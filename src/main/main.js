@@ -1090,8 +1090,10 @@ function main() {
     });
     createBridge({
       port: PORT,
-      // her own Claude Code chat's hooks would cover its answer with theirs
-      onEvent: (evt) => !llm.isChatSession(evt.session_id) && overlay?.webContents.send('claude:event', evt),
+      // her own Claude Code chat's hooks would cover its answer with theirs, and Claude's or Codex's at work
+      // for her chat (in their folder) too: their permission prompt would close the chat, and kill them
+      onEvent: (evt) => !llm.isChatSession(evt.session_id) && !workers.isWorkerEvent(evt, config.load())
+        && overlay?.webContents.send('claude:event', evt),
       onDebug: DEV ? debugHandler : null,
     });
     globalShortcut.register('Control+Alt+C', () => toggleVisible());

@@ -45,3 +45,15 @@ test('codexEffort: low for an errand, medium when asked to think or for code', (
   assert.strictEqual(codexEffort('кодекс, подумай как следует'), 'medium');
   assert.strictEqual(codexEffort('кодекс, напиши скрипт'), 'medium');
 });
+
+test('isWorkerEvent: events from their folder are theirs, not hers to narrate', () => {
+  const { isWorkerEvent } = require('../src/main/workers');
+  const p = require('node:path');
+  const dir = p.resolve('/Users/u/Documents/Capri');
+  const cfg = { workDir: dir };
+  assert.strictEqual(isWorkerEvent({ cwd: dir }, cfg), true);
+  assert.strictEqual(isWorkerEvent({ cwd: p.join(dir, 'sub').toUpperCase() }, cfg), true);
+  assert.strictEqual(isWorkerEvent({ cwd: `${dir}Other` }, cfg), false);
+  assert.strictEqual(isWorkerEvent({ cwd: p.resolve('/Capri/genesis-src') }, cfg), false);
+  assert.strictEqual(isWorkerEvent({}, cfg), false);
+});

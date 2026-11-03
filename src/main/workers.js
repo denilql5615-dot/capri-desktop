@@ -263,4 +263,12 @@ function askCodex(cfg, messages, onDelta, signal) {
   });
 }
 
-module.exports = { route, isStop, findClaude, findCodex, askClaude, askCodex, codexBrief, codexEffort, transcript, workDir };
+/** A hook event from Claude or Codex at work in her folder, for her chat: not hers to narrate. */
+function isWorkerEvent(evt, cfg) {
+  if (!evt?.cwd) return false;
+  const dir = path.resolve(cfg.workDir || path.join(os.homedir(), 'Documents', 'Capri')).toLowerCase();
+  const cwd = path.resolve(String(evt.cwd)).toLowerCase();
+  return cwd === dir || cwd.startsWith(dir + path.sep);
+}
+
+module.exports = { isWorkerEvent, route, isStop, findClaude, findCodex, askClaude, askCodex, codexBrief, codexEffort, transcript, workDir };
