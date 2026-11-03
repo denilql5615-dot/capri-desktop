@@ -46,6 +46,7 @@ class Planner {
     this.id = deps.id || randomUUID;
     this.now = deps.now || Date.now;
     this.onChange = deps.onChange || null; // after every write (main.js: her reminders follow)
+    this.onCreate = deps.onCreate || null; // a new item, before it's written: fields to add to it
   }
 
   read() {
@@ -81,6 +82,7 @@ class Planner {
     const items = this.read();
     if (items.length >= MAX_ITEMS) throw new Error('planner is full');
     const created = item(input, this.id(), this.now());
+    Object.assign(created, this.onCreate?.(created)); // main.js: a note goes to Obsidian, its path kept here
     this.write([...items, created]);
     return created;
   }

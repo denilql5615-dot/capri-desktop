@@ -1664,7 +1664,22 @@ function main() {
   app.whenReady().then(() => {
     if (!['codex', 'claude', 'both'].includes(config.load().assistant)) config.save({ assistant: activeAssistant().id });
     desktopCli = new desktop.Cli(desktop.BIN, path.join(app.getPath('userData'), 'agent-desktop'));
-    localPlanner = new Planner(path.join(app.getPath('userData'), 'planner.json'), { onChange: () => syncPlannerReminders() });
+    localPlanner = new Planner(path.join(app.getPath('userData'), 'planner.json'), {
+      onChange: () => {
+        syncPlannerReminders();
+        chatsWin?.webContents.send('plans:changed'); // her hub's Plans tab
+      },
+      // a note: into your Obsidian vault, its own branch (notes.writePlanNote)
+      onCreate: (entry) => {
+        if (entry.kind !== 'note') return null;
+        try {
+          return { obsidian: notes.writePlanNote(notesDir(), entry) };
+        } catch (err) {
+          console.warn('[capri] planner note:', err.message);
+          return null;
+        }
+      },
+    });
     syncPlannerReminders();
     serveProtocol();
     registerIpc();

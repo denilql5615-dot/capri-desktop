@@ -9,6 +9,21 @@ const notes = require('../src/main/notes');
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'capri-notes-'));
 
+test('planner notes: their own branch next to Capri/, a number for a taken title, an index linking them', () => {
+  const vault = tmp();
+  const dir = path.join(vault, 'Capri');
+  const at = Date.parse('2026-11-04T10:00:00Z');
+  assert.equal(notes.writePlanNote(dir, { title: 'Идея: игра', notes: 'Кошка-навигатор', createdAt: at }), 'Планировщик/Идея игра.md');
+  assert.equal(notes.writePlanNote(dir, { title: 'Идея: игра', notes: '', createdAt: at }), 'Планировщик/Идея игра (2).md');
+  const folder = path.join(vault, 'Планировщик');
+  assert.match(fs.readFileSync(path.join(folder, 'Идея игра.md'), 'utf8'), /тип: заметка планировщика[\s\S]*Кошка-навигатор[\s\S]*\[\[_Планировщик\]\]/);
+  const index = fs.readFileSync(path.join(folder, '_Планировщик.md'), 'utf8');
+  assert.match(index, /\[\[Идея игра\]\] — Кошка-навигатор/);
+  assert.match(index, /\[\[Идея игра \(2\)\]\] — Идея: игра/);
+  assert.equal(fs.existsSync(dir), false); // her own memory untouched
+  fs.rmSync(vault, { recursive: true, force: true });
+});
+
 test('a fact becomes a note, an update keeps its date of birth, the index lists them by kind', () => {
   const dir = tmp();
   assert.equal(notes.write(dir, { title: 'Проект GENESIS', type: 'проект', text: 'Ты делаешь Капри.' }, '2026-11-01'), 'Проект GENESIS');

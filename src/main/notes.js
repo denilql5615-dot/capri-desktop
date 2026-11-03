@@ -139,6 +139,37 @@ function write(dir, { title, type, text }, today = new Date().toISOString().slic
   return name;
 }
 
+// Notes from her planner (kind 'note', from you, Claude or Codex): a branch of their own in the vault,
+// <vault>/Планировщик, next to her Capri/ memory and not in it, one note each, _Планировщик.md linking them.
+const PLAN_DIR = 'Планировщик';
+const PLAN_INDEX = '_Планировщик.md';
+const vaultRoot = (dir) => (path.basename(dir).toLowerCase() === 'capri' ? path.dirname(dir) : dir);
+
+function writePlanIndex(folder) {
+  const notes = fs.readdirSync(folder).filter((n) => n.endsWith('.md') && !n.startsWith('_')).map((name) => {
+    const { meta, text } = parse(fs.readFileSync(path.join(folder, name), 'utf8'));
+    return { title: name.slice(0, -3), created: meta['создано'] || '', text };
+  }).sort((a, b) => b.created.localeCompare(a.created));
+  const lines = ['# Заметки планировщика', '', 'Что ты, Claude или Codex записали в планировщик Капри. Правь как обычные заметки.', ''];
+  for (const n of notes) lines.push(`- ${n.created} [[${n.title}]] — ${n.text.split('\n').find((l) => l && !l.startsWith('[['))?.slice(0, 120) || ''}`);
+  fs.writeFileSync(path.join(folder, PLAN_INDEX), `${lines.join('\n')}\n`, 'utf8');
+}
+
+/** A planner note as an Obsidian note; a title already taken gets a number. Returns its path in the vault. */
+function writePlanNote(dir, { title, notes: text, createdAt }) {
+  const base = fileName(title);
+  if (!base) return null;
+  const folder = path.join(vaultRoot(dir), PLAN_DIR);
+  fs.mkdirSync(folder, { recursive: true });
+  let name = base;
+  for (let n = 2; fs.existsSync(path.join(folder, `${name}.md`)); n++) name = `${base} (${n})`;
+  const created = new Date(createdAt || Date.now()).toISOString().slice(0, 10);
+  const body = String(text || '').trim() || String(title).trim();
+  fs.writeFileSync(path.join(folder, `${name}.md`), `---\nтип: заметка планировщика\nсоздано: ${created}\n---\n${body}\n\n[[${PLAN_INDEX.slice(0, -3)}]]\n`, 'utf8');
+  writePlanIndex(folder);
+  return `${PLAN_DIR}/${name}.md`;
+}
+
 // Russian words are matched on their first five letters ("проекта", "проекту" -> "проек")
 const stems = (s) => new Set(String(s || '').toLowerCase().replace(/ё/g, 'е').match(/[a-zа-я0-9]{3,}/g)?.map((w) => w.slice(0, 5)) || []);
 
@@ -219,4 +250,7 @@ function parseFacts(answer) {
   }
 }
 
-module.exports = { INDEX, TYPES, EXTRACT_SCHEMA, dirOf, fileName, list, searchVault, write, writeIndex, recall, prompt, vaultPrompt, extractMessages, parseFacts };
+module.exports = {
+  INDEX, TYPES, EXTRACT_SCHEMA, PLAN_DIR, dirOf, fileName, list, searchVault, write, writeIndex, writePlanNote,
+  recall, prompt, vaultPrompt, extractMessages, parseFacts,
+};
