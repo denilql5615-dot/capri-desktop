@@ -289,6 +289,35 @@ function withNotes(messages) {
 (${recalled})` } : m));
 }
 
+function pimService() {
+  const cfg = config.load();
+  const account = (cfg.pimAccounts || []).find((item) => item.id === 'proton_work');
+  const secrets = setup.openKeys(cfg.pimSecrets || {});
+  if (!account || !secrets.bridge_user || !secrets.bridge_password) return null;
+  const adapter = pimImap.createImapAdapter({ ...account, user: secrets.bridge_user, password: secrets.bridge_password });
+  return new pim.PimService([adapter]);
+}
+
+async function withPim(messages, said) {
+  if (!pim.isMailQuestion(said)) return messages;
+  const service = pimService();
+  if (!service) return messages;
+  try {
+    const found = await service.searchMail({ accountId: 'proton_work', query: pim.mailQuery(said), limit: 3 });
+    const full = [];
+    for (const mail of found) {
+      const item = await service.getMail({ accountId: 'proton_work', id: mail.id });
+      if (item) full.push(item);
+    }
+    const context = pim.mailPrompt(full);
+    if (!context) return messages;
+    const at = messages.map((message) => message.role).lastIndexOf('user');
+    return messages.map((message, index) => index === at ? { ...message, content: `${message.content}\n\n(${context})` } : message);
+  } catch {
+    return messages;
+  }
+}
+
 // A few minutes after you stop talking, she writes down what's worth keeping (her own model, on this
 // PC only: with an online one she doesn't). Only what came since her last look.
 const NOTES_AFTER_MS = 3 * 60 * 1000;
@@ -1109,7 +1138,7 @@ function registerIpc() {
       const text = worker === 'codex' ? await workers.askCodex(cfg, messages, send, abort.signal, desktopOpts)
         : worker === 'claude' ? await workers.askClaude(cfg, messages, send, abort.signal, desktopOpts)
         : worker === 'computer' ? await computerTask(messages, send, abort.signal)
-        : await chatWithFallback(cfg, withNotes(messages), send, abort.signal, () => streamed);
+        : await chatWithFallback(cfg, await withPim(withNotes(messages), yourWords(messages)), send, abort.signal, () => streamed);
       if (cfg.provider === 'claude') saveMemory({ claude: llm.claudeMemory() });
       if (!worker) noteLater([...messages, { role: 'assistant', content: text }]);
       return { ok: true, text };
