@@ -712,14 +712,16 @@ function askUser({ line, why, grantable }) {
   });
 }
 
-// Claude asked for a task on the computer: its hands are agent-desktop, given after your yes (asked once a
-// task, the hour covers it). Codex can't have them: its sandbox doesn't see your windows. Resolves 'yes',
-// 'no', 'codex' (asked of Codex) or null (no computer in it).
+// Claude or Codex asked for a task on the computer: their hands are agent-desktop, given after your yes
+// (asked once a task, the hour covers it: you asked to touch the keyboard as little as possible). Codex
+// gets them out of its sandbox, which can't see your windows: full access for that task. Resolves 'yes',
+// 'no' or null (no computer in it).
 async function handsFor(worker, text) {
   if (!['claude', 'codex'].includes(worker) || !desktopCli.installed || !agent.isComputerTask(text)) return null;
-  if (worker === 'codex') return 'codex';
   if (grant.covers('UI_CONTROL')) return 'yes';
-  const answer = await askUser({ line: 'Claude будет управлять окнами на ПК', why: null, grantable: true });
+  const answer = await askUser(worker === 'claude'
+    ? { line: 'Claude будет управлять окнами на ПК', why: null, grantable: true }
+    : { line: 'Codex будет управлять окнами на ПК', why: 'без своей песочницы: полный доступ к ПК на эту задачу', grantable: true });
   if (answer === 'hour') {
     grant.grant();
     rebuildTray();
@@ -925,12 +927,9 @@ function registerIpc() {
       // computer: she does it herself with her desktop tool (agent.js)
       const worker = routeOf(yourWords(messages));
       const hands = await handsFor(worker, yourWords(messages));
-      if (hands === 'no') return { ok: true, text: 'Ок, окна Claude не даю.' };
-      if (hands === 'codex') {
-        return { ok: true, text: 'Codex к окнам не пустить: его песочница не видит рабочий стол. Скажи «Клод, …» или просто «на компьютере …» — сделаю сама.' };
-      }
+      if (hands === 'no') return { ok: true, text: `Ок, окна ${worker === 'codex' ? 'Codex' : 'Claude'} не даю.` };
       const desktopOpts = { desktop: hands === 'yes', home: desktopCli.home };
-      const text = worker === 'codex' ? await workers.askCodex(cfg, messages, send, abort.signal)
+      const text = worker === 'codex' ? await workers.askCodex(cfg, messages, send, abort.signal, desktopOpts)
         : worker === 'claude' ? await workers.askClaude(cfg, messages, send, abort.signal, desktopOpts)
         : worker === 'computer' ? await computerTask(messages, send, abort.signal)
         : await chatWithFallback(cfg, messages, send, abort.signal, () => streamed);
