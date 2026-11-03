@@ -40,6 +40,17 @@ const DEFAULTS = {
   pcReact: true,     // she reacts to your PC: the processor at full tilt, the battery, the network, a USB stick, a game (pc.js)
   watchScreen: false, // she looks at your screen now and then and says something about it (look.js)
   lookAsked: false,  // she told you what looking means (where the picture goes) and you said yes
+  // her voice (speech.js): Ctrl+Alt+V and you talk, Whisper writes it down, VoiceStudio says her answer
+  voice: {
+    stt: true,
+    sttUrl: 'http://127.0.0.1:8765/v1', // local Whisper (services/whisper-server)
+    sttModel: 'large-v3-turbo',
+    sttLang: 'ru',
+    tts: true,
+    ttsUrl: 'http://127.0.0.1:3900/v1', // local VoiceStudio
+    ttsModel: 'tts-1',
+    ttsVoice: 'capri_dry',
+  },
 };
 
 let cache = null;
@@ -51,7 +62,8 @@ function file() {
 function load(fresh = false) {
   if (cache && !fresh) return cache;
   try {
-    cache = { ...DEFAULTS, ...JSON.parse(fs.readFileSync(file(), 'utf8')) };
+    const saved = JSON.parse(fs.readFileSync(file(), 'utf8'));
+    cache = { ...DEFAULTS, ...saved, voice: { ...DEFAULTS.voice, ...saved.voice } }; // a voice setting added later gets its default
   } catch {
     cache = { ...DEFAULTS };
   }

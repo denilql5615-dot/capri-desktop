@@ -250,6 +250,7 @@ export class Chat {
     this.bond = null;      // how close she is to you (bond.js)
     this.jealousy = null;  // and how she takes your other AIs
     this.onMessage = null; // () => void: you said something to her
+    this.onAnswer = null;  // (text) => void: her answer is in (listen.js says it out loud)
     this.waitingWhen = null; // a reminder you asked for without saying when: { text, until }
     host.onChatDelta(({ id, text }) => this.onDelta(id, text));
   }
@@ -412,6 +413,7 @@ export class Chat {
     this.warm = true;
     this.remember({ role: 'assistant', content: answer });
     this.panel.stream(answer, { done: true });
+    this.onAnswer?.(answer);
     this.panel.setFace(mood(answer));
     this.panel.setChatBusy(false);
     if (!this.agent) this.after(res.text, answer, asked, early, text);

@@ -7,6 +7,7 @@ import { Brain } from './brain.js';
 import { Guide } from './guide.js';
 import { Mission } from './mission.js';
 import { Chat } from './chat.js';
+import { Listen } from './listen.js';
 import { Setup } from './setup.js';
 import { Custom } from './custom.js';
 import { Bond, Jealousy } from './bond.js';
@@ -227,6 +228,9 @@ async function boot() {
   const guide = new Guide({ capri, panel, voice, host, brain });
   // Talking to her (chat.js): "Talk to her" in her menu, or the button when you click her idle.
   const chat = new Chat({ capri, panel, voice, host, brain });
+  const listen = new Listen({ host, chat, panel }); // talking to her out loud
+  listen.configure(config);
+  chat.onAnswer = (answer) => listen.say(answer);
   brain.onTalk = () => chat.start();
   // Getting her chat going with buttons (setup.js): Ollama and a model, a key, or an address
   const setup = new Setup({ guide, panel, host, brain, capri, voice });
@@ -623,6 +627,7 @@ async function boot() {
 
   host.onConfig((cfg) => {
     voice.configure(cfg);
+    listen.configure(cfg);
     jealousy.enabled = cfg.jealous !== false;
     jealousy.closePages = cfg.closePages !== false;
     followOn = cfg.follow !== false;
@@ -727,6 +732,9 @@ async function boot() {
         break;
       case 'forget': // "Forget our conversations" in her menu, maybe with her chat open
         chat.history = [];
+        break;
+      case 'listen': // Ctrl+Alt+V: you talk to her
+        listen.toggle();
         break;
       case 'chat': // "Talk to her" in her menu
         chat.start();

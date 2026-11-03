@@ -21,6 +21,7 @@ const apps = require('./apps');
 const system = require('./system');
 const launch = require('./launch');
 const files = require('./files');
+const speech = require('./speech');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
 const activeHooks = () => activeAssistant().hooks;
@@ -757,6 +758,23 @@ function registerIpc() {
     }
   });
   ipcMain.on('chat:stop', (_e, id) => chats.get(id)?.abort());
+  // her voice (speech.js): what you said, written down; her line, said
+  ipcMain.handle('voice:transcribe', async (_e, wav) => {
+    const { voice } = config.load();
+    try {
+      return { ok: true, text: await speech.transcribe(wav, voice) };
+    } catch (err) {
+      return { ok: false, error: speech.sttError(err, voice) };
+    }
+  });
+  ipcMain.handle('voice:speak', async (_e, text) => {
+    const { voice } = config.load();
+    if (!voice.tts) return null;
+    return speech.speak(text, voice).catch((err) => {
+      console.warn('[capri] VoiceStudio:', err.message);
+      return null; // her answer is in the panel anyway
+    });
+  });
   // she looks at your screen (look.js): the picture first, then what her AI says about it
   ipcMain.handle('look:snap', async () => {
     try {
@@ -1062,6 +1080,9 @@ function main() {
       onDebug: DEV ? debugHandler : null,
     });
     globalShortcut.register('Control+Alt+C', () => toggleVisible());
+    // Ctrl+Alt+V: you talk to her (again: you're done; she also stops by herself when you go quiet)
+    globalShortcut.register('Control+Alt+V', () => sendCommand('listen'));
+    speech.ensureWhisper(config.load().voice);
     llm.restoreClaude(readMemory().claude);
     refreshModels(); // for her menu's model list
     setTimeout(() => launch.launchables().catch(() => {}), 20000); // what she can open, before you ask
@@ -1082,6 +1103,7 @@ function main() {
 
   app.on('will-quit', () => {
     globalShortcut.unregisterAll();
+    speech.stopWhisper();
     windowWatch?.stop();
   });
   app.on('window-all-closed', (e) => e.preventDefault());
