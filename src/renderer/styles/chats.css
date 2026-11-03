@@ -1,0 +1,322 @@
+/* ------------------------------------------------------------------
+   Her Chats window (chats.html): the same Night City HUD as her panel
+   (capri.css): a near-black plate outlined in neon yellow, one corner
+   cut off, a cyan copy behind, code-like labels.
+------------------------------------------------------------------- */
+
+html,
+body {
+  background: var(--ink); /* a window of its own, not the see-through overlay */
+  color: var(--paper);
+}
+
+body {
+  --accent: var(--yellow);
+  --frame: var(--yellow);
+  --echo: var(--cyan);
+  padding: 10px 14px 16px 10px;
+  font-family: var(--font-mono);
+}
+
+.hud {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 10px;
+  height: 100%;
+}
+
+/* the window's title bar, dragged to move it: "/// CAPRI.LOG   ЧАТЫ   12   ✕" */
+.hud__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0 0 2px;
+  font-size: var(--text-meta);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  -webkit-app-region: drag;
+}
+
+.hud__who {
+  color: var(--cyan);
+  font-weight: 600;
+}
+
+.hud__who::before {
+  content: '/// ';
+  letter-spacing: 0;
+}
+
+.hud__tag {
+  margin-left: -8px;
+  color: var(--paper-3);
+}
+
+.hud__tag::before {
+  content: '.';
+  color: var(--cyan);
+}
+
+.hud__title {
+  margin-left: 10px;
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--paper);
+}
+
+.hud__count {
+  padding: 2px 9px 1px 7px;
+  background: var(--accent);
+  color: var(--ink);
+  font-weight: 600;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%);
+}
+
+.hud__count:empty {
+  display: none;
+}
+
+.hud__close {
+  margin-left: auto;
+  padding-inline: 10px;
+  -webkit-app-region: no-drag;
+}
+
+/* the plate: its shape (one corner cut, a shallow tab out of the top edge) drawn behind it, and the
+   outline from hard copies of that shape all round it, then the cyan one behind */
+.hud__plate {
+  position: relative;
+  isolation: isolate;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 30%) 1fr;
+  filter:
+    drop-shadow(2px 0 0 var(--frame)) drop-shadow(-2px 0 0 var(--frame))
+    drop-shadow(0 2px 0 var(--frame)) drop-shadow(0 -2px 0 var(--frame))
+    drop-shadow(5px 5px 0 var(--echo));
+}
+
+.hud__plate::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--ink);
+  clip-path: polygon(
+    0 0, 57% 0, 59% 4px, 75% 4px, 77% 0,
+    100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%,
+    0 100%
+  );
+}
+
+/* ---------- the list of chats ---------- */
+
+.chats {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 10px 14px 14px;
+  border-right: 1px solid var(--line);
+}
+
+.chats__search {
+  flex: none;
+}
+
+.chats__list,
+.log__lines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--paper-3) transparent;
+}
+
+.chats__list {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chats__item {
+  position: relative;
+  padding: 8px 10px 8px 14px;
+  background: transparent;
+  cursor: pointer;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%);
+}
+
+/* the notch on the left, like her buttons */
+.chats__item::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 14px;
+  width: 5px;
+  height: 2px;
+  background: var(--paper-3);
+}
+
+.chats__item:hover {
+  background: var(--ink-2);
+}
+
+.chats__item.is-current {
+  background: var(--ink-2);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.chats__item.is-current::before {
+  background: var(--accent);
+}
+
+.chats__when {
+  display: flex;
+  gap: 8px;
+  font-size: var(--text-meta);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--paper-3);
+}
+
+.chats__item.is-current .chats__when {
+  color: var(--cyan);
+}
+
+.chats__n {
+  margin-left: auto;
+}
+
+.chats__title {
+  margin-top: 3px;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--paper-2);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+}
+
+.chats__item.is-current .chats__title {
+  color: var(--paper);
+}
+
+.chats__empty {
+  margin: 0;
+  font-size: var(--text-data);
+  line-height: 1.5;
+  color: var(--paper-3);
+}
+
+/* ---------- one chat ---------- */
+
+.log {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 18px 22px;
+}
+
+.log__meta {
+  flex: none;
+  padding-bottom: 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--text-meta);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--paper-3);
+}
+
+.log__meta b {
+  color: var(--cyan);
+  font-weight: 600;
+}
+
+.log__lines {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 10px 6px 4px 0;
+  user-select: text;
+  cursor: auto;
+}
+
+.line__who {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: var(--text-meta);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.line__name {
+  font-weight: 600;
+}
+
+.line__at {
+  color: var(--paper-3);
+}
+
+.line__text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* hers: in her display type, under her name in cyan */
+.line.is-her .line__name {
+  color: var(--cyan);
+}
+
+.line.is-her .line__name::before {
+  content: '/// ';
+  letter-spacing: 0;
+}
+
+.line.is-her .line__text {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+/* yours: typed, in mono, set off by her yellow */
+.line.is-you {
+  margin-left: 18%;
+  padding: 8px 12px 9px 14px;
+  background:
+    linear-gradient(var(--accent), var(--accent)) left 2px top 13px / 5px 2px no-repeat,
+    var(--ink-2);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%);
+}
+
+.line.is-you .line__name {
+  color: var(--accent);
+}
+
+.line.is-you .line__text {
+  font-size: calc(var(--text-data) + 2px);
+  line-height: 1.5;
+  color: var(--paper-2);
+}
+
+mark {
+  background: var(--accent);
+  color: var(--ink);
+}

@@ -414,6 +414,7 @@ export class Chat {
     this.turn = id;
     this.answer = '';
     this.history.push({ role: 'user', content: text });
+    this.host.chatLog?.({ role: 'user', content: text }); // her Chats window
     this.panel.setChatBusy(true);
     this.panel.setActions([]); // a close button she offered before goes with a new message
     this.panel.chatTurn({ quote: text, face: 'aside' });
@@ -533,6 +534,7 @@ export class Chat {
   // an answer of hers, kept with your message before it
   remember(message) {
     this.history.push(message);
+    this.host.chatLog?.(message);
     this.history = this.history.slice(-KEEP);
     this.host.chatRemember(this.history);
   }

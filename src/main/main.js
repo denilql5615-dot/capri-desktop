@@ -27,6 +27,7 @@ const phone = require('./phone');
 const policy = require('./policy');
 const desktop = require('./desktop');
 const agent = require('./agent');
+const chatLog = require('./chats');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
 const activeHooks = () => activeAssistant().hooks;
@@ -78,6 +79,7 @@ function saveMemory(patch) {
 function forgetChats() {
   llm.resetClaude();
   saveMemory({ history: [], claude: null });
+  chatLog.write(chatsFile(), chatLog.cut(chatLog.read(chatsFile())));
   sendCommand('forget');
 }
 
@@ -253,6 +255,34 @@ function playDemo() {
 // During the demo, a little fake terminal for her to sit on and take over (window tracking is
 // Windows only, so only there). Opened without stealing focus; closing it drops her off it.
 let demoWin = null;
+
+// Her Chats window (chats.html): your conversations with her, to read back
+const chatsFile = () => path.join(app.getPath('userData'), 'chats.json');
+let chatsWin = null;
+
+function openChats() {
+  if (chatsWin) {
+    chatsWin.show();
+    chatsWin.focus();
+    return;
+  }
+  const b = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+  const width = Math.min(980, b.width - 80);
+  const height = Math.min(660, b.height - 80);
+  chatsWin = new BrowserWindow({
+    x: Math.round(b.x + (b.width - width) / 2), y: Math.round(b.y + (b.height - height) / 2), width, height,
+    minWidth: 620, minHeight: 420, frame: false, show: false, title: 'Capri · Чаты', backgroundColor: '#13110e',
+    webPreferences: {
+      preload: path.join(__dirname, '..', 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  chatsWin.loadURL(`capri://app/src/renderer/chats.html?lang=${encodeURIComponent(resolveLang(config.load().lang))}`);
+  chatsWin.once('ready-to-show', () => chatsWin?.show());
+  chatsWin.on('closed', () => { chatsWin = null; });
+}
 const DEMO_TERMINAL = `<body style="margin:0;background:#14101c;color:#8f8aa3;font:13px/1.7 Consolas,monospace;padding:14px 18px">
 <div style="color:#36ff7a">PS C:\\night-city-api&gt; npm test -- gigs</div>
 <div>&nbsp;&nbsp;GET /gigs</div><div style="color:#36ff7a">&nbsp;&nbsp;&nbsp;&nbsp;✓ returns 20 items per page</div>
@@ -336,6 +366,7 @@ function rebuildTray() {
     { label: t.help, click: () => sendCommand('welcome') },
     ...(cfg.claude ? [{ label: t.report, click: () => sendCommand('report') }] : []),
     { label: t.talk, click: () => sendCommand('chat') },
+    { label: t.chats, click: openChats },
     { label: t.lookNow, click: () => sendCommand('look') },
     {
       label: t.reminders,
@@ -1033,6 +1064,14 @@ function registerIpc() {
   });
   ipcMain.handle('chat:memory', () => readMemory().history || []);
   ipcMain.on('chat:remember', (_e, history) => Array.isArray(history) && saveMemory({ history }));
+  // every message, for her Chats window
+  ipcMain.on('chat:log', (_e, message) => {
+    chatLog.write(chatsFile(), chatLog.add(chatLog.read(chatsFile()), message));
+    chatsWin?.webContents.send('chats:changed');
+  });
+  ipcMain.handle('chats:list', () => chatLog.list(chatLog.read(chatsFile())));
+  ipcMain.on('chats:open', () => openChats());
+  ipcMain.on('chats:close', () => chatsWin?.close());
   ipcMain.on('chat:ollama', () => shell.openExternal(OLLAMA_SITE));
   // setting her up with buttons (setup.js): Ollama and a model, or a key, or an address
   const progress = (payload) => overlay?.webContents.send('setup:progress', payload);

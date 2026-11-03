@@ -151,6 +151,7 @@ export class Look {
       if (!text) return;
       this.chat.seen = { text, at: Date.now() };
       this.panel.say({ kind: 'info', badge: 'SCAN', face: mood(text), line: text, hold: Math.min(13000, Math.max(5000, 2500 + text.length * 55)) });
+      this.chat.onAnswer?.(text); // out loud, like her answers in chat
     } finally {
       this.looking = false;
     }

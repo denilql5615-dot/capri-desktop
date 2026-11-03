@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'">
+  <title>Capri · Чаты</title>
+  <link rel="stylesheet" href="styles/capri.css">
+  <link rel="stylesheet" href="styles/chats.css">
+</head>
+<body>
+  <div class="hud">
+    <header class="hud__bar">
+      <span class="hud__who">CAPRI</span><span class="hud__tag">LOG</span>
+      <span class="hud__title"></span>
+      <span class="hud__count"></span>
+      <button class="panel__action hud__close" type="button" aria-label="✕">✕</button>
+    </header>
+    <div class="hud__plate">
+      <aside class="chats">
+        <input class="panel__input chats__search" type="search" maxlength="80" spellcheck="false">
+        <ol class="chats__list"></ol>
+        <p class="chats__empty" hidden></p>
+      </aside>
+      <main class="log">
+        <header class="log__meta"></header>
+        <ol class="log__lines"></ol>
+      </main>
+    </div>
+  </div>
+  <script type="module" src="js/chats-window.js"></script>
+</body>
+</html>

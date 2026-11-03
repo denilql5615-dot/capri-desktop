@@ -10,7 +10,7 @@
   `github.com/denilql5615-dot/capri-desktop` (`origin`; `upstream` = mochiiwuff/capri-desktop). `main` форка = оригинал Мочи.
 - Запуск: `npm run dev` (Electron 44 в node_modules). Отладка: HTTP `127.0.0.1:47823/debug/<route>` в `--dev`:
   `command {name,...}`, `eval {js}` (в рендерере есть `window.dev.{chat,listen,panel,capri,...}`), `capture`, `reload`.
-- Тесты: `node --test tests/` — **40/40**. Логи — stdout `npm run dev` (`[capri] ...`).
+- Тесты: `node --test tests/` — **42/42**. Логи — stdout `npm run dev` (`[capri] ...`).
 - Старый проект GENESIS (`D:\Capri\genesis-src`, TS) — источник, откуда переносили модули. Не запускать одновременно:
   порт 8770 общий. **EXE Мочи не ставить**, пока стоит старая Капри: тот же productName «Capri» → та же папка
   `%LOCALAPPDATA%\Programs\Capri` (был инцидент со стёртой папкой).
@@ -32,6 +32,8 @@
 | Claude/Codex, названные для задачи на ПК, получают agent-desktop после одного вопроса (Claude: только эта команда разрешена; Codex: `danger-full-access`, пользователь явно разрешил «фуллдоступ») | `main.js handsFor`, `workers.desktopNote` |
 | Зрение: «посмотри на экран» смотрит только `qwen3.5:4b` (`qwen3-vl:4b` больше не выбирается сама): выгрузить `qwen3:8b` → взгляд (`/no_think`, num_predict 900, повтор при пустом ответе) → выгрузить `qwen3.5` → снова `qwen3:8b`. Нет `qwen3.5:4b` — ответ «не вижу», без запасной модели. Пустые ответы 2026-11-03 были от старой `qwen3-vl:4b`; `qwen3.5` без `think:false` уходит в размышления и возвращает пусто (проверено напрямую) — `think:false` не убирать. Команда распознаётся и с запятыми («посмотри, что на экране») | `ollama.js` (`screenModel`, `unload`, `visionPrompt`), `main.js sayAboutSnap` |
 | Смена модели голосом: «основная», «зрение», «квен три с половиной четыре б» и т.п. (IPC `voice:model`); «зрение» = `qwen3.5:4b` | `ollama.findSpokenModel`, `listen.js` |
+| Окно «Чаты» (правый клик › Чаты): вся переписка с ней, по чатам (пауза 30 мин или «Забыть наши разговоры» = новый чат), поиск, HUD как у панели. Хранится в `%APPDATA%capri-desktopchats.json`, только на ПК; память для ответов — по-прежнему `memory.json` | `src/main/chats.js`, `src/renderer/chats.html`, `js/chats-window.js`, `styles/chats.css` |
+| Ответы про экран (по просьбе и авто-взгляды) озвучиваются | `chat.js sendLook`, `look.js` |
 | Wake word «Капри, …» (всегда включённый микрофон → сегменты → Whisper с нейтральной подсказкой) + голосовые ответы «да / на час / нет» на вопросы | `listen.js` (`Segmenter`, `parseWake`, `parseAnswer`), `speech.js WAKE_PROMPT` |
 
 Проверено вживую (скриптами в обход окна): Whisper, VoiceStudio, Claude/Codex docx, мост телефона, задачи на ПК
