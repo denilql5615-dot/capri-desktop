@@ -492,6 +492,7 @@ export class Chat {
       this.turn = 0;
       this.remember({ role: 'assistant', content: line });
       this.panel.stream(line, { done: true });
+      this.onAnswer?.(line); // out loud, like her other answers
       this.panel.setFace(face);
       this.panel.setChatBusy(false);
     };
