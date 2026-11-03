@@ -29,6 +29,7 @@ const desktop = require('./desktop');
 const agent = require('./agent');
 const chatLog = require('./chats');
 const notes = require('./notes');
+const telegram = require('./telegram');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
 const activeHooks = () => activeAssistant().hooks;
@@ -380,8 +381,31 @@ function resolveLang(setting) {
 
 // What the overlay gets: `lang` is the resolved one, `langSetting` what the user picked.
 function rendererConfig() {
-  const { apiKeys, ...cfg } = config.load(); // the keys stay here: the overlay only learns which ones are set
+  const { apiKeys, phoneToken, telegramToken, ...cfg } = config.load(); // secrets stay in the main process
   return { ...cfg, keys: Object.keys(apiKeys || {}), assistant: activeAssistant().id, lang: resolveLang(cfg.lang), langSetting: cfg.lang, floorGap: overlayArea().gap };
+}
+
+let telegramBot = null;
+const telegramSessions = new Map();
+
+async function applyTelegram() {
+  const cfg = config.load();
+  const token = setup.openKeys({ t: cfg.telegramToken }).t;
+  if (!token) {
+    telegramBot = null;
+    return false;
+  }
+  telegramBot = new telegram.TelegramBot({
+    token,
+    chatId: cfg.telegramChatId,
+    saveChatId: (telegramChatId) => config.save({ telegramChatId }),
+  });
+  return telegramBot.link();
+}
+
+function notifyTelegram(evt) {
+  const text = telegram.eventNotice(telegramSessions, evt);
+  if (text) telegramBot?.send(text);
 }
 
 function updateConfig(patch) {
@@ -1007,12 +1031,19 @@ function registerIpc() {
   ipcMain.handle('config:get', () => rendererConfig());
   ipcMain.handle('hooks:status', () => activeHooks().status());
   ipcMain.handle('config:set', (_e, patch) => {
+    let telegramChanged = false;
+    if (typeof patch?.telegramToken === 'string') {
+      patch = { ...patch, telegramToken: patch.telegramToken ? setup.sealKey(patch.telegramToken.trim()) : null, telegramChatId: null };
+      telegramChanged = true;
+    }
     // "запомни…" in her chat: a note in her memory too
     if (Array.isArray(patch?.memories)) {
       const had = new Set(config.load().memories || []);
       for (const memo of patch.memories.filter((m) => !had.has(m))) notes.write(notesDir(), { title: memo.split(/s+/).slice(0, 5).join(' '), type: 'о тебе', text: memo });
     }
-    return updateConfig(patch);
+    const next = updateConfig(patch);
+    if (telegramChanged) applyTelegram();
+    return next;
   });
   ipcMain.handle('demo:window', (_e, open) => demoWindow(open));
   // right-clicking her: the same menu as the tray icon (which Windows often hides behind the ^ by the clock)
@@ -1453,8 +1484,11 @@ function main() {
       port: PORT,
       // her own Claude Code chat's hooks would cover its answer with theirs, and Claude's or Codex's at work
       // for her chat (in their folder) too: their permission prompt would close the chat, and kill them
-      onEvent: (evt) => !llm.isChatSession(evt.session_id) && !workers.isWorkerEvent(evt, config.load())
-        && overlay?.webContents.send('claude:event', evt),
+      onEvent: (evt) => {
+        if (llm.isChatSession(evt.session_id) || workers.isWorkerEvent(evt, config.load())) return;
+        notifyTelegram(evt);
+        overlay?.webContents.send('claude:event', evt);
+      },
       onDebug: DEV ? debugHandler : null,
     });
     globalShortcut.register('Control+Alt+C', () => toggleVisible());
@@ -1464,6 +1498,7 @@ function main() {
     globalShortcut.register('Control+Alt+X', () => sendCommand('stop'));
     speech.ensureWhisper(config.load().voice);
     applyPhone();
+    applyTelegram();
     // what you asked her to remember before her notes existed: into her notes, once
     const { memories = [] } = config.load();
     if (memories.length && !notes.list(notesDir()).length) {

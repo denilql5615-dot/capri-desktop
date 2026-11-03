@@ -60,6 +60,8 @@ const DEFAULTS = {
   // the phone bridge (phone.js): the Android app talks to her over the home network or Tailscale
   phone: { enabled: false, port: 8770 },
   phoneToken: null,  // the phone's key, encrypted with your Windows account (setup.sealKey)
+  telegramToken: null,
+  telegramChatId: null,
 };
 
 const OLD_PROMPT = 'Капри, Клод, Кодекс. Клод, собери документ в docx. Кодекс, сделай таблицу. Капри, открой YouTube.';
