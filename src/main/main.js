@@ -28,6 +28,7 @@ const policy = require('./policy');
 const desktop = require('./desktop');
 const agent = require('./agent');
 const chatLog = require('./chats');
+const notes = require('./notes');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
 const activeHooks = () => activeAssistant().hooks;
@@ -265,6 +266,59 @@ let demoWin = null;
 const chatsFile = () => path.join(app.getPath('userData'), 'chats.json');
 let chatsWin = null;
 
+// Her long memory: notes in your Obsidian vault (notes.js)
+const notesDir = () => notes.dirOf({ notesDir: config.load().notesDir, appData: app.getPath('appData'), documents: app.getPath('documents') });
+
+// Her notes that fit your last message, put right by it for this answer: small local models mostly go by
+// the last thing they read (chat.js does the same with her mood), up in her persona they'd skip them
+function withNotes(messages) {
+  const at = messages.map((m) => m.role).lastIndexOf('user');
+  const said = messages[at]?.content;
+  if (typeof said !== 'string') return messages;
+  const recalled = notes.prompt(notes.recall(notes.list(notesDir()), said));
+  if (!recalled) return messages;
+  return messages.map((m, i) => (i === at ? { ...m, content: `${said}
+
+(${recalled})` } : m));
+}
+
+// A few minutes after you stop talking, she writes down what's worth keeping (her own model, on this
+// PC only: with an online one she doesn't). Only what came since her last look.
+const NOTES_AFTER_MS = 3 * 60 * 1000;
+let notesTimer = null;
+let notesUpTo = ''; // the last message of yours she went through
+function noteLater(conversation) {
+  clearTimeout(notesTimer);
+  notesTimer = setTimeout(() => takeNotes(conversation).catch((err) => console.warn('[capri] notes:', err.message)), NOTES_AFTER_MS);
+}
+
+async function takeNotes(conversation) {
+  const cfg = config.load();
+  const model = pickModel(cfg);
+  if (cfg.provider !== 'ollama' || !model || ollama.isCloud(model)) return [];
+  const talk = conversation.filter((m) => m.role !== 'system');
+  const from = notesUpTo ? talk.map((m) => m.content).lastIndexOf(notesUpTo) + 1 : 0;
+  const fresh = talk.slice(from);
+  if (!fresh.some((m) => m.role === 'user')) return [];
+  notesUpTo = [...fresh].reverse().find((m) => m.role === 'user').content;
+  const dir = notesDir();
+  const known = notes.list(dir).map((n) => n.title);
+  const facts = notes.parseFacts(await ollama.jsonChat({ model, messages: notes.extractMessages(fresh, known), schema: notes.EXTRACT_SCHEMA }));
+  const kept = facts.map((fact) => notes.write(dir, fact)).filter(Boolean);
+  if (kept.length) console.log(`[capri] noted: ${kept.join('; ')}`);
+  return kept;
+}
+
+// Her memory in Obsidian (her menu): the list of her notes, opened in your vault, or the folder
+function openNotes() {
+  const dir = notesDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const index = path.join(dir, notes.INDEX);
+  if (!fs.existsSync(index)) notes.writeIndex(dir);
+  if (dir.endsWith(`${path.sep}Capri`)) shell.openExternal(`obsidian://open?path=${encodeURIComponent(index)}`);
+  else shell.openPath(dir);
+}
+
 function openChats() {
   if (chatsWin) {
     chatsWin.show();
@@ -372,6 +426,7 @@ function rebuildTray() {
     ...(cfg.claude ? [{ label: t.report, click: () => sendCommand('report') }] : []),
     { label: t.talk, click: () => sendCommand('chat') },
     { label: t.chats, click: openChats },
+    { label: t.notes, click: openNotes },
     { label: t.lookNow, click: () => sendCommand('look') },
     {
       label: t.reminders,
@@ -947,7 +1002,14 @@ function registerIpc() {
   });
   ipcMain.handle('config:get', () => rendererConfig());
   ipcMain.handle('hooks:status', () => activeHooks().status());
-  ipcMain.handle('config:set', (_e, patch) => updateConfig(patch));
+  ipcMain.handle('config:set', (_e, patch) => {
+    // "запомни…" in her chat: a note in her memory too
+    if (Array.isArray(patch?.memories)) {
+      const had = new Set(config.load().memories || []);
+      for (const memo of patch.memories.filter((m) => !had.has(m))) notes.write(notesDir(), { title: memo.split(/s+/).slice(0, 5).join(' '), type: 'о тебе', text: memo });
+    }
+    return updateConfig(patch);
+  });
   ipcMain.handle('demo:window', (_e, open) => demoWindow(open));
   // right-clicking her: the same menu as the tray icon (which Windows often hides behind the ^ by the clock)
   ipcMain.on('menu:open', () => trayMenu?.popup({ window: overlay }));
@@ -990,8 +1052,9 @@ function registerIpc() {
       const text = worker === 'codex' ? await workers.askCodex(cfg, messages, send, abort.signal, desktopOpts)
         : worker === 'claude' ? await workers.askClaude(cfg, messages, send, abort.signal, desktopOpts)
         : worker === 'computer' ? await computerTask(messages, send, abort.signal)
-        : await chatWithFallback(cfg, messages, send, abort.signal, () => streamed);
+        : await chatWithFallback(cfg, withNotes(messages), send, abort.signal, () => streamed);
       if (cfg.provider === 'claude') saveMemory({ claude: llm.claudeMemory() });
+      if (!worker) noteLater([...messages, { role: 'assistant', content: text }]);
       return { ok: true, text };
     } catch (err) {
       return { ok: false, error: abort.signal.aborted ? 'stopped' : err.message, code: err.code || null };
@@ -1292,6 +1355,11 @@ async function debugHandler(route, body) {
     if (body.click) find(trayMenu)?.click();
     return { ok: true, value: items(trayMenu) };
   }
+  if (route === 'notes') {
+    // her notes from the conversation so far, now rather than a few minutes after you stop talking
+    notesUpTo = '';
+    return { ok: true, value: { dir: notesDir(), kept: await takeNotes(readMemory().history || []) } };
+  }
   if (route === 'models') {
     // which model she'd chat with, and why: what Ollama lists and what her config says
     const cfg = config.load(true);
@@ -1392,6 +1460,11 @@ function main() {
     globalShortcut.register('Control+Alt+X', () => sendCommand('stop'));
     speech.ensureWhisper(config.load().voice);
     applyPhone();
+    // what you asked her to remember before her notes existed: into her notes, once
+    const { memories = [] } = config.load();
+    if (memories.length && !notes.list(notesDir()).length) {
+      for (const memo of memories) notes.write(notesDir(), { title: memo.split(/s+/).slice(0, 5).join(' '), type: 'о тебе', text: memo });
+    }
     llm.restoreClaude(readMemory().claude);
     refreshModels(); // for her menu's model list
     setTimeout(() => launch.launchables().catch(() => {}), 20000); // what she can open, before you ask
