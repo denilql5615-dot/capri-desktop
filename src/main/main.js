@@ -1074,7 +1074,7 @@ function main() {
   if (process.platform === 'win32') app.setAppUserModelId('capri.desktop');
 
   app.whenReady().then(() => {
-    if (!['codex', 'claude'].includes(config.load().assistant)) config.save({ assistant: activeAssistant().id });
+    if (!['codex', 'claude', 'both'].includes(config.load().assistant)) config.save({ assistant: activeAssistant().id });
     serveProtocol();
     registerIpc();
     createOverlay();

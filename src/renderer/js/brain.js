@@ -22,7 +22,8 @@ export class Brain {
     this.host = host;
     this.mission = mission; // today's log, for her report card (mission.js)
     this.lang = lang;
-    this.assistant = assistant; // 'claude', 'codex' or 'agy': whose events she follows
+    this.assistant = assistant; // 'claude', 'codex', 'both' (Claude Code and Codex) or 'agy': whose events she follows
+    this.source = 'claude';     // with 'both': whose event she's on (her lines and the name she says go by it)
     this.custom = {};       // what you made her (custom.js): { userName, persona, myLines, memories }
     this.sessions = new Map();
     this.replyFor = null;    // the session whose answer she's holding up for you
@@ -35,13 +36,18 @@ export class Brain {
     this.thinking = null;   // { s, since, said, fidget, gazed } while Claude is quiet mid-task
   }
 
+  // the one she's talking about: with both watched, the one the latest event came from
+  get speaking() {
+    return this.assistant === 'both' ? this.source : this.assistant;
+  }
+
   get t() {
-    return linesFor(this.lang, this.assistant);
+    return linesFor(this.lang, this.speaking);
   }
 
   // the assistant she watches, as she calls it
   get name() {
-    return this.assistant === 'claude' ? 'Claude' : ASSISTANT_NAMES[this.assistant] || 'Claude';
+    return this.speaking === 'claude' ? 'Claude' : ASSISTANT_NAMES[this.speaking] || 'Claude';
   }
 
   session(evt) {
@@ -79,10 +85,12 @@ export class Brain {
     // Codex's and Antigravity's hooks mark their sessions (codex:..., agy:...): only the one she watches
     // counts. Another one at work is another AI in your life: she notices (bond.js).
     const source = /^(codex|agy):/.exec(String(evt.session_id || ''))?.[1] || 'claude';
-    if (!evt.demo && source !== this.assistant) {
+    const watched = this.assistant === 'both' ? ['claude', 'codex'] : [this.assistant];
+    if (!evt.demo && !watched.includes(source)) {
       this.onRival?.(source === 'agy' ? 'gemini' : source);
       return undefined;
     }
+    if (!evt.demo) this.source = source;
     if (!this.watching && !evt.demo) return undefined; // not watching Claude Code: none of its business
     // the first real Claude Code event that ever reaches her (the demo's don't count)
     if (!this.linked && !evt.demo) {
