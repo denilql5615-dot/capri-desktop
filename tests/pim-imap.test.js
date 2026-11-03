@@ -30,5 +30,7 @@ test('IMAP adapter reads summaries and full text through a read-only loopback co
 
 test('IMAP adapter rejects remote hosts by default and prefers plain text', () => {
   assert.throws(() => createImapAdapter({ id: 'x', host: 'imap.example.test', port: 993, user: 'u', password: 'p' }), /remote/);
+  assert.throws(() => createImapAdapter({ id: 'x', host: 'imap.example.test', port: 993, secure: true, localOnly: false, user: 'u', password: 'p' }), /remote/);
+  assert.doesNotThrow(() => createImapAdapter({ id: 'gmail_reserve', host: 'imap.gmail.com', port: 993, secure: true, localOnly: false, user: 'u', password: 'p' }));
   assert.equal(textPart({ type: 'multipart/alternative', childNodes: [{ type: 'text/html', part: '2' }, { type: 'text/plain', part: '1' }] }), '1');
 });

@@ -292,11 +292,17 @@ function withNotes(messages) {
 
 function pimService() {
   const cfg = config.load();
-  const account = (cfg.pimAccounts || []).find((item) => item.id === 'proton_work');
   const secrets = setup.openKeys(cfg.pimSecrets || {});
-  if (!account || !secrets.bridge_user || !secrets.bridge_password) return null;
-  const adapter = pimImap.createImapAdapter({ ...account, user: secrets.bridge_user, password: secrets.bridge_password });
-  return new pim.PimService([adapter]);
+  const adapters = [];
+  for (const account of cfg.pimAccounts || []) {
+    if (account.id === 'proton_work' && secrets.bridge_user && secrets.bridge_password) {
+      adapters.push(pimImap.createImapAdapter({ ...account, user: secrets.bridge_user, password: secrets.bridge_password }));
+    }
+    if (account.id === 'gmail_reserve' && secrets.gmail_user && secrets.gmail_app_password) {
+      adapters.push(pimImap.createImapAdapter({ ...account, user: secrets.gmail_user, password: secrets.gmail_app_password }));
+    }
+  }
+  return adapters.length ? new pim.PimService(adapters) : null;
 }
 
 let pimMcpHttp = null;
@@ -323,15 +329,25 @@ async function applyPimMcp() {
   }
 }
 
+async function restartPimMcp() {
+  if (pimMcpHttp) await new Promise((resolve) => pimMcpHttp.close(resolve));
+  pimMcpHttp = null;
+  return applyPimMcp();
+}
+
 async function withPim(messages, said) {
   if (!pim.isMailQuestion(said)) return messages;
   const service = pimService();
   if (!service) return messages;
   try {
-    const found = await service.searchMail({ accountId: 'proton_work', query: pim.mailQuery(said), limit: 3 });
+    const found = [];
+    for (const accountId of pim.mailAccountIds(said, service.listAccounts())) {
+      try { found.push(...await service.searchMail({ accountId, query: pim.mailQuery(said), limit: 3 })); } catch {}
+    }
+    found.sort((a, b) => String(b.date).localeCompare(String(a.date))).splice(3);
     const full = [];
     for (const mail of found) {
-      const item = await service.getMail({ accountId: 'proton_work', id: mail.id });
+      const item = await service.getMail({ accountId: mail.accountId, id: mail.id });
       if (item) full.push(item);
     }
     const context = pim.mailPrompt(full);
@@ -514,6 +530,7 @@ function rebuildTray() {
     { label: t.chats, click: openChats },
     { label: t.notes, click: openNotes },
     { label: 'Proton Mail Bridge…', click: () => sendCommand('setupProton') },
+    { label: 'Gmail reserve…', click: () => sendCommand('setupGmail') },
     { label: t.lookNow, click: () => sendCommand('look') },
     {
       label: t.reminders,
@@ -1112,14 +1129,33 @@ function registerIpc() {
       const password = String(choice?.password || '');
       const adapter = pimImap.createImapAdapter({ id: 'proton_work', provider: 'proton', role: 'work', host, port, user, password });
       await adapter.searchMail({ query: '', limit: 1 });
+      const cfg = config.load();
       updateConfig({
-        pimAccounts: [{ id: 'proton_work', provider: 'proton', role: 'work', host, port }],
-        pimSecrets: pim.sealSecrets({ bridge_user: user, bridge_password: password }, setup.sealKey),
+        pimAccounts: [...(cfg.pimAccounts || []).filter((item) => item.id !== 'proton_work'), { id: 'proton_work', provider: 'proton', role: 'work', host, port }],
+        pimSecrets: { ...cfg.pimSecrets, ...pim.sealSecrets({ bridge_user: user, bridge_password: password }, setup.sealKey) },
       });
-      applyPimMcp();
+      await restartPimMcp();
       return { ok: true };
     } catch {
       return { ok: false, error: 'Bridge connection failed' };
+    }
+  });
+  ipcMain.handle('pim:gmail-setup', async (_e, choice) => {
+    try {
+      const user = String(choice?.user || '').trim();
+      const password = String(choice?.password || '').replace(/\s+/g, '');
+      const account = { id: 'gmail_reserve', provider: 'gmail', role: 'reserve', host: 'imap.gmail.com', port: 993, secure: true, localOnly: false };
+      const adapter = pimImap.createImapAdapter({ ...account, user, password });
+      await adapter.searchMail({ query: '', limit: 1 });
+      const cfg = config.load();
+      updateConfig({
+        pimAccounts: [...(cfg.pimAccounts || []).filter((item) => item.id !== account.id), account],
+        pimSecrets: { ...cfg.pimSecrets, ...pim.sealSecrets({ gmail_user: user, gmail_app_password: password }, setup.sealKey) },
+      });
+      await restartPimMcp();
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'Gmail connection failed' };
     }
   });
   ipcMain.handle('demo:window', (_e, open) => demoWindow(open));

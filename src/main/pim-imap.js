@@ -35,6 +35,7 @@ function createImapAdapter(options, clientFactory = (config) => new ImapFlow(con
   const { id, provider, role, host, port, secure = false, user, password, mailbox = 'INBOX', localOnly = true } = options || {};
   if (!id || !host || !Number.isInteger(port) || port < 1 || port > 65535 || !user || !password) throw new TypeError('invalid IMAP config');
   if (localOnly && !LOOPBACK.has(String(host).toLowerCase())) throw new TypeError('remote IMAP host is not allowed');
+  if (!localOnly && !(String(host).toLowerCase() === 'imap.gmail.com' && port === 993 && secure)) throw new TypeError('remote IMAP config is not allowed');
 
   const run = async (task) => {
     const client = clientFactory({

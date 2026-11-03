@@ -23,6 +23,18 @@ const PROTON = {
     checking: 'Checking Bridge…', ready: 'Proton Mail is connected.', failed: 'Could not connect. Check the Bridge details.', save: 'Next',
   },
 };
+const GMAIL = {
+  ru: {
+    user: 'Адрес резервного Gmail?', userHow: 'Только личная резервная почта. Обычный пароль Google не вводи.',
+    password: 'Пароль приложения Gmail?', passwordHow: 'Google Account → Безопасность → Двухэтапная аутентификация → Пароли приложений. Вставь 16 символов.',
+    checking: 'Проверяю Gmail…', ready: 'Резервный Gmail подключён только для чтения.', failed: 'Не подключилось. Проверь адрес и пароль приложения.', save: 'Дальше',
+  },
+  en: {
+    user: 'Reserve Gmail address?', userHow: 'Personal backup mail only. Do not enter your normal Google password.',
+    password: 'Gmail app password?', passwordHow: 'Google Account → Security → 2-Step Verification → App passwords. Paste the 16 characters.',
+    checking: 'Checking Gmail…', ready: 'Reserve Gmail is connected read-only.', failed: 'Could not connect. Check the address and app password.', save: 'Next',
+  },
+};
 
 export class Setup {
   constructor({ guide, panel, host, brain, capri, voice }) {
@@ -92,6 +104,19 @@ export class Setup {
       if (!password?.text) return;
       this.working(t.checking);
       const result = await this.host.setupPim({ endpoint: endpoint.text, user: user.text, password: password.text });
+      await this.guide.ask({ kind: result.ok ? 'done' : 'error', face: result.ok ? 'grin' : 'wide', line: result.ok ? t.ready : t.failed, actions: [{ id: 'ok', label: this.t.ok, primary: true }] });
+    });
+  }
+
+  async gmail() {
+    await this.guide.scene(async () => {
+      const t = GMAIL[this.brain.lang] || GMAIL.en;
+      const user = await this.guide.askText({ face: 'look', line: t.user, quote: t.userHow, placeholder: 'name@gmail.com', send: t.save, tag: 'GMAIL' });
+      if (!user?.text) return;
+      const password = await this.guide.askText({ face: 'look', line: t.password, quote: t.passwordHow, placeholder: 'xxxx xxxx xxxx xxxx', secret: true, send: t.save, tag: 'APP PASSWORD' });
+      if (!password?.text) return;
+      this.working(t.checking);
+      const result = await this.host.setupGmail({ user: user.text, password: password.text });
       await this.guide.ask({ kind: result.ok ? 'done' : 'error', face: result.ok ? 'grin' : 'wide', line: result.ok ? t.ready : t.failed, actions: [{ id: 'ok', label: this.t.ok, primary: true }] });
     });
   }

@@ -695,6 +695,9 @@ async function boot() {
       case 'setupProton':
         setup.proton();
         break;
+      case 'setupGmail':
+        setup.gmail();
+        break;
       case 'setupFree': // --dev: Claude Code (or Codex) through Ollama
         setup.free();
         break;
