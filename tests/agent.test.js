@@ -46,6 +46,14 @@ test('isComputerTask: said plainly, not any mention of a computer', () => {
   assert.strictEqual(isComputerTask('Открой блокнот, напиши там привет, как дела'), true);
   assert.strictEqual(isComputerTask('запусти калькулятор и посчитай 2+2'), true);
   assert.strictEqual(isComputerTask('напиши в блокнот список покупок'), true);
+  // Danyal's exact words, 2026-11-03: went to chat and opened Proton Mail instead
+  assert.strictEqual(isComputerTask('открой протон-календарь и заполни тестовую встречу завтра в 15.00.'), true);
+  assert.strictEqual(isComputerTask('Открой Proton Calendar и создай встречу'), true);
+  assert.strictEqual(isComputerTask('назначь встречу в Proton Calendar'), true);
+  assert.strictEqual(isComputerTask('заполни встречу в календаре'), true);
+  assert.strictEqual(isComputerTask('в календаре создай встречу на пятницу'), true);
+  assert.strictEqual(isComputerTask('открой Proton Calendar'), false); // just opening
+  assert.strictEqual(isComputerTask('что у меня в календаре завтра?'), false);
   assert.strictEqual(isComputerTask('мой компьютер старый'), false);
   assert.strictEqual(isComputerTask('напиши мне стих про осень'), false);
   assert.strictEqual(isComputerTask('открой ютуб'), false); // just opening: her own [[open]]
