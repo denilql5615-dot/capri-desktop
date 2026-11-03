@@ -740,6 +740,14 @@ async function boot() {
         listen.hush();
         chat.stopTurn();
         break;
+      case 'phone': // touched on the phone (phone.js): she feels it here
+        if (cmd.kind === 'pet') {
+          capri.perform('petted');
+          voice.play('purr');
+        } else {
+          capri.perform({ poke: 'curious', shake: 'shake', back: 'hop' }[cmd.kind] || 'hop');
+        }
+        break;
       case 'chat': // "Talk to her" in her menu
         chat.start();
         break;

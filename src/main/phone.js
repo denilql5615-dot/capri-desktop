@@ -1,0 +1,207 @@
+'use strict';
+
+// The phone bridge: the Android client (denilql5615-dot/capri-android, Bridge.kt) reaches her over the home
+// network or Tailscale, with the wire contract GENESIS had, so the phone app works as it is:
+//   GET  /ping                 -> { ok, pose, sprites }
+//   POST /chat  { text, voice } -> { reply, brain, pose, audio? }   (audio = "/audio/<id>", fetched with ?token=)
+//   POST /event { kind }        -> { ok }                         (pet, poke, shake, back: she reacts on the PC)
+//   GET  /audio/<id>            -> her reply, said (mp3)
+//   GET  /sprites               -> { pack, version, poses }        (none: the phone keeps its own rig)
+//   GET  /control               -> the phone remote's state   POST /control { voice? } -> the same (whitelist)
+// Every request needs the token (X-Capri-Token header or ?token=). From the phone it's talk only: nothing runs
+// on the PC, Claude and Codex included. Her voice is kept in memory a few minutes, never on disk.
+
+const crypto = require('node:crypto');
+const http = require('node:http');
+const os = require('node:os');
+
+const MAX_BODY = 64 * 1024;
+const AUDIO_TTL_MS = 10 * 60 * 1000;
+const AUDIO_MAX = 20;
+const TURNS = 12; // her phone conversation: the last few exchanges
+
+const newToken = () => crypto.randomBytes(18).toString('base64url');
+
+/** Constant-time token check (hashed first, so the length doesn't leak either). */
+function tokenMatches(got, want) {
+  if (!want) return false;
+  const h = (s) => crypto.createHash('sha256').update(String(s)).digest();
+  return crypto.timingSafeEqual(h(got), h(want));
+}
+
+/** This PC's addresses for the phone: Tailscale (100.x) first, then the home network. */
+function addresses(port) {
+  const ips = Object.values(os.networkInterfaces()).flat()
+    .filter((i) => i && i.family === 'IPv4' && !i.internal)
+    .map((i) => i.address);
+  return [...new Set(ips)]
+    .sort((a, b) => Number(!a.startsWith('100.')) - Number(!b.startsWith('100.')) || a.localeCompare(b))
+    .map((ip) => `http://${ip}:${port}`);
+}
+
+const PHONE_NOTE = 'Канал: телефон. С телефона ты только разговариваешь: ничего на компьютере не открываешь и не запускаешь, '
+  + 'Claude и Codex отсюда не зовёшь. Просят что-то сделать на ПК: скажи, что это можно за компьютером.';
+
+// what the phone remote may switch: deliberately short, nothing that widens what she may do on this PC
+const CONTROL_KEYS = { voice: 'boolean', renderMode: 'string', spritePack: 'string', router: 'boolean', heavyProvider: 'string', fallbackToCodex: 'boolean' };
+function controlPatch(body) {
+  if (!body || typeof body !== 'object') return null;
+  for (const [k, v] of Object.entries(body)) if (typeof v !== CONTROL_KEYS[k]) return null;
+  return body;
+}
+
+class PhoneBridge {
+  // deps: { token(), chat(messages, signal) -> text, speak(text) -> Uint8Array|null, event(kind), persona() -> string,
+  //         control() -> state, applyControl(patch) -> state }
+  constructor(deps) {
+    this.d = deps;
+    this.server = null;
+    this.audio = new Map();
+    this.turns = [];
+    this.queue = Promise.resolve(); // one phone turn at a time
+  }
+
+  get running() {
+    return Boolean(this.server?.listening);
+  }
+
+  start(port, host = '0.0.0.0') {
+    if (this.server) return Promise.resolve(this.server.address().port);
+    const server = http.createServer((req, res) => { this.handle(req, res); });
+    return new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(port, host, () => {
+        server.off('error', reject);
+        this.server = server;
+        resolve(server.address().port);
+      });
+    });
+  }
+
+  stop() {
+    const s = this.server;
+    this.server = null;
+    this.audio.clear();
+    if (!s) return Promise.resolve();
+    return new Promise((r) => { s.closeAllConnections(); s.close(() => r()); });
+  }
+
+  send(res, code, body) {
+    const buf = Buffer.from(JSON.stringify(body), 'utf8');
+    res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'content-length': buf.length });
+    res.end(buf);
+  }
+
+  readJson(req) {
+    return new Promise((resolve, reject) => {
+      const chunks = [];
+      let size = 0;
+      req.on('data', (c) => {
+        size += c.length;
+        if (size > MAX_BODY) {
+          reject(Object.assign(new Error('too large'), { status: 413 }));
+          req.destroy();
+          return;
+        }
+        chunks.push(c);
+      });
+      req.on('end', () => {
+        try {
+          const v = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+          resolve(v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+        } catch {
+          reject(Object.assign(new Error('bad json'), { status: 400 }));
+        }
+      });
+      req.on('error', reject);
+    });
+  }
+
+  pruneAudio(now = Date.now()) {
+    for (const [k, v] of this.audio) if (now - v.at > AUDIO_TTL_MS) this.audio.delete(k);
+    while (this.audio.size > AUDIO_MAX) this.audio.delete(this.audio.keys().next().value);
+  }
+
+  async handle(req, res) {
+    const url = new URL(req.url || '/', 'http://bridge');
+    const got = String(req.headers['x-capri-token'] ?? url.searchParams.get('token') ?? '');
+    if (!tokenMatches(got, this.d.token())) return this.send(res, 401, { error: 'bad token' });
+    try {
+      if (req.method === 'GET' && url.pathname === '/ping') return this.send(res, 200, { ok: true, pose: '', sprites: '' });
+      if (req.method === 'GET' && url.pathname === '/sprites') return this.send(res, 200, { pack: 'capri_desktop', version: '', poses: [] });
+      if (req.method === 'GET' && url.pathname === '/sprites/pack.zip') return this.send(res, 404, { error: 'no sprites' });
+      if (req.method === 'GET' && url.pathname.startsWith('/audio/')) {
+        this.pruneAudio();
+        const a = this.audio.get(url.pathname.slice('/audio/'.length));
+        if (!a) return this.send(res, 404, { error: 'no audio' });
+        res.writeHead(200, { 'content-type': 'audio/mpeg', 'content-length': a.data.byteLength });
+        return res.end(Buffer.from(a.data));
+      }
+      if (req.method === 'GET' && url.pathname === '/control') return this.send(res, 200, this.d.control());
+      if (req.method === 'POST' && url.pathname === '/control') {
+        const patch = controlPatch(await this.readJson(req));
+        if (!patch) return this.send(res, 400, { error: 'not allowed from the phone' });
+        return this.send(res, 200, this.d.applyControl(patch));
+      }
+      if (req.method === 'POST' && url.pathname === '/event') {
+        const kind = String((await this.readJson(req)).kind ?? '').trim();
+        if (/^[a-z_]{1,32}$/.test(kind)) this.d.event(kind);
+        return this.send(res, 200, { ok: true });
+      }
+      if (req.method === 'POST' && url.pathname === '/chat') {
+        const body = await this.readJson(req);
+        const text = String(body.text ?? '').replace(/\u0000/g, '').trim().slice(0, 4000);
+        if (!text) return this.send(res, 400, { error: 'empty' });
+        this.queue = this.queue.catch(() => {}).then(() => this.turn(text, body.voice === true));
+        return this.send(res, 200, await this.queue);
+      }
+      return this.send(res, 404, { error: 'not found' });
+    } catch (err) {
+      const status = err.status || 500;
+      if (status === 500) console.warn('[capri] phone bridge:', err.message);
+      if (!res.headersSent) this.send(res, status, { error: status === 500 ? 'internal error' : err.message });
+    }
+  }
+
+  async reply(text) {
+    if (/^новый разговор/i.test(text)) {
+      this.turns = [];
+      return { reply: 'Начинаем с чистого листа.', brain: 'capri' };
+    }
+    const messages = [
+      { role: 'system', content: `${this.d.persona()}\n${PHONE_NOTE}` },
+      ...this.turns.slice(-TURNS * 2),
+      { role: 'user', content: text },
+    ];
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 120000);
+    try {
+      const { text: said, brain } = await this.d.chat(messages, abort.signal);
+      const reply = String(said || '').trim();
+      if (!reply) return { reply: 'Модель промолчала. Спроси ещё раз, покороче.', brain };
+      this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
+      return { reply, brain };
+    } catch (err) {
+      return { reply: `Не вышло ответить: ${err.message}`, brain: 'error' };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async turn(text, voice) {
+    const { reply, brain } = await this.reply(text);
+    const out = { reply, brain, pose: '' };
+    if (voice && brain !== 'error') {
+      const data = await this.d.speak(reply).catch(() => null);
+      if (data) {
+        const id = `${crypto.randomUUID().replace(/-/g, '')}.mp3`;
+        this.audio.set(id, { data, at: Date.now() });
+        this.pruneAudio();
+        out.audio = `/audio/${id}`;
+      }
+    }
+    return out;
+  }
+}
+
+module.exports = { PhoneBridge, newToken, tokenMatches, addresses, controlPatch };

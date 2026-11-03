@@ -23,6 +23,7 @@ const launch = require('./launch');
 const files = require('./files');
 const speech = require('./speech');
 const workers = require('./workers');
+const phone = require('./phone');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
 const activeHooks = () => activeAssistant().hooks;
@@ -293,6 +294,7 @@ function updateConfig(patch) {
     fitOverlay(); // the taskbar in her window or not
     windowWatch?.refresh();
   }
+  if ('phone' in patch) applyPhone();
   const cfg = rendererConfig();
   overlay?.webContents.send('capri:config', cfg);
   rebuildTray();
@@ -424,6 +426,12 @@ function rebuildTray() {
     },
     { label: t.pcReact, type: 'checkbox', checked: cfg.pcReact !== false, click: (item) => updateConfig({ pcReact: item.checked }) },
     {
+      // the Android app (phone.js): on, she listens on the network for it; the address and key are in phone-link.txt
+      label: `${t.phone || 'Phone bridge'} (${cfg.phone.port})`, type: 'checkbox', checked: Boolean(cfg.phone.enabled),
+      click: (item) => updateConfig({ phone: { ...config.load().phone, enabled: item.checked } }),
+    },
+    ...(cfg.phone.enabled ? [{ label: t.phoneLink || 'Phone address and key…', click: () => shell.openPath(phoneLinkFile()) }] : []),
+    {
       // she asks first (what she'll send where), then turns it on herself
       label: t.lookAuto, type: 'checkbox', checked: Boolean(cfg.watchScreen),
       click: (item) => {
@@ -524,6 +532,89 @@ function runHooks(action, { quiet = false } = {}) {
   if (!quiet) sendCommand('hooks', outcome);
   rebuildTray();
   return outcome;
+}
+
+// ---------------------------------------------------------------- the phone (phone.js)
+let phoneBridge = null;
+const phoneLinkFile = () => path.join(app.getPath('userData'), 'phone-link.txt');
+// GENESIS (the Capri before her) wrote the same file: its key, so the phone already paired keeps working
+const GENESIS_LINK = path.join(app.getPath('appData'), 'Capri', 'phone-link.txt');
+
+// The phone's key: hers if set, else the one the phone already has from GENESIS, else a new one.
+function phoneToken() {
+  const cfg = config.load();
+  if (cfg.phoneToken) return setup.openKeys({ t: cfg.phoneToken }).t;
+  let token = null;
+  try {
+    token = /^token=(\S+)/m.exec(fs.readFileSync(GENESIS_LINK, 'utf8'))?.[1] || null;
+  } catch {
+    // no GENESIS here
+  }
+  token = token || phone.newToken();
+  config.save({ phoneToken: setup.sealKey(token) });
+  return token;
+}
+
+const PHONE_REACT = { pet: 'pet', poke: 'poke', shake: 'shake', back: 'back' };
+
+function phonePersona() {
+  const cfg = config.load();
+  return [
+    'Ты Капри, конструкт личности из Project Capricorn (Cyberpunk: Edgerunners): цифровой призрак из многих разумов, иногда говоришь «мы».',
+    'Говоришь игриво, чуть дерзко, по-доброму; изредка сленг Найт-Сити (чум, прем, гонк). Коротко: одно-три предложения, без markdown и эмодзи.',
+    cfg.userName ? `Пользователя зовут ${cfg.userName}.` : '',
+    cfg.persona ? `Какой он хочет тебя видеть: ${cfg.persona}` : '',
+    cfg.memories?.length ? `Что он просил запомнить: ${cfg.memories.join('; ')}.` : '',
+    'Отвечай по-русски.',
+  ].filter(Boolean).join('\n');
+}
+
+function phoneControl() {
+  const cfg = config.load();
+  return {
+    renderMode: 'vector', spritePack: '', router: false, heavyProvider: 'claude', fallbackToCodex: false,
+    voice: Boolean(cfg.voice.tts), provider: cfg.provider,
+    connection: chatModels?.length ? 'connected' : 'disconnected', codexInstalled: Boolean(workers.findCodex()),
+  };
+}
+
+async function applyPhone() {
+  const { phone: p } = config.load();
+  if (!phoneBridge) {
+    phoneBridge = new phone.PhoneBridge({
+      token: phoneToken,
+      persona: phonePersona,
+      chat: async (messages, signal) => {
+        const cfg = config.load();
+        if (!chatModels) await refreshModels();
+        const model = pickModel(cfg);
+        const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages }, () => {}, signal);
+        return { text, brain: model || cfg.provider };
+      },
+      speak: (text) => (config.load().voice.tts ? speech.speak(text, config.load().voice) : Promise.resolve(null)),
+      event: (kind) => PHONE_REACT[kind] && sendCommand('phone', { kind: PHONE_REACT[kind] }),
+      control: phoneControl,
+      applyControl: (patch) => {
+        if (typeof patch.voice === 'boolean') updateConfig({ voice: { ...config.load().voice, tts: patch.voice } });
+        return phoneControl();
+      },
+    });
+  }
+  await phoneBridge.stop();
+  if (!p.enabled) return;
+  try {
+    const port = await phoneBridge.start(p.port);
+    const urls = phone.addresses(port);
+    // the phone needs the address and key typed in once; the file sits in her own data folder
+    fs.writeFileSync(phoneLinkFile(), [
+      `token=${phoneToken()}`, '',
+      'Впиши на телефоне в Капри → «Мозг на ноутбуке» один из адресов:', ...urls.map((u) => `  ${u}`), '',
+      'Адрес 100.x.x.x — это Tailscale (работает откуда угодно), остальные — только в домашней сети.', '',
+    ].join('\n'));
+    console.log(`[capri] phone bridge on port ${port}`);
+  } catch (err) {
+    console.warn(`[capri] phone bridge could not start on port ${p.port}:`, err.message); // GENESIS still running?
+  }
 }
 
 // The model she talks with: the one picked in her menu if it's still installed, else the first one
@@ -1102,6 +1193,7 @@ function main() {
     // Ctrl+Alt+X: her answer under way stops (Claude or Codex at work in her chat: killed)
     globalShortcut.register('Control+Alt+X', () => sendCommand('stop'));
     speech.ensureWhisper(config.load().voice);
+    applyPhone();
     llm.restoreClaude(readMemory().claude);
     refreshModels(); // for her menu's model list
     setTimeout(() => launch.launchables().catch(() => {}), 20000); // what she can open, before you ask
@@ -1123,6 +1215,7 @@ function main() {
   app.on('will-quit', () => {
     globalShortcut.unregisterAll();
     speech.stopWhisper();
+    phoneBridge?.stop();
     windowWatch?.stop();
   });
   app.on('window-all-closed', (e) => e.preventDefault());

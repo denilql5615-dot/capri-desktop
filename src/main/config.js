@@ -54,6 +54,9 @@ const DEFAULTS = {
     ttsModel: 'tts-1',
     ttsVoice: 'capri_dry',
   },
+  // the phone bridge (phone.js): the Android app talks to her over the home network or Tailscale
+  phone: { enabled: false, port: 8770 },
+  phoneToken: null,  // the phone's key, encrypted with your Windows account (setup.sealKey)
 };
 
 let cache = null;
@@ -66,7 +69,8 @@ function load(fresh = false) {
   if (cache && !fresh) return cache;
   try {
     const saved = JSON.parse(fs.readFileSync(file(), 'utf8'));
-    cache = { ...DEFAULTS, ...saved, voice: { ...DEFAULTS.voice, ...saved.voice } }; // a voice setting added later gets its default
+    // a voice or phone setting added later gets its default
+    cache = { ...DEFAULTS, ...saved, voice: { ...DEFAULTS.voice, ...saved.voice }, phone: { ...DEFAULTS.phone, ...saved.phone } };
   } catch {
     cache = { ...DEFAULTS };
   }

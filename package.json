@@ -20,6 +20,7 @@
     "test:hooks": "node --test tests/hooks.test.js",
     "test:listen": "node --test tests/listen.test.js",
     "test:workers": "node --test tests/workers.test.js",
+    "test:phone": "node --test tests/phone.test.js",
     "dist": "electron-builder --win"
   },
   "keywords": [
