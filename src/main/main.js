@@ -730,8 +730,17 @@ async function computerTask(messages, send, signal) {
       grant.grant();
       rebuildTray();
     },
-    onStep: (line) => send(`→ ${line}\n`),
-  }, signal);
+    onStep: (line) => {
+      console.log(`[capri] computer task: ${line}`);
+      send(`→ ${line}\n`);
+    },
+  }, signal).then((said) => {
+    console.log('[capri] computer task done');
+    return said;
+  }, (err) => {
+    console.warn('[capri] computer task failed:', err.message);
+    throw err;
+  });
 }
 
 // Her answer from the model picked, or from the next one when that one can't: too busy twice in a row
