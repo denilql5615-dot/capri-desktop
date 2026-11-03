@@ -4,20 +4,21 @@
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'">
-  <title>Capri · Чаты</title>
+  <title>Capri · Хаб</title>
   <link rel="stylesheet" href="styles/capri.css">
   <link rel="stylesheet" href="styles/chats.css">
 </head>
 <body>
   <div class="hud">
     <header class="hud__bar">
-      <span class="hud__who">CAPRI</span><span class="hud__tag">LOG</span>
+      <span class="hud__who">CAPRI</span><span class="hud__tag">HUB</span>
+      <nav class="hud__tabs"></nav>
       <span class="hud__title"></span>
       <span class="hud__count"></span>
       <button class="panel__action is-primary hud__new" type="button"></button>
       <button class="panel__action hud__close" type="button" aria-label="✕">✕</button>
     </header>
-    <div class="hud__plate">
+    <div class="hud__plate" data-tab="chats">
       <aside class="chats">
         <input class="panel__input chats__search" type="search" maxlength="80" spellcheck="false">
         <ol class="chats__list"></ol>
@@ -46,7 +47,26 @@
         <p class="log__hint" hidden></p>
       </main>
     </div>
+    <div class="hud__plate hud__plate--one" data-tab="plans" hidden>
+      <section class="plans">
+        <form class="plans__form" autocomplete="off">
+          <select class="panel__input plans__kind"></select>
+          <input class="panel__input plans__title" type="text" maxlength="300" spellcheck="false">
+          <label class="plans__when"><span class="plans__at-label"></span><input class="panel__input plans__at" type="datetime-local"></label>
+          <label class="plans__until"><span class="plans__end-label"></span><input class="panel__input plans__end" type="datetime-local"></label>
+          <input class="panel__input plans__notes" type="text" maxlength="2000" spellcheck="false">
+          <button class="panel__action is-primary plans__add" type="submit"></button>
+        </form>
+        <p class="plans__error" hidden></p>
+        <nav class="plans__views"></nav>
+        <ol class="plans__list"></ol>
+      </section>
+    </div>
+    <div class="hud__plate hud__plate--one" data-tab="settings" hidden>
+      <section class="settings"></section>
+    </div>
   </div>
   <script type="module" src="js/chats-window.js"></script>
+  <script type="module" src="js/hub.js"></script>
 </body>
 </html>

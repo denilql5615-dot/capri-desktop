@@ -457,7 +457,7 @@ function openChats() {
   const height = Math.min(660, b.height - 80);
   chatsWin = new BrowserWindow({
     x: Math.round(b.x + (b.width - width) / 2), y: Math.round(b.y + (b.height - height) / 2), width, height,
-    minWidth: 620, minHeight: 420, frame: false, show: false, title: 'Capri · Чаты', backgroundColor: '#13110e',
+    minWidth: 620, minHeight: 420, frame: false, show: false, title: 'Capri · Хаб', backgroundColor: '#13110e',
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload.js'),
       contextIsolation: true,
@@ -772,6 +772,29 @@ function rebuildTray() {
   ]);
   tray.setContextMenu(menu);
   trayMenu = menu;
+  chatsWin?.webContents.send('hub:menu'); // her hub's Settings tab is this menu: redrawn
+}
+
+// Her hub's Settings tab (hub.js): her tray menu as data, labels, toggles, choices and submenus, each
+// with its path ("3.1") to click it by. One menu, two ways in: nothing to keep in step.
+function menuModel(menu, at = '') {
+  return menu.items.map((item, n) => {
+    const id = at ? `${at}.${n}` : String(n);
+    if (item.type === 'separator') return { type: 'separator' };
+    return {
+      id, label: item.label, type: item.type, checked: item.checked, enabled: item.enabled,
+      ...(item.submenu && { items: menuModel(item.submenu, id) }),
+    };
+  });
+}
+
+function menuItemAt(menu, id) {
+  let item = null;
+  for (const n of String(id || '').split('.')) {
+    item = menu?.items[Number(n)];
+    menu = item?.submenu;
+  }
+  return item;
 }
 
 // Run from a clone (`npm start`), electron.exe alone would open the default Electron app at login:
@@ -1164,6 +1187,18 @@ function registerIpc() {
   ipcMain.handle('planner:list', (_e, filter) => localPlanner.list(filter));
   ipcMain.handle('planner:create', (_e, input) => localPlanner.create(input));
   ipcMain.handle('planner:complete', (_e, id) => localPlanner.complete(id));
+  // a planner note, opened in Obsidian (its path in your vault, kept when it was written)
+  ipcMain.on('planner:open', (_e, id) => {
+    const entry = localPlanner.list({ kinds: ['note'] }).find((p) => p.id === id);
+    if (!entry?.obsidian) return;
+    const root = path.basename(notesDir()).toLowerCase() === 'capri' ? path.dirname(notesDir()) : notesDir();
+    shell.openExternal(`obsidian://open?path=${encodeURIComponent(path.join(root, entry.obsidian))}`);
+  });
+  ipcMain.handle('hub:menu', () => (trayMenu ? menuModel(trayMenu) : []));
+  ipcMain.on('hub:click', (_e, id) => {
+    const item = menuItemAt(trayMenu, id);
+    if (item?.enabled && item.type !== 'submenu') item.click();
+  });
   ipcMain.handle('hooks:status', () => activeHooks().status());
   ipcMain.handle('config:set', (_e, patch) => {
     let telegramChanged = false;
@@ -1598,8 +1633,10 @@ async function debugHandler(route, body) {
     return { ok: true, value: { chars: added.length, lines: added.split('\n').filter((l) => l.startsWith('- ')).length, empty: /Nothing is scheduled/.test(added) } };
   }
   if (route === 'eval') {
-    // a look inside the overlay (app.js puts what's there on window.dev in --dev)
-    return { ok: true, value: await overlay.webContents.executeJavaScript(String(body.js || 'null')) };
+    // a look inside the overlay (app.js puts what's there on window.dev in --dev), or her hub ({ hub: true })
+    const page = body.hub ? chatsWin?.webContents : overlay.webContents;
+    if (!page) throw new Error('her hub is not open');
+    return { ok: true, value: await page.executeJavaScript(String(body.js || 'null')) };
   }
   if (route === 'drag') {
     // a drag over the overlay with a stand-in pointer, the real one untouched: the button goes down
@@ -1627,7 +1664,7 @@ async function debugHandler(route, body) {
     return { ok: true };
   }
   if (route === 'capture') {
-    const image = await overlay.webContents.capturePage();
+    const image = await (body.hub && chatsWin ? chatsWin : overlay).webContents.capturePage();
     // installed, the app's own folder is read-only: its data folder instead
     const dir = path.join(app.isPackaged ? app.getPath('userData') : ROOT, 'captures');
     fs.mkdirSync(dir, { recursive: true });

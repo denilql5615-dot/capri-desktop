@@ -430,3 +430,318 @@ mark {
   font-size: var(--text-data);
   color: var(--red);
 }
+
+/* ---------- her hub: tabs, plans, settings (hub.js) ---------- */
+
+.hud [hidden] {
+  display: none !important;
+}
+
+.hud__tabs {
+  display: flex;
+  gap: 2px;
+  margin-left: 12px;
+  -webkit-app-region: no-drag;
+}
+
+.hud__tab {
+  padding: 4px 12px 3px;
+  border: 0;
+  background: transparent;
+  color: var(--paper-3);
+  font: inherit;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%);
+}
+
+.hud__tab:hover {
+  color: var(--paper);
+  background: var(--ink-2);
+}
+
+.hud__tab.is-current {
+  background: var(--accent);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.hud__plate--one {
+  grid-template-columns: 1fr;
+}
+
+.plans,
+.settings {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--paper-3) transparent;
+  padding: 16px 18px 22px;
+}
+
+.plans {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.plans__form {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.plans__title {
+  flex: 2 1 220px;
+}
+
+.plans__notes {
+  flex: 3 1 260px;
+}
+
+.plans__when,
+.plans__until {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: var(--text-meta);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--paper-3);
+}
+
+.plans__at,
+.plans__end {
+  color-scheme: dark;
+}
+
+.plans__kind {
+  flex: 0 0 150px;
+  color-scheme: dark;
+  color: var(--paper);
+}
+
+.plans__error {
+  margin: 0;
+  color: var(--red);
+  font-size: var(--text-data);
+}
+
+.plans__views {
+  flex: none;
+  display: flex;
+  gap: 4px;
+}
+
+.plans__view {
+  padding: 3px 10px 2px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--paper-3);
+  font: inherit;
+  font-size: var(--text-meta);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.plans__view.is-current {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.plans__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plans__day {
+  margin-top: 10px;
+  font-size: var(--text-meta);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cyan);
+}
+
+.plans__day::before {
+  content: '/// ';
+  letter-spacing: 0;
+}
+
+.plans__empty {
+  color: var(--paper-3);
+  font-size: var(--text-data);
+}
+
+.plan {
+  display: grid;
+  grid-template-columns: 92px 104px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 14px;
+  background:
+    linear-gradient(var(--paper-3), var(--paper-3)) left 2px top 15px / 5px 2px no-repeat,
+    var(--ink-2);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%);
+}
+
+.plan--event {
+  background:
+    linear-gradient(var(--accent), var(--accent)) left 2px top 15px / 5px 2px no-repeat,
+    var(--ink-2);
+}
+
+.plan--reminder {
+  background:
+    linear-gradient(var(--cyan), var(--cyan)) left 2px top 15px / 5px 2px no-repeat,
+    var(--ink-2);
+}
+
+.plan.is-done {
+  opacity: 0.55;
+}
+
+.plan.is-done .plan__title {
+  text-decoration: line-through;
+}
+
+.plan__time {
+  font-size: var(--text-data);
+  color: var(--paper);
+}
+
+.plan__kind {
+  font-size: var(--text-meta);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--paper-3);
+}
+
+.plan__body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.plan__title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.plan__notes {
+  font-size: var(--text-data);
+  color: var(--paper-3);
+  overflow-wrap: anywhere;
+}
+
+.plan__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.plan__actions .panel__action {
+  padding: 5px 11px 4px 12px;
+  font-size: 10px;
+}
+
+.plan__state {
+  font-size: var(--text-meta);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cyan);
+}
+
+.settings__note {
+  margin: 0 0 12px;
+  font-size: var(--text-data);
+  color: var(--paper-3);
+}
+
+.settings__grid {
+  columns: 300px auto;
+  column-gap: 14px;
+}
+
+.settings__card {
+  break-inside: avoid;
+  margin-bottom: 14px;
+  padding: 12px 14px 14px;
+  background: var(--ink-2);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings__head {
+  margin: 0 0 4px;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
+.settings__sub {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+}
+
+.settings__sub .settings__head {
+  font-size: 12px;
+  color: var(--cyan);
+}
+
+.settings__choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.setting {
+  text-align: left;
+}
+
+.setting.panel__action {
+  justify-content: flex-start;
+  padding: 6px 11px 5px 12px;
+  font-size: 10px;
+}
+
+.setting--info {
+  margin: 0;
+  font-size: var(--text-data);
+  color: var(--paper-3);
+}
+
+/* a toggle: its box (in the label) lights up */
+.setting--toggle.is-on {
+  color: var(--accent);
+}
+
+.setting--choice.is-on {
+  outline: 1px solid var(--accent);
+  color: var(--accent);
+}
+
+.plans__kind option {
+  background: var(--ink-2);
+  color: var(--paper);
+}
