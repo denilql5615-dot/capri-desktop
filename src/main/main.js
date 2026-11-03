@@ -33,6 +33,7 @@ const pim = require('./pim');
 const pimImap = require('./pim-imap');
 const pimMcp = require('./pim-mcp');
 const telegram = require('./telegram');
+const { Planner } = require('./planner');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
 const activeHooks = () => activeAssistant().hooks;
@@ -306,6 +307,7 @@ function pimService() {
 }
 
 let pimMcpHttp = null;
+let localPlanner = null;
 function pimMcpToken() {
   const cfg = config.load();
   if (cfg.pimMcpToken?.startsWith('dpapi:')) return setup.openMcpCapability();
@@ -1105,6 +1107,9 @@ function registerIpc() {
     return { origin: { x: o.x, y: o.y }, width: o.width, height: o.height, gap: overlayArea().gap };
   });
   ipcMain.handle('config:get', () => rendererConfig());
+  ipcMain.handle('planner:list', (_e, filter) => localPlanner.list(filter));
+  ipcMain.handle('planner:create', (_e, input) => localPlanner.create(input));
+  ipcMain.handle('planner:complete', (_e, id) => localPlanner.complete(id));
   ipcMain.handle('hooks:status', () => activeHooks().status());
   ipcMain.handle('config:set', (_e, patch) => {
     let telegramChanged = false;
@@ -1580,6 +1585,7 @@ function main() {
   app.whenReady().then(() => {
     if (!['codex', 'claude', 'both'].includes(config.load().assistant)) config.save({ assistant: activeAssistant().id });
     desktopCli = new desktop.Cli(desktop.BIN, path.join(app.getPath('userData'), 'agent-desktop'));
+    localPlanner = new Planner(path.join(app.getPath('userData'), 'planner.json'));
     serveProtocol();
     registerIpc();
     createOverlay();
