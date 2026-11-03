@@ -229,7 +229,11 @@ const BROWSER = /chrome|edge|firefox|opera|brave|vivaldi|duckduckgo|browser/i;
 const TINY = /[:-](0\.5b|1b|1\.5b|135m|270m|360m)\b/i;
 // while the one you named works on it (no answer streams in from Codex until it's done)
 const WORKER_NAMES = { claude: 'Claude Code', codex: 'Codex' };
-const WORKER_WAIT = { claude: 'Передала Claude, он работает… (Ctrl+Alt+X — остановить)', codex: 'Передала Codex, он думает… (Ctrl+Alt+X — остановить)' };
+const WORKER_WAIT = {
+  claude: 'Передала Claude, он работает… (Ctrl+Alt+X — остановить)',
+  codex: 'Передала Codex, он думает… (Ctrl+Alt+X — остановить)',
+  computer: 'Делаю на компьютере… (Ctrl+Alt+X — остановить)\n',
+};
 const STOP_IDLE = 'Сейчас никто не работает, останавливать нечего. Пока Claude или Codex заняты — Ctrl+Alt+X или крестик.';
 // her face when she greets you in a mood (bond.js)
 const MOOD_FACE = { angry: 'many', sulk: 'aside', dizzy: 'wide', thrown: 'wide', jealous: 'look', fun: 'laugh', happy: 'laugh', forgiven: 'smug' };
@@ -360,6 +364,24 @@ export class Chat {
     if (this.turn) this.host.chatStop(this.turn);
   }
 
+  // Before an action on your PC (main.js > policy.js): her question under what she's done so far, and
+  // buttons. Her chat closed meanwhile: no.
+  confirm({ id, line, why, grantable }) {
+    const answer = (a) => {
+      this.panel.setActions([]);
+      this.host.policyAnswer(id, a);
+    };
+    if (!this.open || !this.turn || !this.panel.current?.chat) return answer('no');
+    this.answer += `Можно? ${line}${why ? ` (${why})` : ''}\n`;
+    this.panel.stream(clean(this.answer));
+    this.panel.setActions([
+      { id: 'yes', label: 'Да', primary: true },
+      ...(grantable ? [{ id: 'hour', label: 'Разрешить на час' }] : []),
+      { id: 'no', label: 'Нет' },
+    ], answer);
+    this.capri.perform('curious');
+  }
+
   // her line, said without asking her model (your message is in already)
   reply(text, line) {
     this.turn = 0;
@@ -400,7 +422,8 @@ export class Chat {
       else this.history.splice(at, 0, { role: 'assistant', content: this.opening });
       this.opening = null;
     }
-    const messages = [{ role: 'system', content: this.persona(worker) }, ...this.history.slice(-REMEMBER)];
+    // a task on the computer: her desktop loop in main.js has its own prompt
+    const messages = [{ role: 'system', content: this.persona(WORKER_NAMES[worker] ? worker : null) }, ...this.history.slice(-REMEMBER)];
     // Her mood (angry, sulking…) and her language, said again right by your message, for this answer
     // only. Small local models mostly go by the last thing they read: up in her prompt alone, they
     // forget it (and answer in English after a conversation in English).

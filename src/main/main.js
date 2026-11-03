@@ -24,6 +24,9 @@ const files = require('./files');
 const speech = require('./speech');
 const workers = require('./workers');
 const phone = require('./phone');
+const policy = require('./policy');
+const desktop = require('./desktop');
+const agent = require('./agent');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
 const activeHooks = () => activeAssistant().hooks;
@@ -425,6 +428,8 @@ function rebuildTray() {
       click: (item) => updateConfig({ closePages: item.checked }),
     },
     { label: t.pcReact, type: 'checkbox', checked: cfg.pcReact !== false, click: (item) => updateConfig({ pcReact: item.checked }) },
+    // "Allow for an hour" (policy.js), while it lasts: how long, and a click takes it back
+    ...(grant.minutesLeft() ? [{ label: `Разрешено на час: ещё ${grant.minutesLeft()} мин — отозвать`, click: () => { grant.revoke(); rebuildTray(); } }] : []),
     {
       // the Android app (phone.js): on, she listens on the network for it; the address and key are in phone-link.txt
       label: `${t.phone || 'Phone bridge'} (${cfg.phone.port})`, type: 'checkbox', checked: Boolean(cfg.phone.enabled),
@@ -681,6 +686,51 @@ function yourWords(messages) {
   return last.split('\n\n(Note for you')[0];
 }
 
+// Who answers a message: Claude or Codex named, a stop, a task on the computer (only with her local
+// Ollama model at the wheel: it's the one with her desktop tool), or her chat model (null).
+function routeOf(text) {
+  const cfg = config.load();
+  if (cfg.provider === 'claude') return null;
+  const named = workers.route(text);
+  if (named) return named;
+  return cfg.provider === 'ollama' && desktopCli.installed && agent.isComputerTask(text) ? 'computer' : null;
+}
+
+// ---------------------------------------------------------------- her hands on the PC (agent.js, policy.js)
+const grant = new policy.Grant(); // "Allow for an hour": gone when she restarts
+let desktopCli = null;
+const asking = new Map(); // her questions waiting for your answer: id -> resolve
+const ASK_TIMEOUT_MS = 2 * 60 * 1000;
+
+// Her question in the chat (buttons: yes, allow for an hour, no). No answer in two minutes: no.
+function askUser({ line, why, grantable }) {
+  const id = randomUUID();
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { asking.delete(id); resolve('no'); }, ASK_TIMEOUT_MS);
+    asking.set(id, (answer) => { clearTimeout(timer); resolve(answer); });
+    sendCommand('confirm', { id, line, why: why || null, grantable });
+  });
+}
+
+async function computerTask(messages, send, signal) {
+  const cfg = config.load();
+  if (!chatModels) await refreshModels();
+  const model = pickModel(cfg);
+  const history = messages.filter((m) => m.role !== 'system').slice(0, -1);
+  return agent.runTask(yourWords(messages), history, {
+    driver: desktopCli,
+    origin: 'pc',
+    chat: (msgs, schema, sig) => ollama.jsonChat({ model, messages: msgs, schema }, sig),
+    confirm: askUser,
+    covered: (cls, ask) => grant.covers(cls, ask),
+    grant: () => {
+      grant.grant();
+      rebuildTray();
+    },
+    onStep: (line) => send(`→ ${line}\n`),
+  }, signal);
+}
+
 // Her answer from the model picked, or from the next one when that one can't: too busy twice in a row
 // (Gemini's "high demand", an Ollama cloud model out of free use), not served anymore (an older model
 // closed to new keys), or signed out of Ollama. A model on this PC first. The model that answered is
@@ -847,10 +897,12 @@ function registerIpc() {
         overlay?.webContents.send('chat:delta', { id, text });
       };
       const cfg = config.load();
-      // Claude or Codex named in your message: that one answers, as her (workers.js)
-      const worker = cfg.provider === 'claude' ? null : workers.route(yourWords(messages));
+      // Claude or Codex named in your message: that one answers, as her (workers.js); a task on the
+      // computer: she does it herself with her desktop tool (agent.js)
+      const worker = routeOf(yourWords(messages));
       const text = worker === 'codex' ? await workers.askCodex(cfg, messages, send, abort.signal)
         : worker === 'claude' ? await workers.askClaude(cfg, messages, send, abort.signal)
+        : worker === 'computer' ? await computerTask(messages, send, abort.signal)
         : await chatWithFallback(cfg, messages, send, abort.signal, () => streamed);
       if (cfg.provider === 'claude') saveMemory({ claude: llm.claudeMemory() });
       return { ok: true, text };
@@ -861,8 +913,13 @@ function registerIpc() {
     }
   });
   ipcMain.on('chat:stop', (_e, id) => chats.get(id)?.abort());
-  // who'll answer this message: 'claude', 'codex' or null (her chat model), so she can say she's passing it on
-  ipcMain.handle('chat:route', (_e, text) => (config.load().provider === 'claude' ? null : workers.route(text)));
+  // who'll answer this message: 'claude', 'codex', 'computer', 'stop' or null (her chat model)
+  ipcMain.handle('chat:route', (_e, text) => routeOf(text));
+  // your answer to her question before an action on the PC (policy.js): 'yes', 'hour' or 'no'
+  ipcMain.on('policy:answer', (_e, { id, answer }) => {
+    asking.get(id)?.(['yes', 'hour'].includes(answer) ? answer : 'no');
+    asking.delete(id);
+  });
   // her voice (speech.js): what you said, written down; her line, said
   ipcMain.handle('voice:transcribe', async (_e, wav) => {
     const { voice } = config.load();
@@ -1166,6 +1223,7 @@ function main() {
 
   app.whenReady().then(() => {
     if (!['codex', 'claude', 'both'].includes(config.load().assistant)) config.save({ assistant: activeAssistant().id });
+    desktopCli = new desktop.Cli(desktop.BIN, path.join(app.getPath('userData'), 'agent-desktop'));
     serveProtocol();
     registerIpc();
     createOverlay();

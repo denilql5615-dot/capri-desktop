@@ -21,6 +21,8 @@
     "test:listen": "node --test tests/listen.test.js",
     "test:workers": "node --test tests/workers.test.js",
     "test:phone": "node --test tests/phone.test.js",
+    "test:agent": "node --test tests/agent.test.js",
+    "fetch:agent-desktop": "node scripts/fetch-agent-desktop.mjs",
     "dist": "electron-builder --win"
   },
   "keywords": [
@@ -50,13 +52,15 @@
       "assets/**",
       "hooks/**",
       "scripts/**",
+      "vendor/**",
       "package.json",
       "LICENSE"
     ],
     "asarUnpack": [
       "hooks/**",
       "src/main/windows.ps1",
-      "scripts/md2docx.py"
+      "scripts/md2docx.py",
+      "vendor/**"
     ],
     "win": {
       "target": "nsis",

@@ -124,6 +124,25 @@ async function chat({ model, messages }, onDelta, signal) {
   return text;
 }
 
+// One step of a task (agent.js): her answer as JSON held to `schema`. Not streamed, no thinking aloud
+// (it would eat the turn); a long context, as the snapshots pile up.
+async function jsonChat({ model, messages, schema }, signal) {
+  const res = await fetch(`${base()}/api/chat`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model, messages, format: schema, stream: false, keep_alive: '15m',
+      ...(known.get(model)?.thinking && { think: false }),
+      options: { temperature: 0.2, num_predict: 400, num_ctx: 16384 },
+    }),
+    signal,
+  });
+  if (!res.ok) throw await failure(res);
+  const json = await res.json();
+  if (json.error) throw new Error(json.error);
+  return json.message?.content || '';
+}
+
 // Whether a model can look at pictures (gemma3 can, llama3.2 can't). Can't tell: yes, try it.
 async function canSee(model) {
   const res = await fetch(`${base()}/api/show`, {
@@ -137,4 +156,4 @@ async function canSee(model) {
   return !Array.isArray(info.capabilities) || info.capabilities.includes('vision');
 }
 
-module.exports = { base, models, isCloud, account, freeModels, warm, chat, canSee };
+module.exports = { base, models, isCloud, account, freeModels, warm, chat, jsonChat, canSee };

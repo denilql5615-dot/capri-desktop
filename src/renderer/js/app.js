@@ -740,6 +740,9 @@ async function boot() {
         listen.hush();
         chat.stopTurn();
         break;
+      case 'confirm': // before an action on your PC: her question, in her chat (main.js > policy.js)
+        chat.confirm(cmd);
+        break;
       case 'phone': // touched on the phone (phone.js): she feels it here
         if (cmd.kind === 'pet') {
           capri.perform('petted');
