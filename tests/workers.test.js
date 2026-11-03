@@ -30,3 +30,18 @@ test('codexBrief: persona, the conversation and the task, in one prompt', () => 
   assert.match(brief, /User: привет\n\nCapri: йо/);
   assert.match(brief, /Task: кодекс, что такое 2\+2$/);
 });
+
+test('route: asked to stop one is not a task for it', () => {
+  const { route } = require('../src/main/workers');
+  assert.strictEqual(route('отмени задачу кодексу'), 'stop');
+  assert.strictEqual(route('стоп'), 'stop');
+  assert.strictEqual(route('Клод, хватит'), 'stop');
+  assert.strictEqual(route('кодекс, сделай документ'), 'codex');
+});
+
+test('codexEffort: low for an errand, medium when asked to think or for code', () => {
+  const { codexEffort } = require('../src/main/workers');
+  assert.strictEqual(codexEffort('кодекс, собери docx с брифом'), 'low');
+  assert.strictEqual(codexEffort('кодекс, подумай как следует'), 'medium');
+  assert.strictEqual(codexEffort('кодекс, напиши скрипт'), 'medium');
+});

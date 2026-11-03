@@ -54,7 +54,8 @@
     ],
     "asarUnpack": [
       "hooks/**",
-      "src/main/windows.ps1"
+      "src/main/windows.ps1",
+      "scripts/md2docx.py"
     ],
     "win": {
       "target": "nsis",

@@ -736,6 +736,10 @@ async function boot() {
       case 'listen': // Ctrl+Alt+V: you talk to her
         listen.toggle();
         break;
+      case 'stop': // Ctrl+Alt+X: her answer under way stops, and she stops talking
+        listen.hush();
+        chat.stopTurn();
+        break;
       case 'chat': // "Talk to her" in her menu
         chat.start();
         break;

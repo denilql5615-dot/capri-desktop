@@ -1097,6 +1097,8 @@ function main() {
     globalShortcut.register('Control+Alt+C', () => toggleVisible());
     // Ctrl+Alt+V: you talk to her (again: you're done; she also stops by herself when you go quiet)
     globalShortcut.register('Control+Alt+V', () => sendCommand('listen'));
+    // Ctrl+Alt+X: her answer under way stops (Claude or Codex at work in her chat: killed)
+    globalShortcut.register('Control+Alt+X', () => sendCommand('stop'));
     speech.ensureWhisper(config.load().voice);
     llm.restoreClaude(readMemory().claude);
     refreshModels(); // for her menu's model list

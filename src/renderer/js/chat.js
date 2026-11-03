@@ -229,7 +229,8 @@ const BROWSER = /chrome|edge|firefox|opera|brave|vivaldi|duckduckgo|browser/i;
 const TINY = /[:-](0\.5b|1b|1\.5b|135m|270m|360m)\b/i;
 // while the one you named works on it (no answer streams in from Codex until it's done)
 const WORKER_NAMES = { claude: 'Claude Code', codex: 'Codex' };
-const WORKER_WAIT = { claude: 'Передала Claude, он работает…', codex: 'Передала Codex, он думает… это может занять пару минут.' };
+const WORKER_WAIT = { claude: 'Передала Claude, он работает… (Ctrl+Alt+X — остановить)', codex: 'Передала Codex, он думает… (Ctrl+Alt+X — остановить)' };
+const STOP_IDLE = 'Сейчас никто не работает, останавливать нечего. Пока Claude или Codex заняты — Ctrl+Alt+X или крестик.';
 // her face when she greets you in a mood (bond.js)
 const MOOD_FACE = { angry: 'many', sulk: 'aside', dizzy: 'wide', thrown: 'wide', jealous: 'look', fun: 'laugh', happy: 'laugh', forgiven: 'smug' };
 
@@ -354,6 +355,19 @@ export class Chat {
     this.capri.nextGaze = performance.now() + 60000;
   }
 
+  // Ctrl+Alt+X: the answer under way stops (Claude or Codex at work: killed, with what it started)
+  stopTurn() {
+    if (this.turn) this.host.chatStop(this.turn);
+  }
+
+  // her line, said without asking her model (your message is in already)
+  reply(text, line) {
+    this.turn = 0;
+    this.remember({ role: 'assistant', content: line });
+    this.panel.stream(line, { done: true });
+    this.panel.setChatBusy(false);
+  }
+
   async send(text) {
     if (this.turn || !this.open) return;
     const id = Date.now();
@@ -368,7 +382,9 @@ export class Chat {
     // what you asked for plainly happens right away (the music, the volume, an app you named): her
     // line about it comes under her answer (Claude Code, answering her chat, does things its own way)
     // Claude or Codex named ("Клод, …"): that one answers as her, and does things its own way (workers.js)
-    const worker = this.agent ? null : await this.host.chatRoute(text).catch(() => null);
+    const route = this.agent ? null : await this.host.chatRoute(text).catch(() => null);
+    if (route === 'stop') return this.reply(text, STOP_IDLE); // the box is locked while one works: nothing is
+    const worker = route;
     const agent = this.agent || Boolean(worker);
     const asked = agent ? null : this.asked(text);
     if (asked?.kind === 'look') return this.sendLook(text, id);
@@ -398,7 +414,7 @@ export class Chat {
     const wait = worker ? WORKER_WAIT[worker] : this.agent ? this.t.working : this.cold ? this.t.loading : null;
     const slow = wait && setTimeout(() => {
       if (this.turn === id && !this.answer) this.panel.stream(wait);
-    }, LOADING_AFTER_MS);
+    }, worker ? 300 : LOADING_AFTER_MS); // passed on: said right away, with how to stop it
     const res = await this.host.chatSend({ id, messages });
     clearTimeout(slow);
     if (this.turn !== id) {
@@ -411,7 +427,7 @@ export class Chat {
       this.history.pop();
       this.panel.setFace('wide');
       // too busy or gone even after trying other models (main.js): said plainly, not the server's JSON
-      this.panel.stream(res.code === 'busy' ? this.t.swamped : res.code === 'gone' ? this.t.gone : `${this.t.failed} ${res.error}`, { done: true });
+      this.panel.stream(res.error === 'stopped' ? 'Остановила.' : res.code === 'busy' ? this.t.swamped : res.code === 'gone' ? this.t.gone : `${this.t.failed} ${res.error}`, { done: true });
       this.panel.setChatBusy(false);
       return;
     }

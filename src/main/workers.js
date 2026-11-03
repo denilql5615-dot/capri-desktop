@@ -16,12 +16,69 @@ const CLAUDE_RE = /(?<![а-яёa-z])(клод|клауд|клоуд|claude|ан�
 const CODEX_RE = /(?<![а-яёa-z])(кодекс|кодэкс|codex)/i;
 const TIMEOUT_MS = 10 * 60 * 1000;
 
+// What's on this PC to make things with, so they don't spend a minute looking (Codex reads AGENTS.md,
+// Claude Code CLAUDE.md). Written once; yours to edit after that.
+// The Python python-docx was installed in: by full path, as \`py\` finds no Python inside Codex's sandbox.
+const PYTHON = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs', 'Python', 'Python313', 'python.exe');
+
+const cheatsheet = () => `# Capri's work folder
+
+You were asked through Capri, the user's desktop companion. Be quick: short tasks, no exploring, no skills to read.
+
+- Write only in this folder. Read anywhere.
+- A Word document (.docx): don't build one, and don't look for Python, Word or libraries. Write its
+  content as Markdown (# headings, - bullets, 1. lists, **bold**) in NAME.docx.md: right after you're
+  done, Capri turns it into NAME.docx and removes the .md. Say NAME.docx in your answer.
+- Name files plainly (brief-capri.docx.md), never overwrite one that's there: add -2, -3.
+- Reply in the user's language, one to three sentences: what you made and its file name.
+`;
+
+const MD2DOCX = path.join(__dirname, '..', '..', 'scripts', 'md2docx.py').replace('app.asar', 'app.asar.unpacked');
+
+// After a worker: each NAME.docx.md it wrote turned into NAME.docx (never over another file), the .md
+// removed. Resolves with the names made.
+async function convertDocs(dir, since) {
+  const made = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (!/\.docx\.md$/i.test(name)) continue;
+    const md = path.join(dir, name);
+    if (fs.statSync(md).mtimeMs < since - 1000) continue;
+    const base = name.replace(/\.docx\.md$/i, '');
+    let out = path.join(dir, `${base}.docx`);
+    for (let i = 2; fs.existsSync(out); i++) out = path.join(dir, `${base}-${i}.docx`);
+    const ok = await new Promise((resolve) => {
+      execFile(PYTHON, ['-s', MD2DOCX, md, out], { windowsHide: true, timeout: 60000 }, (err, _o, stderr) => {
+        if (err) console.warn('[capri] md2docx:', String(stderr || err.message).trim().split('\n').at(-1));
+        resolve(!err);
+      });
+    });
+    if (!ok) continue;
+    fs.rmSync(md, { force: true });
+    made.push(path.basename(out));
+  }
+  return made;
+}
+
+// a worker's answer once its documents are made: the .md names it said become the .docx ones
+async function finish(text, dir, since) {
+  const made = await convertDocs(dir, since).catch(() => []);
+  return made.length ? text.replace(/\.docx\.md\b/gi, '.docx') : text;
+}
+
 /** Their folder (made if missing): where what they make for you lands. */
 function workDir(cfg) {
   const dir = cfg.workDir || path.join(os.homedir(), 'Documents', 'Capri');
   fs.mkdirSync(dir, { recursive: true });
+  for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+    const file = path.join(dir, name);
+    if (!fs.existsSync(file)) fs.writeFileSync(file, cheatsheet());
+  }
   return dir;
 }
+
+// Codex thinks less on a plain errand; asked to think it over, or for code, it takes its usual care.
+const CAREFUL_RE = /подума|тщательн|подробн|сложн|разбер|проанализ|код(?![а-яё])|скрипт|программ|баг|ошибк|think|careful|analy[sz]e|debug|code/i;
+const codexEffort = (text) => (CAREFUL_RE.test(text) ? 'medium' : 'low');
 
 const killTree = (child) => (process.platform === 'win32'
   ? execFile('taskkill', ['/pid', String(child.pid), '/t', '/f'], () => {})
@@ -37,9 +94,14 @@ function transcript(messages, last = 8) {
   return [before ? `Conversation so far:\n${before}` : '', `Task: ${turns.at(-1)?.content || ''}`].filter(Boolean).join('\n\n');
 }
 
-/** 'claude', 'codex' (whichever is named first), or null: her chat model answers. */
+// "отмени кодекс", "стоп", "заткни его": about stopping one, not a task for it
+const STOP_RE = /(?<![а-яёa-z])(стоп|хватит|отмен|останов|прекрат|заткн|выключи его|stop|cancel|abort)/i;
+const isStop = (text) => String(text || '').length < 120 && STOP_RE.test(text);
+
+/** 'claude', 'codex' (whichever is named first), 'stop' (asked to stop one), or null: her chat model answers. */
 function route(text) {
   const t = String(text || '').slice(0, 2000);
+  if (isStop(t)) return 'stop';
   const claude = t.search(CLAUDE_RE);
   const codex = t.search(CODEX_RE);
   if (claude < 0 && codex < 0) return null;
@@ -109,6 +171,7 @@ function askClaude(cfg, messages, onDelta, signal, find = findClaude) {
   const exe = find();
   if (!exe) return Promise.reject(new Error('Claude Code не найден на этом ПК: поставь его и войди.'));
   const cwd = workDir(cfg);
+  const since = Date.now();
   const personaFile = path.join(os.tmpdir(), `capri-worker-${process.pid}.txt`);
   fs.writeFileSync(personaFile, [...messages.filter((m) => m.role === 'system').map((m) => m.content), folderNote(cwd)].join('\n\n'));
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
@@ -151,7 +214,7 @@ function askClaude(cfg, messages, onDelta, signal, find = findClaude) {
       if (signal.aborted) return reject(new Error('stopped'));
       if (result?.is_error) return reject(new Error(result.result || 'Claude Code не справился'));
       if (!result) return reject(new Error(errors.trim().slice(0, 300) || 'Claude Code ничего не ответил'));
-      resolve(result.result || all);
+      resolve(finish(result.result || all, cwd, since));
     });
   });
 }
@@ -160,9 +223,12 @@ function askCodex(cfg, messages, onDelta, signal) {
   const exe = findCodex();
   if (!exe) return Promise.reject(new Error('Codex не найден на этом ПК: поставь Codex и войди в него.'));
   const cwd = workDir(cfg);
+  const since = Date.now();
   const out = path.join(os.tmpdir(), `capri-codex-${process.pid}-${Date.now()}.txt`);
+  const effort = codexEffort(messages.findLast((m) => m.role === 'user')?.content || '');
   return new Promise((resolve, reject) => {
-    const child = spawn(exe, ['exec', '--skip-git-repo-check', '--sandbox', 'workspace-write', '--cd', cwd, '--output-last-message', out, '-'], {
+    const child = spawn(exe, ['exec', '--skip-git-repo-check', '--sandbox', 'workspace-write', '--cd', cwd,
+      '-c', `model_reasoning_effort="${effort}"`, '--output-last-message', out, '-'], {
       cwd, windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'],
     });
     const kill = () => killTree(child);
@@ -183,8 +249,10 @@ function askCodex(cfg, messages, onDelta, signal) {
       fs.rm(out, { force: true }, () => {});
       if (signal.aborted) return reject(new Error('stopped'));
       if (text) {
-        onDelta(text); // the CLI gives its answer whole, at the end
-        return resolve(text);
+        return resolve(finish(text, cwd, since).then((said) => {
+          onDelta(said); // the CLI gives its answer whole, at the end
+          return said;
+        }));
       }
       const again = /try again at ([^.\n]+)/i.exec(errors)?.[1]?.trim();
       if (/usage limit|rate.?limit|quota|\b429\b/i.test(errors)) return reject(new Error(`У Codex кончился лимит${again ? `, снова можно в ${again}` : ''}.`));
@@ -195,4 +263,4 @@ function askCodex(cfg, messages, onDelta, signal) {
   });
 }
 
-module.exports = { route, findClaude, findCodex, askClaude, askCodex, codexBrief, transcript, workDir };
+module.exports = { route, isStop, findClaude, findCodex, askClaude, askCodex, codexBrief, codexEffort, transcript, workDir };
