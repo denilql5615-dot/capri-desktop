@@ -42,6 +42,9 @@ uniform float uCollapse;
 uniform float uDissolve;
 uniform float uSparkle;
 uniform float uGrade;
+uniform float uRedHue;  // where her pink is pulled to (hot red; Claude's orange in her Claude skin)
+uniform float uRedSat;  // and how saturated at least
+uniform vec2 uRedLift;  // and how much brighter (v * x + y)
 uniform vec4 uSil;
 uniform vec2 uMisreg;
 uniform vec3 uRim;
@@ -107,11 +110,13 @@ vec3 grade(vec3 c, out float red) {
   float lit = smoothstep(0.1, 0.3, h.z);
   red = smoothstep(0.78, 0.85, hx) * (1.0 - smoothstep(1.06, 1.1, hx)) * lit * smoothstep(0.06, 0.2, h.y);
   float green = smoothstep(0.22, 0.27, h.x) * (1.0 - smoothstep(0.47, 0.52, h.x)) * lit * smoothstep(0.15, 0.3, h.y);
-  hx = mix(hx, 0.968, red * 0.6 * uGrade);
+  hx = mix(hx, uRedHue, red * 0.6 * uGrade);
   h.x = fract(hx);
-  h.y = mix(h.y, max(h.y, 0.86), red * uGrade);
+  h.y = mix(h.y, max(h.y, uRedSat), red * uGrade);
   h.y = mix(h.y, min(1.0, h.y * 1.1 + 0.06), green * uGrade);
-  h.z = mix(h.z, min(1.0, h.z * 1.5 + 0.1), (red + green) * uGrade);
+  float v = h.z;
+  h.z = mix(v, min(1.0, v * uRedLift.x + uRedLift.y), red * uGrade);
+  h.z = mix(h.z, min(1.0, v * 1.5 + 0.1), green * uGrade);
   return hsv2rgb(h);
 }
 
@@ -327,7 +332,7 @@ const UNIFORMS = [
   'uView', 'uPad', 'uTex', 'uSize', 'uSeed', 'uBoil', 'uHair', 'uHead', 'uMane', 'uArmL', 'uArmR', 'uLongL', 'uLongR',
   'uSit', 'uBend', 'uKickL', 'uKickR',
   'uSmear', 'uEcho', 'uGlitch', 'uGlitchSeed',
-  'uSplit', 'uCollapse', 'uDissolve', 'uSparkle', 'uGrade', 'uSil', 'uMisreg', 'uRim', 'uAlpha', 'uPx',
+  'uSplit', 'uCollapse', 'uDissolve', 'uSparkle', 'uGrade', 'uRedHue', 'uRedSat', 'uRedLift', 'uSil', 'uMisreg', 'uRim', 'uAlpha', 'uPx',
 ];
 
 export const SPRITE = {
@@ -347,6 +352,9 @@ export const SPRITE = {
   },
 };
 
+// her pink, pulled toward the show's hot red (hue unwrapped past 1 around red, as grade() does)
+export const RED_GRADE = { hue: 0.968, sat: 0.86, lift: [1.5, 0.1] };
+
 export class SpriteRenderer {
   constructor(canvas, image) {
     this.canvas = canvas;
@@ -359,6 +367,17 @@ export class SpriteRenderer {
       this.setup();
       if (this.scale) this.resize(this.scale);
     });
+  }
+
+  // Another drawing of her, same size (her Claude skin, skin.js): only the picture on the GPU changes.
+  setImage(image, redGrade = RED_GRADE) {
+    this.image = image;
+    this.redGrade = redGrade;
+    const { gl } = this;
+    if (!gl || gl.isContextLost()) return; // put on the GPU with the rest once it's back (setup)
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
   }
 
   // Her shader and picture on the GPU (again, after a reset).
@@ -390,6 +409,7 @@ export class SpriteRenderer {
     for (const name of UNIFORMS) this.u[name] = gl.getUniformLocation(prog, name);
 
     const tex = gl.createTexture();
+    this.tex = tex;
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.image);
@@ -450,6 +470,10 @@ export class SpriteRenderer {
     gl.uniform1f(u.uDissolve, s.dissolve);
     gl.uniform1f(u.uSparkle, s.sparkle);
     gl.uniform1f(u.uGrade, s.grade);
+    const g = this.redGrade || RED_GRADE;
+    gl.uniform1f(u.uRedHue, g.hue);
+    gl.uniform1f(u.uRedSat, g.sat);
+    gl.uniform2f(u.uRedLift, g.lift[0], g.lift[1]);
     gl.uniform4f(u.uSil, s.sil[0], s.sil[1], s.sil[2], s.silAmount);
     gl.uniform2f(u.uMisreg, s.misreg[0], s.misreg[1]);
     gl.uniform3f(u.uRim, 0.48, 0.24, 1.0);

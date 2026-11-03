@@ -659,6 +659,14 @@ export class FxLayer {
 
   // Her flat silhouettes for the impact frames, and her red, green and blue apart: made once,
   // ahead, so nothing is left to work out while she's on screen.
+  // another set of her drawings (her Claude skin, skin.js)
+  setDrawings({ cutins, intro }) {
+    this.cutins = cutins;
+    this.grab = intro?.grab || null;
+    this.grabFrames = intro || {};
+    if (this.grab) this.prepareGrab();
+  }
+
   prepareGrab() {
     const copy = (fill, mode) => {
       const c = document.createElement('canvas');

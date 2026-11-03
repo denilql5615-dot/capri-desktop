@@ -10,7 +10,7 @@
   `github.com/denilql5615-dot/capri-desktop` (`origin`; `upstream` = mochiiwuff/capri-desktop). `main` форка = оригинал Мочи.
 - Запуск: `npm run dev` (Electron 44 в node_modules). Отладка: HTTP `127.0.0.1:47823/debug/<route>` в `--dev`:
   `command {name,...}`, `eval {js}` (в рендерере есть `window.dev.{chat,listen,panel,capri,...}`), `capture`, `reload`.
-- Тесты: `node --test tests/` — **43/43**. Логи — stdout `npm run dev` (`[capri] ...`).
+- Тесты: `node --test tests/` — **44/44**. Логи — stdout `npm run dev` (`[capri] ...`).
 - Старый проект GENESIS (`D:\Capri\genesis-src`, TS) — источник, откуда переносили модули. Не запускать одновременно:
   порт 8770 общий. **EXE Мочи не ставить**, пока стоит старая Капри: тот же productName «Capri» → та же папка
   `%LOCALAPPDATA%\Programs\Capri` (был инцидент со стёртой папкой).
@@ -34,6 +34,7 @@
 | Смена модели голосом: «основная», «зрение», «квен три с половиной четыре б» и т.п. (IPC `voice:model`); «зрение» = `qwen3.5:4b` | `ollama.findSpokenModel`, `listen.js` |
 | Окно «Чаты» (правый клик › Чаты): вся переписка с ней, по чатам (пауза 30 мин или «Забыть наши разговоры» = новый чат), поиск, HUD как у панели. Хранится в `%APPDATA%capri-desktopchats.json`, только на ПК; память для ответов — по-прежнему `memory.json` | `src/main/chats.js`, `src/renderer/chats.html`, `js/chats-window.js`, `styles/chats.css` |
 | Живой чат в окне «Чаты»: поле ввода (идёт в её чат на оверлее: тот же мозг, воркеры, взгляды, вопросы перед действиями — кнопками Да/На час/Нет в окне), поток ответа, Стоп, Голос (= Ctrl+Alt+V), «Новый чат» (= забыть, старый остаётся в списке), «Продолжить этот чат» (её память = тот чат), удалить (два клика), копировать реплику | `main.js chats:*`, `chat.js state()/report()`, `app.js remoteSend/remoteAnswer/memory`, `js/chats-window.js` |
+| Скин Claude: копии всех её рисунков (`assets/capri-claude`, 24 файла) с розовым в оранжевом Claude `#D97757` (`tools/build-claude-skin.py`, оригиналы не тронуты, бэкап `D:Capriackup-capri-sprites-2026-11-03`). Надевается, пока думает Claude: отвечает в её чате («Клод, …» или Claude Code её мозгом) или идёт сессия Claude Code под её хуками (не Codex, не демо); иначе её обычные. Шейдер тела тянет розовое к своему оттенку (`RED_GRADE`), для скина — к оранжевому без пересвета | `js/skin.js`, `sprite.js setImage/uRed*`, `fx.setDrawings`, `panel.setFaceDir`, `brain.claudeAtWork`, `chat.claudeThinking` |
 | Ответы про экран (по просьбе и авто-взгляды) озвучиваются | `chat.js sendLook`, `look.js` |
 | Wake word «Капри, …» (всегда включённый микрофон → сегменты → Whisper с нейтральной подсказкой) + голосовые ответы «да / на час / нет» на вопросы | `listen.js` (`Segmenter`, `parseWake`, `parseAnswer`), `speech.js WAKE_PROMPT` |
 

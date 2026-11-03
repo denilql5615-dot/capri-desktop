@@ -400,6 +400,11 @@ export class Chat {
     this.onAsk?.(`Можно? ${line}.${grantable ? ' Да, на час или нет?' : ' Да или нет?'}`);
   }
 
+  // Claude answering this turn: Claude Code as her AI, or "Клод, …"
+  get claudeThinking() {
+    return Boolean(this.turn) && this.by === 'claude';
+  }
+
   // how her chat is, for her Chats window: answering or not, her question waiting
   state() {
     return { open: this.open, busy: Boolean(this.turn), asking: this.pending ? this.asking : null };
@@ -441,6 +446,7 @@ export class Chat {
     if (route === 'stop') return this.reply(text, STOP_IDLE); // the box is locked while one works: nothing is
     const worker = route;
     const agent = this.agent || Boolean(worker);
+    this.by = this.agent ? 'claude' : worker || 'capri'; // who's thinking (her Claude skin, skin.js)
     const asked = agent ? null : this.asked(text);
     if (asked?.kind === 'look') return this.sendLook(text, id);
     const early = asked && asked.kind !== 'close' ? this.doNow(asked) : null;

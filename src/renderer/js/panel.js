@@ -181,9 +181,17 @@ export class Panel {
     this.place();
   }
 
+  // Her faces from another set of her drawings (her Claude skin, skin.js): the one showing too.
+  setFaceDir(dir) {
+    if (dir === (this.faceDir || FACE_DIR)) return;
+    const file = (this.portrait.getAttribute('src') || '').split('/').pop();
+    this.faceDir = dir;
+    if (file) this.portrait.setAttribute('src', dir + file);
+  }
+
   // Change her expression; the swap glitches across a couple of drawings.
   setFace(name) {
-    const src = FACE_DIR + (FACES[name] || FACES.grin);
+    const src = (this.faceDir || FACE_DIR) + (FACES[name] || FACES.grin);
     if (this.portrait.getAttribute('src') === src) return;
     this.portrait.setAttribute('src', src);
     if (reducedMotion.matches) return;

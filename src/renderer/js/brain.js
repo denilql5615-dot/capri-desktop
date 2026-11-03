@@ -63,6 +63,11 @@ export class Brain {
     return s;
   }
 
+  // a real Claude Code session at work under her watch (not Codex's, not the demo's), heard from lately
+  claudeAtWork(now = Date.now()) {
+    return [...this.sessions.values()].some((s) => s.working && s.source === 'claude' && now - s.seen < 15 * 60 * 1000);
+  }
+
   get busySessions() {
     return [...this.sessions.values()].filter((s) => s.working);
   }
@@ -98,6 +103,7 @@ export class Brain {
       this.onLinked?.();
     }
     const s = this.session(evt);
+    s.source = evt.demo ? 'demo' : source;
     const name = evt.hook_event_name;
     // these three put her somewhere themselves; anything else just brings her out of hiding
     if (name === 'UserPromptSubmit' || name === 'Stop' || name === 'Notification') this.capri.wake();

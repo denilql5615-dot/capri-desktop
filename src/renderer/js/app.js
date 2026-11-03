@@ -13,6 +13,7 @@ import { Custom } from './custom.js';
 import { Bond, Jealousy } from './bond.js';
 import { Reminders, clock } from './reminders.js';
 import { Look } from './look.js';
+import { Skin, SKINS } from './skin.js';
 import { Pc } from './pc.js';
 import { linesFor } from './lines.js';
 import { pick, fmt, reducedMotion } from './util.js';
@@ -232,6 +233,13 @@ async function boot() {
   listen.configure(config);
   chat.onAnswer = (answer) => listen.say(answer);
   chat.onAsk = (line) => listen.say(line);
+  // her Claude skin: her pink in Claude's orange while Claude is the one thinking (skin.js)
+  const skin = new Skin({
+    capri, fx, panel,
+    on: () => chat.claudeThinking || brain.claudeAtWork(),
+    sets: { capri: { dir: SKINS.capri, full: image, intro, cutins: Object.fromEntries(CUTINS.map((name, i) => [name, cutins[i]])) } },
+  });
+  skin.load({ cutins: CUTINS, frames: GRAB_FRAMES, loadImage });
   panel.onBusy = () => chat.report(); // her Chats window: answering or not
   brain.onTalk = () => chat.start();
   // Getting her chat going with buttons (setup.js): Ollama and a model, a key, or an address
@@ -537,7 +545,7 @@ async function boot() {
   };
 
   // what's in here, for --dev scripts (debug route `eval`)
-  window.dev = { capri, brain, panel, chat, listen, guide, fx, voice, bond, jealousy, reminders, look, pc, setup, screens: () => screens };
+  window.dev = { capri, brain, panel, chat, listen, guide, fx, voice, bond, jealousy, reminders, look, pc, setup, skin, screens: () => screens };
 
   host.onClaudeEvent((evt) => brain.handle(evt));
   host.onWindows((data) => {
