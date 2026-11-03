@@ -163,7 +163,8 @@ function writePlanNote(dir, { title, notes: text, createdAt }) {
   fs.mkdirSync(folder, { recursive: true });
   let name = base;
   for (let n = 2; fs.existsSync(path.join(folder, `${name}.md`)); n++) name = `${base} (${n})`;
-  const created = new Date(createdAt || Date.now()).toISOString().slice(0, 10);
+  const d = new Date(createdAt || Date.now()); // your day, not UTC's: after midnight here is still yesterday there
+  const created = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const body = String(text || '').trim() || String(title).trim();
   fs.writeFileSync(path.join(folder, `${name}.md`), `---\nтип: заметка планировщика\nсоздано: ${created}\n---\n${body}\n\n[[${PLAN_INDEX.slice(0, -3)}]]\n`, 'utf8');
   writePlanIndex(folder);
