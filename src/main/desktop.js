@@ -81,6 +81,7 @@ const DELETE_RE = /удал|стер|очист|корзин|delete|remove|erase
 const SEND_RE = /отправ|переслать|опубликов|ответить|купить|оплат|заказ|перевест|перевод средств|send|submit|publish|post\b|reply|forward|buy|pay\b|payment|checkout|order|transfer/i;
 const INSTALL_RE = /установ|инсталл|install|setup|\.msi\b/i;
 const SECRET_RE = /парол|пин-?код|\bpin\b|секрет|токен|cvv|cvc|номер карты|password|passcode|passphrase|secret|token|api.?key|card number/i;
+const FINALIZE_RE = /^(?:создать|сохранить|create|save)$/i;
 
 /**
  * The class of one command: { cls, ask? }. READ_ONLY/UI_CONTROL can ride the hour; `ask` (or a higher
@@ -107,6 +108,9 @@ function classify(a, refs) {
     return { cls: 'UI_CONTROL' };
   }
   const named = `${target.name || ''} ${target.value || ''}`;
+  if (a.cmd === 'click' && /button/i.test(target.role || '') && FINALIZE_RE.test(String(target.name || '').trim())) {
+    return { cls: 'UI_CONTROL', ask: 'подтверждает создание или сохранение' };
+  }
   if (DELETE_RE.test(named)) return { cls: 'DELETE', ask: 'похоже на удаление' };
   if (INSTALL_RE.test(named)) return { cls: 'TERMINAL_EXEC', ask: 'похоже на установку программы' };
   if (SEND_RE.test(named)) return { cls: 'NETWORK_SEND', ask: 'похоже на отправку или оплату' };

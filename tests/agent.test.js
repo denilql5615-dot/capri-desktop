@@ -30,11 +30,12 @@ test('desktop: validation, argv that model text can\'t turn into flags, risk', (
   assert.strictEqual(desktop.validate({ cmd: 'click', ref: '--force' }).ok, false);
   const t = desktop.validate({ cmd: 'type', ref: '@abc:e1', text: '--help' });
   assert.deepStrictEqual(desktop.argv(t.args), ['--headed', 'type', '--', '@abc:e1', '--help']);
-  const refs = new Map([['@abc:e1', { role: 'button', name: 'Удалить' }], ['@abc:e2', { role: 'edit', name: 'Пароль' }], ['@abc:e3', { role: 'button', name: 'OK' }]]);
+  const refs = new Map([['@abc:e1', { role: 'button', name: 'Удалить' }], ['@abc:e2', { role: 'edit', name: 'Пароль' }], ['@abc:e3', { role: 'button', name: 'OK' }], ['@abc:e4', { role: 'button', name: 'Создать' }]]);
   assert.deepStrictEqual(desktop.classify({ cmd: 'snapshot' }, refs), { cls: 'READ_ONLY' });
   assert.strictEqual(desktop.classify({ cmd: 'click', ref: '@abc:e1' }, refs).cls, 'DELETE');
   assert.strictEqual(desktop.classify({ cmd: 'type', ref: '@abc:e2', text: 'x' }, refs).cls, 'CREDENTIAL_ACCESS');
   assert.deepStrictEqual(desktop.classify({ cmd: 'click', ref: '@abc:e3' }, refs), { cls: 'UI_CONTROL' });
+  assert.ok(desktop.classify({ cmd: 'click', ref: '@abc:e4' }, refs).ask);
   assert.ok(desktop.classify({ cmd: 'click', ref: '@abc:e9' }, refs).ask); // never seen: asked
   assert.strictEqual(desktop.classify({ cmd: 'launch', app: 'C:\\x\\setup.exe' }, refs).cls, 'TERMINAL_EXEC');
 });
