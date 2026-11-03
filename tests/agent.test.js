@@ -97,3 +97,12 @@ test('runTask: from the phone a click is denied without asking', async () => {
   assert.strictEqual(asked, false);
   assert.deepStrictEqual(f.ran.map((a) => a[0]), ['snapshot']);
 });
+
+test('runTask: a made-up ref goes back to looking, without asking you; Блокнот is notepad', async () => {
+  const f = fake([{ done: false, cmd: 'launch', app: 'Блокнот' }, { done: false, cmd: 'type', ref: '@zz:e5', text: 'hi' }, look, { done: false, cmd: 'type', ref: '@s1:e1', text: 'hi' }]);
+  const asked = [];
+  await runTask('на компьютере открой блокнот', [], { ...f, origin: 'pc', confirm: async (q) => { asked.push(q.line); return 'yes'; }, covered: () => false, grant: () => {} }, new AbortController().signal);
+  assert.deepStrictEqual(f.ran.map((a) => a.slice(0, 2).join(' ')), ['launch --activate', 'snapshot -i', '--headed type']);
+  assert.strictEqual(f.ran[0].at(-1), 'notepad');
+  assert.deepStrictEqual(asked, ['Открыть notepad', 'Ввести «hi» в «OK» (button)']);
+});
