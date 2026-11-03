@@ -12,7 +12,16 @@ const { decide, grantable } = require('./policy');
 const ROUNDS = 25;
 
 // what's a task on the computer, not a chat: said plainly, so a joke about computers stays a chat
-const COMPUTER_RE = /(?<![а-яё])(на|в) (компе|компьютере|пк|ноуте|ноутбуке)(?![а-яё])|(?<![а-яё])(нажми|кликни|щ[её]лкни)(?![а-яё])|в окне|заполни поле|on (my|the) (pc|computer|desktop)|\bclick\b/i;
+const COMPUTER_RE = new RegExp([
+  String.raw`(?<![а-яё])(на|в) (компе|компьютере|пк|ноуте|ноутбуке)(?![а-яё])`,
+  String.raw`(?<![а-яё])(нажми|кликни|щ[её]лкни)(?![а-яё])`,
+  'в окне', 'заполни поле',
+  // "открой блокнот и напиши…", "запусти калькулятор, посчитай…": opening is hers already, the rest needs hands
+  String.raw`(?<![а-яё])(открой|запусти)(?![а-яё]).{1,40}(,| и ).{0,15}(напиши|напечатай|введи|вставь|нажми|найди|выбери|включи|выключи|посчитай)`,
+  // "напиши там привет", "введи в поиск…": typing into something, not a poem for you
+  String.raw`(?<![а-яё])(напиши|напечатай|введи|вставь)(?![а-яё]).{0,30}(?<![а-яё])(там|туда|в (него|неё|нее|поле|окно|поиск|строку|блокнот))(?![а-яё])`,
+  String.raw`on (my|the) (pc|computer|desktop)`, String.raw`\bclick\b`,
+].join('|'), 'i');
 const isComputerTask = (text) => COMPUTER_RE.test(String(text || '').slice(0, 2000));
 
 const ARGS = ['cmd', 'ref', 'text', 'app', 'window', 'title', 'keys', 'role', 'name', 'property', 'direction', 'amount', 'ms'];

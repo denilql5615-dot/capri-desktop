@@ -42,7 +42,12 @@ test('desktop: validation, argv that model text can\'t turn into flags, risk', (
 test('isComputerTask: said plainly, not any mention of a computer', () => {
   assert.strictEqual(isComputerTask('на компьютере открой блокнот'), true);
   assert.strictEqual(isComputerTask('нажми кнопку ОК'), true);
+  assert.strictEqual(isComputerTask('Открой блокнот, напиши там привет, как дела'), true);
+  assert.strictEqual(isComputerTask('запусти калькулятор и посчитай 2+2'), true);
+  assert.strictEqual(isComputerTask('напиши в блокнот список покупок'), true);
   assert.strictEqual(isComputerTask('мой компьютер старый'), false);
+  assert.strictEqual(isComputerTask('напиши мне стих про осень'), false);
+  assert.strictEqual(isComputerTask('открой ютуб'), false); // just opening: her own [[open]]
   assert.strictEqual(isComputerTask('привет'), false);
 });
 
