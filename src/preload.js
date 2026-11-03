@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('host', {
   completePlan: (id) => ipcRenderer.invoke('planner:complete', id),
   openPlanNote: (id) => ipcRenderer.send('planner:open', id),
   savePhonePack: (pack) => ipcRenderer.send('phonepack:save', pack),
+  galleryList: () => ipcRenderer.invoke('gallery:list'),
+  onGalleryChanged: on('gallery:changed'),
   onPlansChanged: on('plans:changed'),
   hubMenu: () => ipcRenderer.invoke('hub:menu'),
   hubClick: (id) => ipcRenderer.send('hub:click', id),

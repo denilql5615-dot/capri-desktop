@@ -36,6 +36,8 @@ const pimIcs = require('./pim-ics');
 const telegram = require('./telegram');
 const { Planner, syncReminders } = require('./planner');
 const phonepack = require('./phonepack');
+const photo = require('./photo');
+const { Comfy } = require('./comfy');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
 const activeHooks = () => activeAssistant().hooks;
@@ -98,10 +100,11 @@ function forgetChats() {
 
 // capri://app/...        -> files of this repo
 // capri://usersounds/... -> the user's own sound overrides
+// capri://gallery/...    -> her pictures ("скинь фото", comfy.js)
 function serveProtocol() {
   protocol.handle('capri', (request) => {
     const url = new URL(request.url);
-    const base = url.host === 'usersounds' ? userSoundsDir() : ROOT;
+    const base = url.host === 'usersounds' ? userSoundsDir() : url.host === 'gallery' ? galleryDir() : ROOT;
     const target = path.resolve(base, '.' + decodeURIComponent(url.pathname));
     if (target !== base && !target.startsWith(base + path.sep)) {
       return new Response('forbidden', { status: 403 });
@@ -894,6 +897,13 @@ async function applyPhone() {
       event: (kind) => PHONE_REACT[kind] && sendCommand('phone', { kind: PHONE_REACT[kind] }),
       control: phoneControl,
       sprites: phonePack,
+      // "скинь фото" from the phone: drawn here like one asked on the PC, shown in her hub's gallery too
+      mediaKind: photo.kind,
+      photo: (text, kind, history) => (kind === 'video' ? Promise.resolve(VIDEO_LATER) : photoTask(text, history)),
+      galleryFile: (name) => {
+        if (!photo.GALLERY_FILE.test(name)) return null;
+        try { return fs.readFileSync(path.join(galleryDir(), name)); } catch { return null; }
+      },
       applyControl: (patch) => {
         if (typeof patch.voice === 'boolean') updateConfig({ voice: { ...config.load().voice, tts: patch.voice } });
         return phoneControl();
@@ -985,6 +995,8 @@ function yourWords(messages) {
 // default, computerWorker; her own agent only with her local Ollama model), or her chat model (null).
 function routeOf(text) {
   const cfg = config.load();
+  const media = photo.kind(text); // "скинь фото" / "скинь видео": ComfyUI, whoever is her brain
+  if (media) return media;
   if (cfg.provider === 'claude') return null;
   const named = workers.route(text);
   if (named) return named; // Claude or Codex named: theirs, the computer included (handsFor)
@@ -1052,6 +1064,55 @@ async function computerTask(messages, send, signal) {
     throw err;
   });
 }
+
+// ---------------------------------------------------------------- "скинь фото" (photo.js, comfy.js)
+const galleryDir = () => path.join(app.getPath('userData'), 'gallery');
+const comfy = new Comfy({
+  appData: app.getPath('appData'),
+  // the GPU for ComfyUI: every chat model out of it, whichever is loaded (they come back on the next message)
+  beforeJob: async () => {
+    const out = await ollama.unloadAll().catch(() => []);
+    if (out.length) console.log(`[capri] unloaded for a picture: ${out.join(', ')}`);
+  },
+});
+
+// what to draw, worked out by her chat model while it's still loaded: tags, her or not, her line with it
+async function planPhoto(said, history, signal) {
+  const cfg = config.load();
+  if (cfg.provider !== 'ollama') return photo.parsePlan('', said);
+  if (!chatModels) await refreshModels();
+  const model = pickModel(cfg);
+  const answer = await ollama.jsonChat({ model, messages: photo.promptMessages(said, history), schema: photo.SCHEMA }, signal).catch(() => '');
+  return photo.parsePlan(answer, said);
+}
+
+/** A picture for what you said: into her gallery; her line with [[photo:<file>]], which her chats draw. */
+async function photoTask(said, history = [], signal) {
+  if (!comfy.installed) return 'Не могу: ComfyUI на этом ПК не нашла. Поставь Comfy Desktop, и скину.';
+  const plan = await planPhoto(said, history, signal);
+  console.log(`[capri] photo (${plan.her ? 'her' : 'not her'}): ${plan.tags}`);
+  const { png, prompt } = await comfy.draw({ prompt: plan.tags, her: plan.her });
+  const name = photo.galleryName();
+  fs.mkdirSync(galleryDir(), { recursive: true });
+  fs.writeFileSync(path.join(galleryDir(), name), png);
+  fs.writeFileSync(path.join(galleryDir(), name.replace(/\.png$/, '.json')), JSON.stringify({ said, prompt, her: plan.her, at: Date.now() }, null, 2));
+  chatsWin?.webContents.send('gallery:changed');
+  return `${plan.caption || 'Держи.'}\n[[photo:${name}]]`;
+}
+
+/** Her pictures, newest first: [{ name, said, at }]. */
+function galleryList() {
+  let names = [];
+  try { names = fs.readdirSync(galleryDir()).filter((n) => photo.GALLERY_FILE.test(n)); } catch { return []; }
+  return names.sort().reverse().map((name) => {
+    let meta = {};
+    try { meta = JSON.parse(fs.readFileSync(path.join(galleryDir(), name.replace(/\.png$/, '.json')), 'utf8')); } catch {}
+    return { name, said: String(meta.said || ''), at: meta.at || 0 };
+  });
+}
+
+// "скинь видео": no video model yet (her plan: Wan 2.1 VACE through the same ComfyUI)
+const VIDEO_LATER = 'Видео пока не умею: модель для видео ещё не скачана. Фото — пожалуйста: скажи «скинь фото».';
 
 // Her answer from the model picked, or from the next one when that one can't: too busy twice in a row
 // (Gemini's "high demand", an Ollama cloud model out of free use), not served anymore (an older model
@@ -1212,6 +1273,7 @@ function registerIpc() {
     shell.openExternal(`obsidian://open?path=${encodeURIComponent(path.join(root, entry.obsidian))}`);
   });
   ipcMain.handle('hub:menu', () => (trayMenu ? menuModel(trayMenu) : []));
+  ipcMain.handle('gallery:list', () => galleryList());
   ipcMain.on('phonepack:save', (_e, pack) => {
     try {
       phonepack.save(phonePackDir(), pack);
@@ -1340,6 +1402,8 @@ function registerIpc() {
       const text = worker === 'codex' ? await workers.askCodex(cfg, messages, send, abort.signal, desktopOpts)
         : worker === 'claude' ? await workers.askClaude(cfg, messages, send, abort.signal, desktopOpts)
         : worker === 'computer' ? await computerTask(messages, send, abort.signal)
+        : worker === 'photo' ? await photoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal)
+        : worker === 'video' ? VIDEO_LATER
         : await chatWithFallback(cfg, await withPim(withNotes(messages), yourWords(messages)), send, abort.signal, () => streamed);
       if (cfg.provider === 'claude') saveMemory({ claude: llm.claudeMemory() });
       if (!worker) noteLater([...messages, { role: 'assistant', content: text }]);
@@ -1351,7 +1415,7 @@ function registerIpc() {
     }
   });
   ipcMain.on('chat:stop', (_e, id) => chats.get(id)?.abort());
-  // who'll answer this message: 'claude', 'codex', 'computer', 'stop' or null (her chat model)
+  // who'll answer this message: 'claude', 'codex', 'computer', 'photo', 'video', 'stop' or null (her chat model)
   ipcMain.handle('chat:route', (_e, text) => routeOf(text));
   // your answer to her question before an action on the PC (policy.js): 'yes', 'hour' or 'no'
   ipcMain.on('policy:answer', (_e, { id, answer }) => {
@@ -1804,6 +1868,7 @@ function main() {
   app.on('will-quit', () => {
     globalShortcut.unregisterAll();
     speech.stopWhisper();
+    comfy.stop(); // ComfyUI goes with her
     phoneBridge?.stop();
     windowWatch?.stop();
   });

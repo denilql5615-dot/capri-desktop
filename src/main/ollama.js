@@ -92,6 +92,17 @@ async function unload(model) {
   return Boolean(res?.ok);
 }
 
+// Every model Ollama has in memory out of it (her chat model, a roleplay one, a vision one): the GPU free
+// for something else (comfy.js). They load again by themselves on the next message.
+async function unloadAll() {
+  const res = await fetch(`${base()}/api/ps`).catch(() => null);
+  if (!res?.ok) return [];
+  const { models = [] } = await res.json().catch(() => ({}));
+  const names = models.map((m) => m.name || m.model).filter((name) => name && !isCloud(name));
+  await Promise.all(names.map(unload));
+  return names;
+}
+
 // Her answer, streamed: onDelta(piece) as it comes, resolves with all of it.
 async function chat({ model, messages, numPredict = 240 }, onDelta, signal) {
   // cloud models think before they answer, and that counts in num_predict: kept short, with room for it
@@ -215,4 +226,4 @@ function screenModel(list = []) {
 const retryEmptyVision = (text, attempt) => attempt === 0 && !String(text || '').trim();
 const visionPrompt = (text) => `/no_think\n${String(text || '')}`;
 
-module.exports = { base, models, isCloud, account, freeModels, warm, unload, chat, jsonChat, canSee, findSpokenModel, screenModel, retryEmptyVision, visionPrompt };
+module.exports = { base, models, isCloud, account, freeModels, warm, unload, unloadAll, chat, jsonChat, canSee, findSpokenModel, screenModel, retryEmptyVision, visionPrompt };

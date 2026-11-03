@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'">
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: capri://gallery; font-src 'self'">
   <title>Capri · Хаб</title>
   <link rel="stylesheet" href="styles/capri.css">
   <link rel="stylesheet" href="styles/chats.css">
@@ -61,6 +61,13 @@
         <p class="plans__error" hidden></p>
         <nav class="plans__views"></nav>
         <ol class="plans__list"></ol>
+      </section>
+    </div>
+    <div class="hud__plate hud__plate--one" data-tab="gallery" hidden>
+      <section class="gallery">
+        <p class="gallery__note"></p>
+        <ol class="gallery__grid"></ol>
+        <figure class="gallery__big" hidden><img alt=""><figcaption></figcaption></figure>
       </section>
     </div>
     <div class="hud__plate hud__plate--one" data-tab="settings" hidden>

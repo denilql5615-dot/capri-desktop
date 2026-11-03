@@ -138,6 +138,12 @@ class PhoneBridge {
         res.writeHead(200, { 'content-type': 'application/zip', 'content-length': pack.zip.length });
         return res.end(pack.zip);
       }
+      if (req.method === 'GET' && url.pathname.startsWith('/gallery/')) {
+        const png = this.d.galleryFile?.(decodeURIComponent(url.pathname.slice('/gallery/'.length)));
+        if (!png) return this.send(res, 404, { error: 'no picture' });
+        res.writeHead(200, { 'content-type': 'image/png', 'content-length': png.length });
+        return res.end(png);
+      }
       if (req.method === 'GET' && url.pathname.startsWith('/audio/')) {
         this.pruneAudio();
         const a = this.audio.get(url.pathname.slice('/audio/'.length));
@@ -171,6 +177,18 @@ class PhoneBridge {
     }
   }
 
+  async media(text, kind) {
+    try {
+      const said = await this.d.photo(text, kind, this.turns.slice(-4));
+      const m = /\[\[photo:([\w.-]+\.png)\]\]/.exec(said);
+      const reply = said.replace(/\[\[photo:[^\]]*\]\]/g, '').trim() || 'Держи.';
+      this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
+      return { reply, brain: 'comfyui', image: m?.[1] || null };
+    } catch (err) {
+      return { reply: `Не вышло скинуть: ${err.message}`, brain: 'error' };
+    }
+  }
+
   async reply(text) {
     if (/^новый разговор/i.test(text)) {
       this.turns = [];
@@ -197,8 +215,10 @@ class PhoneBridge {
   }
 
   async turn(text, voice) {
-    const { reply, brain } = await this.reply(text);
-    const out = { reply, brain, pose: '' };
+    // "скинь фото" from the phone: drawn on the PC (main.js photoTask), fetched like her voice (/gallery/<file>)
+    const media = this.d.photo && this.d.mediaKind?.(text);
+    const { reply, brain, image } = media ? await this.media(text, media) : await this.reply(text);
+    const out = { reply, brain, pose: '', ...(image && { image: `/gallery/${image}` }) };
     if (voice && brain !== 'error') {
       const data = await this.d.speak(reply).catch(() => null);
       if (data) {

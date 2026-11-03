@@ -745,3 +745,82 @@ mark {
   background: var(--ink-2);
   color: var(--paper);
 }
+
+/* a picture she sent: in the log under her words, and in the gallery (hub.js) */
+.line__photo {
+  display: block;
+  max-width: min(100%, 360px);
+  max-height: 420px;
+  margin-top: 8px;
+  object-fit: contain;
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+.gallery {
+  position: relative;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--paper-3) transparent;
+  padding: 16px 18px 22px;
+}
+
+.gallery__note {
+  margin: 0 0 12px;
+  font-size: var(--text-data);
+  color: var(--paper-3);
+}
+
+.gallery__grid {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.gallery__item {
+  aspect-ratio: 832 / 1216;
+  background: var(--ink-2);
+  cursor: zoom-in;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+.gallery__item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.gallery__item:hover {
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+/* one picture, big, over the grid: a click puts it away */
+.gallery__big {
+  position: fixed;
+  inset: 60px 24px 24px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  background: var(--ink);
+  cursor: zoom-out;
+  z-index: 5;
+}
+
+.gallery__big img {
+  flex: 1;
+  min-height: 0;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.gallery__big figcaption {
+  font-size: var(--text-data);
+  color: var(--paper-3);
+}

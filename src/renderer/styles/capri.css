@@ -953,3 +953,14 @@ html[data-motion='reduced'] .panel__line.is-glitching,
 html[data-motion='reduced'] .panel[data-kind='alert'] .panel__state {
   animation: none !important;
 }
+
+/* a picture she sent in her chat ("скинь фото"): under her line, as wide as the panel lets it */
+.panel__photo {
+  display: block;
+  width: 100%;
+  max-height: 46vh;
+  margin: 10px 0 2px;
+  object-fit: contain;
+  background: var(--ink-2);
+  box-shadow: 0 0 0 1px var(--line);
+}

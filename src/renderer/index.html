@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self' capri: blob:; connect-src 'self' capri:">
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: capri://gallery; font-src 'self'; media-src 'self' capri: blob:; connect-src 'self' capri:">
   <title>Capri</title>
   <link rel="stylesheet" href="styles/capri.css">
   <link rel="stylesheet" href="styles/classic.css">
@@ -32,6 +32,7 @@
             <span class="panel__state"></span>
           </header>
           <p class="panel__line"></p>
+          <img class="panel__photo" hidden alt="">
           <p class="panel__quote" hidden></p>
           <div class="panel__progress" hidden><span class="panel__bar"></span></div>
           <div class="panel__reply" hidden></div>

@@ -235,6 +235,7 @@ const WORKER_WAIT = {
   claude: 'Передала Claude, он работает… (Ctrl+Alt+X — остановить)',
   codex: 'Передала Codex, он думает… (Ctrl+Alt+X — остановить)',
   computer: 'Делаю на компьютере… (Ctrl+Alt+X — остановить)\n',
+  photo: 'Щас скину… (полминуты, первый раз дольше)',
 };
 const STOP_IDLE = 'Сейчас никто не работает, останавливать нечего. Пока Claude или Codex заняты — Ctrl+Alt+X или крестик.';
 // her face when she greets you in a mood (bond.js)
@@ -496,8 +497,11 @@ export class Chat {
     }
     const answer = clean(res.text) || '…';
     this.warm = true;
-    this.remember({ role: 'assistant', content: answer });
+    // a picture she sent (main.js photoTask): kept in the chat as its mark, shown under her line
+    const photos = worker === 'photo' ? photoNames(res.text) : [];
+    this.remember({ role: 'assistant', content: [answer, ...photos.map((p) => `[[photo:${p}]]`)].join('\n') });
     this.panel.stream(answer, { done: true });
+    if (photos.length) this.panel.showPhoto(`capri://gallery/${photos[0]}`);
     this.onAnswer?.(answer);
     this.panel.setFace(mood(answer));
     this.panel.setChatBusy(false);
@@ -1177,6 +1181,11 @@ export class Chat {
 }
 
 // The model's answer as she'd say it: no reasoning block, no markdown marks.
+/** The pictures in her answer: [[photo:<gallery file>]] marks (main.js photoTask). */
+export function photoNames(text) {
+  return [...String(text || '').matchAll(/\[\[photo:(\d{8}-\d{6}-[0-9a-f]{4}\.png)\]\]/g)].map((m) => m[1]);
+}
+
 export function clean(text) {
   return String(text)
     .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')

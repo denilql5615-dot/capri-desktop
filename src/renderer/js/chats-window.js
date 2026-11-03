@@ -130,11 +130,21 @@ function line(role, content, at, q) {
     });
     who.append(copy);
   }
+  // a picture she sent ("скинь фото"): its mark becomes the picture under her words
+  const photos = [...content.matchAll(PHOTO_MARK)].map((m) => m[1]);
   const text = el('p', 'line__text');
-  text.append(marked(content, q));
+  text.append(marked(content.replace(PHOTO_MARK, '').trim(), q));
   item.append(who, text);
+  for (const name of photos) {
+    const img = el('img', 'line__photo');
+    img.src = `capri://gallery/${name}`;
+    img.alt = '';
+    item.append(img);
+  }
   return item;
 }
+
+const PHOTO_MARK = /\[\[photo:(\d{8}-\d{6}-[0-9a-f]{4}\.png)\]\]/g;
 
 function renderLog({ keepScroll = false } = {}) {
   const chat = chats.find((c) => c.id === current);

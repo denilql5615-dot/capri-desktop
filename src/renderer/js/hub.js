@@ -7,21 +7,23 @@ import { pick, byDay, protonPhrase, fromInput, when } from './plans.js';
 
 const T = {
   ru: {
-    tabs: { chats: 'Чаты', plans: 'Планы', settings: 'Настройки' },
+    tabs: { chats: 'Чаты', plans: 'Планы', gallery: 'Галерея', settings: 'Настройки' },
     kinds: { event: 'Встреча', task: 'Задача', reminder: 'Напоминание', note: 'Заметка' },
     views: { soon: 'Впереди', done: 'Сделано', all: 'Всё' },
     title: 'Что записать', at: 'Когда', end: 'До', notes: 'Подробности', add: 'Добавить',
     empty: 'Пусто. Добавь сверху или попроси Капри, Claude или Codex.', undated: 'Без даты', today: 'Сегодня', tomorrow: 'Завтра',
     done: 'Готово', proton: 'В Proton', sent: 'Отправлено Капри', obsidian: 'Obsidian', isDone: 'сделано',
+    galleryNote: 'Что она скинула: попроси в чате «скинь фото» — на ПК или с телефона.', galleryEmpty: 'Пока пусто.',
     needAt: 'Нужно время.', needTitle: 'Нужно название.', failed: 'Не вышло: ', main: 'Главное', settingsNote: 'То же, что в меню у трея и по правому клику на Капри.',
   },
   en: {
-    tabs: { chats: 'Chats', plans: 'Plans', settings: 'Settings' },
+    tabs: { chats: 'Chats', plans: 'Plans', gallery: 'Gallery', settings: 'Settings' },
     kinds: { event: 'Meeting', task: 'Task', reminder: 'Reminder', note: 'Note' },
     views: { soon: 'Ahead', done: 'Done', all: 'All' },
     title: 'What to note', at: 'When', end: 'Until', notes: 'Details', add: 'Add',
     empty: 'Nothing here. Add one above, or ask Capri, Claude or Codex.', undated: 'No date', today: 'Today', tomorrow: 'Tomorrow',
     done: 'Done', proton: 'To Proton', sent: 'Sent to Capri', obsidian: 'Obsidian', isDone: 'done',
+    galleryNote: 'What she sent: ask her for a photo in chat, here or on the phone.', galleryEmpty: 'Nothing yet.',
     needAt: 'It needs a time.', needTitle: 'It needs a title.', failed: 'Didn’t work: ', main: 'Main', settingsNote: 'The same as her tray menu and her right-click menu.',
   },
 };
@@ -45,9 +47,9 @@ function button(label, cls, onClick) {
 
 // ---------------------------------------------------------------- tabs
 
-const TABS = ['chats', 'plans', 'settings'];
+const TABS = ['chats', 'plans', 'gallery', 'settings'];
 const tabsEl = document.querySelector('.hud__tabs');
-const shown = { plans: false, settings: false };
+const shown = { plans: false, gallery: false, settings: false };
 let tab = 'chats';
 
 function select(name) {
@@ -58,6 +60,7 @@ function select(name) {
   document.querySelector('.hud__new').hidden = name !== 'chats';
   document.querySelector('.hud__count').hidden = name !== 'chats';
   if (name === 'plans') loadPlans();
+  if (name === 'gallery') loadGallery();
   if (name === 'settings') loadMenu();
   shown[name] = true;
 }
@@ -70,7 +73,7 @@ for (const name of TABS) {
   tabsEl.append(b);
 }
 addEventListener('keydown', (e) => {
-  if (e.ctrlKey && /^[123]$/.test(e.key)) select(TABS[Number(e.key) - 1]);
+  if (e.ctrlKey && /^[1234]$/.test(e.key)) select(TABS[Number(e.key) - 1]);
 });
 
 // ---------------------------------------------------------------- plans
@@ -198,6 +201,38 @@ async function loadPlans() {
 
 host.onPlansChanged(() => {
   if (tab === 'plans') loadPlans();
+});
+
+// ---------------------------------------------------------------- gallery: what she sent (main.js photoTask)
+
+const gridEl = document.querySelector('.gallery__grid');
+const bigEl = document.querySelector('.gallery__big');
+document.querySelector('.gallery__note').textContent = t.galleryNote;
+bigEl.addEventListener('click', () => { bigEl.hidden = true; });
+
+async function loadGallery() {
+  const list = await host.galleryList().catch(() => []);
+  gridEl.replaceChildren();
+  if (!list.length) gridEl.append(el('li', 'plans__empty', t.galleryEmpty));
+  for (const p of list) {
+    const item = el('li', 'gallery__item');
+    const img = el('img');
+    img.src = `capri://gallery/${p.name}`;
+    img.loading = 'lazy';
+    img.alt = p.said;
+    item.title = p.said;
+    item.append(img);
+    item.addEventListener('click', () => {
+      bigEl.querySelector('img').src = img.src;
+      bigEl.querySelector('figcaption').textContent = p.said;
+      bigEl.hidden = false;
+    });
+    gridEl.append(item);
+  }
+}
+
+host.onGalleryChanged(() => {
+  if (tab === 'gallery') loadGallery();
 });
 
 // ---------------------------------------------------------------- settings: her tray menu, by section
