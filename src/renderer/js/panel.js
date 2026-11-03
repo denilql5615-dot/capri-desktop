@@ -377,6 +377,7 @@ export class Panel {
   // While she answers you can't send another.
   setChatBusy(busy) {
     this.chatBusy = busy;
+    this.onBusy?.(busy); // her Chats window follows (app.js)
     this.chatInput.disabled = busy;
     this.chatSend.disabled = busy;
     if (!busy && this.current?.chat) this.chatInput.focus();

@@ -80,6 +80,7 @@ function forgetChats() {
   llm.resetClaude();
   saveMemory({ history: [], claude: null });
   chatLog.write(chatsFile(), chatLog.cut(chatLog.read(chatsFile())));
+  chatsWin?.webContents.send('chats:changed');
   sendCommand('forget');
 }
 
@@ -973,6 +974,7 @@ function registerIpc() {
       const send = (text) => {
         streamed = true;
         overlay?.webContents.send('chat:delta', { id, text });
+        chatsWin?.webContents.send('chats:delta', text); // her Chats window shows it coming too
       };
       const cfg = config.load();
       // Claude or Codex named in your message: that one answers, as her (workers.js); a task on the
@@ -1072,6 +1074,36 @@ function registerIpc() {
   ipcMain.handle('chats:list', () => chatLog.list(chatLog.read(chatsFile())));
   ipcMain.on('chats:open', () => openChats());
   ipcMain.on('chats:close', () => chatsWin?.close());
+  // her Chats window talks through her chat on the overlay (chat.js): the same brain, workers, looks,
+  // questions before an action on your PC; she answers there too
+  ipcMain.on('chats:send', (_e, text) => {
+    const said = String(text || '').trim().slice(0, 500);
+    if (said) sendCommand('remoteSend', { text: said });
+  });
+  ipcMain.on('chats:stop', () => sendCommand('stop'));
+  ipcMain.on('chats:answer', (_e, answer) => ['yes', 'hour', 'no'].includes(answer) && sendCommand('remoteAnswer', { answer }));
+  ipcMain.on('chats:listen', () => sendCommand('listen'));
+  ipcMain.on('chats:copy', (_e, text) => clipboard.writeText(String(text || '')));
+  // a new chat: she forgets the one you were in (it stays in the list)
+  ipcMain.on('chats:new', () => forgetChats());
+  // an old one continued: she has it in mind again, and your next message goes on in it
+  ipcMain.on('chats:resume', (_e, id) => {
+    const store = chatLog.read(chatsFile());
+    const chat = chatLog.resume(store, id);
+    if (!chat) return;
+    chatLog.write(chatsFile(), store);
+    llm.resetClaude();
+    saveMemory({ history: chat.messages.slice(-60).map(({ role, content }) => ({ role, content })), claude: null });
+    sendCommand('memory');
+    chatsWin?.webContents.send('chats:changed');
+  });
+  // deleting asks first in her window (two clicks); gone for good
+  ipcMain.on('chats:delete', (_e, id) => {
+    chatLog.write(chatsFile(), chatLog.remove(chatLog.read(chatsFile()), id));
+    chatsWin?.webContents.send('chats:changed');
+  });
+  // her chat on the overlay: busy or not, her question waiting, the mic on
+  ipcMain.on('chat:state', (_e, state) => chatsWin?.webContents.send('chats:state', state));
   ipcMain.on('chat:ollama', () => shell.openExternal(OLLAMA_SITE));
   // setting her up with buttons (setup.js): Ollama and a model, or a key, or an address
   const progress = (payload) => overlay?.webContents.send('setup:progress', payload);

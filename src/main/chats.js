@@ -50,8 +50,37 @@ function cut(store) {
   return store;
 }
 
+// "Continue" on an old chat in her window: it becomes the one she talks in, newest in the list
+function resume(store, id, now = Date.now()) {
+  const at = store.chats.findIndex((chat) => chat.id === id);
+  if (at === -1) return null;
+  const [chat] = store.chats.splice(at, 1);
+  chat.updated = now;
+  store.chats.push(chat);
+  delete store.fresh;
+  return chat;
+}
+
+// A chat deleted from her window; the one she's talking in: the next message starts a new one
+function remove(store, id, now = Date.now()) {
+  const live = current(store, now);
+  store.chats = store.chats.filter((chat) => chat.id !== id);
+  if (id === live) store.fresh = true;
+  return store;
+}
+
+// The chat your next message goes into, if it's still going (null: the next one starts a new chat)
+function current(store, now = Date.now()) {
+  const last = store.chats.at(-1);
+  return last && !store.fresh && now - last.updated <= GAP_MS && last.messages.length < MAX_MESSAGES ? last.id : null;
+}
+
 // The list for her window, newest first: titled by what you said first
-function list(store) {
+function list(store, now = Date.now()) {
+  return { current: current(store, now), chats: listed(store) };
+}
+
+function listed(store) {
   return store.chats.slice().reverse().map((chat) => {
     const first = chat.messages.find((m) => m.role === 'user') || chat.messages[0];
     return {
@@ -65,4 +94,4 @@ function list(store) {
   });
 }
 
-module.exports = { GAP_MS, read, write, add, cut, list };
+module.exports = { GAP_MS, read, write, add, cut, resume, remove, current, list };

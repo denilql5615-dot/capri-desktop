@@ -271,7 +271,7 @@ export class Chat {
     return this.brain.t.chat;
   }
 
-  async start() {
+  async start({ remote = false } = {}) {
     const { capri, host, t } = this;
     if (this.open) {
       this.panel.chatInput.focus();
@@ -320,7 +320,7 @@ export class Chat {
     const moody = !tiny && feeling && t.moody[feeling];
     const hello = moody ? fmt(pick(moody), this.bond.mood.vars) : pick(this.history.length ? t.again : t.hello);
     this.opening = moody ? hello : null;
-    host.focusOverlay(true); // the keyboard, for typing to her
+    if (!remote) host.focusOverlay(true); // the keyboard, for typing to her (not from her Chats window: you type there)
     const shown = this.panel.say({
       kind: 'chat',
       face: moody ? MOOD_FACE[feeling] : 'look',
@@ -349,7 +349,7 @@ export class Chat {
       return;
     }
     this.open = true;
-    setTimeout(() => this.panel.chatInput.focus(), 150); // once the overlay has the keyboard
+    if (!remote) setTimeout(() => this.panel.chatInput.focus(), 150); // once the overlay has the keyboard
     capri.perform('hop');
     capri.nextMove = capri.nextGaze = performance.now() + STAY_MS;
   }
@@ -359,6 +359,7 @@ export class Chat {
     this.open = false;
     if (abort && this.turn) this.host.chatStop(this.turn);
     this.turn = 0;
+    this.report();
     this.host.focusOverlay(false);
     this.capri.nextMove = performance.now() + 30000;
     this.capri.nextGaze = performance.now() + 60000;
@@ -376,6 +377,8 @@ export class Chat {
     const answer = (a) => {
       if (this.pending !== answer) return; // answered already (a click and a word at once)
       this.pending = null;
+      this.asking = null;
+      this.report();
       this.panel.setActions([]);
       this.host.policyAnswer(id, a === 'hour' && !grantable ? 'yes' : a);
     };
@@ -384,6 +387,8 @@ export class Chat {
       return;
     }
     this.pending = answer;
+    this.asking = { line, grantable: Boolean(grantable) };
+    this.report();
     this.answer += `Можно? ${line}${why ? ` (${why})` : ''}\n`;
     this.panel.stream(clean(this.answer));
     this.panel.setActions([
@@ -393,6 +398,15 @@ export class Chat {
     ], answer);
     this.capri.perform('curious');
     this.onAsk?.(`Можно? ${line}.${grantable ? ' Да, на час или нет?' : ' Да или нет?'}`);
+  }
+
+  // how her chat is, for her Chats window: answering or not, her question waiting
+  state() {
+    return { open: this.open, busy: Boolean(this.turn), asking: this.pending ? this.asking : null };
+  }
+
+  report() {
+    this.host.chatState?.(this.state());
   }
 
   // her question answered out loud (listen.js)

@@ -14,6 +14,7 @@
       <span class="hud__who">CAPRI</span><span class="hud__tag">LOG</span>
       <span class="hud__title"></span>
       <span class="hud__count"></span>
+      <button class="panel__action is-primary hud__new" type="button"></button>
       <button class="panel__action hud__close" type="button" aria-label="✕">✕</button>
     </header>
     <div class="hud__plate">
@@ -23,8 +24,26 @@
         <p class="chats__empty" hidden></p>
       </aside>
       <main class="log">
-        <header class="log__meta"></header>
+        <header class="log__meta">
+          <span class="log__when"></span>
+          <span class="log__live" hidden></span>
+          <button class="panel__action log__delete" type="button" hidden></button>
+        </header>
         <ol class="log__lines"></ol>
+        <div class="log__resume" hidden>
+          <span class="log__resume-note"></span>
+          <button class="panel__action is-primary log__resume-go" type="button"></button>
+        </div>
+        <div class="log__ask" hidden>
+          <span class="log__ask-line"></span>
+          <span class="log__ask-actions"></span>
+        </div>
+        <form class="log__compose" autocomplete="off">
+          <button class="panel__action log__mic" type="button"></button>
+          <input class="panel__input log__input" type="text" maxlength="500" spellcheck="false">
+          <button class="panel__action is-primary log__send" type="submit"></button>
+        </form>
+        <p class="log__hint" hidden></p>
       </main>
     </div>
   </div>

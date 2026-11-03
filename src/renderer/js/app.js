@@ -232,6 +232,7 @@ async function boot() {
   listen.configure(config);
   chat.onAnswer = (answer) => listen.say(answer);
   chat.onAsk = (line) => listen.say(line);
+  panel.onBusy = () => chat.report(); // her Chats window: answering or not
   brain.onTalk = () => chat.start();
   // Getting her chat going with buttons (setup.js): Ollama and a model, a key, or an address
   const setup = new Setup({ guide, panel, host, brain, capri, voice });
@@ -740,6 +741,17 @@ async function boot() {
       case 'stop': // Ctrl+Alt+X: her answer under way stops, and she stops talking
         listen.hush();
         chat.stopTurn();
+        break;
+      case 'remoteSend': // typed in her Chats window: said in her chat here, she answers here too
+        if (!chat.open) await chat.start({ remote: true });
+        if (chat.open && !chat.turn) chat.send(cmd.text);
+        else host.chatState({ ...chat.state(), refused: chat.open ? 'busy' : 'closed' });
+        break;
+      case 'remoteAnswer': // her question answered with a button in her Chats window
+        chat.answerPending(cmd.answer);
+        break;
+      case 'memory': // an old chat continued from her Chats window: she has it in mind again
+        chat.history = await host.chatMemory().catch(() => chat.history);
         break;
       case 'confirm': // before an action on your PC: her question, in her chat (main.js > policy.js)
         chat.confirm(cmd);

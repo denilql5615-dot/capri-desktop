@@ -79,10 +79,22 @@ body {
   display: none;
 }
 
-.hud__close {
+.hud__new {
   margin-left: auto;
+  -webkit-app-region: no-drag;
+}
+
+.hud__close {
   padding-inline: 10px;
   -webkit-app-region: no-drag;
+}
+
+/* gone for good, or stopping her: in red */
+.panel__action.is-danger {
+  --btn: var(--red);
+  --notch: var(--ink);
+  background: var(--red);
+  color: var(--ink);
 }
 
 /* the plate: its shape (one corner cut, a shallow tab out of the top edge) drawn behind it, and the
@@ -231,6 +243,10 @@ body {
 
 .log__meta {
   flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
   padding-bottom: 10px;
   margin-bottom: 4px;
   border-bottom: 1px solid var(--line);
@@ -319,4 +335,98 @@ body {
 mark {
   background: var(--accent);
   color: var(--ink);
+}
+
+/* the chat she's talking in */
+.log__live {
+  padding: 2px 9px 1px 7px;
+  background: var(--cyan);
+  color: var(--ink);
+  font-weight: 600;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%);
+}
+
+.log__delete {
+  margin-left: auto;
+  padding: 5px 11px 4px 12px;
+  font-size: 10px;
+}
+
+.chats__item.is-live .chats__when span:first-child::before {
+  content: '● ';
+  color: var(--cyan);
+}
+
+/* copy, on a line you point at */
+.line__copy {
+  margin-left: auto;
+  padding: 2px 9px 1px 10px;
+  font-size: 9px;
+  opacity: 0;
+  transition: opacity 150ms var(--ease-out);
+}
+
+.line:hover .line__copy,
+.line__copy:focus-visible {
+  opacity: 1;
+}
+
+/* under the chat: continue an old one, her question, your line */
+.log__resume,
+.log__ask {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 9px 12px 9px 14px;
+  background:
+    linear-gradient(var(--accent), var(--accent)) left 2px center / 5px 2px no-repeat,
+    var(--ink-2);
+  font-size: calc(var(--text-data) + 1px);
+  color: var(--paper-2);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%);
+}
+
+.log__resume-go {
+  margin-left: auto;
+}
+
+.log__ask {
+  --accent: var(--cyan);
+}
+
+.log__ask-line {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--paper);
+}
+
+.log__ask-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.log__compose {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.log__compose .panel__action {
+  flex: none;
+}
+
+.log__input:disabled {
+  color: var(--paper-3);
+}
+
+.log__hint {
+  margin: 8px 0 0;
+  font-size: var(--text-data);
+  color: var(--red);
 }
