@@ -897,14 +897,15 @@ function yourWords(messages) {
   return last.split('\n\n(Note for you')[0];
 }
 
-// Who answers a message: Claude or Codex named, a stop, a task on the computer (only with her local
-// Ollama model at the wheel: it's the one with her desktop tool), or her chat model (null).
+// Who answers a message: Claude or Codex named, a stop, a task on the computer (Claude or Codex by
+// default, computerWorker; her own agent only with her local Ollama model), or her chat model (null).
 function routeOf(text) {
   const cfg = config.load();
   if (cfg.provider === 'claude') return null;
   const named = workers.route(text);
   if (named) return named; // Claude or Codex named: theirs, the computer included (handsFor)
-  return cfg.provider === 'ollama' && desktopCli.installed && agent.isComputerTask(text) ? 'computer' : null;
+  if (!desktopCli.installed || !agent.isComputerTask(text)) return null;
+  return workers.handsWorker(cfg.computerWorker) || (cfg.provider === 'ollama' ? 'computer' : null);
 }
 
 // ---------------------------------------------------------------- her hands on the PC (agent.js, policy.js)

@@ -2,7 +2,18 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { route, codexBrief } = require('../src/main/workers');
+const { route, handsWorker, codexBrief } = require('../src/main/workers');
+
+test('handsWorker: your choice drives the PC, the other if it is missing, her own agent if neither', () => {
+  const both = { claude: () => 'c', codex: () => 'x' };
+  const onlyCodex = { claude: () => null, codex: () => 'x' };
+  assert.strictEqual(handsWorker('claude', both), 'claude');
+  assert.strictEqual(handsWorker(undefined, both), 'claude');
+  assert.strictEqual(handsWorker('codex', both), 'codex');
+  assert.strictEqual(handsWorker('claude', onlyCodex), 'codex');
+  assert.strictEqual(handsWorker('claude', { claude: () => null, codex: () => null }), null);
+  assert.strictEqual(handsWorker('capri', both), null);
+});
 
 test('route: a worker named goes to it, the first named wins', () => {
   assert.strictEqual(route('Клод, разбери этот лог'), 'claude');

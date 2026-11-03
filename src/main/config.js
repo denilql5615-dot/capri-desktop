@@ -62,6 +62,7 @@ const DEFAULTS = {
   phoneToken: null,  // the phone's key, encrypted with your Windows account (setup.sealKey)
   telegramToken: null,
   telegramChatId: null,
+  computerWorker: 'claude', // who drives the PC when no one is named: 'claude', 'codex' or 'capri' (her own agent)
   pimAccounts: [],
   pimSecrets: {},
   pimMcpPort: 47824,
