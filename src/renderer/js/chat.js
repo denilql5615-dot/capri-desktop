@@ -200,7 +200,8 @@ function robloxGame(text) {
   return name.length >= 2 ? name : null;
 }
 // "regarde mon écran", "tu vois quoi ?", "what's on my screen?", "что ты видишь?"
-const LOOK_ASK = /regarde (?:mon|l['’]|ce que)|(?:jette|jeter) un (?:œil|oeil)|tu vois quoi|qu['’]est[- ]ce que tu vois|look at (?:my|the|this) screen|what(?:'s| is) on my screen|what do you see|take a look|mira (?:mi|la) pantalla|qu[ée] ves|olha (?:minha|a) tela|o que voc[êe] v[êe]|посмотри на (?:мой )?экран|что ты видишь/i;
+const LOOK_ASK = /regarde (?:mon|l['’]|ce que)|(?:jette|jeter) un (?:œil|oeil)|tu vois quoi|qu['’]est[- ]ce que tu vois|look at (?:my|the|this) screen|what(?:'s| is) on my screen|what do you see|take a look|mira (?:mi|la) pantalla|qu[ée] ves|olha (?:minha|a) tela|o que voc[êe] v[êe]|(?:посмотри|глянь|взгляни|погляди|проверь|оцени)(?:\s+пожалуйста)?(?:\s+(?:что|чего))?(?:\s+(?:у меня|сейчас))?(?:\s+на)?\s+(?:мой\s+)?(?:экран|монитор)|что(?:\s+сейчас)?(?:\s+у меня)?\s+(?:видно|открыто|показано)\s+на\s+экране|что(?:\s+ты)?\s+видишь(?:\s+на\s+экране)?|видишь\s+(?:мой\s+)?экран|прочитай(?:\s+текст)?\s+(?:с|на)\s+экрана/i;
+export const isLookRequest = (text) => LOOK_ASK.test(String(text || ''));
 // what her tag needs to find in your message before it does anything: a small model tags answers about
 // anything ("[[music: synthwave]]" under a film tip), and music and the media keys act right away
 const LISTEN = /[ée]cout|listen|escuch|\bouv(ir|e)\b|слуша|playlist|album|\b(play|joue|mets|pon|toca|coloca)\b|включи|поставь/i;
@@ -338,7 +339,8 @@ export class Chat {
         note: status.local ? t.note : t.noteCloud,
       },
       onSend: (text) => this.send(text),
-      onLeave: () => this.close(),
+      onClose: () => this.close(),
+      onLeave: () => this.close(false),
       hold: null,
     });
     if (!shown) {
@@ -351,10 +353,10 @@ export class Chat {
     capri.nextMove = capri.nextGaze = performance.now() + STAY_MS;
   }
 
-  close() {
+  close(abort = true) {
     if (!this.open) return;
     this.open = false;
-    if (this.turn) this.host.chatStop(this.turn);
+    if (abort && this.turn) this.host.chatStop(this.turn);
     this.turn = 0;
     this.host.focusOverlay(false);
     this.capri.nextMove = performance.now() + 30000;
@@ -553,7 +555,7 @@ export class Chat {
     if (name) return { kind: 'name', name };
     const memo = MEMO_ASK.exec(text)?.[1]?.trim();
     if (memo) return { kind: 'memo', text: memo };
-    if (this.look && LOOK_ASK.test(text)) return { kind: 'look' };
+    if (this.look && isLookRequest(text)) return { kind: 'look' };
     const pc = this.askedPc(text, count);
     if (pc) return pc;
     if (SHOT_ASK.test(text)) return { kind: 'shot' };

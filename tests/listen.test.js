@@ -50,6 +50,9 @@ test('parseWake: her name first, what you asked after it', async () => {
   assert.deepStrictEqual(parseWake('Капри, открой ютуб.'), { rest: 'открой ютуб.' });
   assert.deepStrictEqual(parseWake('эй капри'), { rest: '' });
   assert.deepStrictEqual(parseWake('Capri, привет'), { rest: 'привет' });
+  assert.deepStrictEqual(parseWake('ну слушай, Каприя, что на экране'), { rest: 'что на экране' });
+  assert.deepStrictEqual(parseWake('алло Гапри открой блокнот'), { rest: 'открой блокнот' });
+  assert.deepStrictEqual(parseWake('Kapri, привет'), { rest: 'привет' });
   assert.strictEqual(parseWake('открой ютуб'), null);
   assert.strictEqual(parseWake('капризный ребёнок'), null);
   assert.strictEqual(parseWake('я сказал Капри'), null); // not first: just talking about her
@@ -65,6 +68,33 @@ test('parseAnswer: yes, for an hour, no, or not an answer', async () => {
   assert.strictEqual(parseAnswer('не надо'), 'no');
   assert.strictEqual(parseAnswer('Продолжение следует...'), null);
   assert.strictEqual(parseAnswer('данные'), null);
+});
+
+test('parseControl: explicit stop commands only', async () => {
+  const { parseControl } = await load();
+  assert.strictEqual(parseControl('стоп'), 'stop');
+  assert.strictEqual(parseControl('останови задачу!'), 'stop');
+  assert.strictEqual(parseControl('прекрати выполнение'), 'stop');
+  assert.strictEqual(parseControl('cancel'), 'stop');
+  assert.strictEqual(parseControl('стоп музыка'), null);
+  assert.strictEqual(parseControl('остановка рядом'), null);
+});
+
+test('parseModelCommand: model name after an explicit switch command', async () => {
+  const { parseModelCommand } = await load();
+  assert.strictEqual(parseModelCommand('переключись на qwen 3 8b'), 'qwen 3 8b');
+  assert.strictEqual(parseModelCommand('смени модель на Квен три восемь б.'), 'Квен три восемь б');
+  assert.strictEqual(parseModelCommand('switch model to qwen3-vl:4b'), 'qwen3-vl:4b');
+  assert.strictEqual(parseModelCommand('используй модель куэн три точка пять четыре б'), 'куэн три точка пять четыре б');
+  assert.strictEqual(parseModelCommand('выбери фаун двенадцать б'), 'фаун двенадцать б');
+  assert.strictEqual(parseModelCommand('выбери модель основную'), 'основную');
+  assert.strictEqual(parseModelCommand('переключись на модель новую'), 'новую');
+  assert.strictEqual(parseModelCommand('смени модель на зрение'), 'зрение');
+  assert.strictEqual(parseModelCommand('выбери ролевую модель'), 'ролевую');
+  assert.strictEqual(parseModelCommand('поставь основную модель'), 'основную');
+  assert.strictEqual(parseModelCommand('перейди на модель зрения'), 'зрения');
+  assert.strictEqual(parseModelCommand('давай ролевую модель'), 'ролевую');
+  assert.strictEqual(parseModelCommand('модель qwen'), null);
 });
 
 test('Segmenter: a segment from a little before speech to a pause; a click is not speech', async () => {

@@ -813,27 +813,43 @@ async function sayAboutSnap({ id, persona, prompt, history = [] }) {
   if (!image) return { ok: false, error: 'the picture is gone' };
   const cfg = config.load();
   if (!chatModels?.length) await refreshModels();
-  const model = pickModel(cfg);
-  if (!model) return { ok: false, code: 'noai' };
+  const chatModel = pickModel(cfg);
+  if (!chatModel) return { ok: false, code: 'noai' };
   if (cfg.provider === 'claude') return { ok: false, code: 'novision', model: 'Claude Code' };
-  if (cfg.provider === 'ollama' && !(await ollama.canSee(model))) return { ok: false, code: 'novision', model };
+  const model = cfg.provider === 'ollama' ? ollama.screenModel(chatModels) : chatModel;
+  if (!model || (cfg.provider === 'ollama' && !(await ollama.canSee(model)))) return { ok: false, code: 'novision', model: chatModel };
+  const switched = cfg.provider === 'ollama' && model !== chatModel;
+  if (switched && !(await ollama.unload(chatModel))) return { ok: false, error: `Не удалось освободить ${chatModel}.`, model };
   const user = cfg.provider === 'ollama'
-    ? { role: 'user', content: prompt, images: [image] }
+    ? { role: 'user', content: ollama.visionPrompt(prompt), images: [image] }
     : { role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${image}` } }] };
   // asked in her chat: the conversation so far comes before it (text only)
   const before = (Array.isArray(history) ? history : []).filter((m) => typeof m?.content === 'string' && ['user', 'assistant'].includes(m.role));
   const messages = [{ role: 'system', content: persona }, ...before, user];
-  for (let attempt = 0; ; attempt++) {
-    try {
-      const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages }, () => {}, AbortSignal.timeout(120000));
-      return { ok: true, text, model };
-    } catch (err) {
-      if (err.code === 'busy' && attempt === 0) {
-        await new Promise((r) => setTimeout(r, 1500));
-        continue;
+  try {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const text = await llm.chat(cfg.provider, llmConfig(cfg), {
+          model, messages, numPredict: cfg.provider === 'ollama' ? 900 : undefined,
+        }, () => {}, AbortSignal.timeout(120000));
+        if (cfg.provider === 'ollama' && !String(text || '').trim()) {
+          if (ollama.retryEmptyVision(text, attempt)) continue;
+          return { ok: false, error: 'Модель зрения не ответила.', code: 'empty', model };
+        }
+        return { ok: true, text, model };
+      } catch (err) {
+        if (err.code === 'busy' && attempt === 0) {
+          await new Promise((r) => setTimeout(r, 1500));
+          continue;
+        }
+        const novision = /image|vision|multimodal|modalit|image_url|content.*(part|type)/i.test(err.message);
+        return { ok: false, error: err.message, code: novision ? 'novision' : err.code || null, model };
       }
-      const novision = /image|vision|multimodal|modalit|image_url|content.*(part|type)/i.test(err.message);
-      return { ok: false, error: err.message, code: novision ? 'novision' : err.code || null, model };
+    }
+  } finally {
+    if (switched) {
+      await ollama.unload(model);
+      ollama.warm(chatModel);
     }
   }
 }
@@ -964,6 +980,16 @@ function registerIpc() {
       return { ok: false, error: speech.sttError(err, voice) };
     }
   });
+  ipcMain.handle('voice:model', async (_e, wanted) => {
+    const models = await ollama.models().catch(() => null);
+    if (!models) return { ok: false, error: 'Ollama сейчас недоступна.' };
+    const model = ollama.findSpokenModel(models, String(wanted || '').slice(0, 80));
+    if (!model) return { ok: false, error: `Не нашла установленную модель «${String(wanted || '').slice(0, 80)}».` };
+    chatModels = models;
+    updateConfig({ provider: 'ollama', chatModel: model });
+    ollama.warm(model);
+    return { ok: true, model };
+  });
   ipcMain.handle('voice:speak', async (_e, text) => {
     const { voice } = config.load();
     if (!voice.tts) return null;
@@ -1001,7 +1027,7 @@ function registerIpc() {
   // where her AI runs, for what she tells you before she looks: { local, provider, model }
   ipcMain.handle('look:where', () => {
     const cfg = config.load();
-    const model = pickModel(cfg);
+    const model = cfg.provider === 'ollama' ? ollama.screenModel(chatModels) || pickModel(cfg) : pickModel(cfg);
     const provider = cfg.provider === 'ollama' && ollama.isCloud(model) ? 'Ollama' : llm.PROVIDERS[cfg.provider]?.label || cfg.provider;
     return { local: llm.isLocal(cfg.provider, cfg, model), provider, model };
   });

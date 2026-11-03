@@ -10,7 +10,7 @@
   `github.com/denilql5615-dot/capri-desktop` (`origin`; `upstream` = mochiiwuff/capri-desktop). `main` форка = оригинал Мочи.
 - Запуск: `npm run dev` (Electron 44 в node_modules). Отладка: HTTP `127.0.0.1:47823/debug/<route>` в `--dev`:
   `command {name,...}`, `eval {js}` (в рендерере есть `window.dev.{chat,listen,panel,capri,...}`), `capture`, `reload`.
-- Тесты: `node --test tests/` — **27/27**. Логи — stdout `npm run dev` (`[capri] ...`).
+- Тесты: `node --test tests/` — **40/40**. Логи — stdout `npm run dev` (`[capri] ...`).
 - Старый проект GENESIS (`D:\Capri\genesis-src`, TS) — источник, откуда переносили модули. Не запускать одновременно:
   порт 8770 общий. **EXE Мочи не ставить**, пока стоит старая Капри: тот же productName «Capri» → та же папка
   `%LOCALAPPDATA%\Programs\Capri` (был инцидент со стёртой папкой).
@@ -30,6 +30,8 @@
 | Управление ПК: agent-desktop v1.0.2 (`vendor/agent-desktop`, вне git, `npm run fetch:agent-desktop`), белый список команд, оценка риска; цикл задачи — qwen3:8b отвечает JSON по схеме (`format`), НЕ tool calls (Ollama 0.40 молча теряет tool calls) | `src/main/desktop.js`, `src/main/agent.js`, `ollama.jsonChat` |
 | Маршрут: имя воркера → воркер; иначе «на компьютере / нажми / открой X и напиши…» → своя задача на ПК; иначе чат | `main.js routeOf`, `agent.isComputerTask` |
 | Claude/Codex, названные для задачи на ПК, получают agent-desktop после одного вопроса (Claude: только эта команда разрешена; Codex: `danger-full-access`, пользователь явно разрешил «фуллдоступ») | `main.js handsFor`, `workers.desktopNote` |
+| Зрение: «посмотри на экран» смотрит только `qwen3.5:4b` (`qwen3-vl:4b` больше не выбирается сама): выгрузить `qwen3:8b` → взгляд (`/no_think`, num_predict 900, повтор при пустом ответе) → выгрузить `qwen3.5` → снова `qwen3:8b`. Нет `qwen3.5:4b` — ответ «не вижу», без запасной модели | `ollama.js` (`screenModel`, `unload`, `visionPrompt`), `main.js sayAboutSnap` |
+| Смена модели голосом: «основная», «зрение», «квен три с половиной четыре б» и т.п. (IPC `voice:model`); «зрение» = `qwen3.5:4b` | `ollama.findSpokenModel`, `listen.js` |
 | Wake word «Капри, …» (всегда включённый микрофон → сегменты → Whisper с нейтральной подсказкой) + голосовые ответы «да / на час / нет» на вопросы | `listen.js` (`Segmenter`, `parseWake`, `parseAnswer`), `speech.js WAKE_PROMPT` |
 
 Проверено вживую (скриптами в обход окна): Whisper, VoiceStudio, Claude/Codex docx, мост телефона, задачи на ПК
@@ -61,6 +63,6 @@ JS в curl — писать скрипт в файл.) Вероятное леч
 1. Починить баг №1, проверить с ним вживую: «Капри, на компьютере открой блокнот и напиши привет» → голосом «давай на час».
 2. Проверка wake word на живом голосе Danyal: ложные срабатывания / неслышание → подстроить `Segmenter` (порог, `WAKE` в listen.js) и варианты имени в `NAME_RE`.
 3. Цель Danyal — вообще без клавиатуры: всё голосом (подтверждения, остановка «Капри, стоп», переключение моделей).
-4. Не перенесено из GENESIS: роутер qwen3:8b ↔ qwen3-vl:4b для «посмотри на экран» (VL только для экрана, в 8 ГБ VRAM вместе не держать), спрайты на телефон.
+4. Не перенесено из GENESIS: спрайты на телефон. (Роутер зрения сделан — см. таблицу; проверен вживую 2026-11-03.) В голосовом списке моделей ещё есть Faun RP («ролевая»), хотя Danyal её отклонил — убрать при случае.
 5. Codex медленный: ~35 с уходит на старт (плагины/MCP). Можно урезать конфиг для `exec`.
 6. Перед сборкой EXE — сменить `productName`/`appId`, чтобы не конфликтовать со старой Капри.

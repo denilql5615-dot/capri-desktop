@@ -216,9 +216,9 @@ function restoreClaude(saved) {
 
 const isChatSession = (id) => Boolean(id) && id === claudeSession;
 
-async function chat(id, cfg, { model, messages }, onDelta, signal) {
+async function chat(id, cfg, { model, messages, numPredict }, onDelta, signal) {
   const p = endpoint(id, cfg);
-  if (p.kind === 'ollama') return ollama.chat({ model, messages }, onDelta, signal);
+  if (p.kind === 'ollama') return ollama.chat({ model, messages, numPredict }, onDelta, signal);
   // Claude Code keeps its own memory of the conversation: only her persona and your last message go
   if (p.kind === 'claude') return claudeChat(cfg, messages.at(-1).content, messages[0].content, onDelta, signal);
   return openaiChat(p, { model, messages }, onDelta, signal);

@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('host', {
   onChatDelta: on('chat:delta'),
   transcribe: (wav, opts) => ipcRenderer.invoke('voice:transcribe', wav, opts),
   speak: (text) => ipcRenderer.invoke('voice:speak', text),
+  switchModel: (name) => ipcRenderer.invoke('voice:model', name),
   lookSnap: () => ipcRenderer.invoke('look:snap'),
   lookSay: (request) => ipcRenderer.invoke('look:say', request),
   lookWhere: () => ipcRenderer.invoke('look:where'),

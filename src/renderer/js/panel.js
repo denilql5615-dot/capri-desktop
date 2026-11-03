@@ -57,6 +57,7 @@ export class Panel {
     this.tickerShownAt = 0;
     this.tickerTimer = null;
     this.missed = null; // a Claude message that came while you were chatting with her, shown after
+    this.chatBusy = false;
 
     // talking to her (chat.js): a line to type in, under her answer
     this.chatForm = panel.querySelector('.panel__chat');
@@ -73,9 +74,15 @@ export class Panel {
       this.current?.onSend?.(text);
     });
     this.chatInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') this.hide();
+      if (e.key === 'Escape') {
+        this.current?.onClose?.();
+        this.hide();
+      }
     });
-    this.chatClose.addEventListener('click', () => this.hide());
+    this.chatClose.addEventListener('click', () => {
+      this.current?.onClose?.();
+      this.hide();
+    });
 
     this.el.addEventListener('click', () => {
       if (this.current?.chat) this.chatInput.focus(); // a chat stays until you close it
@@ -103,6 +110,7 @@ export class Panel {
   // chat: a line to type to her, { placeholder, send, close, noteTag, note, secret }; onSend(text)
   //       gets what you typed (secret: hidden as you type, a key)
   // progress: a bar under the line, 0..1 (a download)
+  // onClose: () => void, when its own close control is used
   // onLeave: () => void, when this message goes (closed, timed out or replaced)
   say(msg) {
     const cur = this.current;
@@ -117,7 +125,7 @@ export class Panel {
     // nor on a chat with her: only a permission prompt breaks in; Claude finishing waits until after
     // (even while she teleports and the panel is put aside for a moment). Her setup's panels with a
     // line to type in (a key) aren't a chat: its next step follows them.
-    if (cur?.chat && !cur.guide && !this.el.hidden && !this.leaving && PRIORITY[msg.kind] < 4) {
+    if (cur?.chat && !cur.guide && !this.el.hidden && !this.leaving && (this.chatBusy || PRIORITY[msg.kind] < 4)) {
       if (PRIORITY[msg.kind] >= 3) this.missed = { ...msg, missedAt: performance.now() };
       return false;
     }
@@ -368,6 +376,7 @@ export class Panel {
 
   // While she answers you can't send another.
   setChatBusy(busy) {
+    this.chatBusy = busy;
     this.chatInput.disabled = busy;
     this.chatSend.disabled = busy;
     if (!busy && this.current?.chat) this.chatInput.focus();

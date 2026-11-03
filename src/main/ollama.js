@@ -81,8 +81,19 @@ function warm(model) {
   }).catch(() => {});
 }
 
+// Free its VRAM before loading another large local model.
+async function unload(model) {
+  if (!model || isCloud(model)) return true;
+  const res = await fetch(`${base()}/api/generate`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model, keep_alive: 0 }),
+  }).catch(() => null);
+  return Boolean(res?.ok);
+}
+
 // Her answer, streamed: onDelta(piece) as it comes, resolves with all of it.
-async function chat({ model, messages }, onDelta, signal) {
+async function chat({ model, messages, numPredict = 240 }, onDelta, signal) {
   // cloud models think before they answer, and that counts in num_predict: kept short, with room for it
   const canThink = known.get(model)?.thinking;
   const thinks = isCloud(model) && canThink;
@@ -96,7 +107,7 @@ async function chat({ model, messages }, onDelta, signal) {
       keep_alive: '15m', // she stays loaded while you chat
       // a local thinking model (qwen3, qwen3.5) thinks by default and spends all 240 tokens on it: she'd answer "…"
       ...(canThink && { think: thinks ? 'low' : false }),
-      options: { temperature: 0.85, num_predict: thinks ? 1200 : 240 },
+      options: { temperature: 0.85, num_predict: thinks ? 1200 : numPredict },
     }),
     signal,
   });
@@ -104,6 +115,7 @@ async function chat({ model, messages }, onDelta, signal) {
   const decoder = new TextDecoder();
   let buffer = '';
   let text = '';
+  let thinkingChars = 0;
   for await (const chunk of res.body) {
     buffer += decoder.decode(chunk, { stream: true });
     let nl;
@@ -113,12 +125,18 @@ async function chat({ model, messages }, onDelta, signal) {
       if (!line) continue;
       const msg = JSON.parse(line);
       if (msg.error) throw new Error(msg.error);
+      thinkingChars += String(msg.message?.thinking || '').length;
       const piece = msg.message?.content || ''; // a thinking model's reasoning comes apart, and is left out
       if (piece) {
         text += piece;
         onDelta(piece);
       }
-      if (msg.done) return text;
+      if (msg.done) {
+        if (!text.trim()) console.warn('[capri] empty Ollama answer', model, {
+          thinkingChars, doneReason: msg.done_reason || '', evalCount: msg.eval_count || 0,
+        });
+        return text;
+      }
     }
   }
   return text;
@@ -156,4 +174,45 @@ async function canSee(model) {
   return !Array.isArray(info.capabilities) || info.capabilities.includes('vision');
 }
 
-module.exports = { base, models, isCloud, account, freeModels, warm, chat, jsonChat, canSee };
+function spokenModelKey(name) {
+  return String(name || '').toLowerCase()
+    .replace(/кьюэн|кьюен|кьювен|квэн|квен|куэн|куен|квин|куин/g, 'qwen')
+    .replace(/три\s+с\s+половиной/g, '3.5')
+    .replace(/двенадцать/g, '12').replace(/восемь/g, '8').replace(/пять/g, '5').replace(/четыре/g, '4').replace(/три/g, '3')
+    .replace(/точка/g, '.').replace(/ви\s*[- ]?эл|вл/g, 'vl').replace(/би/g, 'b').replace(/б/g, 'b')
+    .replace(/фаун/g, 'faun').replace(/эм\s*эн/g, 'mn')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+const SPOKEN_MODELS = {
+  основная: 'qwen3:8b',
+  основную: 'qwen3:8b',
+  новая: 'qwen3.5:4b',
+  новую: 'qwen3.5:4b',
+  зрение: 'qwen3.5:4b',
+  зрения: 'qwen3.5:4b',
+  зрительную: 'qwen3.5:4b',
+  ролевая: 'hf.co/limloop/MN-12B-Faun-RP-RU-GGUF:Q3_K_M',
+  ролевую: 'hf.co/limloop/MN-12B-Faun-RP-RU-GGUF:Q3_K_M',
+  qwen38b: 'qwen3:8b',
+  qwen3vl4b: 'qwen3-vl:4b',
+  qwen354b: 'qwen3.5:4b',
+  faun12b: 'hf.co/limloop/MN-12B-Faun-RP-RU-GGUF:Q3_K_M',
+  mn12b: 'hf.co/limloop/MN-12B-Faun-RP-RU-GGUF:Q3_K_M',
+};
+
+function findSpokenModel(list, wanted) {
+  const key = spokenModelKey(wanted);
+  const said = String(wanted || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+  const named = SPOKEN_MODELS[said] || SPOKEN_MODELS[key];
+  return key || named ? list.find((model) => model.toLowerCase() === named?.toLowerCase() || spokenModelKey(model) === key) || null : null;
+}
+
+function screenModel(list = []) {
+  return list.find((model) => model.toLowerCase() === 'qwen3.5:4b') || null;
+}
+
+const retryEmptyVision = (text, attempt) => attempt === 0 && !String(text || '').trim();
+const visionPrompt = (text) => `/no_think\n${String(text || '')}`;
+
+module.exports = { base, models, isCloud, account, freeModels, warm, unload, chat, jsonChat, canSee, findSpokenModel, screenModel, retryEmptyVision, visionPrompt };

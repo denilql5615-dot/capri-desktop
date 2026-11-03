@@ -51,7 +51,7 @@ export class Endpointer {
 
 // Her name at the start of what you said ("Капри, открой ютуб", "эй капри"): null if it isn't there, else
 // { rest } (what you asked, '' for her name alone). Also as speech-to-text spells it.
-const NAME_RE = /^\s*(?:(?:эй|слушай|окей|ок|hey|ok)[,\s]+)?(?:капри|каприз|капре|кэпри|кабри|capri)(?![а-яёa-z])[\s,.!?:—-]*/i;
+const NAME_RE = /^\s*(?:(?:эй|хей|слушай|послушай|алло|привет|ну|окей|ок|hey|hi|hello|ok)[,\s]+){0,2}(?:капри|капре|кэпри|капрэй|каприй|каприя|капря|каприша|каприз|кабри|кэбри|гапри|капр|capri|kapri|capry|cabri)(?![а-яёa-z])[\s,.!?:—-]*/i;
 export function parseWake(text) {
   const m = NAME_RE.exec(String(text || ''));
   return m ? { rest: text.slice(m[0].length).trim() } : null;
@@ -64,6 +64,19 @@ export function parseAnswer(text) {
   if (/^(нет|не надо|не нужно|не|стоп|отмена|отмени|no|stop)(?![а-яёa-z])/.test(t)) return 'no';
   if (/^(да|давай|можно|ага|угу|конечно|разрешаю|делай|ок|окей|yes|ok)(?![а-яёa-z])/.test(t)) return 'yes';
   return null;
+}
+
+// A wake-word command that must work even while her current task has the chat locked.
+export function parseControl(text) {
+  const t = String(text || '').toLowerCase().replace(/[.,!?…]/g, ' ').trim();
+  return /^(стоп|стой|остановись|останови|отмени|хватит|прекрати|заверши|вырубай|stop|cancel)(?:\s+(?:задачу|работу|выполнение|это))?$/.test(t) ? 'stop' : null;
+}
+
+export function parseModelCommand(text) {
+  const t = String(text || '').trim();
+  const ru = /^(?:переключись|переключи|смени|поставь|выбери|используй|включи|перейди|давай)(?:\s+модель)?(?:\s+на)?(?:\s+модель)?\s+(.+)$/i.exec(t);
+  const en = /^(?:switch|change|use)(?:\s+model)?(?:\s+to)?\s+(.+)$/i.exec(t);
+  return (ru?.[1] || en?.[1] || '').replace(/[.!?…]+$/, '').replace(/\s+(?:модель|model)$/i, '').trim() || null;
 }
 
 // Speech in a stream that's always on: a segment from the first loud bit (and a little before it) until a
@@ -182,17 +195,33 @@ export class Listen {
       const pending = Boolean(this.chat.pending);
       const res = await this.host.transcribe(wav, { wake: true });
       if (!res.ok || !res.text) return;
+      const wake = parseWake(res.text);
+      if (wake && parseControl(wake.rest) === 'stop') {
+        this.hush();
+        this.chat.stopTurn();
+        return;
+      }
       // her question waiting: your answer needs no name ("да", "на час", "нет")
       if (this.chat.pending) {
-        const answer = parseAnswer(parseWake(res.text)?.rest ?? res.text);
+        const answer = parseAnswer(wake?.rest ?? res.text);
         if (answer) this.chat.answerPending(answer);
         return;
       }
       if (pending) return;
-      const wake = parseWake(res.text);
       if (!wake) return;
       if (this.chat.turn) return; // she's busy with the last thing you asked
       if (!wake.rest) return this.toggle(); // her name alone: she listens
+      const wantedModel = parseModelCommand(wake.rest);
+      if (wantedModel) {
+        const changed = await this.host.switchModel(wantedModel);
+        if (!this.chat.open) await this.chat.start();
+        const line = changed.ok
+          ? `Переключила модель на ${changed.model}.`
+          : changed.error || `Не нашла установленную модель «${wantedModel}».`;
+        if (this.chat.open) this.chat.interject(line, [], null);
+        this.say(line);
+        return;
+      }
       if (!this.chat.open) await this.chat.start();
       if (this.chat.open && !this.chat.turn) this.chat.send(wake.rest);
     } finally {
