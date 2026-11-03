@@ -233,10 +233,11 @@ async function boot() {
   listen.configure(config);
   chat.onAnswer = (answer) => listen.say(answer);
   chat.onAsk = (line) => listen.say(line);
-  // her Claude skin: her pink in Claude's orange while Claude is the one thinking (skin.js)
+  // her skins: her pink in Claude's orange or Codex's violet while that one is thinking (skin.js); the
+  // one answering her chat first, else the one at work under her hooks
   const skin = new Skin({
     capri, fx, panel,
-    on: () => chat.claudeThinking || brain.claudeAtWork(),
+    who: () => chat.thinker || brain.atWork(),
     sets: { capri: { dir: SKINS.capri, full: image, intro, cutins: Object.fromEntries(CUTINS.map((name, i) => [name, cutins[i]])) } },
   });
   skin.load({ cutins: CUTINS, frames: GRAB_FRAMES, loadImage });

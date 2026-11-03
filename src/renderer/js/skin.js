@@ -1,13 +1,22 @@
-// Her Claude skin: her drawings with her pink in Claude's orange (assets/capri-claude, made by
-// tools/build-claude-skin.py), worn while Claude is the one thinking: answering her chat ("Клод, …",
-// or Claude Code picked as her AI), or at work in a Claude Code session she watches through its hooks.
-// So you see at a glance whether it's her or Claude. Everything else about her stays the same: only
-// which drawings she's made of changes (her body, her faces in her panel, her cut-ins, her intro).
+// Her skins: her drawings with her pink in another AI's colour (assets/capri-<name>, made by
+// tools/build-skin.py), worn while that AI is the one thinking: answering her chat ("Клод, …" or
+// "Кодекс, …", or Claude Code picked as her AI), or at work in a session she watches through its hooks.
+// So you see at a glance whether it's her, Claude or Codex. Everything else about her stays the same:
+// only which drawings she's made of changes (her body, her faces in her panel, her cut-ins, her intro).
 
-export const SKINS = { capri: '../../assets/capri/', claude: '../../assets/capri-claude/' };
-// how her body's shader treats her pink (sprite.js grade()): the show's hot red, or Claude's orange as it
-// is in the drawings (#D97757: hue 15 degrees, unwrapped past 1), neither pulled further nor brightened
-const GRADES = { capri: null, claude: { hue: 1.0411, sat: 0.6, lift: [1, 0] } };
+export const SKINS = {
+  capri: '../../assets/capri/',
+  claude: '../../assets/capri-claude/', // Claude's orange, #D97757
+  codex: '../../assets/capri-codex/',   // Codex's violet, #684699
+};
+// how her body's shader treats her pink (sprite.js grade()): the show's hot red, or the skin's colour as
+// it is in the drawings, neither pulled further nor brightened (hue unwrapped past 1 around red; Codex's
+// violet is outside what the shader counts as pink, so it's left as drawn anyway)
+const GRADES = {
+  capri: null,
+  claude: { hue: 1.0411, sat: 0.6, lift: [1, 0] },
+  codex: { hue: 0.7349, sat: 0.54, lift: [1, 0] },
+};
 const CHECK_MS = 500;
 
 // One skin's drawings: her full body (the rig's texture), her cut-ins, her intro's close-up frames.
@@ -24,28 +33,32 @@ export async function loadSkin(dir, { cutins, frames, loadImage }) {
 }
 
 export class Skin {
-  // on: () => true while Claude is the one thinking; sets: { capri } now, claude once loaded (load())
-  constructor({ capri, fx, panel, on, sets }) {
+  // who: () => 'claude', 'codex' or null, the one thinking now; sets: { capri } now, the others once
+  // loaded (load())
+  constructor({ capri, fx, panel, who, sets }) {
     this.capri = capri;
     this.fx = fx;
     this.panel = panel;
-    this.on = on;
+    this.who = who;
     this.sets = sets;
     this.name = 'capri';
     setInterval(() => this.check(), CHECK_MS);
   }
 
-  // her Claude drawings, in the background after her start (she doesn't wait for them)
+  // the other AIs' drawings, in the background after her start (she doesn't wait for them)
   async load(names) {
-    this.sets.claude = await loadSkin(SKINS.claude, names).catch((err) => {
-      console.warn('[capri] Claude skin unavailable:', err?.message || err);
-      return null;
-    });
+    await Promise.all(['claude', 'codex'].map(async (name) => {
+      this.sets[name] = await loadSkin(SKINS[name], names).catch((err) => {
+        console.warn(`[capri] ${name} skin unavailable:`, err?.message || err);
+        return null;
+      });
+    }));
     this.check();
   }
 
   check() {
-    const want = this.sets.claude && this.on() ? 'claude' : 'capri';
+    const who = this.who();
+    const want = who && this.sets[who] ? who : 'capri';
     if (want !== this.name) this.wear(want);
   }
 

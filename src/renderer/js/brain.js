@@ -63,9 +63,12 @@ export class Brain {
     return s;
   }
 
-  // a real Claude Code session at work under her watch (not Codex's, not the demo's), heard from lately
-  claudeAtWork(now = Date.now()) {
-    return [...this.sessions.values()].some((s) => s.working && s.source === 'claude' && now - s.seen < 15 * 60 * 1000);
+  // the AI at work under her watch ('claude' or 'codex', not the demo), heard from lately: the one
+  // heard from last when both are (null: none)
+  atWork(now = Date.now()) {
+    const busy = [...this.sessions.values()]
+      .filter((s) => s.working && ['claude', 'codex'].includes(s.source) && now - s.seen < 15 * 60 * 1000);
+    return busy.sort((a, b) => b.seen - a.seen)[0]?.source || null;
   }
 
   get busySessions() {

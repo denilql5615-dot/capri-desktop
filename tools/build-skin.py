@@ -1,16 +1,18 @@
-"""Her Claude skin: copies of every drawing of hers (assets/capri) with her pink parts in Claude's orange
-(#D97757), into assets/capri-claude, same names. She wears it while Claude answers for her or works under
-her watch (claude.js in the renderer). The originals are only read.
+"""Her skins: copies of every drawing of hers (assets/capri) with her pink parts in another colour, into
+assets/capri-<name>, same names. She wears one while that AI answers for her or works under her watch
+(skin.js in the renderer): Claude's orange (#D97757), Codex's violet (#684699). The originals are only read.
 
 Only her pinks and crimsons move (hue around 340 degrees, saturated enough): her green face, blue eyes,
 purple shadows, black and white stay. The hue goes to Claude's; saturation and brightness are scaled so
-her main pink lands right on #D97757 and her shading stays as it was. A soft edge on the hue range, so a
+her main pink lands right on the skin's colour and her shading stays as it was. A soft edge on the hue range, so a
 pink fading into another colour doesn't leave a seam.
 
-    py tools/build-claude-skin.py
+    py tools/build-skin.py            (all of them)
+    py tools/build-skin.py codex      (one)
 """
 
 import colorsys
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -18,9 +20,10 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / 'assets' / 'capri'
-OUT = ROOT / 'assets' / 'capri-claude'
-
-CLAUDE = (0xD9, 0x77, 0x57)
+SKINS = {
+    'claude': (0xD9, 0x77, 0x57),
+    'codex': (0x68, 0x46, 0x99),
+}
 PINK_HUE = 340.0  # her magenta-crimson
 FULL = 50.0       # degrees each side moved all the way
 SOFT = 15.0       # then fading out over this many
@@ -74,35 +77,41 @@ def reference():
     return (s * w).sum() / w.sum(), (v * w).sum() / w.sum()
 
 
-def recolor(img, s_ref, v_ref):
+def recolor(img, s_ref, v_ref, colour):
     a = np.asarray(img).astype(np.float64) / 255
     rgb = a[..., :3]
     h, s, v = hsv(rgb)
     w = weight(h, s, v)[..., None]
-    th, ts, tv = colorsys.rgb_to_hsv(*(c / 255 for c in CLAUDE))
+    th, ts, tv = colorsys.rgb_to_hsv(*(c / 255 for c in colour))
     moved = rgb_of(np.full_like(h, th * 360), np.clip(s * ts / s_ref, 0, 1), np.clip(v * tv / v_ref, 0, 1))
     out = rgb * (1 - w) + moved * w
     return Image.fromarray(np.round(np.concatenate([out, a[..., 3:]], -1) * 255).astype(np.uint8), 'RGBA'), float(w.mean())
 
 
-def main():
-    OUT.mkdir(exist_ok=True)
-    s_ref, v_ref = reference()
-    print(f'her pink: s={s_ref:.3f} v={v_ref:.3f} -> Claude #{"".join(f"{c:02X}" for c in CLAUDE)}')
+def build(name, colour, s_ref, v_ref):
+    out = ROOT / 'assets' / f'capri-{name}'
+    out.mkdir(exist_ok=True)
+    print(f'{name}: her pink s={s_ref:.3f} v={v_ref:.3f} -> #{"".join(f"{c:02X}" for c in colour)}')
     for path in sorted(SRC.iterdir()):
         if path.suffix.lower() not in ('.png', '.webp'):
             continue
         src = Image.open(path)
         src.load()
-        img, share = recolor(src.convert('RGBA'), s_ref, v_ref)
-        target = OUT / path.name
+        img, share = recolor(src.convert('RGBA'), s_ref, v_ref, colour)
+        target = out / path.name
         if path.suffix.lower() == '.webp':
             img.save(target, 'WEBP', quality=92, method=6)
         else:
             if src.mode != 'RGBA':
                 img = img.convert(src.mode if src.mode in ('RGB', 'L') else 'RGBA')
             img.save(target, 'PNG', optimize=True)
-        print(f'{path.name}: {share:.1%} moved')
+        print(f'  {path.name}: {share:.1%} moved')
+
+
+def main():
+    s_ref, v_ref = reference()
+    for name in sys.argv[1:] or SKINS:
+        build(name, SKINS[name], s_ref, v_ref)
 
 
 if __name__ == '__main__':

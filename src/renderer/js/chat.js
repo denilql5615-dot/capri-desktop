@@ -400,9 +400,10 @@ export class Chat {
     this.onAsk?.(`Можно? ${line}.${grantable ? ' Да, на час или нет?' : ' Да или нет?'}`);
   }
 
-  // Claude answering this turn: Claude Code as her AI, or "Клод, …"
-  get claudeThinking() {
-    return Boolean(this.turn) && this.by === 'claude';
+  // who's answering this turn, if it's another AI: 'claude' (Claude Code as her AI, or "Клод, …") or
+  // 'codex' ("Кодекс, …"); null when it's her
+  get thinker() {
+    return this.turn && ['claude', 'codex'].includes(this.by) ? this.by : null;
   }
 
   // how her chat is, for her Chats window: answering or not, her question waiting
