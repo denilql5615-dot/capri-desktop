@@ -14,6 +14,9 @@ const READ = ['snapshot', 'find', 'get', 'list_windows', 'list_apps', 'wait'];
 const ACT = ['click', 'set_value', 'type', 'clear', 'select', 'toggle', 'check', 'uncheck', 'expand', 'collapse', 'scroll', 'scroll_to', 'press', 'focus_window', 'restore', 'minimize', 'maximize'];
 const APP = ['launch', 'close_app'];
 const CMDS = [...READ, ...ACT, ...APP];
+// apps installed per user, outside System32: agent-desktop launches them by path only. Known paths, not asked.
+const PROTON_MAIL = path.join(process.env.LOCALAPPDATA || '', 'proton_mail', 'Proton Mail.exe');
+const KNOWN_APPS = [PROTON_MAIL];
 
 const REF = /^@[a-z0-9]{1,40}:e\d{1,6}$/i;
 const WINDOW = /^w-\d{1,12}$/;
@@ -91,6 +94,7 @@ const FINALIZE_RE = /^(?:создать|сохранить|create|save)$/i;
 function classify(a, refs) {
   if (READ.includes(a.cmd)) return { cls: 'READ_ONLY' };
   if (a.cmd === 'launch') {
+    if (KNOWN_APPS.includes(a.app)) return { cls: 'UI_CONTROL' };
     if (/[\\/:]/.test(a.app) || INSTALL_RE.test(a.app)) return { cls: 'TERMINAL_EXEC', ask: 'запускает программу по пути или установщик' };
     return { cls: 'UI_CONTROL' };
   }
@@ -232,4 +236,4 @@ class Cli {
   }
 }
 
-module.exports = { CMDS, READ, validate, argv, classify, describe, digest, Cli, BIN };
+module.exports = { CMDS, READ, validate, argv, classify, describe, digest, Cli, BIN, PROTON_MAIL };

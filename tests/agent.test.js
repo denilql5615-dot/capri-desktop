@@ -38,6 +38,7 @@ test('desktop: validation, argv that model text can\'t turn into flags, risk', (
   assert.ok(desktop.classify({ cmd: 'click', ref: '@abc:e4' }, refs).ask);
   assert.ok(desktop.classify({ cmd: 'click', ref: '@abc:e9' }, refs).ask); // never seen: asked
   assert.strictEqual(desktop.classify({ cmd: 'launch', app: 'C:\\x\\setup.exe' }, refs).cls, 'TERMINAL_EXEC');
+  assert.strictEqual(desktop.classify({ cmd: 'launch', app: desktop.PROTON_MAIL }, refs).cls, 'UI_CONTROL'); // a known path
 });
 
 test('isComputerTask: said plainly, not any mention of a computer', () => {
@@ -119,4 +120,10 @@ test('runTask: a made-up ref goes back to looking, without asking you; Блок�
   assert.deepStrictEqual(f.ran.map((a) => a.slice(0, 2).join(' ')), ['launch --activate', 'snapshot -i', '--headed type']);
   assert.strictEqual(f.ran[0].at(-1), 'notepad');
   assert.deepStrictEqual(asked, ['Открыть notepad', 'Ввести «hi» в «OK» (button)']);
+});
+
+test('runTask: Proton Calendar opens Proton Mail, where the calendar lives', async () => {
+  const f = fake([{ done: false, cmd: 'launch', app: 'Proton Calendar' }]);
+  await runTask('открой протон-календарь и заполни встречу', [], { ...f, origin: 'pc', confirm: async () => 'yes', covered: () => false, grant: () => {} }, new AbortController().signal);
+  assert.strictEqual(f.ran[0].at(-1), desktop.PROTON_MAIL);
 });
