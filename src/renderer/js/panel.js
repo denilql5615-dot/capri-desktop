@@ -141,6 +141,7 @@ export class Panel {
     this.state.textContent = msg.badge || this.labels.state[msg.kind] || '';
     this.quote.textContent = msg.quote || '';
     this.quote.hidden = !msg.quote;
+    this.photo.hidden = true; // a picture she sent belongs to that chat answer, not to her next line
     this.setProgress(msg.progress);
     this.reply.textContent = msg.reply || '';
     this.reply.hidden = !msg.reply;
