@@ -46,7 +46,7 @@
   },
   "build": {
     "appId": "capri.desktop",
-    "productName": "Capri",
+    "productName": "Capri Desktop",
     "files": [
       "src/**",
       "assets/**",
@@ -71,8 +71,8 @@
       "perMachine": false,
       "runAfterFinish": true,
       "createDesktopShortcut": true,
-      "shortcutName": "Capri",
-      "artifactName": "Capri-Setup-${version}.${ext}"
+      "shortcutName": "Capri Desktop",
+      "artifactName": "Capri-Desktop-Setup-${version}.${ext}"
     }
   }
 }

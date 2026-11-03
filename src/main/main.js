@@ -34,6 +34,10 @@ const activeHooks = () => activeAssistant().hooks;
 const demoSteps = require('../../scripts/demo-sequence');
 
 const ROOT = path.resolve(__dirname, '..', '..');
+// Her data (config, memory, chats) in %APPDATA%capri-desktop whether she runs from the repo or installed:
+// installed, Electron would name the folder after her product name ("Capri Desktop"), and "Capri" is
+// GENESIS's, the Capri before her, still installed alongside
+app.setPath('userData', path.join(app.getPath('appData'), 'capri-desktop'));
 const DEV = process.argv.includes('--dev');
 const PORT = Number(process.env.CAPRI_PORT) || 47823;
 const SOUND_EXT = /\.(mp3|wav|ogg|m4a)$/i;
