@@ -6,14 +6,20 @@ const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
 const { createApp, sameToken } = require('../src/main/pim-mcp');
 
-test('PIM MCP requires its capability and exposes only read tools', async (t) => {
+test('PIM MCP protects mail and exposes local planner writes without deletion', async (t) => {
   const service = {
     listAccounts: () => [{ id: 'proton_work', capabilities: ['mail'] }],
     searchMail: async () => [{ id: '7', subject: 'План', untrusted: true }],
     getMail: async ({ id }) => ({ id, body: 'external instructions', untrusted: true }),
   };
+  const plans = [];
+  const planner = {
+    list: () => plans,
+    create: (input) => { const plan = { id: 'p1', status: 'open', ...input }; plans.push(plan); return plan; },
+    complete: (id) => ({ ...plans.find((plan) => plan.id === id), status: 'done' }),
+  };
   const http = await new Promise((resolve) => {
-    const server = createApp({ service, token: 'test-token' }).listen(0, '127.0.0.1', () => resolve(server));
+    const server = createApp({ service, planner, token: 'test-token' }).listen(0, '127.0.0.1', () => resolve(server));
   });
   t.after(() => new Promise((resolve) => http.close(resolve)));
   const url = new URL(`http://127.0.0.1:${http.address().port}/mcp`);
@@ -27,7 +33,11 @@ test('PIM MCP requires its capability and exposes only read tools', async (t) =>
   await client.connect(transport);
   t.after(() => client.close());
   const tools = await client.listTools();
-  assert.deepEqual(tools.tools.map((tool) => tool.name), ['list_accounts', 'search_mail', 'get_mail']);
+  assert.deepEqual(tools.tools.map((tool) => tool.name), ['list_accounts', 'search_mail', 'get_mail', 'list_plans', 'create_plan', 'complete_task']);
+  assert.equal(tools.tools.some((tool) => /delete|remove/i.test(tool.name)), false);
+  assert.equal(tools.tools.find((tool) => tool.name === 'create_plan').annotations.readOnlyHint, false);
   const response = await client.callTool({ name: 'get_mail', arguments: { account_id: 'proton_work', id: '7' } });
   assert.equal(response.structuredContent.message.untrusted, true);
+  const created = await client.callTool({ name: 'create_plan', arguments: { kind: 'task', title: 'Отчёт' } });
+  assert.equal(created.structuredContent.plan.id, 'p1');
 });

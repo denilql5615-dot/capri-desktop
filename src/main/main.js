@@ -324,7 +324,7 @@ async function applyPimMcp() {
   const service = pimService();
   if (!service) return false;
   try {
-    pimMcpHttp = await pimMcp.start({ service, token: pimMcpToken(), port: config.load().pimMcpPort });
+    pimMcpHttp = await pimMcp.start({ service, planner: localPlanner, token: pimMcpToken(), port: config.load().pimMcpPort });
     return true;
   } catch {
     return false;
