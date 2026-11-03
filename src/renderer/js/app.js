@@ -692,6 +692,9 @@ async function boot() {
       case 'setupKey': // "API key or address" in her menu's AI model, or a service picked there that needs one
         setup.key();
         break;
+      case 'setupProton':
+        setup.proton();
+        break;
       case 'setupFree': // --dev: Claude Code (or Codex) through Ollama
         setup.free();
         break;

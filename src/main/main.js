@@ -30,6 +30,7 @@ const agent = require('./agent');
 const chatLog = require('./chats');
 const notes = require('./notes');
 const pim = require('./pim');
+const pimImap = require('./pim-imap');
 const telegram = require('./telegram');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
@@ -458,6 +459,7 @@ function rebuildTray() {
     { label: t.talk, click: () => sendCommand('chat') },
     { label: t.chats, click: openChats },
     { label: t.notes, click: openNotes },
+    { label: 'Proton Mail Bridge…', click: () => sendCommand('setupProton') },
     { label: t.lookNow, click: () => sendCommand('look') },
     {
       label: t.reminders,
@@ -1048,6 +1050,22 @@ function registerIpc() {
     const next = updateConfig(patch);
     if (telegramChanged) applyTelegram();
     return next;
+  });
+  ipcMain.handle('pim:setup', async (_e, choice) => {
+    try {
+      const { host, port } = pim.parseLocalEndpoint(choice?.endpoint);
+      const user = String(choice?.user || '').trim();
+      const password = String(choice?.password || '');
+      const adapter = pimImap.createImapAdapter({ id: 'proton_work', provider: 'proton', role: 'work', host, port, user, password });
+      await adapter.searchMail({ query: '', limit: 1 });
+      updateConfig({
+        pimAccounts: [{ id: 'proton_work', provider: 'proton', role: 'work', host, port }],
+        pimSecrets: pim.sealSecrets({ bridge_user: user, bridge_password: password }, setup.sealKey),
+      });
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'Bridge connection failed' };
+    }
   });
   ipcMain.handle('demo:window', (_e, open) => demoWindow(open));
   // right-clicking her: the same menu as the tray icon (which Windows often hides behind the ^ by the clock)

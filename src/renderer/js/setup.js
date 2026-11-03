@@ -9,6 +9,20 @@ import { fmt } from './util.js';
 const KEYED = ['groq', 'gemini', 'openrouter', 'openai', 'mistral', 'deepseek'];
 const NAMES = { groq: 'Groq', gemini: 'Gemini', openrouter: 'OpenRouter', openai: 'OpenAI', mistral: 'Mistral', deepseek: 'DeepSeek' };
 const ROOMY = 12 * 2 ** 30; // enough memory for the bigger model
+const PROTON = {
+  ru: {
+    endpoint: 'Адрес IMAP из Proton Bridge?', endpointHow: 'Bridge → Configure email client. Обычно 127.0.0.1:1143.',
+    user: 'Username из Proton Bridge?', userHow: 'Это локальный Bridge username, не логин Proton.',
+    password: 'Password из Proton Bridge?', passwordHow: 'Он сохранится на этом ПК через Windows DPAPI.',
+    checking: 'Проверяю Bridge…', ready: 'Proton Mail подключена.', failed: 'Не подключилось. Проверь данные Bridge.', save: 'Дальше',
+  },
+  en: {
+    endpoint: 'IMAP address from Proton Bridge?', endpointHow: 'Bridge → Configure email client. Usually 127.0.0.1:1143.',
+    user: 'Username from Proton Bridge?', userHow: 'This is the local Bridge username, not your Proton login.',
+    password: 'Password from Proton Bridge?', passwordHow: 'It is stored on this PC with Windows DPAPI.',
+    checking: 'Checking Bridge…', ready: 'Proton Mail is connected.', failed: 'Could not connect. Check the Bridge details.', save: 'Next',
+  },
+};
 
 export class Setup {
   constructor({ guide, panel, host, brain, capri, voice }) {
@@ -65,6 +79,21 @@ export class Setup {
   // Claude Code or Codex for free (the one she watches), run through Ollama in a window of its own.
   async free() {
     await this.guide.scene(() => this.freeNow());
+  }
+
+  async proton() {
+    await this.guide.scene(async () => {
+      const t = PROTON[this.brain.lang] || PROTON.en;
+      const endpoint = await this.guide.askText({ face: 'look', line: t.endpoint, quote: t.endpointHow, placeholder: '127.0.0.1:1143', send: t.save, tag: 'IMAP' });
+      if (!endpoint?.text) return;
+      const user = await this.guide.askText({ face: 'look', line: t.user, quote: t.userHow, placeholder: 'Bridge username', send: t.save, tag: 'USER' });
+      if (!user?.text) return;
+      const password = await this.guide.askText({ face: 'look', line: t.password, quote: t.passwordHow, placeholder: 'Bridge password', secret: true, send: t.save, tag: 'PASSWORD' });
+      if (!password?.text) return;
+      this.working(t.checking);
+      const result = await this.host.setupPim({ endpoint: endpoint.text, user: user.text, password: password.text });
+      await this.guide.ask({ kind: result.ok ? 'done' : 'error', face: result.ok ? 'grin' : 'wide', line: result.ok ? t.ready : t.failed, actions: [{ id: 'ok', label: this.t.ok, primary: true }] });
+    });
   }
 
   // ---------- steps ----------

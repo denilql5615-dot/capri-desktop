@@ -39,7 +39,7 @@ function createImapAdapter(options, clientFactory = (config) => new ImapFlow(con
   const run = async (task) => {
     const client = clientFactory({
       host, port, secure: Boolean(secure), auth: { user, pass: password }, logger: false,
-      tls: { rejectUnauthorized: !localOnly },
+      doSTARTTLS: localOnly && !secure, tls: { rejectUnauthorized: !localOnly },
     });
     await client.connect();
     try {

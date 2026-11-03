@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { PimService, MAX_RESULTS, sealSecrets, publicConfig } = require('../src/main/pim');
+const { PimService, MAX_RESULTS, sealSecrets, publicConfig, parseLocalEndpoint } = require('../src/main/pim');
 
 test('PIM exposes read capabilities without credentials and keeps external content untrusted', async () => {
   let requested;
@@ -37,4 +37,6 @@ test('PIM secrets are sealed and never enter renderer config', () => {
   assert.deepEqual(sealed, { bridge_password: 'enc:secret', bridge_user: null });
   assert.throws(() => sealSecrets({ '../password': 'secret' }, String), /invalid/);
   assert.deepEqual(publicConfig({ visible: true, apiKeys: { x: 'secret' }, phoneToken: 'secret', telegramToken: 'secret', pimSecrets: sealed }), { visible: true });
+  assert.deepEqual(parseLocalEndpoint('127.0.0.1:1143'), { host: '127.0.0.1', port: 1143 });
+  assert.throws(() => parseLocalEndpoint('imap.example.test:993'), /local/);
 });

@@ -24,6 +24,7 @@ test('IMAP adapter reads summaries and full text through a read-only loopback co
   assert.deepEqual(found[0], { id: '7', from: 'work@example.test', subject: 'План', date: '2026-11-03T12:00:00.000Z', snippet: 'текст 1 1000', unread: true });
   assert.equal((await adapter.getMail('7')).body, 'текст 1 200000');
   assert.equal(calls[0][1].logger, false);
+  assert.equal(calls[0][1].doSTARTTLS, true);
   assert.deepEqual(calls[1], ['open', 'INBOX', { readOnly: true }]);
 });
 

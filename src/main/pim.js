@@ -27,6 +27,13 @@ function publicConfig(config) {
   return safe;
 }
 
+function parseLocalEndpoint(value) {
+  const match = /^(127\.0\.0\.1|localhost):(\d{1,5})$/i.exec(String(value || '').trim());
+  const port = Number(match?.[2]);
+  if (!match || port < 1 || port > 65535) throw new TypeError('invalid local PIM endpoint');
+  return { host: match[1].toLowerCase(), port };
+}
+
 class PimService {
   constructor(adapters = []) {
     this.adapters = new Map();
@@ -81,4 +88,4 @@ class PimService {
   }
 }
 
-module.exports = { PimService, MAX_RESULTS, sealSecrets, publicConfig };
+module.exports = { PimService, MAX_RESULTS, sealSecrets, publicConfig, parseLocalEndpoint };
