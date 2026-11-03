@@ -724,7 +724,7 @@ function rebuildTray() {
     },
     {
       label: t.theme,
-      submenu: [['nightcity', 'Night City'], ['classic', t.themeClassic]].map(([theme, label]) => ({
+      submenu: [['nightcity', 'Night City'], ['classic', t.themeClassic], ['arasaka', 'Arasaka × Nothing']].map(([theme, label]) => ({
         label, type: 'radio', checked: cfg.theme === theme, click: () => updateConfig({ theme }),
       })),
     },

@@ -1,0 +1,400 @@
+/* ------------------------------------------------------------------
+   "Arasaka × Nothing" in her menu (data-theme='arasaka'): a corporate
+   black-and-white plate with Arasaka's red, set like Nothing OS: a dot
+   grid behind everything, dot-matrix titles, pill buttons with a red
+   dot, thin white outlines instead of neon. 荒坂 in the corner.
+   Only what differs from capri.css / chats.css, loaded after them;
+   :where() keeps each selector as specific as the rule it replaces.
+   assets/theme/emblem.svg is her crest here: swap the file for another.
+------------------------------------------------------------------- */
+
+html[data-theme='arasaka'] {
+  --ink: oklch(0.13 0 0);
+  --ink-2: oklch(0.19 0 0);
+  --paper: oklch(0.97 0 0);
+  --paper-2: oklch(0.82 0 0);
+  --paper-3: oklch(0.6 0 0);
+  --red: oklch(0.58 0.22 27);
+  --yellow: var(--paper);   /* her neon yellow: white here */
+  --cyan: var(--red);       /* her cyan data: Arasaka red */
+  --line: oklch(0.97 0 0 / 0.12);
+  --dots: radial-gradient(circle, oklch(0.97 0 0 / 0.08) 0.9px, transparent 1.2px) 0 0 / 9px 9px;
+  --matrix: radial-gradient(circle, var(--paper) 0.75px, transparent 1px) 0 0 / 2.2px 2.2px;
+  --kanji: 'Yu Gothic UI', 'Meiryo UI', 'MS Gothic', sans-serif;
+  --cut: 10px;
+  --emblem: url('../../../assets/theme/emblem.svg');
+}
+
+/* dot-matrix type: the letters made of dots, for titles big enough to read that way */
+:where(html[data-theme='arasaka']) .hud__title,
+:where(html[data-theme='arasaka']) .settings__head,
+:where(html[data-theme='arasaka']) .report__big {
+  background: var(--matrix);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+:where(html[data-theme='arasaka']) .hud__title {
+  font-size: 19px;
+}
+
+/* ---------- her panel on the overlay ---------- */
+
+:where(html[data-theme='arasaka']) .panel {
+  --accent: var(--paper);
+  --frame: var(--paper);
+  --echo: transparent;
+}
+
+:where(html[data-theme='arasaka']) .panel[data-kind='done'],
+:where(html[data-theme='arasaka']) .panel[data-kind='remind'],
+:where(html[data-theme='arasaka']) .panel[data-kind='alert'],
+:where(html[data-theme='arasaka']) .panel[data-kind='error'] {
+  --accent: var(--red);
+  --frame: var(--red);
+}
+
+:where(html[data-theme='arasaka']) .panel[data-kind='idle'] {
+  --accent: var(--paper-3);
+  --frame: var(--paper-3);
+}
+
+/* corner ticks, thin */
+:where(html[data-theme='arasaka']) .panel::before,
+:where(html[data-theme='arasaka']) .panel::after {
+  border-color: var(--red);
+  border-width: 1px 0 0 1px;
+}
+
+:where(html[data-theme='arasaka']) .panel::after {
+  border-width: 1px 1px 0 0;
+}
+
+:where(html[data-theme='arasaka']) .panel__frame {
+  filter:
+    drop-shadow(1px 0 0 var(--frame)) drop-shadow(-1px 0 0 var(--frame))
+    drop-shadow(0 1px 0 var(--frame)) drop-shadow(0 -1px 0 var(--frame));
+}
+
+/* the plate: black on a dot grid, a red rule down the left, 荒坂 top right */
+:where(html[data-theme='arasaka']) .panel__plate {
+  background: var(--dots), var(--ink);
+  box-shadow: inset 3px 0 0 var(--red);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%);
+}
+
+:where(html[data-theme='arasaka']) .panel__plate::after {
+  content: '荒坂';
+  position: absolute;
+  right: 12px;
+  top: 8px;
+  font-family: var(--kanji);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--red);
+  pointer-events: none;
+}
+
+:where(html[data-theme='arasaka']) .panel__face {
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--paper-3);
+  overflow: hidden;
+}
+
+:where(html[data-theme='arasaka']) .panel__face img {
+  border-radius: 50%;
+}
+
+:where(html[data-theme='arasaka']) .panel__who {
+  color: var(--paper);
+  letter-spacing: 0.18em;
+}
+
+:where(html[data-theme='arasaka']) .panel__who::before {
+  content: '● ';
+  color: var(--red);
+  letter-spacing: 0;
+}
+
+:where(html[data-theme='arasaka']) .panel__quote {
+  border-left-color: var(--red);
+}
+
+:where(html[data-theme='arasaka']) .panel__bar {
+  background: var(--red);
+}
+
+/* ---------- buttons: Nothing's pills, a red dot for her notch ---------- */
+
+:where(html[data-theme='arasaka']) .panel__action {
+  --btn: var(--paper-2);
+  padding: 7px 16px 6px 24px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--btn);
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  border-radius: 999px;
+  clip-path: none;
+}
+
+:where(html[data-theme='arasaka']) .panel__action::before {
+  left: 11px;
+  top: calc(50% - 2.5px);
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--red);
+}
+
+:where(html[data-theme='arasaka']) .panel__action:hover {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+:where(html[data-theme='arasaka']) .panel__action.is-primary {
+  --btn: var(--red);
+  background: var(--red);
+  color: var(--paper);
+}
+
+:where(html[data-theme='arasaka']) .panel__action.is-primary::before {
+  background: var(--paper);
+}
+
+:where(html[data-theme='arasaka']) .panel__action.is-primary:hover {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+:where(html[data-theme='arasaka']) .panel__action.is-primary:hover::before {
+  background: var(--red);
+}
+
+:where(html[data-theme='arasaka']) .panel__close {
+  padding-inline: 12px;
+}
+
+:where(html[data-theme='arasaka']) .panel__close::before {
+  content: none;
+}
+
+:where(html[data-theme='arasaka']) .panel__input {
+  border-bottom: 1px solid var(--paper-3);
+  background:
+    radial-gradient(circle, var(--red) 2.5px, transparent 3px) left 4px center / 8px 8px no-repeat,
+    var(--ink-2);
+  border-radius: 10px 10px 0 0;
+}
+
+:where(html[data-theme='arasaka']) .panel__input:focus {
+  border-bottom-color: var(--red);
+}
+
+/* the ticker: a white pill, its dot red */
+:where(html[data-theme='arasaka']) .ticker {
+  --frame: var(--paper-2);
+  filter: none;
+}
+
+:where(html[data-theme='arasaka']) .ticker__plate {
+  box-shadow: inset 0 0 0 1px var(--frame);
+  border-radius: 999px;
+  clip-path: none;
+  background: var(--dots), var(--ink);
+}
+
+:where(html[data-theme='arasaka']) .ticker__dot {
+  background: var(--red);
+  border-radius: 50%;
+}
+
+/* ---------- her hub (chats.html) ---------- */
+
+/* the hub's own window only: the overlay's body has to stay see-through */
+:where(html[data-theme='arasaka']) body:has(> .hud) {
+  --accent: var(--paper);
+  --frame: var(--paper-3);
+  --echo: transparent;
+  background: var(--dots), var(--ink);
+}
+
+/* chats.css sizes the hub's small buttons itself: room kept for the red dot */
+:where(html[data-theme='arasaka']) .hud .panel__action {
+  padding-left: 24px !important;
+}
+
+:where(html[data-theme='arasaka']) .hud__who {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--paper);
+  letter-spacing: 0.22em;
+}
+
+:where(html[data-theme='arasaka']) .hud__who::before {
+  content: '';
+  width: 20px;
+  height: 20px;
+  background: var(--emblem) center / contain no-repeat;
+}
+
+:where(html[data-theme='arasaka']) .hud__tag {
+  margin-left: 0;
+  color: var(--red);
+  font-family: var(--kanji);
+  font-weight: 700;
+  letter-spacing: 0.3em;
+}
+
+:where(html[data-theme='arasaka']) .hud__tag::before {
+  content: '荒坂 · ';
+  color: var(--red);
+}
+
+:where(html[data-theme='arasaka']) .hud__tab {
+  border-radius: 999px;
+  clip-path: none;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+:where(html[data-theme='arasaka']) .hud__tab.is-current {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+:where(html[data-theme='arasaka']) .hud__tab.is-current::before {
+  content: '● ';
+  color: var(--red);
+}
+
+:where(html[data-theme='arasaka']) .hud__count,
+:where(html[data-theme='arasaka']) .log__live {
+  background: var(--red);
+  color: var(--paper);
+  border-radius: 999px;
+  clip-path: none;
+}
+
+/* the plate: thin white outline, square but one corner, the dot grid inside, a red rule on top */
+:where(html[data-theme='arasaka']) .hud__plate {
+  filter:
+    drop-shadow(1px 0 0 var(--frame)) drop-shadow(-1px 0 0 var(--frame))
+    drop-shadow(0 1px 0 var(--frame)) drop-shadow(0 -1px 0 var(--frame));
+}
+
+:where(html[data-theme='arasaka']) .hud__plate::before {
+  background:
+    linear-gradient(var(--red), var(--red)) left 0 top 0 / 96px 3px no-repeat,
+    var(--dots),
+    var(--ink);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%);
+}
+
+/* 荒坂 written down the right edge, Arasaka's corporate signage */
+:where(html[data-theme='arasaka']) .hud__plate::after {
+  content: 'ARASAKA · 荒坂 · CAPRI';
+  position: absolute;
+  right: 4px;
+  bottom: 18px;
+  writing-mode: vertical-rl;
+  font-family: var(--kanji);
+  font-size: 9px;
+  letter-spacing: 0.4em;
+  color: oklch(0.97 0 0 / 0.22);
+  pointer-events: none;
+}
+
+:where(html[data-theme='arasaka']) .chats__item,
+:where(html[data-theme='arasaka']) .plan,
+:where(html[data-theme='arasaka']) .line.is-you,
+:where(html[data-theme='arasaka']) .settings__card {
+  border-radius: 14px;
+  clip-path: none;
+}
+
+:where(html[data-theme='arasaka']) .chats__item::before {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  top: 13px;
+}
+
+:where(html[data-theme='arasaka']) .chats__item.is-current {
+  box-shadow: inset 0 0 0 1px var(--paper-3);
+}
+
+:where(html[data-theme='arasaka']) .chats__item.is-current::before {
+  background: var(--red);
+}
+
+:where(html[data-theme='arasaka']) .line.is-her .line__name::before,
+:where(html[data-theme='arasaka']) .plans__day::before {
+  content: '● ';
+  color: var(--red);
+}
+
+:where(html[data-theme='arasaka']) .line.is-you {
+  background:
+    radial-gradient(circle, var(--paper) 2.5px, transparent 3px) left 4px top 10px / 8px 8px no-repeat,
+    var(--ink-2);
+}
+
+:where(html[data-theme='arasaka']) mark {
+  background: var(--red);
+  color: var(--paper);
+}
+
+:where(html[data-theme='arasaka']) .plan,
+:where(html[data-theme='arasaka']) .plan--event,
+:where(html[data-theme='arasaka']) .plan--reminder {
+  background:
+    radial-gradient(circle, var(--paper-3) 2.5px, transparent 3px) left 4px top 12px / 8px 8px no-repeat,
+    var(--ink-2);
+}
+
+:where(html[data-theme='arasaka']) .plan--event {
+  background:
+    radial-gradient(circle, var(--red) 2.5px, transparent 3px) left 4px top 12px / 8px 8px no-repeat,
+    var(--ink-2);
+}
+
+:where(html[data-theme='arasaka']) .plan--reminder {
+  background:
+    radial-gradient(circle, var(--paper) 2.5px, transparent 3px) left 4px top 12px / 8px 8px no-repeat,
+    var(--ink-2);
+}
+
+:where(html[data-theme='arasaka']) .plans__view {
+  border-radius: 999px;
+}
+
+:where(html[data-theme='arasaka']) .plans__view.is-current {
+  border-color: var(--paper);
+  color: var(--paper);
+}
+
+:where(html[data-theme='arasaka']) .settings__card {
+  background: var(--dots), var(--ink-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+:where(html[data-theme='arasaka']) .settings__sub .settings__head {
+  background: none;
+  color: var(--red);
+}
+
+:where(html[data-theme='arasaka']) .setting--toggle.is-on,
+:where(html[data-theme='arasaka']) .setting--choice.is-on {
+  outline: none;
+  background: var(--paper);
+  color: var(--ink);
+}

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Capri's own crest for the Arasaka × Nothing theme: a ring of dots (Nothing's glyphs), a red core
+       and a corporate bar. Drop another emblem.svg here and the theme takes it. -->
+  <g fill="#f2f2f2">
+    <circle cx="32" cy="4" r="2.6"/><circle cx="42.7" cy="6.1" r="2.6"/><circle cx="51.8" cy="12.2" r="2.6"/>
+    <circle cx="57.9" cy="21.3" r="2.6"/><circle cx="60" cy="32" r="2.6"/><circle cx="57.9" cy="42.7" r="2.6"/>
+    <circle cx="51.8" cy="51.8" r="2.6"/><circle cx="42.7" cy="57.9" r="2.6"/><circle cx="32" cy="60" r="2.6"/>
+    <circle cx="21.3" cy="57.9" r="2.6"/><circle cx="12.2" cy="51.8" r="2.6"/><circle cx="6.1" cy="42.7" r="2.6"/>
+    <circle cx="4" cy="32" r="2.6"/><circle cx="6.1" cy="21.3" r="2.6"/><circle cx="12.2" cy="12.2" r="2.6"/>
+    <circle cx="21.3" cy="6.1" r="2.6"/>
+  </g>
+  <circle cx="32" cy="32" r="13" fill="#d81e2c"/>
+  <rect x="14" y="30" width="36" height="4" fill="#0b0b0b"/>
+</svg>

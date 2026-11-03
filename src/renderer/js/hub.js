@@ -257,8 +257,16 @@ async function loadMenu() {
   settingsEl.scrollTop = scroll;
 }
 
+// her window style (her menu: Night City, Classic, Arasaka × Nothing), the same as on the overlay
+async function applyTheme() {
+  const { theme } = await host.getConfig();
+  document.documentElement.dataset.theme = theme || 'nightcity';
+}
+
 host.onHubMenu(() => {
+  applyTheme(); // the menu is rebuilt on every change of hers, a new style included
   if (tab === 'settings') loadMenu();
 });
+applyTheme();
 
 select(new URLSearchParams(location.search).get('tab') || 'chats');
