@@ -201,7 +201,8 @@ function robloxGame(text) {
 }
 // "regarde mon écran", "tu vois quoi ?", "what's on my screen?", "что ты видишь?"
 const LOOK_ASK = /regarde (?:mon|l['’]|ce que)|(?:jette|jeter) un (?:œil|oeil)|tu vois quoi|qu['’]est[- ]ce que tu vois|look at (?:my|the|this) screen|what(?:'s| is) on my screen|what do you see|take a look|mira (?:mi|la) pantalla|qu[ée] ves|olha (?:minha|a) tela|o que voc[êe] v[êe]|(?:посмотри|глянь|взгляни|погляди|проверь|оцени)(?:\s+пожалуйста)?(?:\s+(?:что|чего))?(?:\s+(?:у меня|сейчас))?(?:\s+на)?\s+(?:мой\s+)?(?:экран|монитор)|что(?:\s+сейчас)?(?:\s+у меня)?\s+(?:видно|открыто|показано)\s+на\s+экране|что(?:\s+ты)?\s+видишь(?:\s+на\s+экране)?|видишь\s+(?:мой\s+)?экран|прочитай(?:\s+текст)?\s+(?:с|на)\s+экрана/i;
-export const isLookRequest = (text) => LOOK_ASK.test(String(text || ''));
+// commas and the like left out first: speech-to-text writes "посмотри, что на экране"
+export const isLookRequest = (text) => LOOK_ASK.test(String(text || '').replace(/[,;:!?.…—]+/g, ' ').replace(/\s+/g, ' '));
 // what her tag needs to find in your message before it does anything: a small model tags answers about
 // anything ("[[music: synthwave]]" under a film tip), and music and the media keys act right away
 const LISTEN = /[ée]cout|listen|escuch|\bouv(ir|e)\b|слуша|playlist|album|\b(play|joue|mets|pon|toca|coloca)\b|включи|поставь/i;
@@ -517,7 +518,7 @@ export class Chat {
       id: snap.id,
       persona: this.lookPersona(),
       history: this.history.slice(-REMEMBER, -1),
-      prompt: `${text}\n\n(Note for you, never repeat it: the picture is the user's screen right now; a small figure with a big red mane on it is you. Answer about what you really see, in character. ${this.languageNote()})`,
+      prompt: `${text}\n\n(Note for you, never repeat it: the picture is the user's screen right now; a small figure with a big red mane on it is you: leave it out, the user asks about the rest of the screen. Answer about what you really see there (an app, a website, a title, a word), in character. ${this.languageNote()})`,
     });
     if (!res.ok) {
       const model = String(res.model || '…').replace(/:latest$/, '');

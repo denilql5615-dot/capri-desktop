@@ -57,6 +57,9 @@ test('natural Russian requests to inspect the screen are recognized', async () =
     'что сейчас открыто на экране',
     'что ты видишь',
     'прочитай текст с экрана',
+    'посмотри, что на экране.',
+    'Глянь, пожалуйста, на экран!',
+    "what's on my screen?",
   ]) assert.equal(isLookRequest(phrase), true, phrase);
   assert.equal(isLookRequest('открой настройки экрана'), false);
   delete globalThis.matchMedia;
