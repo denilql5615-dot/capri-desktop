@@ -10,6 +10,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { spawn, execFile } = require('node:child_process');
 const ollama = require('./ollama');
+const { findClaude } = require('./workers');
 
 const PROVIDERS = {
   ollama: { label: 'Ollama (local)', kind: 'ollama', local: true },
@@ -124,14 +125,21 @@ async function openaiChat(p, { model, messages }, onDelta, signal) {
 // The prompt goes in on stdin, never on the command line: the shell (needed for an npm claude.cmd)
 // only ever sees fixed arguments.
 
-const quote = (s) => (process.platform === 'win32' ? `"${s}"` : s); // cmd joins the arguments
+// Claude Code's own executable when found (~/.local/bin is often not on PATH), else `claude` through the
+// shell (an npm claude.cmd)
+function claudeCommand() {
+  const exe = findClaude();
+  return exe ? { cmd: exe, shell: false } : { cmd: 'claude', shell: process.platform === 'win32' };
+}
+const quote = (s, shell) => (shell ? `"${s}"` : s); // cmd joins the arguments
 // its session id, picked here so her hooks can tell its events from your other sessions' (main.js)
 let claudeSession = null;
 let claudeStarted = false; // each message after the first continues the same conversation
 
 function claudeVersion() {
   return new Promise((resolve, reject) => {
-    execFile('claude', ['--version'], { shell: process.platform === 'win32', timeout: 10000 }, (err, out) => (
+    const { cmd, shell } = claudeCommand();
+    execFile(cmd, ['--version'], { shell, timeout: 10000 }, (err, out) => (
       err ? reject(new Error('Claude Code not found (is `claude` on your PATH?)')) : resolve(out.trim())));
   });
 }
@@ -140,15 +148,16 @@ function claudeChat(cfg, text, persona, onDelta, signal) {
   // her persona, from a file: too long and too full of quotes and newlines for cmd's command line
   const personaFile = path.join(os.tmpdir(), 'capri-persona.txt');
   fs.writeFileSync(personaFile, persona);
+  const { cmd, shell } = claudeCommand();
   const args = ['-p', '--output-format', 'stream-json', '--verbose',
     '--permission-mode', CLAUDE_MODES.includes(cfg.claudeMode) ? cfg.claudeMode : 'default',
-    '--append-system-prompt-file', quote(personaFile)];
+    '--append-system-prompt-file', quote(personaFile, shell)];
   if (!claudeSession) claudeSession = randomUUID();
   args.push(claudeStarted ? '--resume' : '--session-id', claudeSession);
   return new Promise((resolve, reject) => {
-    const child = spawn('claude', args, {
+    const child = spawn(cmd, args, {
       cwd: cfg.claudeCwd || os.homedir(),
-      shell: process.platform === 'win32',
+      shell,
       windowsHide: true,
     });
     const kill = () => (process.platform === 'win32'

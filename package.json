@@ -19,6 +19,7 @@
     "check:llm": "node scripts/check-llm.js",
     "test:hooks": "node --test tests/hooks.test.js",
     "test:listen": "node --test tests/listen.test.js",
+    "test:workers": "node --test tests/workers.test.js",
     "dist": "electron-builder --win"
   },
   "keywords": [

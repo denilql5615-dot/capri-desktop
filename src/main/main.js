@@ -22,6 +22,7 @@ const system = require('./system');
 const launch = require('./launch');
 const files = require('./files');
 const speech = require('./speech');
+const workers = require('./workers');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
 const activeHooks = () => activeAssistant().hooks;
@@ -583,10 +584,17 @@ async function signInToOllama() {
   }
 }
 
+// your last message without the note chat.js adds to it for her model (her mood, her language)
+function yourWords(messages) {
+  const last = messages.findLast((m) => m.role === 'user')?.content || '';
+  return last.split('\n\n(Note for you')[0];
+}
+
 // Her answer from the model picked, or from the next one when that one can't: too busy twice in a row
 // (Gemini's "high demand", an Ollama cloud model out of free use), not served anymore (an older model
 // closed to new keys), or signed out of Ollama. A model on this PC first. The model that answered is
 // kept for next time.
+
 async function chatWithFallback(cfg, messages, send, signal, streamed) {
   let model = pickModel(cfg);
   const tried = new Set();
@@ -748,8 +756,12 @@ function registerIpc() {
         overlay?.webContents.send('chat:delta', { id, text });
       };
       const cfg = config.load();
-      const text = await chatWithFallback(cfg, messages, send, abort.signal, () => streamed);
-      if (cfg.provider === 'claude') saveMemory({ claude: llm.claudeMemory() });
+      // Claude or Codex named in your message: that one answers, as her (workers.js)
+      const worker = cfg.provider === 'claude' ? null : workers.route(yourWords(messages));
+      const text = worker === 'codex' ? await workers.askCodex(cfg, messages, send, abort.signal)
+        : worker === 'claude' ? await llm.chat('claude', llmConfig(cfg), { model: null, messages }, send, abort.signal)
+        : await chatWithFallback(cfg, messages, send, abort.signal, () => streamed);
+      if (cfg.provider === 'claude' || worker === 'claude') saveMemory({ claude: llm.claudeMemory() });
       return { ok: true, text };
     } catch (err) {
       return { ok: false, error: abort.signal.aborted ? 'stopped' : err.message, code: err.code || null };
@@ -758,6 +770,8 @@ function registerIpc() {
     }
   });
   ipcMain.on('chat:stop', (_e, id) => chats.get(id)?.abort());
+  // who'll answer this message: 'claude', 'codex' or null (her chat model), so she can say she's passing it on
+  ipcMain.handle('chat:route', (_e, text) => (config.load().provider === 'claude' ? null : workers.route(text)));
   // her voice (speech.js): what you said, written down; her line, said
   ipcMain.handle('voice:transcribe', async (_e, wav) => {
     const { voice } = config.load();

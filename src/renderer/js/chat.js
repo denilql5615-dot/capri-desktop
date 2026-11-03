@@ -227,6 +227,8 @@ const SITES = {
 const BROWSER = /chrome|edge|firefox|opera|brave|vivaldi|duckduckgo|browser/i;
 // local models this small mostly talk nonsense ("llama3.2:1b", "qwen2.5:0.5b"…)
 const TINY = /[:-](0\.5b|1b|1\.5b|135m|270m|360m)\b/i;
+// while the one you named works on it (no answer streams in from Codex until it's done)
+const WORKER_WAIT = { claude: 'Передала Claude, он работает…', codex: 'Передала Codex, он думает… это может занять пару минут.' };
 // her face when she greets you in a mood (bond.js)
 const MOOD_FACE = { angry: 'many', sulk: 'aside', dizzy: 'wide', thrown: 'wide', jealous: 'look', fun: 'laugh', happy: 'laugh', forgiven: 'smug' };
 
@@ -364,7 +366,10 @@ export class Chat {
     this.onMessage?.();
     // what you asked for plainly happens right away (the music, the volume, an app you named): her
     // line about it comes under her answer (Claude Code, answering her chat, does things its own way)
-    const asked = this.agent ? null : this.asked(text);
+    // Claude or Codex named ("Клод, …"): that one answers as her, and does things its own way (workers.js)
+    const worker = this.agent ? null : await this.host.chatRoute(text).catch(() => null);
+    const agent = this.agent || Boolean(worker);
+    const asked = agent ? null : this.asked(text);
     if (asked?.kind === 'look') return this.sendLook(text, id);
     const early = asked && asked.kind !== 'close' ? this.doNow(asked) : null;
     this.bond?.heard(text); // "sorry": she lets it go
@@ -382,14 +387,14 @@ export class Chat {
     // Her mood (angry, sulking…) and her language, said again right by your message, for this answer
     // only. Small local models mostly go by the last thing they read: up in her prompt alone, they
     // forget it (and answer in English after a conversation in English).
-    if (!this.agent) {
+    if (!agent) {
       const mood = this.bond?.moodLine().replace(/^Right now: /, '');
       const last = messages.at(-1);
       messages[messages.length - 1] = { ...last, content: `${last.content}\n\n(Note for you, never repeat it: ${[mood, this.languageNote()].filter(Boolean).join(' ')})` };
     }
     // nothing yet after a few seconds: Ollama is still loading the model (the first answer after a start),
     // or Claude Code is at work
-    const wait = this.agent ? this.t.working : this.cold ? this.t.loading : null;
+    const wait = worker ? WORKER_WAIT[worker] : this.agent ? this.t.working : this.cold ? this.t.loading : null;
     const slow = wait && setTimeout(() => {
       if (this.turn === id && !this.answer) this.panel.stream(wait);
     }, LOADING_AFTER_MS);
@@ -416,7 +421,7 @@ export class Chat {
     this.onAnswer?.(answer);
     this.panel.setFace(mood(answer));
     this.panel.setChatBusy(false);
-    if (!this.agent) this.after(res.text, answer, asked, early, text);
+    if (!agent) this.after(res.text, answer, asked, early, text);
     this.listApps(); // fresh for the next message
   }
 
