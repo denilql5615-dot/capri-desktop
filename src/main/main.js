@@ -345,22 +345,43 @@ async function restartPimMcp() {
   return applyPimMcp();
 }
 
+async function mailContext(service, said) {
+  if (!service || !pim.isMailQuestion(said)) return '';
+  const found = [];
+  for (const accountId of pim.mailAccountIds(said, service.listAccounts())) {
+    try { found.push(...await service.searchMail({ accountId, query: pim.mailQuery(said), limit: 3 })); } catch {}
+  }
+  found.sort((a, b) => String(b.date).localeCompare(String(a.date))).splice(3);
+  const full = [];
+  for (const mail of found) {
+    const item = await service.getMail({ accountId: mail.accountId, id: mail.id });
+    if (item) full.push(item);
+  }
+  return pim.mailPrompt(full);
+}
+
+// "что у меня завтра?": Proton Calendar (ICS) and her own planner for the days asked about
+async function calendarContext(service, said) {
+  if (!pim.isCalendarQuestion(said)) return '';
+  const [from, to] = pim.calendarRange(said);
+  const events = [];
+  for (const account of service?.listAccounts() || []) {
+    if (!account.capabilities.includes('calendar')) continue;
+    try {
+      events.push(...await service.listEvents({ accountId: account.id, from: from.toISOString(), to: to.toISOString(), limit: pim.MAX_RESULTS }));
+    } catch (err) {
+      console.warn('[capri] calendar:', err.message);
+    }
+  }
+  let plans = [];
+  try { plans = pim.plansIn(localPlanner?.list() || [], from, to); } catch {}
+  return pim.calendarPrompt({ events, plans, from, to });
+}
+
 async function withPim(messages, said) {
-  if (!pim.isMailQuestion(said)) return messages;
-  const service = pimService();
-  if (!service) return messages;
   try {
-    const found = [];
-    for (const accountId of pim.mailAccountIds(said, service.listAccounts())) {
-      try { found.push(...await service.searchMail({ accountId, query: pim.mailQuery(said), limit: 3 })); } catch {}
-    }
-    found.sort((a, b) => String(b.date).localeCompare(String(a.date))).splice(3);
-    const full = [];
-    for (const mail of found) {
-      const item = await service.getMail({ accountId: mail.accountId, id: mail.id });
-      if (item) full.push(item);
-    }
-    const context = pim.mailPrompt(full);
+    const service = pimService();
+    const context = [await mailContext(service, said), await calendarContext(service, said)].filter(Boolean).join('\n\n');
     if (!context) return messages;
     const at = messages.map((message) => message.role).lastIndexOf('user');
     return messages.map((message, index) => index === at ? { ...message, content: `${message.content}\n\n(${context})` } : message);
@@ -1545,6 +1566,12 @@ async function debugHandler(route, body) {
     // which model she'd chat with, and why: what Ollama lists and what her config says
     const cfg = config.load(true);
     return { ok: true, value: { chatModels, configured: cfg.chatModel, provider: cfg.provider, picked: pickModel(cfg), config: config.file() } };
+  }
+  if (route === 'pim') {
+    // what her chat would add for a phrase (mail, calendar): its size and line count only, not the content
+    const said = String(body.text || '');
+    const added = (await withPim([{ role: 'user', content: said }], said))[0].content.slice(said.length);
+    return { ok: true, value: { chars: added.length, lines: added.split('\n').filter((l) => l.startsWith('- ')).length, empty: /Nothing is scheduled/.test(added) } };
   }
   if (route === 'eval') {
     // a look inside the overlay (app.js puts what's there on window.dev in --dev)

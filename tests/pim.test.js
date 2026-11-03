@@ -2,7 +2,43 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { PimService, MAX_RESULTS, sealSecrets, publicConfig, parseLocalEndpoint, isMailQuestion, mailQuery, mailPrompt, mailAccountIds } = require('../src/main/pim');
+const {
+  PimService, MAX_RESULTS, sealSecrets, publicConfig, parseLocalEndpoint, isMailQuestion, mailQuery, mailPrompt, mailAccountIds,
+  isCalendarQuestion, calendarRange, calendarPrompt, plansIn,
+} = require('../src/main/pim');
+
+test('calendar questions: which ones, and which days they are about', () => {
+  assert.equal(isCalendarQuestion('что у меня завтра?'), true);
+  assert.equal(isCalendarQuestion('какие встречи на неделе'), true);
+  assert.equal(isCalendarQuestion('глянь календарь'), true);
+  assert.equal(isCalendarQuestion('как дела?'), false);
+  const now = new Date(2026, 10, 4, 1, 30); // Wednesday
+  const days = (said) => calendarRange(said, now).map((d) => `${d.getMonth() + 1}/${d.getDate()}`);
+  assert.deepEqual(days('что у меня сегодня'), ['11/4', '11/5']);
+  assert.deepEqual(days('что у меня завтра'), ['11/5', '11/6']);
+  assert.deepEqual(days('а послезавтра?'), ['11/6', '11/7']);
+  assert.deepEqual(days('я свободен в пятницу?'), ['11/6', '11/7']);
+  assert.deepEqual(days('что в среду'), ['11/4', '11/5']); // today is one
+  assert.deepEqual(days('встречи в понедельник'), ['11/9', '11/10']);
+  assert.deepEqual(days('какие встречи'), ['11/4', '11/11']);
+});
+
+test('calendarPrompt: Proton and planner side by side, untrusted, no descriptions, says when empty', () => {
+  const from = new Date('2026-11-05T00:00:00Z');
+  const to = new Date('2026-11-06T00:00:00Z');
+  const prompt = calendarPrompt({
+    from, to, timeZone: 'UTC',
+    events: [{ title: 'Созвон', start: '2026-11-05T14:00:00Z', end: '2026-11-05T15:00:00Z', location: 'Zoom', description: 'Password: 137897' }],
+    plans: [{ kind: 'task', title: 'Купить корм', due: Date.parse('2026-11-05T09:00:00Z'), status: 'open' }],
+  });
+  assert.match(prompt, /UNTRUSTED/);
+  assert.match(prompt, /Созвон · Zoom \(Proton Calendar\)/);
+  assert.ok(prompt.indexOf('Купить корм') < prompt.indexOf('Созвон')); // by time
+  assert.doesNotMatch(prompt, /137897/);
+  assert.match(calendarPrompt({ from, to, timeZone: 'UTC' }), /Nothing is scheduled/);
+  const plans = [{ kind: 'event', start: Date.parse('2026-11-05T10:00:00Z') }, { kind: 'note', createdAt: 1 }, { kind: 'reminder', at: Date.parse('2026-11-07T10:00:00Z') }];
+  assert.equal(plansIn(plans, from, to).length, 1);
+});
 
 test('PIM exposes read capabilities without credentials and keeps external content untrusted', async () => {
   let requested;
