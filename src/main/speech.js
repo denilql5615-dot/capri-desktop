@@ -12,6 +12,7 @@ const { spawn } = require('node:child_process');
 const WHISPER_DIR = process.env.CAPRI_WHISPER_DIR || 'D:\\Capri\\services\\whisper-server';
 const STT_TIMEOUT_MS = 60000;
 const TTS_TIMEOUT_MS = 30000;
+const WHISPER_BOOT_MS = 60000; // large-v3-turbo onto the graphics card
 const MAX_SPOKEN = 1200; // a long answer is read in the panel; she says the start of it
 
 const base = (url) => String(url || '').replace(/\/+$/, '');
@@ -84,8 +85,10 @@ async function up(url) {
   }
 }
 
-async function ensureWhisper(voice, dir = WHISPER_DIR) {
-  if (!voice.stt || whisper) return;
+// At her start, and before each transcription: a server that went away since (another app that had
+// started it quit) comes back. With `wait`, until it answers (the model takes a while to load).
+async function ensureWhisper(voice, { wait = false, dir = WHISPER_DIR } = {}) {
+  if (!voice.stt) return;
   let u;
   try {
     u = new URL(voice.sttUrl);
@@ -93,10 +96,19 @@ async function ensureWhisper(voice, dir = WHISPER_DIR) {
     return;
   }
   if (!isLocal(voice.sttUrl) || u.port !== '8765') return; // server.py's fixed address
+  const health = `${u.protocol}//${u.host}/health`;
+  if (await up(health)) return;
+  if (!whisper) startWhisper(dir);
+  for (let t = Date.now(); wait && whisper && Date.now() - t < WHISPER_BOOT_MS;) {
+    await new Promise((r) => setTimeout(r, 1000));
+    if (await up(health)) return;
+  }
+}
+
+function startWhisper(dir) {
   const python = path.join(dir, '.venv', 'Scripts', 'python.exe');
   const script = path.join(dir, 'server.py');
   if (!fs.existsSync(python) || !fs.existsSync(script)) return; // setup.bat never ran
-  if (await up(`${u.protocol}//${u.host}/health`)) return;
   const child = spawn(python, [script], { cwd: dir, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
   let tail = '';
   child.stderr.on('data', (d) => { tail = (tail + d).slice(-600); });

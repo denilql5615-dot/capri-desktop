@@ -762,6 +762,7 @@ function registerIpc() {
   ipcMain.handle('voice:transcribe', async (_e, wav) => {
     const { voice } = config.load();
     try {
+      await speech.ensureWhisper(voice, { wait: true });
       return { ok: true, text: await speech.transcribe(wav, voice) };
     } catch (err) {
       return { ok: false, error: speech.sttError(err, voice) };

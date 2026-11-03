@@ -84,7 +84,8 @@ function warm(model) {
 // Her answer, streamed: onDelta(piece) as it comes, resolves with all of it.
 async function chat({ model, messages }, onDelta, signal) {
   // cloud models think before they answer, and that counts in num_predict: kept short, with room for it
-  const thinks = isCloud(model) && known.get(model)?.thinking;
+  const canThink = known.get(model)?.thinking;
+  const thinks = isCloud(model) && canThink;
   const res = await fetch(`${base()}/api/chat`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -93,7 +94,8 @@ async function chat({ model, messages }, onDelta, signal) {
       messages,
       stream: true,
       keep_alive: '15m', // she stays loaded while you chat
-      ...(thinks && { think: 'low' }),
+      // a local thinking model (qwen3, qwen3.5) thinks by default and spends all 240 tokens on it: she'd answer "…"
+      ...(canThink && { think: thinks ? 'low' : false }),
       options: { temperature: 0.85, num_predict: thinks ? 1200 : 240 },
     }),
     signal,
