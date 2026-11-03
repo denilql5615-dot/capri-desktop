@@ -47,6 +47,8 @@ const DEFAULTS = {
     sttUrl: 'http://127.0.0.1:8765/v1', // local Whisper (services/whisper-server)
     sttModel: 'large-v3-turbo',
     sttLang: 'ru',
+    // the words Whisper should expect (its initial prompt): the names, spelled as you say them
+    sttPrompt: 'Капри, Клод, Кодекс. Клод, собери документ в docx. Кодекс, сделай таблицу. Капри, открой YouTube.',
     tts: true,
     ttsUrl: 'http://127.0.0.1:3900/v1', // local VoiceStudio
     ttsModel: 'tts-1',

@@ -39,6 +39,7 @@ async function transcribe(wav, voice) {
   form.append('file', new Blob([wav], { type: 'audio/wav' }), 'speech.wav');
   form.append('model', voice.sttModel);
   if (voice.sttLang) form.append('language', voice.sttLang);
+  if (voice.sttPrompt) form.append('prompt', voice.sttPrompt);
   const res = await post(`${base(voice.sttUrl)}/audio/transcriptions`, { method: 'POST', body: form }, STT_TIMEOUT_MS);
   const json = await res.json();
   return String(json.text || '').trim();
