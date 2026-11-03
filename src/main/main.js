@@ -692,11 +692,8 @@ function routeOf(text) {
   const cfg = config.load();
   if (cfg.provider === 'claude') return null;
   const named = workers.route(text);
-  if (named === 'stop') return named;
-  // hands on the desktop are hers alone: "Клод, открой блокнот и напиши…" is still hers to do (Claude and
-  // Codex can't touch your windows)
-  if (cfg.provider === 'ollama' && desktopCli.installed && agent.isComputerTask(text)) return 'computer';
-  return named;
+  if (named) return named; // Claude or Codex named: theirs, the computer included (handsFor)
+  return cfg.provider === 'ollama' && desktopCli.installed && agent.isComputerTask(text) ? 'computer' : null;
 }
 
 // ---------------------------------------------------------------- her hands on the PC (agent.js, policy.js)
@@ -713,6 +710,21 @@ function askUser({ line, why, grantable }) {
     asking.set(id, (answer) => { clearTimeout(timer); resolve(answer); });
     sendCommand('confirm', { id, line, why: why || null, grantable });
   });
+}
+
+// Claude asked for a task on the computer: its hands are agent-desktop, given after your yes (asked once a
+// task, the hour covers it). Codex can't have them: its sandbox doesn't see your windows. Resolves 'yes',
+// 'no', 'codex' (asked of Codex) or null (no computer in it).
+async function handsFor(worker, text) {
+  if (!['claude', 'codex'].includes(worker) || !desktopCli.installed || !agent.isComputerTask(text)) return null;
+  if (worker === 'codex') return 'codex';
+  if (grant.covers('UI_CONTROL')) return 'yes';
+  const answer = await askUser({ line: 'Claude будет управлять окнами на ПК', why: null, grantable: true });
+  if (answer === 'hour') {
+    grant.grant();
+    rebuildTray();
+  }
+  return answer === 'no' ? 'no' : 'yes';
 }
 
 async function computerTask(messages, send, signal) {
@@ -912,8 +924,14 @@ function registerIpc() {
       // Claude or Codex named in your message: that one answers, as her (workers.js); a task on the
       // computer: she does it herself with her desktop tool (agent.js)
       const worker = routeOf(yourWords(messages));
+      const hands = await handsFor(worker, yourWords(messages));
+      if (hands === 'no') return { ok: true, text: 'Ок, окна Claude не даю.' };
+      if (hands === 'codex') {
+        return { ok: true, text: 'Codex к окнам не пустить: его песочница не видит рабочий стол. Скажи «Клод, …» или просто «на компьютере …» — сделаю сама.' };
+      }
+      const desktopOpts = { desktop: hands === 'yes', home: desktopCli.home };
       const text = worker === 'codex' ? await workers.askCodex(cfg, messages, send, abort.signal)
-        : worker === 'claude' ? await workers.askClaude(cfg, messages, send, abort.signal)
+        : worker === 'claude' ? await workers.askClaude(cfg, messages, send, abort.signal, desktopOpts)
         : worker === 'computer' ? await computerTask(messages, send, abort.signal)
         : await chatWithFallback(cfg, messages, send, abort.signal, () => streamed);
       if (cfg.provider === 'claude') saveMemory({ claude: llm.claudeMemory() });
