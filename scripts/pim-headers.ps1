@@ -1,5 +1,7 @@
 param(
   [string]$ConfigPath = (Join-Path $env:APPDATA 'capri-desktop\config.json'),
+  # written by the running Capri; outside %APPDATA%, which MSIX apps (Claude, Codex) each see a copy of
+  [string]$CapabilityPath = (Join-Path $HOME '.capri\pim-mcp.dpapi'),
   [switch]$Protect,
   [switch]$TokenOnly
 )
@@ -23,8 +25,12 @@ try {
     exit 0
   }
 
-  $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
-  $encrypted = [string]$config.pimMcpToken
+  if (-not $PSBoundParameters.ContainsKey('ConfigPath') -and (Test-Path -LiteralPath $CapabilityPath)) {
+    $encrypted = (Get-Content -LiteralPath $CapabilityPath -Raw).Trim()
+  } else {
+    $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+    $encrypted = [string]$config.pimMcpToken
+  }
   if (-not $encrypted.StartsWith('dpapi:', [StringComparison]::Ordinal)) {
     throw 'Missing encrypted PIM capability'
   }

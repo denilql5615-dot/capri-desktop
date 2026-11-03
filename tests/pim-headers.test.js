@@ -39,4 +39,20 @@ test('PIM header helper protects and decrypts its capability with DPAPI', { skip
   ], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), { Authorization: `Bearer ${token}` });
+
+  // Claude and Codex call it bare: the sealed copy in your home folder, not their own %APPDATA%
+  const capabilityPath = path.join(dir, 'pim-mcp.dpapi');
+  fs.writeFileSync(capabilityPath, protect.stdout);
+  const bare = spawnSync('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    helperPath,
+    '-CapabilityPath',
+    capabilityPath,
+  ], { encoding: 'utf8' });
+  assert.equal(bare.status, 0, bare.stderr);
+  assert.deepEqual(JSON.parse(bare.stdout), { Authorization: `Bearer ${token}` });
 });

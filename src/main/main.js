@@ -313,13 +313,17 @@ function pimService() {
 let pimMcpHttp = null;
 let localPlanner = null;
 function pimMcpToken() {
-  const cfg = config.load();
-  if (cfg.pimMcpToken?.startsWith('dpapi:')) return setup.openMcpCapability();
-  const token = cfg.pimMcpToken
-    ? setup.openKeys({ token: cfg.pimMcpToken }).token
-    : randomBytes(32).toString('base64url');
-  if (!token) throw new Error('Unable to migrate the PIM capability');
-  config.save({ pimMcpToken: setup.sealMcpCapability(token) });
+  let sealed = config.load().pimMcpToken;
+  let token;
+  if (sealed?.startsWith('dpapi:')) {
+    token = setup.openMcpCapability(config.file());
+  } else {
+    token = sealed ? setup.openKeys({ token: sealed }).token : randomBytes(32).toString('base64url');
+    if (!token) throw new Error('Unable to migrate the PIM capability');
+    sealed = setup.sealMcpCapability(token);
+    config.save({ pimMcpToken: sealed });
+  }
+  setup.publishMcpCapability(sealed); // for Claude and Codex, whichever started her
   return token;
 }
 

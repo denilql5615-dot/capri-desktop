@@ -154,13 +154,22 @@ function sealMcpCapability(token) {
   }).trim();
 }
 
-function openMcpCapability() {
-  return execFileSync('powershell.exe', [...pimHeadersArgs, '-TokenOnly'], {
+function openMcpCapability(configPath) {
+  return execFileSync('powershell.exe', [...pimHeadersArgs, '-TokenOnly', '-ConfigPath', configPath], {
     encoding: 'utf8', windowsHide: true,
   }).trim();
 }
 
+// Claude and Codex are MSIX apps: each sees its own copy of %APPDATA%, so the one that started Capri
+// would be the only one let in. Your home folder isn't redirected; the helper reads the sealed copy here.
+const MCP_CAPABILITY_FILE = path.join(os.homedir(), '.capri', 'pim-mcp.dpapi');
+
+function publishMcpCapability(sealed) {
+  fs.mkdirSync(path.dirname(MCP_CAPABILITY_FILE), { recursive: true });
+  fs.writeFileSync(MCP_CAPABILITY_FILE, sealed);
+}
+
 module.exports = {
   MODELS, KEY_PAGES, ollamaState, installOllama, startOllama, pullModel, launchThroughOllama,
-  sealKey, openKeys, sealMcpCapability, openMcpCapability,
+  sealKey, openKeys, sealMcpCapability, openMcpCapability, publishMcpCapability,
 };
