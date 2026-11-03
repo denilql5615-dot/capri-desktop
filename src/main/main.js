@@ -431,6 +431,11 @@ function rebuildTray() {
     // "Allow for an hour" (policy.js), while it lasts: how long, and a click takes it back
     ...(grant.minutesLeft() ? [{ label: `Разрешено на час: ещё ${grant.minutesLeft()} мин — отозвать`, click: () => { grant.revoke(); rebuildTray(); } }] : []),
     {
+      // her name, heard (listen.js): the microphone always on, what's said only to Whisper on this PC
+      label: t.wake || 'Answer to "Capri" (microphone on)', type: 'checkbox', checked: Boolean(cfg.voice.wake),
+      click: (item) => updateConfig({ voice: { ...config.load().voice, wake: item.checked } }),
+    },
+    {
       // the Android app (phone.js): on, she listens on the network for it; the address and key are in phone-link.txt
       label: `${t.phone || 'Phone bridge'} (${cfg.phone.port})`, type: 'checkbox', checked: Boolean(cfg.phone.enabled),
       click: (item) => updateConfig({ phone: { ...config.load().phone, enabled: item.checked } }),
@@ -950,11 +955,11 @@ function registerIpc() {
     asking.delete(id);
   });
   // her voice (speech.js): what you said, written down; her line, said
-  ipcMain.handle('voice:transcribe', async (_e, wav) => {
+  ipcMain.handle('voice:transcribe', async (_e, wav, opts) => {
     const { voice } = config.load();
     try {
       await speech.ensureWhisper(voice, { wait: true });
-      return { ok: true, text: await speech.transcribe(wav, voice) };
+      return { ok: true, text: await speech.transcribe(wav, voice, { wake: Boolean(opts?.wake) }) };
     } catch (err) {
       return { ok: false, error: speech.sttError(err, voice) };
     }

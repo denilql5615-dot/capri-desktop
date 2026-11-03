@@ -33,13 +33,19 @@ async function post(url, init, ms) {
   return res;
 }
 
-/** What you said, as text (16 kHz mono WAV in). */
-async function transcribe(wav, voice) {
+// For the always-on stream (listen.js): plain Russian phrases, no names. Given a list of names to expect,
+// Whisper makes a short "да" into "Капри, Клод, собери документ…" (measured); with none, it drifts into
+// other languages.
+const WAKE_PROMPT = 'Привет. Открой ютуб. Который час? Да. Нет. Давай, на час.';
+
+/** What you said, as text (16 kHz mono WAV in). `wake`: a bit of the always-on stream. */
+async function transcribe(wav, voice, { wake = false } = {}) {
   const form = new FormData();
   form.append('file', new Blob([wav], { type: 'audio/wav' }), 'speech.wav');
   form.append('model', voice.sttModel);
   if (voice.sttLang) form.append('language', voice.sttLang);
-  if (voice.sttPrompt) form.append('prompt', voice.sttPrompt);
+  const prompt = wake ? WAKE_PROMPT : voice.sttPrompt;
+  if (prompt) form.append('prompt', prompt); // else the server's own, which lists names: the same trap
   const res = await post(`${base(voice.sttUrl)}/audio/transcriptions`, { method: 'POST', body: form }, STT_TIMEOUT_MS);
   const json = await res.json();
   return String(json.text || '').trim();

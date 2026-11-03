@@ -41,7 +41,7 @@ contextBridge.exposeInMainWorld('host', {
   chatMemory: () => ipcRenderer.invoke('chat:memory'),
   chatRemember: (history) => ipcRenderer.send('chat:remember', history),
   onChatDelta: on('chat:delta'),
-  transcribe: (wav) => ipcRenderer.invoke('voice:transcribe', wav),
+  transcribe: (wav, opts) => ipcRenderer.invoke('voice:transcribe', wav, opts),
   speak: (text) => ipcRenderer.invoke('voice:speak', text),
   lookSnap: () => ipcRenderer.invoke('look:snap'),
   lookSay: (request) => ipcRenderer.invoke('look:say', request),

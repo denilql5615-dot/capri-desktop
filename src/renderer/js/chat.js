@@ -259,6 +259,8 @@ export class Chat {
     this.jealousy = null;  // and how she takes your other AIs
     this.onMessage = null; // () => void: you said something to her
     this.onAnswer = null;  // (text) => void: her answer is in (listen.js says it out loud)
+    this.onAsk = null;     // (line) => void: she asks before an action on your PC (said out loud too)
+    this.pending = null;   // that question, waiting for your answer: (answer) => void
     this.waitingWhen = null; // a reminder you asked for without saying when: { text, until }
     host.onChatDelta(({ id, text }) => this.onDelta(id, text));
   }
@@ -366,12 +368,19 @@ export class Chat {
 
   // Before an action on your PC (main.js > policy.js): her question under what she's done so far, and
   // buttons. Her chat closed meanwhile: no.
+  // Said too (listen.js), so you can answer it out loud: "да", "на час", "нет".
   confirm({ id, line, why, grantable }) {
     const answer = (a) => {
+      if (this.pending !== answer) return; // answered already (a click and a word at once)
+      this.pending = null;
       this.panel.setActions([]);
-      this.host.policyAnswer(id, a);
+      this.host.policyAnswer(id, a === 'hour' && !grantable ? 'yes' : a);
     };
-    if (!this.open || !this.turn || !this.panel.current?.chat) return answer('no');
+    if (!this.open || !this.turn || !this.panel.current?.chat) {
+      this.host.policyAnswer(id, 'no');
+      return;
+    }
+    this.pending = answer;
     this.answer += `Можно? ${line}${why ? ` (${why})` : ''}\n`;
     this.panel.stream(clean(this.answer));
     this.panel.setActions([
@@ -380,6 +389,12 @@ export class Chat {
       { id: 'no', label: 'Нет' },
     ], answer);
     this.capri.perform('curious');
+    this.onAsk?.(`Можно? ${line}.${grantable ? ' Да, на час или нет?' : ' Да или нет?'}`);
+  }
+
+  // her question answered out loud (listen.js)
+  answerPending(answer) {
+    this.pending?.(answer);
   }
 
   // her line, said without asking her model (your message is in already)

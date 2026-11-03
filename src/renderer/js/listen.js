@@ -49,6 +49,71 @@ export class Endpointer {
   }
 }
 
+// Her name at the start of what you said ("Капри, открой ютуб", "эй капри"): null if it isn't there, else
+// { rest } (what you asked, '' for her name alone). Also as speech-to-text spells it.
+const NAME_RE = /^\s*(?:(?:эй|слушай|окей|ок|hey|ok)[,\s]+)?(?:капри|каприз|капре|кэпри|кабри|capri)(?![а-яёa-z])[\s,.!?:—-]*/i;
+export function parseWake(text) {
+  const m = NAME_RE.exec(String(text || ''));
+  return m ? { rest: text.slice(m[0].length).trim() } : null;
+}
+
+// Your answer to her question, said: 'hour', 'yes', 'no' or null (something else)
+export function parseAnswer(text) {
+  const t = String(text || '').toLowerCase().replace(/[.,!?…]/g, ' ').trim();
+  if (/(на ?ч[аеё]с|часик)(?![а-яё])/.test(t)) return 'hour'; // "давай на час", heard as "девайна чес" too
+  if (/^(нет|не надо|не нужно|не|стоп|отмена|отмени|no|stop)(?![а-яёa-z])/.test(t)) return 'no';
+  if (/^(да|давай|можно|ага|угу|конечно|разрешаю|делай|ок|окей|yes|ok)(?![а-яёa-z])/.test(t)) return 'yes';
+  return null;
+}
+
+// Speech in a stream that's always on: a segment from the first loud bit (and a little before it) until a
+// pause, handed over as WAV. For her name, so: short.
+const WAKE = { preMs: 300, silenceMs: 700, minMs: 350, maxMs: 8000 };
+export class Segmenter {
+  constructor(onSegment) {
+    this.onSegment = onSegment;
+    this.floor = 0.01;
+    this.pre = [];      // the last moments before speech, so its first syllable isn't cut
+    this.cur = null;    // { chunks, ms, silent } while you speak
+  }
+
+  push(chunk, ms) {
+    const level = rms(chunk);
+    const loud = level > Math.max(0.02, this.floor * 3);
+    if (!this.cur) {
+      if (!loud) {
+        this.floor = this.floor * 0.95 + level * 0.05;
+        this.pre.push(chunk);
+        while (this.pre.length * ms > WAKE.preMs) this.pre.shift();
+        return;
+      }
+      this.cur = { chunks: [...this.pre, chunk], ms: ms * (this.pre.length + 1), speech: ms, silent: 0 };
+      this.pre = [];
+      return;
+    }
+    const c = this.cur;
+    c.chunks.push(chunk);
+    c.ms += ms;
+    if (loud) {
+      c.speech += ms;
+      c.silent = 0;
+    } else {
+      c.silent += ms;
+    }
+    if (c.silent >= WAKE.silenceMs || c.ms >= WAKE.maxMs) {
+      this.cur = null;
+      if (c.speech >= WAKE.minMs) this.onSegment(c.chunks);
+    }
+  }
+}
+
+const join = (chunks) => {
+  const all = new Float32Array(chunks.reduce((n, c) => n + c.length, 0));
+  let o = 0;
+  for (const c of chunks) { all.set(c, o); o += c.length; }
+  return all;
+};
+
 export class Listen {
   constructor({ host, chat, panel }) {
     this.host = host;
@@ -60,12 +125,80 @@ export class Listen {
     this.chunks = [];
     this.audio = null; // what she's saying now
     this.said = 0;     // which of her answers is being said (a newer one cuts it off)
-    this.voice = { stt: true, tts: true };
+    this.quietUntil = 0; // her own voice, and a moment after it: not you
+    this.voice = { stt: true, tts: true, wake: false };
+    this.wake = null;  // { stream, ctx, node } while she listens for her name
+    this.hearing = false; // a segment of it is with Whisper
   }
 
   get active() { return Boolean(this.stream); }
 
-  configure(cfg) { if (cfg?.voice) this.voice = cfg.voice; }
+  configure(cfg) {
+    if (cfg?.voice) this.voice = cfg.voice;
+    if (this.voice.wake && this.voice.stt) this.startWake();
+    else this.stopWake();
+  }
+
+  // ---- her name, heard ("Капри, …"), and your answers to her questions, said
+  async startWake() {
+    if (this.wake) return;
+    this.wake = {}; // taken: a second call while the mic opens does nothing
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+      const ctx = new AudioContext({ sampleRate: RATE });
+      const node = ctx.createScriptProcessor(2048, 1, 1);
+      const seg = new Segmenter((chunks) => this.heard(encodeWav(resample(join(chunks), ctx.sampleRate, RATE), RATE)));
+      node.onaudioprocess = (e) => {
+        // not while you talk to her with Ctrl+Alt+V, nor while she's talking
+        if (this.active || performance.now() < this.quietUntil || this.audio) return;
+        const d = new Float32Array(e.inputBuffer.getChannelData(0));
+        seg.push(d, (d.length / ctx.sampleRate) * 1000);
+      };
+      ctx.createMediaStreamSource(stream).connect(node);
+      node.connect(ctx.destination);
+      if (!this.wake) { // turned off meanwhile
+        stream.getTracks().forEach((t) => t.stop());
+        ctx.close();
+        return;
+      }
+      this.wake = { stream, ctx, node };
+    } catch {
+      this.wake = null;
+    }
+  }
+
+  stopWake() {
+    const w = this.wake;
+    this.wake = null;
+    w?.node?.disconnect();
+    w?.stream?.getTracks().forEach((t) => t.stop());
+    w?.ctx?.close().catch(() => {});
+  }
+
+  async heard(wav) {
+    if (this.hearing) return; // one at a time: Whisper's still on the last one
+    this.hearing = true;
+    try {
+      const pending = Boolean(this.chat.pending);
+      const res = await this.host.transcribe(wav, { wake: true });
+      if (!res.ok || !res.text) return;
+      // her question waiting: your answer needs no name ("да", "на час", "нет")
+      if (this.chat.pending) {
+        const answer = parseAnswer(parseWake(res.text)?.rest ?? res.text);
+        if (answer) this.chat.answerPending(answer);
+        return;
+      }
+      if (pending) return;
+      const wake = parseWake(res.text);
+      if (!wake) return;
+      if (this.chat.turn) return; // she's busy with the last thing you asked
+      if (!wake.rest) return this.toggle(); // her name alone: she listens
+      if (!this.chat.open) await this.chat.start();
+      if (this.chat.open && !this.chat.turn) this.chat.send(wake.rest);
+    } finally {
+      this.hearing = false;
+    }
+  }
 
   // Ctrl+Alt+V: on, or off if you're already talking
   async toggle() {
@@ -73,7 +206,8 @@ export class Listen {
     if (!this.voice.stt) return;
     this.hush();
     if (!this.chat.open) await this.chat.start();
-    if (!this.chat.open || this.chat.turn) return; // her setup came up instead, or she's still answering
+    // her setup came up instead, or she's still answering (unless she's asking you something: say it)
+    if (!this.chat.open || (this.chat.turn && !this.chat.pending)) return;
     try {
       await this.open();
     } catch {
@@ -125,6 +259,10 @@ export class Listen {
     this.hint(null);
     if (!res.ok) return this.hint(res.error);
     if (!res.text) return this.hint('Не расслышала. Ещё раз: Ctrl+Alt+V.');
+    if (this.chat.pending) {
+      const answer = parseAnswer(res.text);
+      return answer ? this.chat.answerPending(answer) : this.hint('Скажи «да», «на час» или «нет».');
+    }
     this.chat.send(res.text);
   }
 
@@ -137,14 +275,20 @@ export class Listen {
     this.hush(false);
     const url = URL.createObjectURL(new Blob([mp3], { type: 'audio/mpeg' }));
     const audio = new Audio(url);
-    audio.onended = audio.onerror = () => URL.revokeObjectURL(url);
+    const done = () => {
+      URL.revokeObjectURL(url);
+      if (this.audio === audio) this.audio = null;
+      this.quietUntil = performance.now() + 500; // the room still rings with her for a moment
+    };
+    audio.onended = audio.onerror = done;
     this.audio = audio;
-    audio.play().catch(() => URL.revokeObjectURL(url));
+    audio.play().catch(done);
   }
 
   hush(cancel = true) {
     if (cancel) this.said++;
     this.audio?.pause();
+    if (this.audio) this.quietUntil = performance.now() + 500;
     this.audio = null;
   }
 

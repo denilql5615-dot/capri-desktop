@@ -231,6 +231,7 @@ async function boot() {
   const listen = new Listen({ host, chat, panel }); // talking to her out loud
   listen.configure(config);
   chat.onAnswer = (answer) => listen.say(answer);
+  chat.onAsk = (line) => listen.say(line);
   brain.onTalk = () => chat.start();
   // Getting her chat going with buttons (setup.js): Ollama and a model, a key, or an address
   const setup = new Setup({ guide, panel, host, brain, capri, voice });

@@ -47,8 +47,11 @@ const DEFAULTS = {
     sttUrl: 'http://127.0.0.1:8765/v1', // local Whisper (services/whisper-server)
     sttModel: 'large-v3-turbo',
     sttLang: 'ru',
-    // the words Whisper should expect (its initial prompt): the names, spelled as you say them
-    sttPrompt: 'Капри, Клод, Кодекс. Клод, собери документ в docx. Кодекс, сделай таблицу. Капри, открой YouTube.',
+    // what Whisper should expect (its initial prompt): plain phrases with the names in them, as you say
+    // them. Not a list of names: given one, it turns a short "да" into a whole command (speech.js).
+    sttPrompt: 'Привет. Открой ютуб. Который час? Да. Нет. Давай, на час. Пусть Клод глянет, а Кодекс сделает таблицу.',
+    // she listens for her name ("Капри, …") all the time, through Whisper on this PC only: off until you say so
+    wake: false,
     tts: true,
     ttsUrl: 'http://127.0.0.1:3900/v1', // local VoiceStudio
     ttsModel: 'tts-1',
@@ -58,6 +61,8 @@ const DEFAULTS = {
   phone: { enabled: false, port: 8770 },
   phoneToken: null,  // the phone's key, encrypted with your Windows account (setup.sealKey)
 };
+
+const OLD_PROMPT = 'Капри, Клод, Кодекс. Клод, собери документ в docx. Кодекс, сделай таблицу. Капри, открой YouTube.';
 
 let cache = null;
 
@@ -71,6 +76,8 @@ function load(fresh = false) {
     const saved = JSON.parse(fs.readFileSync(file(), 'utf8'));
     // a voice or phone setting added later gets its default
     cache = { ...DEFAULTS, ...saved, voice: { ...DEFAULTS.voice, ...saved.voice }, phone: { ...DEFAULTS.phone, ...saved.phone } };
+    // the first prompt, a list of names, made Whisper invent commands: replaced unless you wrote your own
+    if (cache.voice.sttPrompt === OLD_PROMPT) cache.voice.sttPrompt = DEFAULTS.voice.sttPrompt;
   } catch {
     cache = { ...DEFAULTS };
   }
