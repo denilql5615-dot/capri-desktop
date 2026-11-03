@@ -45,6 +45,7 @@ class Planner {
     this.file = file;
     this.id = deps.id || randomUUID;
     this.now = deps.now || Date.now;
+    this.onChange = deps.onChange || null; // after every write (main.js: her reminders follow)
   }
 
   read() {
@@ -63,6 +64,7 @@ class Planner {
     const temp = `${this.file}.${process.pid}.tmp`;
     fs.writeFileSync(temp, JSON.stringify(items, null, 2), { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(temp, this.file);
+    this.onChange?.();
   }
 
   list(filter = {}) {
@@ -86,11 +88,33 @@ class Planner {
   complete(id) {
     const items = this.read();
     const index = items.findIndex((entry) => entry.id === String(id || ''));
-    if (index < 0 || items[index].kind !== 'task') throw new Error('planner task not found');
+    if (index < 0 || !['task', 'reminder'].includes(items[index].kind)) throw new Error('planner task not found');
     items[index] = { ...items[index], status: 'done', updatedAt: this.now() };
     this.write(items);
     return items[index];
   }
+
+  /** Reminders handed to her reminders list, so one gone from it later has fired. */
+  markPushed(ids) {
+    const set = new Set(ids);
+    if (!set.size) return;
+    this.write(this.read().map((entry) => (set.has(entry.id) ? { ...entry, pushed: true } : entry)));
+  }
 }
 
-module.exports = { Planner, KINDS, item };
+/** Her planner's reminders in her reminders list (config.reminders; reminders.js fires them): an open one
+ * not there yet goes in (one that came due while she was off too, she says she missed it); one handed over
+ * and gone from the list once due has fired, and is done. Gone before it's due is a save race: back in. */
+function syncReminders(plans, list, now = Date.now()) {
+  const listed = new Set((list || []).map((r) => r.planId).filter(Boolean));
+  const add = [];
+  const done = [];
+  for (const p of plans || []) {
+    if (p.kind !== 'reminder' || p.status !== 'open' || listed.has(p.id)) continue;
+    if (p.pushed && p.at <= now) done.push(p.id);
+    else add.push({ id: `plan-${p.id}`, at: p.at, text: p.title, made: p.createdAt, planId: p.id });
+  }
+  return { add, done };
+}
+
+module.exports = { Planner, KINDS, item, syncReminders };

@@ -34,7 +34,7 @@ const pimImap = require('./pim-imap');
 const pimMcp = require('./pim-mcp');
 const pimIcs = require('./pim-ics');
 const telegram = require('./telegram');
-const { Planner } = require('./planner');
+const { Planner, syncReminders } = require('./planner');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
 const activeHooks = () => activeAssistant().hooks;
@@ -312,6 +312,25 @@ function pimService() {
 
 let pimMcpHttp = null;
 let localPlanner = null;
+
+// Reminders in her planner (from you, Claude or Codex through MCP) ring like the ones from her chat:
+// handed to her reminders list, done in the planner once they have rung (planner.syncReminders).
+let syncingReminders = false;
+function syncPlannerReminders() {
+  if (!localPlanner || syncingReminders) return;
+  syncingReminders = true;
+  try {
+    const list = config.load().reminders || [];
+    const { add, done } = syncReminders(localPlanner.list({ kinds: ['reminder'] }), list);
+    if (add.length) updateConfig({ reminders: [...list, ...add] });
+    localPlanner.markPushed(add.map((r) => r.planId));
+    for (const id of done) localPlanner.complete(id);
+  } catch (err) {
+    console.warn('[capri] planner reminders:', err.message);
+  } finally {
+    syncingReminders = false;
+  }
+}
 function pimMcpToken() {
   let sealed = config.load().pimMcpToken;
   let token;
@@ -546,7 +565,11 @@ function rebuildTray() {
     const sameDay = d.toDateString() === new Date().toDateString();
     return new Intl.DateTimeFormat(resolveLang(cfg.lang), sameDay ? { hour: '2-digit', minute: '2-digit' } : { weekday: 'short', hour: '2-digit', minute: '2-digit' }).format(d);
   };
-  const cancelReminder = (id) => updateConfig({ reminders: (config.load().reminders || []).filter((r) => r.id !== id) });
+  const cancelReminder = (id) => {
+    const planId = (config.load().reminders || []).find((r) => r.id === id)?.planId;
+    updateConfig({ reminders: (config.load().reminders || []).filter((r) => r.id !== id) });
+    if (planId) try { localPlanner.complete(planId); } catch {} // cancelled: done in her planner too
+  };
 
   const menu = Menu.buildFromTemplate([
     { label: t.online(PORT), enabled: false },
@@ -1156,6 +1179,7 @@ function registerIpc() {
     }
     const next = updateConfig(patch);
     if (telegramChanged) applyTelegram();
+    if (Array.isArray(patch?.reminders)) syncPlannerReminders(); // one may have rung
     return next;
   });
   ipcMain.handle('pim:setup', async (_e, choice) => {
@@ -1640,7 +1664,8 @@ function main() {
   app.whenReady().then(() => {
     if (!['codex', 'claude', 'both'].includes(config.load().assistant)) config.save({ assistant: activeAssistant().id });
     desktopCli = new desktop.Cli(desktop.BIN, path.join(app.getPath('userData'), 'agent-desktop'));
-    localPlanner = new Planner(path.join(app.getPath('userData'), 'planner.json'));
+    localPlanner = new Planner(path.join(app.getPath('userData'), 'planner.json'), { onChange: () => syncPlannerReminders() });
+    syncPlannerReminders();
     serveProtocol();
     registerIpc();
     createOverlay();
