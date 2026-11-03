@@ -302,9 +302,12 @@ function pimService() {
 let pimMcpHttp = null;
 function pimMcpToken() {
   const cfg = config.load();
-  if (cfg.pimMcpToken) return setup.openKeys({ token: cfg.pimMcpToken }).token;
-  const token = randomBytes(32).toString('base64url');
-  config.save({ pimMcpToken: setup.sealKey(token) });
+  if (cfg.pimMcpToken?.startsWith('dpapi:')) return setup.openMcpCapability();
+  const token = cfg.pimMcpToken
+    ? setup.openKeys({ token: cfg.pimMcpToken }).token
+    : randomBytes(32).toString('base64url');
+  if (!token) throw new Error('Unable to migrate the PIM capability');
+  config.save({ pimMcpToken: setup.sealMcpCapability(token) });
   return token;
 }
 

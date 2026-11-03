@@ -8,7 +8,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn, execFile } = require('node:child_process');
+const { spawn, execFile, execFileSync } = require('node:child_process');
 const { safeStorage } = require('electron');
 const ollama = require('./ollama');
 
@@ -145,6 +145,22 @@ function openKey(stored) {
 
 const openKeys = (apiKeys = {}) => Object.fromEntries(Object.entries(apiKeys).map(([id, v]) => [id, openKey(v)]));
 
+const pimHeadersScript = path.join(__dirname, '..', '..', 'scripts', 'pim-headers.ps1');
+const pimHeadersArgs = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', pimHeadersScript];
+
+function sealMcpCapability(token) {
+  return execFileSync('powershell.exe', [...pimHeadersArgs, '-Protect'], {
+    encoding: 'utf8', input: token, windowsHide: true,
+  }).trim();
+}
+
+function openMcpCapability() {
+  return execFileSync('powershell.exe', [...pimHeadersArgs, '-TokenOnly'], {
+    encoding: 'utf8', windowsHide: true,
+  }).trim();
+}
+
 module.exports = {
-  MODELS, KEY_PAGES, ollamaState, installOllama, startOllama, pullModel, launchThroughOllama, sealKey, openKeys,
+  MODELS, KEY_PAGES, ollamaState, installOllama, startOllama, pullModel, launchThroughOllama,
+  sealKey, openKeys, sealMcpCapability, openMcpCapability,
 };
