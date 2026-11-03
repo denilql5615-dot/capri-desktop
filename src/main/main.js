@@ -29,6 +29,7 @@ const desktop = require('./desktop');
 const agent = require('./agent');
 const chatLog = require('./chats');
 const notes = require('./notes');
+const pim = require('./pim');
 const telegram = require('./telegram');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
@@ -381,7 +382,9 @@ function resolveLang(setting) {
 
 // What the overlay gets: `lang` is the resolved one, `langSetting` what the user picked.
 function rendererConfig() {
-  const { apiKeys, phoneToken, telegramToken, ...cfg } = config.load(); // secrets stay in the main process
+  const loaded = config.load();
+  const cfg = pim.publicConfig(loaded); // secrets stay in the main process
+  const { apiKeys } = loaded;
   return { ...cfg, keys: Object.keys(apiKeys || {}), assistant: activeAssistant().id, lang: resolveLang(cfg.lang), langSetting: cfg.lang, floorGap: overlayArea().gap };
 }
 
@@ -1036,6 +1039,7 @@ function registerIpc() {
       patch = { ...patch, telegramToken: patch.telegramToken ? setup.sealKey(patch.telegramToken.trim()) : null, telegramChatId: null };
       telegramChanged = true;
     }
+    if (patch?.pimSecrets) patch = { ...patch, pimSecrets: pim.sealSecrets(patch.pimSecrets, setup.sealKey) };
     // "запомни…" in her chat: a note in her memory too
     if (Array.isArray(patch?.memories)) {
       const had = new Set(config.load().memories || []);

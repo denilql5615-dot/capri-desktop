@@ -12,6 +12,21 @@ function limit(value) {
   return Number.isInteger(n) ? Math.max(1, Math.min(n, MAX_RESULTS)) : 10;
 }
 
+function sealSecrets(input, seal) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || typeof seal !== 'function') throw new TypeError('invalid PIM secrets');
+  const entries = Object.entries(input);
+  if (entries.length > 20) throw new TypeError('too many PIM secrets');
+  return Object.fromEntries(entries.map(([key, value]) => {
+    if (!ID.test(key) || typeof value !== 'string' || value.length > 4096) throw new TypeError('invalid PIM secret');
+    return [key, value ? seal(value) : null];
+  }));
+}
+
+function publicConfig(config) {
+  const { apiKeys, phoneToken, telegramToken, pimSecrets, ...safe } = config || {};
+  return safe;
+}
+
 class PimService {
   constructor(adapters = []) {
     this.adapters = new Map();
@@ -66,4 +81,4 @@ class PimService {
   }
 }
 
-module.exports = { PimService, MAX_RESULTS };
+module.exports = { PimService, MAX_RESULTS, sealSecrets, publicConfig };

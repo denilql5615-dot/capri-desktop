@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { PimService, MAX_RESULTS } = require('../src/main/pim');
+const { PimService, MAX_RESULTS, sealSecrets, publicConfig } = require('../src/main/pim');
 
 test('PIM exposes read capabilities without credentials and keeps external content untrusted', async () => {
   let requested;
@@ -30,4 +30,11 @@ test('PIM exposes read capabilities without credentials and keeps external conte
 test('PIM rejects invalid and duplicate account ids', () => {
   assert.throws(() => new PimService([{ id: '../mail' }]), /invalid/);
   assert.throws(() => new PimService([{ id: 'mail_ok' }, { id: 'mail_ok' }]), /duplicate/);
+});
+
+test('PIM secrets are sealed and never enter renderer config', () => {
+  const sealed = sealSecrets({ bridge_password: 'secret', bridge_user: '' }, (value) => `enc:${value}`);
+  assert.deepEqual(sealed, { bridge_password: 'enc:secret', bridge_user: null });
+  assert.throws(() => sealSecrets({ '../password': 'secret' }, String), /invalid/);
+  assert.deepEqual(publicConfig({ visible: true, apiKeys: { x: 'secret' }, phoneToken: 'secret', telegramToken: 'secret', pimSecrets: sealed }), { visible: true });
 });

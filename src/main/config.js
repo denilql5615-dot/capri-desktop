@@ -62,6 +62,8 @@ const DEFAULTS = {
   phoneToken: null,  // the phone's key, encrypted with your Windows account (setup.sealKey)
   telegramToken: null,
   telegramChatId: null,
+  pimAccounts: [],
+  pimSecrets: {},
 };
 
 const OLD_PROMPT = 'Капри, Клод, Кодекс. Клод, собери документ в docx. Кодекс, сделай таблицу. Капри, открой YouTube.';
