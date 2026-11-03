@@ -44,3 +44,15 @@ test('her model\'s facts are checked; an answer that isn\'t JSON gives none', ()
   const [, user] = notes.extractMessages([{ role: 'user', content: 'у меня кот' }, { role: 'assistant', content: 'мяу' }], ['Имя']);
   assert.match(user.content, /already has: Имя[\s\S]*USER: у меня кот\nCAPRI: мяу/);
 });
+
+test('her notes go in the vault you opened last', () => {
+  const appData = tmp();
+  const [old, fresh] = [tmp(), tmp()];
+  fs.mkdirSync(path.join(appData, 'obsidian'));
+  fs.writeFileSync(path.join(appData, 'obsidian', 'obsidian.json'), JSON.stringify({ vaults: {
+    a: { path: old, ts: 1, open: true },
+    b: { path: fresh, ts: 2, open: true },
+  } }));
+  assert.equal(notes.dirOf({ appData, documents: 'X' }), path.join(fresh, 'Capri'));
+  assert.equal(notes.dirOf({ notesDir: 'D:/mine', appData, documents: 'X' }), 'D:/mine');
+});

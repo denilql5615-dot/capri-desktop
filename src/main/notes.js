@@ -15,11 +15,11 @@ const MAX_TEXT = 600;
 const ALWAYS = 6; // notes about you she always has in mind
 const MATCHED = 5; // and the ones that fit what you just said
 
-// The open Obsidian vault (or the first one), from Obsidian's own list of them.
+// Your Obsidian vault, from Obsidian's own list of them: the one opened last among those open (else any)
 function obsidianVault(appData) {
   try {
     const { vaults = {} } = JSON.parse(fs.readFileSync(path.join(appData, 'obsidian', 'obsidian.json'), 'utf8'));
-    const list = Object.values(vaults).filter((v) => v?.path && fs.existsSync(v.path));
+    const list = Object.values(vaults).filter((v) => v?.path && fs.existsSync(v.path)).sort((a, b) => (b.ts || 0) - (a.ts || 0));
     return (list.find((v) => v.open) || list[0])?.path || null;
   } catch {
     return null;
