@@ -8,7 +8,7 @@ const {
   app, BrowserWindow, Tray, Menu, ipcMain, screen, protocol, net, shell, globalShortcut, nativeImage,
   clipboard, ClipboardItem, dialog, powerMonitor, desktopCapturer,
 } = require('electron');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, randomBytes } = require('node:crypto');
 
 const config = require('./config');
 const { TRAY, LANGS } = require('./labels');
@@ -31,6 +31,7 @@ const chatLog = require('./chats');
 const notes = require('./notes');
 const pim = require('./pim');
 const pimImap = require('./pim-imap');
+const pimMcp = require('./pim-mcp');
 const telegram = require('./telegram');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
@@ -296,6 +297,27 @@ function pimService() {
   if (!account || !secrets.bridge_user || !secrets.bridge_password) return null;
   const adapter = pimImap.createImapAdapter({ ...account, user: secrets.bridge_user, password: secrets.bridge_password });
   return new pim.PimService([adapter]);
+}
+
+let pimMcpHttp = null;
+function pimMcpToken() {
+  const cfg = config.load();
+  if (cfg.pimMcpToken) return setup.openKeys({ token: cfg.pimMcpToken }).token;
+  const token = randomBytes(32).toString('base64url');
+  config.save({ pimMcpToken: setup.sealKey(token) });
+  return token;
+}
+
+async function applyPimMcp() {
+  if (pimMcpHttp) return true;
+  const service = pimService();
+  if (!service) return false;
+  try {
+    pimMcpHttp = await pimMcp.start({ service, token: pimMcpToken(), port: config.load().pimMcpPort });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function withPim(messages, said) {
@@ -1091,6 +1113,7 @@ function registerIpc() {
         pimAccounts: [{ id: 'proton_work', provider: 'proton', role: 'work', host, port }],
         pimSecrets: pim.sealSecrets({ bridge_user: user, bridge_password: password }, setup.sealKey),
       });
+      applyPimMcp();
       return { ok: true };
     } catch {
       return { ok: false, error: 'Bridge connection failed' };
@@ -1550,6 +1573,7 @@ function main() {
     speech.ensureWhisper(config.load().voice);
     applyPhone();
     applyTelegram();
+    applyPimMcp();
     // what you asked her to remember before her notes existed: into her notes, once
     const { memories = [] } = config.load();
     if (memories.length && !notes.list(notesDir()).length) {

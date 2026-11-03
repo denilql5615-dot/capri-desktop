@@ -36,7 +36,7 @@ test('PIM secrets are sealed and never enter renderer config', () => {
   const sealed = sealSecrets({ bridge_password: 'secret', bridge_user: '' }, (value) => `enc:${value}`);
   assert.deepEqual(sealed, { bridge_password: 'enc:secret', bridge_user: null });
   assert.throws(() => sealSecrets({ '../password': 'secret' }, String), /invalid/);
-  assert.deepEqual(publicConfig({ visible: true, apiKeys: { x: 'secret' }, phoneToken: 'secret', telegramToken: 'secret', pimSecrets: sealed }), { visible: true });
+  assert.deepEqual(publicConfig({ visible: true, apiKeys: { x: 'secret' }, phoneToken: 'secret', telegramToken: 'secret', pimSecrets: sealed, pimMcpToken: 'secret' }), { visible: true });
   assert.deepEqual(parseLocalEndpoint('127.0.0.1:1143'), { host: '127.0.0.1', port: 1143 });
   assert.throws(() => parseLocalEndpoint('imap.example.test:993'), /local/);
 });

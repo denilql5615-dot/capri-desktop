@@ -64,6 +64,8 @@ const DEFAULTS = {
   telegramChatId: null,
   pimAccounts: [],
   pimSecrets: {},
+  pimMcpPort: 47824,
+  pimMcpToken: null,
 };
 
 const OLD_PROMPT = 'Капри, Клод, Кодекс. Клод, собери документ в docx. Кодекс, сделай таблицу. Капри, открой YouTube.';

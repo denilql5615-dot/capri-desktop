@@ -25,7 +25,7 @@ function sealSecrets(input, seal) {
 }
 
 function publicConfig(config) {
-  const { apiKeys, phoneToken, telegramToken, pimSecrets, ...safe } = config || {};
+  const { apiKeys, phoneToken, telegramToken, pimSecrets, pimMcpToken, ...safe } = config || {};
   return safe;
 }
 
