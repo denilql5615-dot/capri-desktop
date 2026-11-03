@@ -15,6 +15,7 @@ import { Reminders, clock } from './reminders.js';
 import { Look } from './look.js';
 import { Skin, SKINS } from './skin.js';
 import { Pc } from './pc.js';
+import { POSES, renderPose } from './phonepack.js';
 import { linesFor } from './lines.js';
 import { pick, fmt, reducedMotion } from './util.js';
 
@@ -722,6 +723,12 @@ async function boot() {
       case 'remindIn': // --dev: a reminder `ms` from now
         reminders.add(Date.now() + (cmd.ms ?? 3000), cmd.text ?? '');
         break;
+      case 'phonePack': { // main.js: her moves as frames for the phone (phonepack.js), one pose after another
+        const poses = [];
+        for (const def of POSES) poses.push(await renderPose(image, def));
+        host.savePhonePack({ version: cmd.version, poses });
+        break;
+      }
       case 'bond': // --dev: sync points from a source (as if earned)
         bond.add(cmd.source || 'chat', cmd.n || 1);
         break;

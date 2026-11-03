@@ -35,6 +35,7 @@ const pimMcp = require('./pim-mcp');
 const pimIcs = require('./pim-ics');
 const telegram = require('./telegram');
 const { Planner, syncReminders } = require('./planner');
+const phonepack = require('./phonepack');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
 const activeHooks = () => activeAssistant().hooks;
@@ -224,6 +225,11 @@ function createOverlay() {
   overlay.once('ready-to-show', () => {
     fitOverlay();
     overlay.showInactive();
+    // her moves for the phone, drawn again when what draws them changed (phonepack.js); after she's settled in
+    setTimeout(() => {
+      const v = phonepack.version(ROOT);
+      if (phonePack()?.version !== v) sendCommand('phonePack', { version: v });
+    }, 8000);
   });
   overlay.webContents.on('render-process-gone', (_e, details) => {
     console.error('[capri] renderer gone:', details.reason);
@@ -820,6 +826,16 @@ function runHooks(action, { quiet = false } = {}) {
 // ---------------------------------------------------------------- the phone (phone.js)
 let phoneBridge = null;
 const phoneLinkFile = () => path.join(app.getPath('userData'), 'phone-link.txt');
+
+// her moves for the phone (phonepack.js): read once, zipped, kept until the overlay draws them again
+const phonePackDir = () => path.join(app.getPath('userData'), 'phone-pack');
+let phonePackCache;
+function phonePack() {
+  if (phonePackCache === undefined) {
+    try { phonePackCache = phonepack.load(phonePackDir()); } catch (err) { console.warn('[capri] phone pack:', err.message); phonePackCache = null; }
+  }
+  return phonePackCache;
+}
 // GENESIS (the Capri before her) wrote the same file: its key, so the phone already paired keeps working
 const GENESIS_LINK = path.join(app.getPath('appData'), 'Capri', 'phone-link.txt');
 
@@ -877,6 +893,7 @@ async function applyPhone() {
       speak: (text) => (config.load().voice.tts ? speech.speak(text, config.load().voice) : Promise.resolve(null)),
       event: (kind) => PHONE_REACT[kind] && sendCommand('phone', { kind: PHONE_REACT[kind] }),
       control: phoneControl,
+      sprites: phonePack,
       applyControl: (patch) => {
         if (typeof patch.voice === 'boolean') updateConfig({ voice: { ...config.load().voice, tts: patch.voice } });
         return phoneControl();
@@ -1195,6 +1212,16 @@ function registerIpc() {
     shell.openExternal(`obsidian://open?path=${encodeURIComponent(path.join(root, entry.obsidian))}`);
   });
   ipcMain.handle('hub:menu', () => (trayMenu ? menuModel(trayMenu) : []));
+  ipcMain.on('phonepack:save', (_e, pack) => {
+    try {
+      phonepack.save(phonePackDir(), pack);
+      phonePackCache = undefined;
+      const drawn = phonePack();
+      console.log(`[capri] phone pack ${drawn?.version}: ${drawn?.poses.length} poses, ${Math.round((drawn?.zip.length || 0) / 1024)} KB`);
+    } catch (err) {
+      console.warn('[capri] phone pack:', err.message);
+    }
+  });
   ipcMain.on('hub:click', (_e, id) => {
     const item = menuItemAt(trayMenu, id);
     if (item?.enabled && item.type !== 'submenu') item.click();

@@ -127,9 +127,17 @@ class PhoneBridge {
     const got = String(req.headers['x-capri-token'] ?? url.searchParams.get('token') ?? '');
     if (!tokenMatches(got, this.d.token())) return this.send(res, 401, { error: 'bad token' });
     try {
-      if (req.method === 'GET' && url.pathname === '/ping') return this.send(res, 200, { ok: true, pose: '', sprites: '' });
-      if (req.method === 'GET' && url.pathname === '/sprites') return this.send(res, 200, { pack: 'capri_desktop', version: '', poses: [] });
-      if (req.method === 'GET' && url.pathname === '/sprites/pack.zip') return this.send(res, 404, { error: 'no sprites' });
+      // her moves as a pack of frames (main.js phonepack.js); none drawn yet: the phone keeps its ragdoll
+      const pack = this.d.sprites?.() || null;
+      if (req.method === 'GET' && url.pathname === '/ping') return this.send(res, 200, { ok: true, pose: '', sprites: pack?.version || '' });
+      if (req.method === 'GET' && url.pathname === '/sprites') {
+        return this.send(res, 200, { pack: pack?.pack || 'capri_pc', version: pack?.version || '', poses: pack?.poses || [] });
+      }
+      if (req.method === 'GET' && url.pathname === '/sprites/pack.zip') {
+        if (!pack) return this.send(res, 404, { error: 'no sprites' });
+        res.writeHead(200, { 'content-type': 'application/zip', 'content-length': pack.zip.length });
+        return res.end(pack.zip);
+      }
       if (req.method === 'GET' && url.pathname.startsWith('/audio/')) {
         this.pruneAudio();
         const a = this.audio.get(url.pathname.slice('/audio/'.length));

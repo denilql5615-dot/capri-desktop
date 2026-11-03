@@ -56,3 +56,22 @@ test('bridge: token, chat with the phone note, voice, events, control', async ()
     await bridge.stop();
   }
 });
+
+test('bridge: her moves for the phone, once drawn; none yet, the phone keeps its ragdoll', async () => {
+  let pack = null;
+  const bridge = new PhoneBridge({ token: () => 'k', sprites: () => pack });
+  const port = await bridge.start(0, '127.0.0.1');
+  const get = (p) => fetch(`http://127.0.0.1:${port}${p}${p.includes('?') ? '&' : '?'}token=k`);
+  try {
+    assert.deepStrictEqual(await (await get('/sprites')).json(), { pack: 'capri_pc', version: '', poses: [] });
+    assert.strictEqual((await get('/sprites/pack.zip')).status, 404);
+    pack = { pack: 'capri_pc', version: 'abcdef012345', poses: [{ id: 'pack:capri_pc/stand', frames: 20, fps: 12 }], zip: Buffer.from('PK-zip') };
+    assert.strictEqual((await (await get('/ping')).json()).sprites, 'abcdef012345');
+    assert.deepStrictEqual((await (await get('/sprites')).json()).poses, pack.poses);
+    const zip = await get('/sprites/pack.zip');
+    assert.strictEqual(zip.headers.get('content-type'), 'application/zip');
+    assert.strictEqual(Buffer.from(await zip.arrayBuffer()).toString(), 'PK-zip');
+  } finally {
+    await bridge.stop();
+  }
+});
