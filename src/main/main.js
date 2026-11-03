@@ -692,8 +692,11 @@ function routeOf(text) {
   const cfg = config.load();
   if (cfg.provider === 'claude') return null;
   const named = workers.route(text);
-  if (named) return named;
-  return cfg.provider === 'ollama' && desktopCli.installed && agent.isComputerTask(text) ? 'computer' : null;
+  if (named === 'stop') return named;
+  // hands on the desktop are hers alone: "Клод, открой блокнот и напиши…" is still hers to do (Claude and
+  // Codex can't touch your windows)
+  if (cfg.provider === 'ollama' && desktopCli.installed && agent.isComputerTask(text)) return 'computer';
+  return named;
 }
 
 // ---------------------------------------------------------------- her hands on the PC (agent.js, policy.js)
