@@ -759,9 +759,9 @@ function registerIpc() {
       // Claude or Codex named in your message: that one answers, as her (workers.js)
       const worker = cfg.provider === 'claude' ? null : workers.route(yourWords(messages));
       const text = worker === 'codex' ? await workers.askCodex(cfg, messages, send, abort.signal)
-        : worker === 'claude' ? await llm.chat('claude', llmConfig(cfg), { model: null, messages }, send, abort.signal)
+        : worker === 'claude' ? await workers.askClaude(cfg, messages, send, abort.signal)
         : await chatWithFallback(cfg, messages, send, abort.signal, () => streamed);
-      if (cfg.provider === 'claude' || worker === 'claude') saveMemory({ claude: llm.claudeMemory() });
+      if (cfg.provider === 'claude') saveMemory({ claude: llm.claudeMemory() });
       return { ok: true, text };
     } catch (err) {
       return { ok: false, error: abort.signal.aborted ? 'stopped' : err.message, code: err.code || null };

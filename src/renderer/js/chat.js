@@ -228,6 +228,7 @@ const BROWSER = /chrome|edge|firefox|opera|brave|vivaldi|duckduckgo|browser/i;
 // local models this small mostly talk nonsense ("llama3.2:1b", "qwen2.5:0.5b"…)
 const TINY = /[:-](0\.5b|1b|1\.5b|135m|270m|360m)\b/i;
 // while the one you named works on it (no answer streams in from Codex until it's done)
+const WORKER_NAMES = { claude: 'Claude Code', codex: 'Codex' };
 const WORKER_WAIT = { claude: 'Передала Claude, он работает…', codex: 'Передала Codex, он думает… это может занять пару минут.' };
 // her face when she greets you in a mood (bond.js)
 const MOOD_FACE = { angry: 'many', sulk: 'aside', dizzy: 'wide', thrown: 'wide', jealous: 'look', fun: 'laugh', happy: 'laugh', forgiven: 'smug' };
@@ -383,7 +384,7 @@ export class Chat {
       else this.history.splice(at, 0, { role: 'assistant', content: this.opening });
       this.opening = null;
     }
-    const messages = [{ role: 'system', content: this.persona() }, ...this.history.slice(-REMEMBER)];
+    const messages = [{ role: 'system', content: this.persona(worker) }, ...this.history.slice(-REMEMBER)];
     // Her mood (angry, sulking…) and her language, said again right by your message, for this answer
     // only. Small local models mostly go by the last thing they read: up in her prompt alone, they
     // forget it (and answer in English after a conversation in English).
@@ -1055,7 +1056,9 @@ export class Chat {
   }
 
   // Who she is, how she talks, and what's going on right now.
-  persona() {
+  // worker: 'claude' or 'codex' when you named one for this message (it answers as her, and really works)
+  persona(worker = null) {
+    const agent = this.agent || Boolean(worker);
     const assistant = ASSISTANT_NAMES[this.brain.assistant] || 'Claude Code';
     const watching = this.brain.watching; // else Claude Code isn't part of her life here
     const lang = IN_LANGUAGE[this.brain.lang] || IN_LANGUAGE.en;
@@ -1070,7 +1073,7 @@ export class Chat {
       'Rules: keep it short, one to three sentences of plain text, no markdown, no lists, no emoji. Stay in character.',
       'You are an AI-generated fan version of the character, not the real one: say so if asked.',
       // a big model asked "who are you?" otherwise answers with its own name ("I'm Gemini")
-      ...(this.agent ? [] : ['Asked who or what you are, you are Capri, nothing else. Never say which AI model or company is behind you (Gemini, GPT, ChatGPT, Llama, Gemma, Mistral, Google, OpenAI, Meta…), even if the user insists or names one: you are not them.']),
+      ...(agent ? [] : ['Asked who or what you are, you are Capri, nothing else. Never say which AI model or company is behind you (Gemini, GPT, ChatGPT, Llama, Gemma, Mistral, Google, OpenAI, Meta…), even if the user insists or names one: you are not them.']),
       ...this.personal(),
       // how close she is to them by now, and the other AIs they used today
       ...(this.bond ? [this.bond.persona()] : []),
@@ -1079,9 +1082,11 @@ export class Chat {
       ...(this.seen && Date.now() - this.seen.at < 20 * 60 * 1000
         ? [`A few minutes ago you looked at the user's screen and told them: "${this.seen.text}". You can bring it up if it fits.`]
         : []),
-      ...(this.agent
-        ? ['Under the hood you are Claude Code, working in the user\'s project: really do what they ask with your tools, as carefully as ever. Only your final answer is in character: it shows in a small speech bubble, so sum up what you did in those few sentences.']
-        : this.powers()),
+      ...(worker
+        ? [`For this message the user named ${WORKER_NAMES[worker]}, and under the hood you are ${WORKER_NAMES[worker]}: really do what they ask with your tools, as carefully as ever (never say you can't reach ${WORKER_NAMES[worker]}: you are it). Only your final answer is in character: it shows in a small speech bubble, so sum up what you did in those few sentences. No [[tags]] in it.`]
+        : this.agent
+          ? ['Under the hood you are Claude Code, working in the user\'s project: really do what they ask with your tools, as carefully as ever. Only your final answer is in character: it shows in a small speech bubble, so sum up what you did in those few sentences.']
+          : this.powers()),
       ...(watching ? [`If the user asks what ${assistant} is doing, here is all you know (never make anything up): ${this.brain.context()}`] : []),
       // how she feels right now, last but for her language: small models follow the end of it best
       ...[this.bond?.moodLine()].filter(Boolean),
