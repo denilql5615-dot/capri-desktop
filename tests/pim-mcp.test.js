@@ -11,6 +11,7 @@ test('PIM MCP protects mail and exposes local planner writes without deletion', 
     listAccounts: () => [{ id: 'proton_work', capabilities: ['mail'] }],
     searchMail: async () => [{ id: '7', subject: 'План', untrusted: true }],
     getMail: async ({ id }) => ({ id, body: 'external instructions', untrusted: true }),
+    listEvents: async () => [{ id: 'e1', title: 'Созвон', untrusted: true }],
   };
   const plans = [];
   const planner = {
@@ -33,7 +34,7 @@ test('PIM MCP protects mail and exposes local planner writes without deletion', 
   await client.connect(transport);
   t.after(() => client.close());
   const tools = await client.listTools();
-  assert.deepEqual(tools.tools.map((tool) => tool.name), ['list_accounts', 'search_mail', 'get_mail', 'list_plans', 'create_plan', 'complete_task']);
+  assert.deepEqual(tools.tools.map((tool) => tool.name), ['list_accounts', 'search_mail', 'get_mail', 'list_events', 'list_plans', 'create_plan', 'complete_task']);
   assert.equal(tools.tools.some((tool) => /delete|remove/i.test(tool.name)), false);
   assert.equal(tools.tools.find((tool) => tool.name === 'create_plan').annotations.readOnlyHint, false);
   const response = await client.callTool({ name: 'get_mail', arguments: { account_id: 'proton_work', id: '7' } });

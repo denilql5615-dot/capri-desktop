@@ -32,6 +32,7 @@ const notes = require('./notes');
 const pim = require('./pim');
 const pimImap = require('./pim-imap');
 const pimMcp = require('./pim-mcp');
+const pimIcs = require('./pim-ics');
 const telegram = require('./telegram');
 const { Planner } = require('./planner');
 const { ASSISTANTS, assistant } = require('./assistants');
@@ -302,6 +303,9 @@ function pimService() {
     if (account.id === 'gmail_reserve' && secrets.gmail_user && secrets.gmail_app_password) {
       adapters.push(pimImap.createImapAdapter({ ...account, user: secrets.gmail_user, password: secrets.gmail_app_password }));
     }
+    if (account.id === 'proton_calendar' && secrets.calendar_ics_url) {
+      adapters.push(pimIcs.createIcsAdapter({ ...account, url: secrets.calendar_ics_url }));
+    }
   }
   return adapters.length ? new pim.PimService(adapters) : null;
 }
@@ -532,6 +536,7 @@ function rebuildTray() {
     { label: t.chats, click: openChats },
     { label: t.notes, click: openNotes },
     { label: 'Proton Mail Bridge…', click: () => sendCommand('setupProton') },
+    { label: 'Proton Calendar…', click: () => sendCommand('setupCalendar') },
     { label: 'Gmail reserve…', click: () => sendCommand('setupGmail') },
     { label: t.lookNow, click: () => sendCommand('look') },
     {
@@ -1161,6 +1166,24 @@ function registerIpc() {
       return { ok: true };
     } catch {
       return { ok: false, error: 'Gmail connection failed' };
+    }
+  });
+  ipcMain.handle('pim:calendar-setup', async (_e, choice) => {
+    try {
+      const url = String(choice?.url || '').trim();
+      const account = { id: 'proton_calendar', provider: 'proton', role: 'calendar' };
+      const adapter = pimIcs.createIcsAdapter({ ...account, url });
+      const now = Date.now();
+      await adapter.listEvents({ from: new Date(now).toISOString(), to: new Date(now + 30 * 86400000).toISOString(), limit: 1 });
+      const cfg = config.load();
+      updateConfig({
+        pimAccounts: [...(cfg.pimAccounts || []).filter((item) => item.id !== account.id), account],
+        pimSecrets: { ...cfg.pimSecrets, ...pim.sealSecrets({ calendar_ics_url: url }, setup.sealKey) },
+      });
+      await restartPimMcp();
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'Proton Calendar connection failed' };
     }
   });
   ipcMain.handle('demo:window', (_e, open) => demoWindow(open));

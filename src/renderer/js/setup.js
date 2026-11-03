@@ -35,6 +35,16 @@ const GMAIL = {
     checking: 'Checking Gmail…', ready: 'Reserve Gmail is connected read-only.', failed: 'Could not connect. Check the address and app password.', save: 'Next',
   },
 };
+const CALENDAR = {
+  ru: {
+    url: 'Секретная ссылка Proton Calendar?', urlHow: 'Proton Calendar → Настройки → Календари → Поделиться с кем угодно → Полный доступ → Создать ссылку. Вставь её сюда, не в чат.',
+    checking: 'Проверяю календарь…', ready: 'Proton Calendar подключён только для чтения.', failed: 'Не подключилось. Нужна полная секретная ссылка Proton Calendar.', save: 'Подключить',
+  },
+  en: {
+    url: 'Secret Proton Calendar link?', urlHow: 'Proton Calendar → Settings → Calendars → Share with anyone → Full view → Create link. Paste it here, not in chat.',
+    checking: 'Checking calendar…', ready: 'Proton Calendar is connected read-only.', failed: 'Could not connect. Use the full secret Proton Calendar link.', save: 'Connect',
+  },
+};
 
 export class Setup {
   constructor({ guide, panel, host, brain, capri, voice }) {
@@ -117,6 +127,17 @@ export class Setup {
       if (!password?.text) return;
       this.working(t.checking);
       const result = await this.host.setupGmail({ user: user.text, password: password.text });
+      await this.guide.ask({ kind: result.ok ? 'done' : 'error', face: result.ok ? 'grin' : 'wide', line: result.ok ? t.ready : t.failed, actions: [{ id: 'ok', label: this.t.ok, primary: true }] });
+    });
+  }
+
+  async calendar() {
+    await this.guide.scene(async () => {
+      const t = CALENDAR[this.brain.lang] || CALENDAR.en;
+      const url = await this.guide.askText({ face: 'look', line: t.url, quote: t.urlHow, placeholder: 'https://calendar.proton.me/...', secret: true, send: t.save, tag: 'ICS' });
+      if (!url?.text) return;
+      this.working(t.checking);
+      const result = await this.host.setupCalendar({ url: url.text });
       await this.guide.ask({ kind: result.ok ? 'done' : 'error', face: result.ok ? 'grin' : 'wide', line: result.ok ? t.ready : t.failed, actions: [{ id: 'ok', label: this.t.ok, primary: true }] });
     });
   }

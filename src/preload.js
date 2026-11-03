@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('host', {
   createPlan: (input) => ipcRenderer.invoke('planner:create', input),
   completePlan: (id) => ipcRenderer.invoke('planner:complete', id),
   setupPim: (choice) => ipcRenderer.invoke('pim:setup', choice),
+  setupCalendar: (choice) => ipcRenderer.invoke('pim:calendar-setup', choice),
   setupGmail: (choice) => ipcRenderer.invoke('pim:gmail-setup', choice),
   listSounds: () => ipcRenderer.invoke('sounds:list'),
   hooksStatus: () => ipcRenderer.invoke('hooks:status'),

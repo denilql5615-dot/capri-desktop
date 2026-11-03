@@ -695,6 +695,9 @@ async function boot() {
       case 'setupProton':
         setup.proton();
         break;
+      case 'setupCalendar':
+        setup.calendar();
+        break;
       case 'setupGmail':
         setup.gmail();
         break;

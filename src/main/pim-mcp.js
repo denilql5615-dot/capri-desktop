@@ -38,6 +38,16 @@ function makeServer(service, planner) {
     try { return result({ message: await service.getMail({ accountId: account_id, id }) }); } catch { return failed(); }
   });
 
+  server.registerTool('list_events', {
+    title: 'List calendar events', description: 'List read-only events from an explicitly selected calendar account.',
+    inputSchema: {
+      account_id: z.string(), from: z.string().max(80), to: z.string().max(80),
+      limit: z.number().int().min(1).max(25).default(10),
+    }, annotations: readOnly,
+  }, async ({ account_id, from, to, limit }) => {
+    try { return result({ events: await service.listEvents({ accountId: account_id, from, to, limit }) }); } catch { return failed(); }
+  });
+
   server.registerTool('list_plans', {
     title: 'List local plans', description: 'List local events, tasks, reminders, and notes.',
     inputSchema: { kinds: z.array(z.enum(['event', 'task', 'reminder', 'note'])).optional(), status: z.enum(['open', 'done']).optional() }, annotations: readOnly,
