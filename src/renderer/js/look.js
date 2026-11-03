@@ -5,13 +5,16 @@
 // disk), her eyes on the window in front while a scanline sweeps it, and one or two sentences from
 // her AI, in character. Her chat remembers what she said, for a while.
 
-import { fmt, rand } from './util.js';
+import { fmt, pick, rand, sleep } from './util.js';
 import { clean, mood } from './chat.js';
 
 const FIRST_AFTER = 2 * 60 * 1000; // turned on: her first look a couple of minutes later
 const EVERY = [8, 15];             // then every 8 to 15 minutes…
 const ACTIVE_MS = 90 * 1000;       // …if you're at your PC (the pointer moved lately)…
 const SAME_WINDOW_MS = 25 * 60 * 1000; // …and on another window than last time (or a good while later)
+// now and then after a look on her own, a prank: she points at where a button usually is, sparks, and
+// says she pressed it. Pretend: nothing is clicked, nothing more is read
+const PRANK_CHANCE = 0.3;
 // what her AI is asked about the picture
 const PROMPT = 'This is a picture of the user\'s screen right now. If you see a small figure with a big red mane, that\'s you: leave it out. Name one concrete thing you really see on it (the app or website, a title, a picture, a word), then react to it in character: curious, playful or teasing. One or two short sentences, talking to them.';
 
@@ -116,6 +119,30 @@ export class Look {
     this.voice.play('charge');
   }
 
+  // The prank: her arm shoots out at the bottom right of the window in front (where an OK or Send button
+  // usually sits), sparks fly off her fingertip, and she says she pressed it. Only pointing: no click.
+  async prank() {
+    if (this.pranking || !this.free()) return false;
+    const win = this.capri.windows.wins.find((w) => w.id === this.capri.windows.fg);
+    if (!this.capri.canPoint(win)) return false;
+    this.pranking = true;
+    const t = this.t;
+    try {
+      const spot = { x: win.x + win.w - 124, y: win.y + win.h - 54, w: 88, h: 30 };
+      if (!(await this.capri.pointAt(spot, { label: t.prankLabel }))) return false;
+      this.fx.crackle({ x: spot.x + spot.w / 2, y: spot.y + spot.h / 2 }, { life: 650, radius: 36 });
+      this.voice.play('blip');
+      const line = pick(t.prank);
+      this.panel.say({ kind: 'info', face: 'smug', line, hold: 4500 });
+      this.chat.onAnswer?.(line);
+      await sleep(3600);
+      return true;
+    } finally {
+      this.capri.stopPointing();
+      this.pranking = false;
+    }
+  }
+
   async now({ manual = false } = {}) {
     if (this.looking) return;
     this.looking = true;
@@ -150,8 +177,10 @@ export class Look {
       const text = clean(res.text).replace(/^["“«]\s*|\s*["”»]$/g, ''); // no quotes around what she says
       if (!text) return;
       this.chat.seen = { text, at: Date.now() };
-      this.panel.say({ kind: 'info', badge: 'SCAN', face: mood(text), line: text, hold: Math.min(13000, Math.max(5000, 2500 + text.length * 55)) });
+      const hold = Math.min(13000, Math.max(5000, 2500 + text.length * 55));
+      this.panel.say({ kind: 'info', badge: 'SCAN', face: mood(text), line: text, hold });
       this.chat.onAnswer?.(text); // out loud, like her answers in chat
+      if (!manual && Math.random() < PRANK_CHANCE) setTimeout(() => this.prank(), hold + 600);
     } finally {
       this.looking = false;
     }

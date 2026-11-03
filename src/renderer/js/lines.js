@@ -327,6 +327,9 @@ export const LINES = {
       noVision: '{model} ne sait pas lire les images. gemma3 sait, sur ton PC, comme Gemini en ligne : change dans mon menu › Modèle IA.',
       noAI: 'Il me faut une IA pour regarder : clic droit sur moi › Modèle IA.',
       failed: 'Je n’ai pas réussi à regarder : {error}',
+      // a fake press after a look (look.js prank): she points at where a button usually is, sparks, teases
+      prank: ['Oups. J’ai appuyé sur un truc… Je rigole, j’ai touché à rien.', 'Clic. T’inquiète, c’était pour de faux.', 'Je l’appuie ? …C’est fait. Bon, bon, non.'],
+      prankLabel: 'CLIC',
     },
     // les rappels (reminders.js) : « rappelle-moi dans 20 min de sortir le linge »
     remind: {
@@ -708,6 +711,9 @@ export const LINES = {
       noVision: '{model} can’t read pictures. gemma3 can, on your PC, and so can Gemini online: switch in my menu › AI model.',
       noAI: 'I need an AI to look: right-click me › AI model.',
       failed: 'I couldn’t look: {error}',
+      // a fake press after a look (look.js prank): she points at where a button usually is, sparks, teases
+      prank: ['Oops. I think I pressed something… Kidding, I didn’t touch a thing.', 'Click. Relax, that was pretend.', 'Want me to press it? …Done. Fine, fine, I didn’t.'],
+      prankLabel: 'CLICK',
     },
     // reminders (reminders.js): "remind me in 20 minutes to take out the laundry"
     remind: {
@@ -1083,6 +1089,9 @@ export const LINES = {
       noVision: '{model} no sabe leer imágenes. gemma3 sí, en tu PC, y Gemini en línea también: cámbialo en mi menú › Modelo de IA.',
       noAI: 'Necesito una IA para mirar: clic derecho sobre mí › Modelo de IA.',
       failed: 'No pude mirar: {error}',
+      // a fake press after a look (look.js prank): she points at where a button usually is, sparks, teases
+      prank: ['Ups. Creo que apreté algo… Es broma, no toqué nada.', 'Clic. Tranqui, era de mentira.', '¿Lo aprieto? …Listo. Vale, vale, no.'],
+      prankLabel: 'CLIC',
     },
     // recordatorios (reminders.js): «recuérdame en 20 minutos sacar la ropa»
     remind: {
@@ -1460,6 +1469,9 @@ export const LINES = {
       noVision: '{model} não sabe ler imagens. O gemma3 sabe, no seu PC, e o Gemini online também: troca no meu menu › Modelo de IA.',
       noAI: 'Preciso de uma IA pra olhar: clique direito em mim › Modelo de IA.',
       failed: 'Não consegui olhar: {error}',
+      // a fake press after a look (look.js prank): she points at where a button usually is, sparks, teases
+      prank: ['Opa. Acho que apertei alguma coisa… Brincadeira, não toquei em nada.', 'Clique. Relaxa, foi de mentira.', 'Quer que eu aperte? …Pronto. Tá, tá, não apertei.'],
+      prankLabel: 'CLIQUE',
     },
     // lembretes (reminders.js): "me lembra daqui a 20 minutos de tirar a roupa"
     remind: {
@@ -1839,6 +1851,9 @@ export const LINES = {
       noVision: '{model} не умеет читать картинки. gemma3 умеет, на твоём ПК, и Gemini онлайн тоже: поменяй в моём меню › ИИ-модель.',
       noAI: 'Чтобы смотреть, мне нужен ИИ: правый клик по мне › ИИ-модель.',
       failed: 'Не получилось посмотреть: {error}',
+      // a fake press after a look (look.js prank): she points at where a button usually is, sparks, teases
+      prank: ['Ой. Кажется, я что-то нажала… Шучу, ничего я не трогала.', 'Тык. Расслабься, это было понарошку.', 'Нажать? …Всё, нажала. Ладно-ладно, не нажимала.', 'Опа, кнопочка. Тык! …Видел бы ты своё лицо.'],
+      prankLabel: 'ТЫК',
     },
     // напоминания (reminders.js): «напомни через 20 минут снять бельё»
     remind: {
