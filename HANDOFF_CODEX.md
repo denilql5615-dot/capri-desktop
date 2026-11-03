@@ -44,6 +44,7 @@
 - agent-desktop отказывает с «private file DACL grants an untrusted principal», если запускать с домом по умолчанию → всегда передавать `AGENT_DESKTOP_HOME` = `%APPDATA%\capri-desktop\agent-desktop`.
 - agent-desktop держит общий lock — команды строго по одной.
 - Claude Code: `~/.local/bin/claude.exe` (не в PATH). `python` = заглушка Store, настоящий через полный путь.
+- **Две копии данных Капри.** Приложение Claude на Windows — MSIX: процессы, запущенные из его Bash/PowerShell, пишут `%APPDATA%capri-desktop` в `%LOCALAPPDATA%PackagesClaude_pzs8sxrjxfjjcLocalCacheRoamingcapri-desktop` (и читают оттуда же). Запуск из вкладки терминала приложения (`run_in_terminal`) или руками — настоящая папка. Капри запускать только снаружи (вкладка терминала / ярлык), иначе настройки, `memory.json`, `chats.json` расходятся. Что видит главный процесс: `POST /debug/models`.
 - Обычный скриншот не видит прозрачный оверлей Капри — смотреть через `/debug/capture`.
 
 ## ОТКРЫТЫЙ БАГ №1 (начать с него)

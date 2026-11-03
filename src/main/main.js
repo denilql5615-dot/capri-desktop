@@ -1256,6 +1256,11 @@ async function debugHandler(route, body) {
     if (body.click) find(trayMenu)?.click();
     return { ok: true, value: items(trayMenu) };
   }
+  if (route === 'models') {
+    // which model she'd chat with, and why: what Ollama lists and what her config says
+    const cfg = config.load(true);
+    return { ok: true, value: { chatModels, configured: cfg.chatModel, provider: cfg.provider, picked: pickModel(cfg), config: config.file() } };
+  }
   if (route === 'eval') {
     // a look inside the overlay (app.js puts what's there on window.dev in --dev)
     return { ok: true, value: await overlay.webContents.executeJavaScript(String(body.js || 'null')) };
