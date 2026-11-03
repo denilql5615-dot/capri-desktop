@@ -275,7 +275,11 @@ function withNotes(messages) {
   const at = messages.map((m) => m.role).lastIndexOf('user');
   const said = messages[at]?.content;
   if (typeof said !== 'string') return messages;
-  const recalled = notes.prompt(notes.recall(notes.list(notesDir()), said));
+  const dir = notesDir();
+  const recalled = [
+    notes.prompt(notes.recall(notes.list(dir), said)),
+    notes.vaultPrompt(notes.searchVault(dir, said)),
+  ].filter(Boolean).join('\n\n');
   if (!recalled) return messages;
   return messages.map((m, i) => (i === at ? { ...m, content: `${said}
 

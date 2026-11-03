@@ -14,6 +14,8 @@ const TYPES = ['о тебе', 'проект', 'договорённость', '�
 const MAX_TEXT = 600;
 const ALWAYS = 6; // notes about you she always has in mind
 const MATCHED = 5; // and the ones that fit what you just said
+const VAULT_MATCHED = 3;
+const VAULT_TEXT = 360;
 
 // Your Obsidian vault, from Obsidian's own list of them: the one opened last among those open (else any)
 function obsidianVault(appData) {
@@ -63,6 +65,46 @@ function list(dir) {
     const { meta, text } = parse(fs.readFileSync(path.join(dir, name), 'utf8'));
     return { title: name.slice(0, -3), type: meta['тип'] || 'о тебе', text, updated: meta['обновлено'] || '' };
   }).filter((n) => n.text);
+}
+
+// The rest of the Obsidian vault: only a few notes that match this message. Her own Capri/ notes are
+// still handled by list()/recall(), so their metadata and index keep their old meaning.
+function searchVault(dir, said, limit = VAULT_MATCHED) {
+  const words = stems(said);
+  if (!words.size) return [];
+  const root = path.basename(dir).toLowerCase() === 'capri' ? path.dirname(dir) : dir;
+  const files = [];
+  const walk = (folder) => {
+    let entries = [];
+    try { entries = fs.readdirSync(folder, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (entry.name === '.obsidian') continue;
+      const file = path.join(folder, entry.name);
+      if (entry.isDirectory()) walk(file);
+      else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) files.push(file);
+    }
+  };
+  walk(root);
+  return files.map((file) => {
+    let text = '';
+    try { text = parse(fs.readFileSync(file, 'utf8')).text; } catch { return null; }
+    const title = path.basename(file, path.extname(file));
+    const titleWords = stems(title);
+    const textWords = stems(text.slice(0, 4000));
+    let score = 0;
+    for (const word of words) score += (titleWords.has(word) ? 3 : 0) + (textWords.has(word) ? 1 : 0);
+    if (!score) return null;
+    const excerpt = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 4).join(' ').slice(0, VAULT_TEXT);
+    return { title, text: excerpt, score, file: path.relative(root, file) };
+  }).filter(Boolean).sort((a, b) => b.score - a.score || a.file.localeCompare(b.file, 'ru')).slice(0, limit);
+}
+
+function vaultPrompt(matches) {
+  if (!matches.length) return '';
+  return [
+    'Relevant excerpts from the user\'s C.A.P.R.I knowledge base. Use only when they answer the request; do not claim they are facts about the user:',
+    ...matches.map((n) => `- ${n.title}: ${n.text.replace(/\s+/g, ' ')}`),
+  ].join('\n');
 }
 
 // _Память.md: every note, by kind, as links Obsidian follows
@@ -177,4 +219,4 @@ function parseFacts(answer) {
   }
 }
 
-module.exports = { INDEX, TYPES, EXTRACT_SCHEMA, dirOf, fileName, list, write, writeIndex, recall, prompt, extractMessages, parseFacts };
+module.exports = { INDEX, TYPES, EXTRACT_SCHEMA, dirOf, fileName, list, searchVault, write, writeIndex, recall, prompt, vaultPrompt, extractMessages, parseFacts };

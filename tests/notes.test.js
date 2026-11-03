@@ -37,6 +37,24 @@ test('she has in mind her notes about you, and the ones that share words with wh
   assert.equal(notes.prompt([]), '');
 });
 
+test('she reads only the best matching excerpts from the Obsidian vault', () => {
+  const vault = tmp();
+  const dir = path.join(vault, 'Capri');
+  fs.mkdirSync(path.join(vault, 'GENESIS'));
+  fs.mkdirSync(path.join(vault, '.obsidian'));
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(vault, 'GENESIS', 'Решения.md'), '# Решения\n\nРендерер Капри — Electron и Canvas.\nСледующая строка.\nЕщё строка.\nЛишняя строка.');
+  fs.writeFileSync(path.join(vault, 'Главная.md'), '# C.A.P.R.I\n\nКарта базы проекта Капри.');
+  fs.writeFileSync(path.join(vault, '.obsidian', 'Секрет.md'), 'Рендерер секретный.');
+  fs.writeFileSync(path.join(dir, 'Проект.md'), 'Капри использует другой рендерер.');
+
+  const found = notes.searchVault(dir, 'какой рендерер у Капри?', 3);
+  assert.deepEqual(found.map((n) => n.title), ['Проект', 'Решения', 'Главная']);
+  assert.ok(found.every((n) => !n.file.startsWith('.obsidian')));
+  assert.doesNotMatch(found[1].text, /Лишняя строка/);
+  assert.match(notes.vaultPrompt(found), /Relevant excerpts[\s\S]*- Решения: # Решения Рендерер Капри/);
+});
+
 test('her model\'s facts are checked; an answer that isn\'t JSON gives none', () => {
   assert.deepEqual(notes.parseFacts('{"facts":[{"title":"Кот","type":"о тебе","text":"У тебя кот."},{"title":"","type":"о тебе","text":"x"},{"title":"о тебе","type":"о тебе","text":"x"}]}'),
     [{ title: 'Кот', type: 'о тебе', text: 'У тебя кот.' }]);
