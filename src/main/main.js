@@ -38,6 +38,7 @@ const { Planner, syncReminders } = require('./planner');
 const phonepack = require('./phonepack');
 const photo = require('./photo');
 const { Router, workerSettings } = require('./router');
+const quick = require('./quick');
 const { Comfy } = require('./comfy');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
@@ -392,6 +393,11 @@ async function mailContext(service, said) {
 // "что у меня завтра?": Proton Calendar (ICS) and her own planner for the days asked about
 async function calendarContext(service, said) {
   if (!pim.isCalendarQuestion(said)) return '';
+  return pim.calendarPrompt(await calendarData(service, said));
+}
+
+// What's on Proton Calendar and in her planner for the days you asked about: { events, plans, from, to }
+async function calendarData(service, said) {
   const [from, to] = pim.calendarRange(said);
   const events = [];
   for (const account of service?.listAccounts() || []) {
@@ -404,7 +410,19 @@ async function calendarContext(service, said) {
   }
   let plans = [];
   try { plans = pim.plansIn(localPlanner?.list() || [], from, to); } catch {}
-  return pim.calendarPrompt({ events, plans, from, to });
+  return { events, plans, from, to };
+}
+
+// A plain question about your schedule: her answer from the calendar by code, no model (quick.js).
+// null: not one, or the calendar couldn't be read (her model answers then).
+async function quickAnswer(said) {
+  if (!quick.isQuick(said)) return null;
+  try {
+    return quick.scheduleAnswer(await calendarData(pimService(), said));
+  } catch (err) {
+    console.warn('[capri] quick answer:', err.message);
+    return null;
+  }
 }
 
 async function withPim(messages, said) {
@@ -1014,6 +1032,7 @@ async function routeOf(text, context = []) {
   const canHands = Boolean(desktopCli?.installed);
   const keyComputer = canHands && agent.isComputerTask(text);
   if (!named && !keyComputer && String(text || '').trim().length < SHORT_MESSAGE) return { worker: null };
+  if (!named && !keyComputer && quick.isQuick(text)) return { worker: null }; // her quick answer (quick.js)
   const model = cfg.provider === 'ollama' && cfg.router !== false ? pickModel(cfg) : null;
   const d = await router.decide(text, { model: model && !ollama.isCloud(model) ? model : null, context });
   const hands = () => workers.handsWorker(cfg.computerWorker) || (cfg.provider === 'ollama' ? 'computer' : null);
@@ -1430,6 +1449,13 @@ function registerIpc() {
       const tierOpts = workerSettings(route.tier, { computer: hands === 'yes' });
       if (worker === 'claude' || worker === 'codex') router.hold(route.tier || 'routine');
       const desktopOpts = { desktop: hands === 'yes', home: desktopCli.home, model: tierOpts.claudeModel, effort: tierOpts.codexEffort };
+      // a plain question about your schedule: answered from the calendar at once, no model (quick.js)
+      const fast = !worker ? await quickAnswer(yourWords(messages)) : null;
+      if (fast) {
+        send(fast);
+        recentTurns = [{ role: 'user', content: yourWords(messages) }, { role: 'assistant', content: fast }];
+        return { ok: true, text: fast };
+      }
       const text = worker === 'codex' ? await workers.askCodex(cfg, messages, send, abort.signal, desktopOpts)
         : worker === 'claude' ? await workers.askClaude(cfg, messages, send, abort.signal, desktopOpts)
         : worker === 'computer' ? await computerTask(messages, send, abort.signal)
