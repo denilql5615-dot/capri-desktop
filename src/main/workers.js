@@ -177,7 +177,7 @@ function codexBrief(messages, cwd) {
 const AGENT_DESKTOP_DIR = path.join(__dirname, '..', '..', 'vendor', 'agent-desktop').replace('app.asar', 'app.asar.unpacked');
 const desktopNote = (cmd) => [
   `You may operate the user's Windows desktop with the agent-desktop CLI: run it as \`${cmd}\` (nothing else needs a terminal).`,
-  `- ${cmd} list-windows: what is open.  ${cmd} launch --activate -- notepad: open an app by its program name (notepad, calc, mspaint, explorer, chrome).`,
+  `- ${cmd} list-windows: what is open.  ${cmd} launch --activate --timeout 5000 -- notepad: open an app by its program name (notepad, calc, mspaint, explorer, chrome); always with that --timeout (without it a Store app such as Notepad keeps it waiting 30 s with its window open long since).`,
   `- ${cmd} snapshot -i --compact --app=notepad: the controls of an app, each with a ref like @<snapshot id>:e<n>.`,
   `- ${cmd} click -- @ref   ${cmd} --headed type -- @ref "text"   ${cmd} --headed press -- ctrl+s   ${cmd} --headed focus-window --app=notepad`,
   'Snapshot before you act, use only refs from the latest snapshot, check with another snapshot after.',

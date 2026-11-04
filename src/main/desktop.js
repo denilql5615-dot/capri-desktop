@@ -74,7 +74,9 @@ function argv(a) {
     case 'press': return ['--headed', 'press', ...opt('app', a.app), ...pos(a.keys.toLowerCase())];
     case 'focus_window': return ['--headed', 'focus-window', ...target, ...opt('title', a.title)];
     case 'restore': case 'minimize': case 'maximize': return [a.cmd, ...target];
-    case 'launch': return ['launch', '--activate', ...pos(a.app)];
+    // --activate waits for the app's own window, and a Store app (Windows 11 Notepad) hands its start to
+    // another process: no window of its own ever, the whole timeout waited (30 s by default) with it open long since
+    case 'launch': return ['launch', '--activate', '--timeout', String(LAUNCH_MS), ...pos(a.app)];
     case 'close_app': return ['close-app', ...pos(a.app)]; // graceful only: the app may still ask to save
     default: return [a.cmd.replace('_', '-'), ...pos(a.ref)];
   }
@@ -204,6 +206,8 @@ function digest(env, refs, limit = 6000) {
   const text = out.join('\n');
   return text.length > limit ? `${text.slice(0, limit)}\n… (cut: snapshot a smaller part with "ref" as the root)` : text;
 }
+
+const LAUNCH_MS = 5000;
 
 const BIN = path.join(__dirname, '..', '..', 'vendor', 'agent-desktop', 'agent-desktop.exe').replace('app.asar', 'app.asar.unpacked');
 

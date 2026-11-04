@@ -127,3 +127,8 @@ test('runTask: Proton Calendar opens Proton Mail, where the calendar lives', asy
   await runTask('открой протон-календарь и заполни встречу', [], { ...f, origin: 'pc', confirm: async () => 'yes', covered: () => false, grant: () => {} }, new AbortController().signal);
   assert.strictEqual(f.ran[0].at(-1), desktop.PROTON_MAIL);
 });
+
+test('argv: launch waits a few seconds at most for its window (a Store app never shows one of its own)', () => {
+  const desktop = require('../src/main/desktop');
+  assert.deepStrictEqual(desktop.argv({ cmd: 'launch', app: 'notepad' }), ['launch', '--activate', '--timeout', '5000', '--', 'notepad']);
+});
