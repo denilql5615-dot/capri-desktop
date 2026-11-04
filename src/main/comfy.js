@@ -11,6 +11,17 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const PORT = 8189; // not Comfy Desktop's own: the two can't clash
+// Comfy Desktop's own ComfyUI, while its window is open: the port it wrote down last (comfy-procs), else its default
+function desktopPort(appData) {
+  try {
+    const dir = path.join(appData, 'Comfy Desktop', 'comfy-procs');
+    const last = fs.readdirSync(dir).filter((n) => n.endsWith('.json'))
+      .map((n) => JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8'))).sort((a, b) => (b.spawnedAt || 0) - (a.spawnedAt || 0))[0];
+    return Number.isInteger(last?.port) && last.port !== PORT ? last.port : 8188;
+  } catch {
+    return 8188;
+  }
+}
 const IDLE_MS = 5 * 60 * 1000;
 const START_MS = 3 * 60 * 1000;
 const JOB_MS = 10 * 60 * 1000;
@@ -65,10 +76,67 @@ function workflow({ prompt, her = true, seed = Math.floor(Math.random() * 2 ** 4
   return { graph, positive };
 }
 
+// Your own workflow (her menu, "Фото: свой воркфлоу ComfyUI…"): built and tried in ComfyUI with your LoRAs,
+// saved with Workflow → Export (API), {prompt} written where her tags go in the positive prompt. Pictures of
+// her are drawn with it as it is; only {prompt} is filled and the seed is new each time. Pictures that aren't
+// of her keep the plain built-in one (your LoRAs would put her in them).
+const PLACEHOLDER = '{prompt}';
+const SEED_INPUTS = ['seed', 'noise_seed'];
+
+/** Your workflow checked: { graph } or { error } in plain words. */
+function checkWorkflow(json) {
+  let graph;
+  try {
+    graph = typeof json === 'string' ? JSON.parse(json) : json;
+  } catch {
+    return { error: 'это не JSON' };
+  }
+  if (Array.isArray(graph?.nodes)) return { error: 'это обычное сохранение, а нужно Workflow → Export (API)' };
+  const nodes = graph && typeof graph === 'object' ? Object.values(graph) : [];
+  if (!nodes.length || !nodes.every((n) => n && typeof n.class_type === 'string' && n.inputs && typeof n.inputs === 'object')) {
+    return { error: 'не похоже на воркфлоу ComfyUI в формате API' };
+  }
+  if (!nodes.some((n) => Object.values(n.inputs).some((v) => typeof v === 'string' && v.includes(PLACEHOLDER)))) {
+    return { error: `в промпте нет метки ${PLACEHOLDER}: поставь её туда, куда Капри подставит, что просили` };
+  }
+  if (!nodes.some((n) => /SaveImage|PreviewImage/.test(n.class_type))) return { error: 'нет узла Save Image' };
+  return { graph };
+}
+
+/** A copy of your workflow for one picture: {prompt} filled, every seed new, saved under her prefix. */
+function fillWorkflow(graph, { prompt, seed = Math.floor(Math.random() * 2 ** 48) }) {
+  const out = JSON.parse(JSON.stringify(graph));
+  const tags = String(prompt || '').trim();
+  let positive = '';
+  for (const node of Object.values(out)) {
+    for (const [key, value] of Object.entries(node.inputs)) {
+      if (typeof value === 'string' && value.includes(PLACEHOLDER)) {
+        node.inputs[key] = value.split(PLACEHOLDER).join(tags).replace(/,(\s*,)+/g, ',').replace(/^[\s,]+|[\s,]+$/g, '');
+        positive = positive || node.inputs[key];
+      }
+      if (SEED_INPUTS.includes(key) && typeof value === 'number') node.inputs[key] = seed;
+    }
+    if (node.class_type === 'SaveImage') node.inputs.filename_prefix = 'capri_chat';
+  }
+  return { graph: out, positive };
+}
+
+/** Your workflow from its file: the graph, or null (none, or it no longer checks out). */
+function loadWorkflow(file) {
+  if (!file) return null;
+  try {
+    const { graph, error } = checkWorkflow(fs.readFileSync(file, 'utf8'));
+    if (error) console.warn(`[capri] your ComfyUI workflow: ${error}`);
+    return graph || null;
+  } catch {
+    return null;
+  }
+}
+
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 class Comfy {
-  /** deps: { appData, beforeJob() (frees the GPU: chat models out), log(line) } */
+  /** deps: { appData, beforeJob() (frees the GPU: chat models out), workflowFile() (yours, or null) } */
   constructor(deps) {
     this.d = deps;
     this.proc = null;
@@ -92,9 +160,12 @@ class Comfy {
   }
 
   async alive() {
+    return this.aliveAt(this.base);
+  }
+
+  async aliveAt(base) {
     try {
-      await this.api('/system_stats', { timeout: 2000 });
-      return true;
+      return (await fetch(`${base}/system_stats`, { signal: AbortSignal.timeout(2000) })).ok;
     } catch {
       return false;
     }
@@ -146,9 +217,15 @@ class Comfy {
 
   async run({ prompt, her = true }) {
     await this.d.beforeJob?.();
-    await this.up();
+    // Comfy Desktop open (you trying your workflow): its ComfyUI draws, the same models and nodes; a second
+    // one wouldn't fit in 8 GB beside it
+    const desktop = `http://127.0.0.1:${desktopPort(this.d.appData)}`;
+    const own = this.base;
+    if (!this.proc && await this.aliveAt(desktop)) this.base = desktop;
+    else await this.up();
     try {
-      const { graph, positive } = workflow({ prompt, her });
+      const yours = her ? loadWorkflow(this.d.workflowFile?.()) : null;
+      const { graph, positive } = yours ? fillWorkflow(yours, { prompt }) : workflow({ prompt, her });
       const { prompt_id: id } = await (await this.api('/prompt', { method: 'POST', body: { prompt: graph, client_id: 'capri' } })).json();
       const until = Date.now() + JOB_MS;
       while (Date.now() < until) {
@@ -169,10 +246,14 @@ class Comfy {
     } finally {
       // the GPU back at once; the process goes after a few idle minutes (the next picture starts faster)
       this.api('/free', { method: 'POST', body: { unload_models: true, free_memory: true } }).catch(() => {});
-      clearTimeout(this.idleTimer);
-      this.idleTimer = setTimeout(() => this.stop(), IDLE_MS);
+      const borrowed = this.base !== own;
+      this.base = own;
+      if (!borrowed) {
+        clearTimeout(this.idleTimer);
+        this.idleTimer = setTimeout(() => this.stop(), IDLE_MS);
+      }
     }
   }
 }
 
-module.exports = { Comfy, locate, workflow, PORT, HER };
+module.exports = { Comfy, locate, workflow, checkWorkflow, fillWorkflow, loadWorkflow, PLACEHOLDER, PORT, HER };

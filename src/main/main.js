@@ -40,7 +40,7 @@ const photo = require('./photo');
 const { Router, workerSettings, hasSecret } = require('./router');
 const quick = require('./quick');
 const brief = require('./brief');
-const { Comfy } = require('./comfy');
+const { Comfy, checkWorkflow } = require('./comfy');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
 const activeHooks = () => activeAssistant().hooks;
@@ -744,6 +744,9 @@ function rebuildTray() {
       label: t.wake || 'Answer to "Capri" (microphone on)', type: 'checkbox', checked: Boolean(cfg.voice.wake),
       click: (item) => updateConfig({ voice: { ...config.load().voice, wake: item.checked } }),
     },
+    // "скинь фото" with your own ComfyUI workflow (comfy.js), or back to her built-in one
+    { label: fs.existsSync(comfyWorkflowFile()) ? 'Фото: свой воркфлоу ComfyUI (заменить)…' : 'Фото: свой воркфлоу ComfyUI…', click: () => pickComfyWorkflow() },
+    ...(fs.existsSync(comfyWorkflowFile()) ? [{ label: 'Фото: вернуть стандартный', click: () => { fs.rmSync(comfyWorkflowFile(), { force: true }); rebuildTray(); } }] : []),
     {
       // her morning brief (brief.js): your day, said once each morning at the time in morningBrief.time
       label: `Утренняя сводка (${morningBrief().time})`, type: 'checkbox', checked: morningBrief().enabled,
@@ -1157,7 +1160,26 @@ const comfy = new Comfy({
     const out = await ollama.unloadAll().catch(() => []);
     if (out.length) console.log(`[capri] unloaded for a picture: ${out.join(', ')}`);
   },
+  workflowFile: () => (fs.existsSync(comfyWorkflowFile()) ? comfyWorkflowFile() : null),
 });
+// your own ComfyUI workflow for pictures of her (comfy.js checkWorkflow): a copy kept here
+const comfyWorkflowFile = () => path.join(app.getPath('userData'), 'comfy-workflow.json');
+
+async function pickComfyWorkflow() {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    title: 'Воркфлоу ComfyUI (Workflow → Export (API))', properties: ['openFile'],
+    filters: [{ name: 'Workflow (API)', extensions: ['json'] }], defaultPath: app.getPath('downloads'),
+  });
+  if (canceled || !filePaths[0]) return;
+  const { error } = checkWorkflow(fs.readFileSync(filePaths[0], 'utf8'));
+  if (error) {
+    dialog.showMessageBox({ type: 'warning', message: 'Этот воркфлоу не подходит', detail: `${error[0].toUpperCase()}${error.slice(1)}.` });
+    return;
+  }
+  fs.copyFileSync(filePaths[0], comfyWorkflowFile());
+  rebuildTray();
+  dialog.showMessageBox({ type: 'info', message: 'Готово', detail: 'Теперь «скинь фото» рисует по твоему воркфлоу. Проверь: попроси у неё фото.' });
+}
 
 // what to draw, worked out by her chat model while it's still loaded: tags, her or not, her line with it
 async function planPhoto(said, history, signal) {
