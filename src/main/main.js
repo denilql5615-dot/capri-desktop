@@ -37,7 +37,7 @@ const telegram = require('./telegram');
 const { Planner, syncReminders } = require('./planner');
 const phonepack = require('./phonepack');
 const photo = require('./photo');
-const { Router, workerSettings } = require('./router');
+const { Router, workerSettings, hasSecret } = require('./router');
 const quick = require('./quick');
 const { Comfy } = require('./comfy');
 const { ASSISTANTS, assistant } = require('./assistants');
@@ -411,6 +411,20 @@ async function calendarData(service, said) {
   let plans = [];
   try { plans = pim.plansIn(localPlanner?.list() || [], from, to); } catch {}
   return { events, plans, from, to };
+}
+
+// The exchange in your vault (notes.js): the talk in Сырьё/Чаты, what Claude or Codex made in Результаты.
+// A message with a key or password in it isn't written down. Off: config vaultChats false.
+function toVault(cfg, worker, said, answer) {
+  if (cfg.vaultChats === false || hasSecret(said) || ['stop', 'video'].includes(worker)) return;
+  try {
+    const dir = notesDir();
+    const by = { claude: 'Claude', codex: 'Codex', computer: 'Капри (на ПК)', photo: 'Капри (фото)' }[worker] || 'Капри';
+    notes.appendChat(dir, { said, answer, by });
+    if (worker === 'claude' || worker === 'codex') notes.writeOutput(dir, { worker: by, task: said, answer, folder: workers.workDir(cfg) });
+  } catch (err) {
+    console.warn('[capri] vault:', err.message);
+  }
 }
 
 // A plain question about your schedule: her answer from the calendar by code, no model (quick.js).
@@ -1454,6 +1468,7 @@ function registerIpc() {
       if (fast) {
         send(fast);
         recentTurns = [{ role: 'user', content: yourWords(messages) }, { role: 'assistant', content: fast }];
+        toVault(cfg, null, yourWords(messages), fast);
         return { ok: true, text: fast };
       }
       const text = worker === 'codex' ? await workers.askCodex(cfg, messages, send, abort.signal, desktopOpts)
@@ -1465,6 +1480,7 @@ function registerIpc() {
       if (cfg.provider === 'claude') saveMemory({ claude: llm.claudeMemory() });
       if (!worker) noteLater([...messages, { role: 'assistant', content: text }]);
       recentTurns = [{ role: 'user', content: yourWords(messages) }, { role: 'assistant', content: text }];
+      toVault(cfg, worker, yourWords(messages), text);
       return { ok: true, text };
     } catch (err) {
       return { ok: false, error: abort.signal.aborted ? 'stopped' : err.message, code: err.code || null };

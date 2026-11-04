@@ -63,6 +63,7 @@ const DEFAULTS = {
   telegramToken: null,
   telegramChatId: null,
   router: true, // her router (router.js) sorts what you say and how hard; false: keywords only
+  vaultChats: true, // your talks with her in <vault>/Сырьё/Чаты, what Claude/Codex made in <vault>/Результаты
   computerWorker: 'claude', // who drives the PC when no one is named: 'claude', 'codex' or 'capri' (her own agent)
   pimAccounts: [],
   pimSecrets: {},

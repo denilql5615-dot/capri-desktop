@@ -78,7 +78,7 @@ function searchVault(dir, said, limit = VAULT_MATCHED) {
     let entries = [];
     try { entries = fs.readdirSync(folder, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
-      if (entry.name === '.obsidian') continue;
+      if (entry.name === '.obsidian' || (folder === root && entry.name === RAW_DIR)) continue; // raw talk isn't knowledge
       const file = path.join(folder, entry.name);
       if (entry.isDirectory()) walk(file);
       else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) files.push(file);
@@ -171,6 +171,54 @@ function writePlanNote(dir, { title, notes: text, createdAt }) {
   return `${PLAN_DIR}/${name}.md`;
 }
 
+// The vault laid out the Karpathy way, next to what's there: <vault>/Сырьё (raw: your talks with her, a
+// file a day; her Capri/ notes are what she makes of them, the wiki) and <vault>/Результаты (outputs:
+// what Claude and Codex made for you, a note each, _Результаты.md linking them; her vault search finds them).
+const RAW_DIR = 'Сырьё';
+const OUT_DIR = 'Результаты';
+const OUT_INDEX = '_Результаты.md';
+const pad = (n) => String(n).padStart(2, '0');
+const localDay = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const localTime = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+
+/** One exchange with her, added to today's file in <vault>/Сырьё/Чаты. Returns its path in the vault. */
+function appendChat(dir, { said, answer, by = 'Капри', at = Date.now() }) {
+  const you = String(said || '').trim();
+  const her = String(answer || '').trim();
+  if (!you || !her) return null;
+  const d = new Date(at);
+  const folder = path.join(vaultRoot(dir), RAW_DIR, 'Чаты');
+  fs.mkdirSync(folder, { recursive: true });
+  const file = path.join(folder, `${localDay(d)}.md`);
+  const head = fs.existsSync(file) ? '' : `---\nтип: разговор\nдата: ${localDay(d)}\n---\n# Разговоры ${localDay(d)}\n`;
+  fs.appendFileSync(file, `${head}\n### ${localTime(d)} · Ты\n${you.slice(0, 4000)}\n\n**${by}:** ${her.slice(0, 8000)}\n`, 'utf8');
+  return `${RAW_DIR}/Чаты/${localDay(d)}.md`;
+}
+
+function writeOutIndex(folder) {
+  const rows = fs.readdirSync(folder).filter((n) => n.endsWith('.md') && !n.startsWith('_')).sort().reverse()
+    .map((name) => `- [[${name.slice(0, -3)}]]`);
+  fs.writeFileSync(path.join(folder, OUT_INDEX), `# Результаты\n\nЧто Claude и Codex сделали по твоим просьбам через Капри.\n\n${rows.join('\n')}\n`, 'utf8');
+}
+
+/** What a worker did for you, as a note in <vault>/Результаты. Returns its path in the vault. */
+function writeOutput(dir, { worker, task, answer, folder: workFolder, at = Date.now() }) {
+  const body = String(answer || '').trim();
+  const asked = String(task || '').trim();
+  if (!body || !asked) return null;
+  const d = new Date(at);
+  const folder = path.join(vaultRoot(dir), OUT_DIR);
+  fs.mkdirSync(folder, { recursive: true });
+  const base = fileName(`${localDay(d)} ${pad(d.getHours())}-${pad(d.getMinutes())} ${asked.slice(0, 50)}`);
+  let name = base;
+  for (let n = 2; fs.existsSync(path.join(folder, `${name}.md`)); n++) name = `${base} (${n})`;
+  const files = workFolder ? `\n\nФайлы — в папке ${workFolder}` : '';
+  fs.writeFileSync(path.join(folder, `${name}.md`),
+    `---\nтип: результат\nкто: ${worker}\nсоздано: ${localDay(d)}\n---\n**Задача:** ${asked.slice(0, 2000)}\n\n${body.slice(0, 20000)}${files}\n\n[[${OUT_INDEX.slice(0, -3)}]]\n`, 'utf8');
+  writeOutIndex(folder);
+  return `${OUT_DIR}/${name}.md`;
+}
+
 // Russian words are matched on their first five letters ("проекта", "проекту" -> "проек")
 const stems = (s) => new Set(String(s || '').toLowerCase().replace(/ё/g, 'е').match(/[a-zа-я0-9]{3,}/g)?.map((w) => w.slice(0, 5)) || []);
 
@@ -252,6 +300,7 @@ function parseFacts(answer) {
 }
 
 module.exports = {
-  INDEX, TYPES, EXTRACT_SCHEMA, PLAN_DIR, dirOf, fileName, list, searchVault, write, writeIndex, writePlanNote,
+  INDEX, TYPES, EXTRACT_SCHEMA, PLAN_DIR, RAW_DIR, OUT_DIR, dirOf, fileName, list, searchVault, write, writeIndex, writePlanNote,
+  appendChat, writeOutput,
   recall, prompt, vaultPrompt, extractMessages, parseFacts,
 };
