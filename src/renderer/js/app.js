@@ -792,6 +792,22 @@ async function boot() {
       case 'chat': // "Talk to her" in her menu
         chat.start();
         break;
+      case 'brief': { // her morning brief (main brief.js): out, your day shown and said
+        if (chat.open && chat.interject(cmd.text, [], null)) {
+          listen.say(cmd.text);
+          break;
+        }
+        if (capri.stowed) {
+          host.setConfig({ visible: true });
+          await capri.unstow();
+        }
+        capri.wake();
+        await until(() => !capri.busy && !capri.dragging, 8000);
+        capri.perform('hop');
+        panel.say({ kind: 'info', face: 'look', line: cmd.text, hold: 20000 });
+        listen.say(cmd.text);
+        break;
+      }
       case 'report': // "Mission report" in her menu
         if (capri.stowed) {
           host.setConfig({ visible: true });

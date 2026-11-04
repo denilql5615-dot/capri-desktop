@@ -39,6 +39,7 @@ const phonepack = require('./phonepack');
 const photo = require('./photo');
 const { Router, workerSettings, hasSecret } = require('./router');
 const quick = require('./quick');
+const brief = require('./brief');
 const { Comfy } = require('./comfy');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
@@ -427,6 +428,22 @@ function toVault(cfg, worker, said, answer) {
   }
 }
 
+// Her morning brief (brief.js): checked each minute; due, she says your day (the calendar, by code).
+const morningBrief = () => ({ ...brief.DEFAULTS, ...config.load().morningBrief });
+let briefing = false;
+async function morningBriefTick(now = new Date()) {
+  const settings = morningBrief();
+  if (briefing || !overlay || !brief.isDue(settings, now)) return;
+  briefing = true;
+  try {
+    const today = quick.scheduleAnswer(await calendarData(pimService(), 'сегодня'));
+    updateConfig({ morningBrief: { ...settings, last: brief.dayOf(now) } }); // once a day, whatever comes next
+    sendCommand('brief', { text: brief.text(today, now) });
+  } finally {
+    briefing = false;
+  }
+}
+
 // A plain question about your schedule: her answer from the calendar by code, no model (quick.js).
 // null: not one, or the calendar couldn't be read (her model answers then).
 async function quickAnswer(said) {
@@ -726,6 +743,11 @@ function rebuildTray() {
       // her name, heard (listen.js): the microphone always on, what's said only to Whisper on this PC
       label: t.wake || 'Answer to "Capri" (microphone on)', type: 'checkbox', checked: Boolean(cfg.voice.wake),
       click: (item) => updateConfig({ voice: { ...config.load().voice, wake: item.checked } }),
+    },
+    {
+      // her morning brief (brief.js): your day, said once each morning at the time in morningBrief.time
+      label: `Утренняя сводка (${morningBrief().time})`, type: 'checkbox', checked: morningBrief().enabled,
+      click: (item) => updateConfig({ morningBrief: { ...morningBrief(), enabled: item.checked } }),
     },
     {
       // the Android app (phone.js): on, she listens on the network for it; the address and key are in phone-link.txt
@@ -1883,6 +1905,7 @@ function main() {
       },
     });
     syncPlannerReminders();
+    setInterval(() => morningBriefTick().catch((err) => console.warn('[capri] morning brief:', err.message)), 60 * 1000);
     serveProtocol();
     registerIpc();
     createOverlay();
