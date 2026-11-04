@@ -32,14 +32,18 @@ function write(file, store) {
 function add(store, message, now = Date.now()) {
   const content = String(message?.content || '').trim().slice(0, MAX_CHARS);
   if (!content || !['user', 'assistant'].includes(message?.role)) return store;
-  let last = store.chats.at(-1);
-  if (!last || store.fresh || now - last.updated > GAP_MS || last.messages.length >= MAX_MESSAGES) {
-    last = { id: `${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`, started: now, updated: now, messages: [] };
+  // where it was said: 'phone' (the bridge, phone.js) or the PC; each has chats of its own ("Forget our
+  // conversations" is the PC's)
+  const via = message.via === 'phone' ? 'phone' : undefined;
+  let last = store.chats.findLast((chat) => chat.via === via);
+  if (!last || (!via && store.fresh) || now - last.updated > GAP_MS || last.messages.length >= MAX_MESSAGES) {
+    last = { id: `${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`, started: now, updated: now, messages: [], ...(via && { via }) };
     store.chats.push(last);
-    delete store.fresh;
+    if (!via) delete store.fresh;
   }
   last.messages.push({ role: message.role, content, at: now });
   last.updated = now;
+  if (store.chats.at(-1) !== last) store.chats.push(...store.chats.splice(store.chats.indexOf(last), 1)); // newest last
   store.chats = store.chats.slice(-MAX_CHATS);
   return store;
 }
@@ -56,6 +60,7 @@ function resume(store, id, now = Date.now()) {
   if (at === -1) return null;
   const [chat] = store.chats.splice(at, 1);
   chat.updated = now;
+  delete chat.via; // a phone chat continued here goes on on the PC
   store.chats.push(chat);
   delete store.fresh;
   return chat;
@@ -71,7 +76,7 @@ function remove(store, id, now = Date.now()) {
 
 // The chat your next message goes into, if it's still going (null: the next one starts a new chat)
 function current(store, now = Date.now()) {
-  const last = store.chats.at(-1);
+  const last = store.chats.findLast((chat) => !chat.via); // the PC's: phone chats go on by themselves
   return last && !store.fresh && now - last.updated <= GAP_MS && last.messages.length < MAX_MESSAGES ? last.id : null;
 }
 
@@ -88,8 +93,9 @@ function listed(store) {
       started: chat.started,
       updated: chat.updated,
       count: chat.messages.length,
-      title: String(first?.content || '…').replace(/\s+/g, ' ').slice(0, 80),
+      title: `${chat.via === 'phone' ? 'Телефон · ' : ''}${String(first?.content || '…').replace(/\s+/g, ' ').slice(0, 80)}`,
       messages: chat.messages,
+      ...(chat.via && { via: chat.via }),
     };
   });
 }

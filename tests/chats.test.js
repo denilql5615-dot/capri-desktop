@@ -45,3 +45,21 @@ test('an old chat continued becomes the live one; the live one deleted, the next
   assert.equal(store.fresh, true);
   assert.equal(chats.current(store, now + 20), null);
 });
+
+const { add, list } = chats;
+test('phone messages: chats of their own, titled so; the PC\'s live chat stays the PC\'s', () => {
+  const t0 = 1_000_000;
+  let store = { chats: [] };
+  store = add(store, { role: 'user', content: 'на ПК' }, t0);
+  store = add(store, { role: 'user', content: 'с телефона', via: 'phone' }, t0 + 1000);
+  store = add(store, { role: 'assistant', content: 'ответ телефону', via: 'phone' }, t0 + 2000);
+  store = add(store, { role: 'assistant', content: 'ответ на ПК' }, t0 + 3000);
+  assert.strictEqual(store.chats.length, 2);
+  const { current: live, chats } = list(store, t0 + 4000);
+  const pc = chats.find((c) => !c.via);
+  const ph = chats.find((c) => c.via === 'phone');
+  assert.strictEqual(live, pc.id);
+  assert.deepStrictEqual(pc.messages.map((m) => m.content), ['на ПК', 'ответ на ПК']);
+  assert.strictEqual(ph.title, 'Телефон · с телефона');
+  assert.strictEqual(ph.count, 2);
+});

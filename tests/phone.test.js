@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { PhoneBridge, tokenMatches, controlPatch } = require('../src/main/phone');
+const { PhoneBridge, tokenMatches, controlPatch, parseModelCommand } = require('../src/main/phone');
 
 test('tokenMatches: only the right key, never an empty one', () => {
   assert.strictEqual(tokenMatches('abc', 'abc'), true);
@@ -74,4 +74,39 @@ test('bridge: her moves for the phone, once drawn; none yet, the phone keeps its
   } finally {
     await bridge.stop();
   }
+});
+
+test('bridge: "переключись на ролевую" switches her model; a phrase naming no model is a message; each exchange logged', async () => {
+  const logged = [];
+  let asked = 0;
+  const bridge = new PhoneBridge({
+    token: () => 'k',
+    persona: () => 'Ты Капри.',
+    chat: async () => { asked++; return { text: 'ок', brain: 'qwen3:8b' }; },
+    speak: async () => null,
+    switchModel: async (wanted) => (wanted === 'ролевую' ? { ok: true, model: 'faun' } : { ok: false, error: 'нет' }),
+    log: (entry) => logged.push(entry),
+  });
+  const port = await bridge.start(0, '127.0.0.1');
+  const post = (body) => fetch(`http://127.0.0.1:${port}/chat`, { method: 'POST', headers: { 'x-capri-token': 'k' }, body: JSON.stringify(body) }).then((r) => r.json());
+  try {
+    const sw = await post({ text: 'переключись на ролевую' });
+    assert.strictEqual(sw.reply, 'Переключилась на faun.');
+    assert.strictEqual(asked, 0);
+    const music = await post({ text: 'включи музыку' });
+    assert.strictEqual(music.reply, 'ок');
+    assert.strictEqual(asked, 1);
+    assert.deepStrictEqual(logged, [
+      { said: 'переключись на ролевую', answer: 'Переключилась на faun.' },
+      { said: 'включи музыку', answer: 'ок' },
+    ]);
+  } finally {
+    await bridge.stop();
+  }
+});
+
+test('parseModelCommand: the model asked for, or null', () => {
+  assert.strictEqual(parseModelCommand('Переключись на ролевую.'), 'ролевую');
+  assert.strictEqual(parseModelCommand('смени модель на основную модель'), 'основную');
+  assert.strictEqual(parseModelCommand('как дела'), null);
 });

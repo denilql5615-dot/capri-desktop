@@ -428,6 +428,19 @@ function toVault(cfg, worker, said, answer) {
   }
 }
 
+// "переключись на ролевую", "основную", "qwen три восемь б" (her name on the PC, or the phone chat):
+// her chat model for both, if one like it is installed
+async function switchSpokenModel(wanted) {
+  const models = await ollama.models().catch(() => null);
+  if (!models) return { ok: false, error: 'Ollama сейчас недоступна.' };
+  const model = ollama.findSpokenModel(models, String(wanted || '').slice(0, 80));
+  if (!model) return { ok: false, error: `Не нашла установленную модель «${String(wanted || '').slice(0, 80)}».` };
+  chatModels = models;
+  updateConfig({ provider: 'ollama', chatModel: model });
+  ollama.warm(model);
+  return { ok: true, model };
+}
+
 // Her morning brief (brief.js): checked each minute; due, she says your day (the calendar, by code).
 const morningBrief = () => ({ ...brief.DEFAULTS, ...config.load().morningBrief });
 let briefing = false;
@@ -966,6 +979,17 @@ async function applyPhone() {
         if (typeof patch.voice === 'boolean') updateConfig({ voice: { ...config.load().voice, tts: patch.voice } });
         return phoneControl();
       },
+      // "переключись на ролевую" in the phone chat: the same switch as her name and that on the PC
+      switchModel: (wanted) => switchSpokenModel(wanted),
+      // a phone exchange: her hub's Chats (a phone chat of its own) and your vault, like one here
+      log: ({ said, answer }) => {
+        let store = chatLog.read(chatsFile());
+        store = chatLog.add(store, { role: 'user', content: said, via: 'phone' });
+        store = chatLog.add(store, { role: 'assistant', content: answer, via: 'phone' });
+        chatLog.write(chatsFile(), store);
+        chatsWin?.webContents.send('chats:changed');
+        toVault(config.load(), null, said, answer.replace(/\n?\[\[photo:[^\]]*\]\]/g, ''));
+      },
     });
   }
   await phoneBridge.stop();
@@ -1072,8 +1096,11 @@ async function routeOf(text, context = []) {
   const keyComputer = canHands && agent.isComputerTask(text);
   if (!named && !keyComputer && String(text || '').trim().length < SHORT_MESSAGE) return { worker: null };
   if (!named && !keyComputer && quick.isQuick(text)) return { worker: null }; // her quick answer (quick.js)
+  // the router's model is the one it was tuned on (routerModel, qwen3:8b), and only while it's her chat
+  // model, loaded anyway: with the roleplay one in VRAM a second model wouldn't fit, so keywords then
   const model = cfg.provider === 'ollama' && cfg.router !== false ? pickModel(cfg) : null;
-  const d = await router.decide(text, { model: model && !ollama.isCloud(model) ? model : null, context });
+  const tuned = cfg.routerModel || 'qwen3:8b';
+  const d = await router.decide(text, { model: model === tuned ? model : null, context });
   const hands = () => workers.handsWorker(cfg.computerWorker) || (cfg.provider === 'ollama' ? 'computer' : null);
   let worker = null;
   let computer = false;
@@ -1550,16 +1577,7 @@ function registerIpc() {
       return { ok: false, error: speech.sttError(err, voice) };
     }
   });
-  ipcMain.handle('voice:model', async (_e, wanted) => {
-    const models = await ollama.models().catch(() => null);
-    if (!models) return { ok: false, error: 'Ollama сейчас недоступна.' };
-    const model = ollama.findSpokenModel(models, String(wanted || '').slice(0, 80));
-    if (!model) return { ok: false, error: `Не нашла установленную модель «${String(wanted || '').slice(0, 80)}».` };
-    chatModels = models;
-    updateConfig({ provider: 'ollama', chatModel: model });
-    ollama.warm(model);
-    return { ok: true, model };
-  });
+  ipcMain.handle('voice:model', (_e, wanted) => switchSpokenModel(wanted));
   ipcMain.handle('voice:speak', async (_e, text) => {
     const { voice } = config.load();
     if (!voice.tts) return null;

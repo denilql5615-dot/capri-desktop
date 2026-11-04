@@ -20,6 +20,14 @@ const AUDIO_TTL_MS = 10 * 60 * 1000;
 const AUDIO_MAX = 20;
 const TURNS = 12; // her phone conversation: the last few exchanges
 
+// "переключись на ролевую", "смени модель на основную", "use qwen3": the model asked for (listen.js has the same)
+function parseModelCommand(text) {
+  const t = String(text || '').trim();
+  const ru = /^(?:переключись|переключи|смени|поставь|выбери|используй|включи|перейди|давай)(?:\s+модель)?(?:\s+на)?(?:\s+модель)?\s+(.+)$/i.exec(t);
+  const en = /^(?:switch|change|use)(?:\s+model)?(?:\s+to)?\s+(.+)$/i.exec(t);
+  return (ru?.[1] || en?.[1] || '').replace(/[.!?…]+$/, '').replace(/\s+(?:модель|model)$/i, '').trim() || null;
+}
+
 const newToken = () => crypto.randomBytes(18).toString('base64url');
 
 /** Constant-time token check (hashed first, so the length doesn't leak either). */
@@ -189,6 +197,15 @@ class PhoneBridge {
     }
   }
 
+  // "переключись на ролевую", "поставь основную": her chat model switched, here and on the PC alike. A
+  // phrase that names no model on this PC ("включи музыку") isn't one: null, she answers it as usual.
+  async switchModel(text) {
+    const wanted = parseModelCommand(text);
+    if (!wanted || !this.d.switchModel) return null;
+    const r = await this.d.switchModel(wanted).catch(() => null);
+    return r?.ok ? { reply: `Переключилась на ${r.model}.`, brain: r.model } : null;
+  }
+
   async reply(text) {
     if (/^новый разговор/i.test(text)) {
       this.turns = [];
@@ -217,7 +234,10 @@ class PhoneBridge {
   async turn(text, voice) {
     // "скинь фото" from the phone: drawn on the PC (main.js photoTask), fetched like her voice (/gallery/<file>)
     const media = this.d.photo && this.d.mediaKind?.(text);
-    const { reply, brain, image } = media ? await this.media(text, media) : await this.reply(text);
+    const { reply, brain, image } = media ? await this.media(text, media)
+      : (await this.switchModel(text)) || await this.reply(text);
+    // kept like a talk on the PC: her hub's Chats (as a phone chat) and your vault (main.js)
+    if (brain !== 'error') this.d.log?.({ said: text, answer: image ? `${reply}\n[[photo:${image}]]` : reply });
     const out = { reply, brain, pose: '', ...(image && { image: `/gallery/${image}` }) };
     if (voice && brain !== 'error') {
       const data = await this.d.speak(reply).catch(() => null);
@@ -232,4 +252,4 @@ class PhoneBridge {
   }
 }
 
-module.exports = { PhoneBridge, newToken, tokenMatches, addresses, controlPatch };
+module.exports = { PhoneBridge, newToken, tokenMatches, addresses, controlPatch, parseModelCommand };
