@@ -55,8 +55,10 @@ const path = require('node:path');
 test('videoGraph: Wan VACE from her still, trimmed, saved as WebM', () => {
   const g = videoGraph({ prompt: 'waving, beach', image: 'capri_still_1.png', seed: 3 });
   assert.equal(g[6].inputs.image, 'capri_still_1.png');
-  assert.deepEqual(g[7].inputs.reference_image, ['6', 0]);
-  assert.equal(g[7].inputs.length, 49);
+  assert.deepEqual(g[7].inputs.reference_image, ['13', 0]);
+  assert.equal(g[7].inputs.length, 33);
+  assert.deepEqual(g[7].inputs.control_video, ['15', 0]);
+  assert.deepEqual(g[7].inputs.control_masks, ['19', 0]);
   assert.equal(g[9].inputs.seed, 3);
   assert.deepEqual(g[10].inputs.trim_amount, ['7', 3]);
   assert.equal(g[12].class_type, 'SaveWEBM');

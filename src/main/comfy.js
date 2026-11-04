@@ -134,7 +134,7 @@ function loadWorkflow(file) {
 }
 
 // "Скинь видео": Wan 2.1 VACE 1.3B (Comfy-Org's repack, in ComfyUI's own models: diffusion_models,
-// text_encoders, vae), her still as the reference, three seconds at 16 fps, portrait 480×832, saved as
+// text_encoders, vae), her still as the reference, two seconds at 16 fps, portrait 480×832, saved as
 // WebM (VP9: Electron and Android both play it). ~11 GB on disk; on 8 GB of VRAM it takes a few minutes.
 const VIDEO_MODELS = {
   unet: 'wan2.1_vace_1.3B_fp16.safetensors',
@@ -144,10 +144,20 @@ const VIDEO_MODELS = {
 const VIDEO_MS = 25 * 60 * 1000;
 const VIDEO_NEGATIVE = 'static, frozen, still image, blurry, low quality, distorted face, deformed hands, extra limbs, flicker, watermark, text, subtitles';
 
-/** The Wan VACE graph: `image` (in ComfyUI's input folder) brought to life as `prompt` says. */
-function videoGraph({ prompt, image, seed = Math.floor(Math.random() * 2 ** 48), width = 480, height = 832, frames = 49 }) {
+/** The Wan VACE graph: `image` (in ComfyUI's input folder) brought to life as `prompt` says. Her still is
+ * the first frame (kept, mask 0) and the rest are drawn on from it (grey, mask 1): as a reference alone the
+ * 1.3B model drew someone else. Two seconds: three took ~14 minutes on 8 GB. */
+function videoGraph({ prompt, image, seed = Math.floor(Math.random() * 2 ** 48), width = 480, height = 832, frames = 33 }) {
   const text = [String(prompt || '').trim(), 'anime style, smooth natural motion, subtle movement, consistent character'].filter(Boolean).join(', ');
+  const empty = (batch, color) => ({ class_type: 'EmptyImage', inputs: { width, height, batch_size: batch, color } });
   return {
+    13: { class_type: 'ImageScale', inputs: { image: ['6', 0], upscale_method: 'lanczos', width, height, crop: 'center' } },
+    14: empty(frames - 1, 0x7f7f7f),
+    15: { class_type: 'ImageBatch', inputs: { image1: ['13', 0], image2: ['14', 0] } }, // the control video
+    16: empty(1, 0x000000),
+    17: empty(frames - 1, 0xffffff),
+    18: { class_type: 'ImageBatch', inputs: { image1: ['16', 0], image2: ['17', 0] } },
+    19: { class_type: 'ImageToMask', inputs: { image: ['18', 0], channel: 'red' } }, // 0: keep, 1: draw
     1: { class_type: 'UNETLoader', inputs: { unet_name: VIDEO_MODELS.unet, weight_dtype: 'default' } },
     2: { class_type: 'CLIPLoader', inputs: { clip_name: VIDEO_MODELS.clip, type: 'wan', device: 'default' } },
     3: { class_type: 'VAELoader', inputs: { vae_name: VIDEO_MODELS.vae } },
@@ -156,7 +166,10 @@ function videoGraph({ prompt, image, seed = Math.floor(Math.random() * 2 ** 48),
     6: { class_type: 'LoadImage', inputs: { image } },
     7: {
       class_type: 'WanVaceToVideo',
-      inputs: { positive: ['4', 0], negative: ['5', 0], vae: ['3', 0], width, height, length: frames, batch_size: 1, strength: 1, reference_image: ['6', 0] },
+      inputs: {
+        positive: ['4', 0], negative: ['5', 0], vae: ['3', 0], width, height, length: frames, batch_size: 1, strength: 1,
+        control_video: ['15', 0], control_masks: ['19', 0], reference_image: ['13', 0],
+      },
     },
     8: { class_type: 'ModelSamplingSD3', inputs: { model: ['1', 0], shift: 8 } },
     9: {
@@ -198,7 +211,8 @@ class Comfy {
     if (!where) return null;
     let root = path.join(where.root, 'ComfyUI', 'models');
     try {
-      const m = /base_path:\s*'([^']+)'/.exec(fs.readFileSync(where.models, 'utf8'));
+      // the real line, not the commented example above it ("#     base_path: '...'")
+      const m = /^[ \t]+base_path:[ \t]*'([^']+)'/m.exec(fs.readFileSync(where.models, 'utf8'));
       if (m) root = m[1];
     } catch {}
     return missingVideoModels(root);
