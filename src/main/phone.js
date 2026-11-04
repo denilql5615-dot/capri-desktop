@@ -51,7 +51,7 @@ const PHONE_NOTE = 'Канал: телефон. С телефона ты тол�
   + 'Claude и Codex отсюда не зовёшь. Просят что-то сделать на ПК: скажи, что это можно за компьютером.';
 
 // what the phone remote may switch: deliberately short, nothing that widens what she may do on this PC
-const CONTROL_KEYS = { voice: 'boolean', renderMode: 'string', spritePack: 'string', router: 'boolean', heavyProvider: 'string', fallbackToCodex: 'boolean' };
+const CONTROL_KEYS = { voice: 'boolean', router: 'boolean', worker: 'string' };
 function controlPatch(body) {
   if (!body || typeof body !== 'object') return null;
   for (const [k, v] of Object.entries(body)) if (typeof v !== CONTROL_KEYS[k]) return null;

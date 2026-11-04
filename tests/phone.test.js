@@ -14,6 +14,8 @@ test('controlPatch: the remote may switch its few settings, nothing else', () =>
   assert.deepStrictEqual(controlPatch({ voice: false }), { voice: false });
   assert.strictEqual(controlPatch({ voice: 'yes' }), null);
   assert.strictEqual(controlPatch({ claudeMode: 'acceptEdits' }), null);
+  assert.deepStrictEqual(controlPatch({ router: true, worker: 'codex' }), { router: true, worker: 'codex' });
+  assert.strictEqual(controlPatch({ renderMode: 'sprite' }), null); // GENESIS's, gone here
 });
 
 test('bridge: token, chat with the phone note, voice, events, control', async () => {

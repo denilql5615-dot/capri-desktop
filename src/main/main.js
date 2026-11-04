@@ -942,11 +942,15 @@ function phonePersona() {
   ].filter(Boolean).join('\n');
 }
 
+// The phone's remote (phone.js /control): her router on or off, who works on the PC (computerWorker:
+// Claude, Codex or she herself), her voice on the PC
+const WORKERS = ['claude', 'codex', 'capri'];
 function phoneControl() {
   const cfg = config.load();
   return {
-    renderMode: 'vector', spritePack: '', router: false, heavyProvider: 'claude', fallbackToCodex: false,
-    voice: Boolean(cfg.voice.tts), provider: cfg.provider,
+    router: cfg.router !== false,
+    worker: WORKERS.includes(cfg.computerWorker) ? cfg.computerWorker : 'claude',
+    voice: Boolean(cfg.voice.tts), provider: cfg.provider, model: pickModel(cfg) || '',
     connection: chatModels?.length ? 'connected' : 'disconnected', codexInstalled: Boolean(workers.findCodex()),
   };
 }
@@ -977,6 +981,9 @@ async function applyPhone() {
       },
       applyControl: (patch) => {
         if (typeof patch.voice === 'boolean') updateConfig({ voice: { ...config.load().voice, tts: patch.voice } });
+        if (typeof patch.router === 'boolean') updateConfig({ router: patch.router });
+        if (WORKERS.includes(patch.worker)) updateConfig({ computerWorker: patch.worker });
+        rebuildTray();
         return phoneControl();
       },
       // "переключись на ролевую" in the phone chat: the same switch as her name and that on the PC
