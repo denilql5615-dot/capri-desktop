@@ -237,7 +237,7 @@ class PhoneBridge {
     const { reply, brain, image } = media ? await this.media(text, media)
       : (await this.switchModel(text)) || await this.reply(text);
     // kept like a talk on the PC: her hub's Chats (as a phone chat) and your vault (main.js)
-    if (brain !== 'error') this.d.log?.({ said: text, answer: image ? `${reply}\n[[photo:${image}]]` : reply });
+    if (brain !== 'error' && !/^новый разговор/i.test(text)) this.d.log?.({ said: text, answer: image ? `${reply}\n[[photo:${image}]]` : reply });
     const out = { reply, brain, pose: '', ...(image && { image: `/gallery/${image}` }) };
     if (voice && brain !== 'error') {
       const data = await this.d.speak(reply).catch(() => null);
