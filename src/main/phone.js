@@ -147,10 +147,11 @@ class PhoneBridge {
         return res.end(pack.zip);
       }
       if (req.method === 'GET' && url.pathname.startsWith('/gallery/')) {
-        const png = this.d.galleryFile?.(decodeURIComponent(url.pathname.slice('/gallery/'.length)));
-        if (!png) return this.send(res, 404, { error: 'no picture' });
-        res.writeHead(200, { 'content-type': 'image/png', 'content-length': png.length });
-        return res.end(png);
+        const name = decodeURIComponent(url.pathname.slice('/gallery/'.length));
+        const file = this.d.galleryFile?.(name);
+        if (!file) return this.send(res, 404, { error: 'no picture' });
+        res.writeHead(200, { 'content-type': /\.webm$/i.test(name) ? 'video/webm' : 'image/png', 'content-length': file.length });
+        return res.end(file);
       }
       if (req.method === 'GET' && url.pathname.startsWith('/audio/')) {
         this.pruneAudio();
@@ -188,7 +189,7 @@ class PhoneBridge {
   async media(text, kind) {
     try {
       const said = await this.d.photo(text, kind, this.turns.slice(-4));
-      const m = /\[\[photo:([\w.-]+\.png)\]\]/.exec(said);
+      const m = /\[\[photo:([\w.-]+\.(?:png|webm))\]\]/.exec(said);
       const reply = said.replace(/\[\[photo:[^\]]*\]\]/g, '').trim() || 'Держи.';
       this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
       return { reply, brain: 'comfyui', image: m?.[1] || null };

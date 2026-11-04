@@ -58,14 +58,17 @@ function parsePlan(answer, said) {
   }
 }
 
-/** A gallery file name for now: 20261104-013512-4f2a.png */
-function galleryName(now = new Date(), rand = Math.random()) {
+/** A gallery file name for now: 20261104-013512-4f2a.png (a clip: .webm) */
+function galleryName(now = new Date(), rand = Math.random(), ext = 'png') {
   const p = (n) => String(n).padStart(2, '0');
-  return `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}-${Math.floor(rand * 65536).toString(16).padStart(4, '0')}.png`;
+  return `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}-${Math.floor(rand * 65536).toString(16).padStart(4, '0')}.${ext}`;
 }
 
-const GALLERY_FILE = /^\d{8}-\d{6}-[0-9a-f]{4}\.png$/;
-const MARK = /\[\[photo:(\d{8}-\d{6}-[0-9a-f]{4}\.png)\]\]/g;
+// her gallery: pictures (.png) and clips (.webm, "скинь видео"); in her answers as [[photo:<file>]] either way
+const GALLERY_FILE = /^\d{8}-\d{6}-[0-9a-f]{4}\.(?:png|webm)$/;
+const MARK = /\[\[photo:(\d{8}-\d{6}-[0-9a-f]{4}\.(?:png|webm))\]\]/g;
+const isVideo = (name) => /\.webm$/i.test(String(name || ''));
+const metaName = (name) => String(name).replace(/\.(?:png|webm)$/, '.json');
 
 /** Her answer's pictures, and the words without their marks. */
 function split(text) {
@@ -73,4 +76,4 @@ function split(text) {
   return { text: String(text || '').replace(MARK, '').trim(), photos };
 }
 
-module.exports = { kind, SCHEMA, promptMessages, parsePlan, galleryName, GALLERY_FILE, split };
+module.exports = { kind, SCHEMA, promptMessages, parsePlan, galleryName, GALLERY_FILE, split, isVideo, metaName };

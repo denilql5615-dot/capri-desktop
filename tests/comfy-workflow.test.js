@@ -46,3 +46,30 @@ test('fillWorkflow: her tags in, a new seed, her prefix; your settings and LoRAs
 test('fillWorkflow: an empty request leaves no stray commas', () => {
   assert.equal(fillWorkflow(yours(), { prompt: '' }).graph[2].inputs.text, 'capri_cp, capri_body, masterpiece');
 });
+
+const { videoGraph, missingVideoModels } = require('../src/main/comfy');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+test('videoGraph: Wan VACE from her still, trimmed, saved as WebM', () => {
+  const g = videoGraph({ prompt: 'waving, beach', image: 'capri_still_1.png', seed: 3 });
+  assert.equal(g[6].inputs.image, 'capri_still_1.png');
+  assert.deepEqual(g[7].inputs.reference_image, ['6', 0]);
+  assert.equal(g[7].inputs.length, 49);
+  assert.equal(g[9].inputs.seed, 3);
+  assert.deepEqual(g[10].inputs.trim_amount, ['7', 3]);
+  assert.equal(g[12].class_type, 'SaveWEBM');
+  assert.match(g[4].inputs.text, /^waving, beach, anime style/);
+  for (const node of Object.values(g)) {
+    for (const v of Object.values(node.inputs)) if (Array.isArray(v)) assert.ok(g[v[0]], `link to ${v[0]}`);
+  }
+});
+
+test('missingVideoModels: the files not in the models folder', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'comfy-models-'));
+  assert.equal(missingVideoModels(root).length, 3);
+  fs.mkdirSync(path.join(root, 'vae'));
+  fs.writeFileSync(path.join(root, 'vae', 'wan_2.1_vae.safetensors'), '');
+  assert.deepEqual(missingVideoModels(root), ['wan2.1_vace_1.3B_fp16.safetensors', 'umt5_xxl_fp8_e4m3fn_scaled.safetensors']);
+});

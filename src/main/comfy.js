@@ -133,6 +133,48 @@ function loadWorkflow(file) {
   }
 }
 
+// "Скинь видео": Wan 2.1 VACE 1.3B (Comfy-Org's repack, in ComfyUI's own models: diffusion_models,
+// text_encoders, vae), her still as the reference, three seconds at 16 fps, portrait 480×832, saved as
+// WebM (VP9: Electron and Android both play it). ~11 GB on disk; on 8 GB of VRAM it takes a few minutes.
+const VIDEO_MODELS = {
+  unet: 'wan2.1_vace_1.3B_fp16.safetensors',
+  clip: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
+  vae: 'wan_2.1_vae.safetensors',
+};
+const VIDEO_MS = 25 * 60 * 1000;
+const VIDEO_NEGATIVE = 'static, frozen, still image, blurry, low quality, distorted face, deformed hands, extra limbs, flicker, watermark, text, subtitles';
+
+/** The Wan VACE graph: `image` (in ComfyUI's input folder) brought to life as `prompt` says. */
+function videoGraph({ prompt, image, seed = Math.floor(Math.random() * 2 ** 48), width = 480, height = 832, frames = 49 }) {
+  const text = [String(prompt || '').trim(), 'anime style, smooth natural motion, subtle movement, consistent character'].filter(Boolean).join(', ');
+  return {
+    1: { class_type: 'UNETLoader', inputs: { unet_name: VIDEO_MODELS.unet, weight_dtype: 'default' } },
+    2: { class_type: 'CLIPLoader', inputs: { clip_name: VIDEO_MODELS.clip, type: 'wan', device: 'default' } },
+    3: { class_type: 'VAELoader', inputs: { vae_name: VIDEO_MODELS.vae } },
+    4: { class_type: 'CLIPTextEncode', inputs: { text, clip: ['2', 0] } },
+    5: { class_type: 'CLIPTextEncode', inputs: { text: VIDEO_NEGATIVE, clip: ['2', 0] } },
+    6: { class_type: 'LoadImage', inputs: { image } },
+    7: {
+      class_type: 'WanVaceToVideo',
+      inputs: { positive: ['4', 0], negative: ['5', 0], vae: ['3', 0], width, height, length: frames, batch_size: 1, strength: 1, reference_image: ['6', 0] },
+    },
+    8: { class_type: 'ModelSamplingSD3', inputs: { model: ['1', 0], shift: 8 } },
+    9: {
+      class_type: 'KSampler',
+      inputs: { seed, steps: 20, cfg: 6, sampler_name: 'uni_pc', scheduler: 'simple', denoise: 1, model: ['8', 0], positive: ['7', 0], negative: ['7', 1], latent_image: ['7', 2] },
+    },
+    10: { class_type: 'TrimVideoLatent', inputs: { samples: ['9', 0], trim_amount: ['7', 3] } },
+    11: { class_type: 'VAEDecode', inputs: { samples: ['10', 0], vae: ['3', 0] } },
+    12: { class_type: 'SaveWEBM', inputs: { images: ['11', 0], filename_prefix: 'capri_video', codec: 'vp9', fps: 16, crf: 28 } },
+  };
+}
+
+/** Whether the video models are in ComfyUI's models folder (`modelsRoot`): the ones missing. */
+function missingVideoModels(modelsRoot) {
+  const where = { unet: 'diffusion_models', clip: 'text_encoders', vae: 'vae' };
+  return Object.entries(VIDEO_MODELS).filter(([k, file]) => !fs.existsSync(path.join(modelsRoot, where[k], file))).map(([, file]) => file);
+}
+
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 class Comfy {
@@ -148,6 +190,18 @@ class Comfy {
 
   get installed() {
     return Boolean(locate(this.d.appData));
+  }
+
+  /** The video models not in ComfyUI's models folder yet ([] : ready; null: no ComfyUI). */
+  videoMissing() {
+    const where = locate(this.d.appData);
+    if (!where) return null;
+    let root = path.join(where.root, 'ComfyUI', 'models');
+    try {
+      const m = /base_path:\s*'([^']+)'/.exec(fs.readFileSync(where.models, 'utf8'));
+      if (m) root = m[1];
+    } catch {}
+    return missingVideoModels(root);
   }
 
   async api(route, { method = 'GET', body, timeout = 15000 } = {}) {
@@ -210,39 +264,74 @@ class Comfy {
 
   /** One picture: { png (Buffer), prompt (what was drawn) }. In turn with any other. */
   draw(request) {
-    const job = this.queue.catch(() => {}).then(() => this.run(request));
+    return this.enqueue(() => this.session(() => this.picture(request)));
+  }
+
+  /** A short clip of her: { png (the still it starts from), webm, prompt }. The still is drawn like a picture
+   * (your workflow if you set one), then Wan 2.1 VACE brings it to life. In turn with any other. */
+  animate({ prompt }) {
+    return this.enqueue(() => this.session(async () => {
+      const still = await this.picture({ prompt, her: true });
+      await this.api('/free', { method: 'POST', body: { unload_models: true, free_memory: true } }).catch(() => {});
+      const image = await this.upload(still.png);
+      const webm = await this.submit(videoGraph({ prompt, image }), VIDEO_MS);
+      return { png: still.png, webm, prompt: still.prompt };
+    }));
+  }
+
+  enqueue(work) {
+    const job = this.queue.catch(() => {}).then(work);
     this.queue = job;
     return job;
   }
 
-  async run({ prompt, her = true }) {
+  async picture({ prompt, her = true }) {
+    const yours = her ? loadWorkflow(this.d.workflowFile?.()) : null;
+    const { graph, positive } = yours ? fillWorkflow(yours, { prompt }) : workflow({ prompt, her });
+    return { png: await this.submit(graph), prompt: positive };
+  }
+
+  /** A picture into ComfyUI's input folder (for LoadImage): its name there. */
+  async upload(png) {
+    const form = new FormData();
+    form.append('image', new Blob([png], { type: 'image/png' }), `capri_still_${Date.now()}.png`);
+    form.append('overwrite', 'true');
+    const res = await fetch(`${this.base}/upload/image`, { method: 'POST', body: form, signal: AbortSignal.timeout(30000) });
+    if (!res.ok) throw new Error(`ComfyUI /upload/image: ${res.status}`);
+    const { name, subfolder } = await res.json();
+    return subfolder ? `${subfolder}/${name}` : name;
+  }
+
+  /** A graph run to its first saved file (a picture or a video): that file. */
+  async submit(graph, timeout = JOB_MS) {
+    const { prompt_id: id } = await (await this.api('/prompt', { method: 'POST', body: { prompt: graph, client_id: 'capri' } })).json();
+    const until = Date.now() + timeout;
+    while (Date.now() < until) {
+      await wait(1500);
+      const history = (await (await this.api(`/history/${id}`)).json())[id];
+      if (!history) continue;
+      if (history.status?.status_str === 'error') {
+        const msg = history.status.messages?.find(([kind]) => kind === 'execution_error')?.[1]?.exception_message;
+        throw new Error(`ComfyUI: ${msg || 'ошибка'}`);
+      }
+      const file = Object.values(history.outputs || {}).flatMap((o) => o.images || [])[0];
+      if (!file) continue;
+      const q = new URLSearchParams({ filename: file.filename, subfolder: file.subfolder || '', type: file.type || 'output' });
+      return Buffer.from(await (await this.api(`/view?${q}`, { timeout: 60000 })).arrayBuffer());
+    }
+    throw new Error(`ComfyUI работал дольше ${Math.round(timeout / 60000)} минут`);
+  }
+
+  // the GPU for the job, from ComfyUI: Comfy Desktop's while it's open (you trying your workflow: the same
+  // models and nodes, a second one wouldn't fit in 8 GB beside it), else her own, started now
+  async session(work) {
     await this.d.beforeJob?.();
-    // Comfy Desktop open (you trying your workflow): its ComfyUI draws, the same models and nodes; a second
-    // one wouldn't fit in 8 GB beside it
     const desktop = `http://127.0.0.1:${desktopPort(this.d.appData)}`;
     const own = this.base;
     if (!this.proc && await this.aliveAt(desktop)) this.base = desktop;
     else await this.up();
     try {
-      const yours = her ? loadWorkflow(this.d.workflowFile?.()) : null;
-      const { graph, positive } = yours ? fillWorkflow(yours, { prompt }) : workflow({ prompt, her });
-      const { prompt_id: id } = await (await this.api('/prompt', { method: 'POST', body: { prompt: graph, client_id: 'capri' } })).json();
-      const until = Date.now() + JOB_MS;
-      while (Date.now() < until) {
-        await wait(1500);
-        const history = (await (await this.api(`/history/${id}`)).json())[id];
-        if (!history) continue;
-        if (history.status?.status_str === 'error') {
-          const msg = history.status.messages?.find(([kind]) => kind === 'execution_error')?.[1]?.exception_message;
-          throw new Error(`ComfyUI: ${msg || 'ошибка'}`);
-        }
-        const image = Object.values(history.outputs || {}).flatMap((o) => o.images || [])[0];
-        if (!image) continue;
-        const q = new URLSearchParams({ filename: image.filename, subfolder: image.subfolder || '', type: image.type || 'output' });
-        const png = Buffer.from(await (await this.api(`/view?${q}`, { timeout: 30000 })).arrayBuffer());
-        return { png, prompt: positive };
-      }
-      throw new Error('ComfyUI рисовал дольше десяти минут');
+      return await work();
     } finally {
       // the GPU back at once; the process goes after a few idle minutes (the next picture starts faster)
       this.api('/free', { method: 'POST', body: { unload_models: true, free_memory: true } }).catch(() => {});
@@ -256,4 +345,6 @@ class Comfy {
   }
 }
 
-module.exports = { Comfy, locate, workflow, checkWorkflow, fillWorkflow, loadWorkflow, PLACEHOLDER, PORT, HER };
+module.exports = {
+  Comfy, locate, workflow, checkWorkflow, fillWorkflow, loadWorkflow, videoGraph, missingVideoModels, VIDEO_MODELS, PLACEHOLDER, PORT, HER,
+};

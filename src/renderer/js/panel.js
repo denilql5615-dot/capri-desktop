@@ -28,7 +28,8 @@ export class Panel {
     this.tickerEl = ticker;
     this.labels = labels;
     this.line = panel.querySelector('.panel__line');
-    this.photo = panel.querySelector('.panel__photo'); // a picture she sent ("скинь фото")
+    this.photo = panel.querySelector('img.panel__photo'); // a picture she sent ("скинь фото")
+    this.clip = panel.querySelector('.panel__clip'); // or a clip ("скинь видео"): looped, silent
     this.stopStream(); // her chat answer, decoding in (stream)
     this.streamTo = [];
     this.portrait = panel.querySelector('.panel__face img');
@@ -142,6 +143,7 @@ export class Panel {
     this.quote.textContent = msg.quote || '';
     this.quote.hidden = !msg.quote;
     this.photo.hidden = true; // a picture she sent belongs to that chat answer, not to her next line
+    this.hideClip();
     this.setProgress(msg.progress);
     this.reply.textContent = msg.reply || '';
     this.reply.hidden = !msg.reply;
@@ -323,6 +325,7 @@ export class Panel {
     this.quote.textContent = quote;
     this.quote.hidden = !quote;
     this.photo.hidden = true;
+    this.hideClip();
     this.line.textContent = '';
     this.line.classList.add('is-streaming');
     this.place();
@@ -380,10 +383,25 @@ export class Panel {
   // A picture she sent, under her line, in her chat (capri://gallery/...): placed again once it's loaded.
   showPhoto(src) {
     if (!this.current?.chat) return;
-    this.photo.onload = () => this.place();
-    this.photo.src = src;
-    this.photo.hidden = false;
+    if (/\.webm$/i.test(src)) {
+      this.photo.hidden = true;
+      this.clip.onloadeddata = () => this.place();
+      this.clip.src = src;
+      this.clip.hidden = false;
+      this.clip.play().catch(() => {});
+    } else {
+      this.hideClip();
+      this.photo.onload = () => this.place();
+      this.photo.src = src;
+      this.photo.hidden = false;
+    }
     this.place();
+  }
+
+  hideClip() {
+    if (!this.clip || this.clip.hidden) return;
+    this.clip.pause();
+    this.clip.hidden = true;
   }
 
   // a jolt through her finished answer: split colours, slices knocked sideways

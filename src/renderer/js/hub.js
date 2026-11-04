@@ -208,7 +208,10 @@ host.onPlansChanged(() => {
 const gridEl = document.querySelector('.gallery__grid');
 const bigEl = document.querySelector('.gallery__big');
 document.querySelector('.gallery__note').textContent = t.galleryNote;
-bigEl.addEventListener('click', () => { bigEl.hidden = true; });
+bigEl.addEventListener('click', () => {
+  bigEl.hidden = true;
+  bigEl.querySelector('video')?.pause();
+});
 
 async function loadGallery() {
   const list = await host.galleryList().catch(() => []);
@@ -216,14 +219,24 @@ async function loadGallery() {
   if (!list.length) gridEl.append(el('li', 'plans__empty', t.galleryEmpty));
   for (const p of list) {
     const item = el('li', 'gallery__item');
-    const img = el('img');
+    const img = el(p.video ? 'video' : 'img'); // a clip ("скинь видео"): looped, silent
     img.src = `capri://gallery/${p.name}`;
-    img.loading = 'lazy';
-    img.alt = p.said;
+    if (p.video) Object.assign(img, { muted: true, loop: true, autoplay: true, playsInline: true });
+    else Object.assign(img, { loading: 'lazy', alt: p.said });
     item.title = p.said;
     item.append(img);
     item.addEventListener('click', () => {
-      bigEl.querySelector('img').src = img.src;
+      const bigImg = bigEl.querySelector('img');
+      const bigClip = bigEl.querySelector('video');
+      bigImg.hidden = Boolean(p.video);
+      bigClip.hidden = !p.video;
+      if (p.video) {
+        bigClip.src = img.src;
+        bigClip.play().catch(() => {});
+      } else {
+        bigClip.pause();
+        bigImg.src = img.src;
+      }
       bigEl.querySelector('figcaption').textContent = p.said;
       bigEl.hidden = false;
     });

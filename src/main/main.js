@@ -417,10 +417,10 @@ async function calendarData(service, said) {
 // The exchange in your vault (notes.js): the talk in Сырьё/Чаты, what Claude or Codex made in Результаты.
 // A message with a key or password in it isn't written down. Off: config vaultChats false.
 function toVault(cfg, worker, said, answer) {
-  if (cfg.vaultChats === false || hasSecret(said) || ['stop', 'video'].includes(worker)) return;
+  if (cfg.vaultChats === false || hasSecret(said) || worker === 'stop') return;
   try {
     const dir = notesDir();
-    const by = { claude: 'Claude', codex: 'Codex', computer: 'Капри (на ПК)', photo: 'Капри (фото)' }[worker] || 'Капри';
+    const by = { claude: 'Claude', codex: 'Codex', computer: 'Капри (на ПК)', photo: 'Капри (фото)', video: 'Капри (видео)' }[worker] || 'Капри';
     notes.appendChat(dir, { said, answer, by });
     if (worker === 'claude' || worker === 'codex') notes.writeOutput(dir, { worker: by, task: said, answer, folder: workers.workDir(cfg) });
   } catch (err) {
@@ -970,7 +970,7 @@ async function applyPhone() {
       sprites: phonePack,
       // "скинь фото" from the phone: drawn here like one asked on the PC, shown in her hub's gallery too
       mediaKind: photo.kind,
-      photo: (text, kind, history) => (kind === 'video' ? Promise.resolve(VIDEO_LATER) : photoTask(text, history)),
+      photo: (text, kind, history) => (kind === 'video' ? videoTask(text, history) : photoTask(text, history)),
       galleryFile: (name) => {
         if (!photo.GALLERY_FILE.test(name)) return null;
         try { return fs.readFileSync(path.join(galleryDir(), name)); } catch { return null; }
@@ -1227,7 +1227,24 @@ async function photoTask(said, history = [], signal) {
   const name = photo.galleryName();
   fs.mkdirSync(galleryDir(), { recursive: true });
   fs.writeFileSync(path.join(galleryDir(), name), png);
-  fs.writeFileSync(path.join(galleryDir(), name.replace(/\.png$/, '.json')), JSON.stringify({ said, prompt, her: plan.her, at: Date.now() }, null, 2));
+  fs.writeFileSync(path.join(galleryDir(), photo.metaName(name)), JSON.stringify({ said, prompt, her: plan.her, at: Date.now() }, null, 2));
+  chatsWin?.webContents.send('gallery:changed');
+  return `${plan.caption || 'Держи.'}\n[[photo:${name}]]`;
+}
+
+/** "Скинь видео": a still of her drawn, then brought to life (comfy.js animate); the clip into her gallery,
+ * her line with [[photo:<file>.webm]], which her chats play. A few minutes: she says so first. */
+async function videoTask(said, history = [], signal) {
+  if (!comfy.installed) return 'Не могу: ComfyUI на этом ПК не нашла. Поставь Comfy Desktop, и скину.';
+  const missing = comfy.videoMissing();
+  if (missing?.length) return `Видео пока не могу: не докачаны модели (${missing.join(', ')}).`;
+  const plan = await planPhoto(said, history, signal);
+  console.log(`[capri] video: ${plan.tags}`);
+  const { webm, prompt } = await comfy.animate({ prompt: plan.tags });
+  const name = photo.galleryName(new Date(), Math.random(), 'webm');
+  fs.mkdirSync(galleryDir(), { recursive: true });
+  fs.writeFileSync(path.join(galleryDir(), name), webm);
+  fs.writeFileSync(path.join(galleryDir(), photo.metaName(name)), JSON.stringify({ said, prompt, her: true, video: true, at: Date.now() }, null, 2));
   chatsWin?.webContents.send('gallery:changed');
   return `${plan.caption || 'Держи.'}\n[[photo:${name}]]`;
 }
@@ -1238,13 +1255,10 @@ function galleryList() {
   try { names = fs.readdirSync(galleryDir()).filter((n) => photo.GALLERY_FILE.test(n)); } catch { return []; }
   return names.sort().reverse().map((name) => {
     let meta = {};
-    try { meta = JSON.parse(fs.readFileSync(path.join(galleryDir(), name.replace(/\.png$/, '.json')), 'utf8')); } catch {}
-    return { name, said: String(meta.said || ''), at: meta.at || 0 };
+    try { meta = JSON.parse(fs.readFileSync(path.join(galleryDir(), photo.metaName(name)), 'utf8')); } catch {}
+    return { name, said: String(meta.said || ''), at: meta.at || 0, video: photo.isVideo(name) };
   });
 }
-
-// "скинь видео": no video model yet (her plan: Wan 2.1 VACE through the same ComfyUI)
-const VIDEO_LATER = 'Видео пока не умею: модель для видео ещё не скачана. Фото — пожалуйста: скажи «скинь фото».';
 
 // Her answer from the model picked, or from the next one when that one can't: too busy twice in a row
 // (Gemini's "high demand", an Ollama cloud model out of free use), not served anymore (an older model
@@ -1546,7 +1560,7 @@ function registerIpc() {
         : worker === 'claude' ? await workers.askClaude(cfg, messages, send, abort.signal, desktopOpts)
         : worker === 'computer' ? await computerTask(messages, send, abort.signal)
         : worker === 'photo' ? await photoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal)
-        : worker === 'video' ? VIDEO_LATER
+        : worker === 'video' ? await videoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal)
         : await chatWithFallback(cfg, await withPim(withNotes(messages), yourWords(messages)), send, abort.signal, () => streamed);
       if (cfg.provider === 'claude') saveMemory({ claude: llm.claudeMemory() });
       if (!worker) noteLater([...messages, { role: 'assistant', content: text }]);

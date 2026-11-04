@@ -136,15 +136,17 @@ function line(role, content, at, q) {
   text.append(marked(content.replace(PHOTO_MARK, '').trim(), q));
   item.append(who, text);
   for (const name of photos) {
-    const img = el('img', 'line__photo');
+    const clip = /\.webm$/i.test(name); // a clip she sent ("скинь видео"): looped, silent
+    const img = el(clip ? 'video' : 'img', 'line__photo');
     img.src = `capri://gallery/${name}`;
-    img.alt = '';
+    if (clip) Object.assign(img, { muted: true, loop: true, autoplay: true, playsInline: true });
+    else img.alt = '';
     item.append(img);
   }
   return item;
 }
 
-const PHOTO_MARK = /\[\[photo:(\d{8}-\d{6}-[0-9a-f]{4}\.png)\]\]/g;
+const PHOTO_MARK = /\[\[photo:(\d{8}-\d{6}-[0-9a-f]{4}\.(?:png|webm))\]\]/g;
 
 function renderLog({ keepScroll = false } = {}) {
   const chat = chats.find((c) => c.id === current);

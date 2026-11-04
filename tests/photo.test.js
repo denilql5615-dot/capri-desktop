@@ -67,3 +67,13 @@ test('phone: "скинь фото" comes back with the picture to fetch, the pic
     await bridge.stop();
   }
 });
+
+test('gallery: clips (.webm) beside pictures, in her marks too', () => {
+  const { galleryName, GALLERY_FILE, split, isVideo, metaName } = require('../src/main/photo');
+  const name = galleryName(new Date(2026, 10, 4, 1, 2, 3), 0.5, 'webm');
+  assert.match(name, /^20261104-010203-8000\.webm$/);
+  assert.ok(GALLERY_FILE.test(name));
+  assert.ok(isVideo(name));
+  assert.equal(metaName(name), '20261104-010203-8000.json');
+  assert.deepEqual(split(`держи\n[[photo:${name}]]`), { text: 'держи', photos: [name] });
+});
