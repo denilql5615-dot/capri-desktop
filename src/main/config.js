@@ -62,6 +62,7 @@ const DEFAULTS = {
   phoneToken: null,  // the phone's key, encrypted with your Windows account (setup.sealKey)
   telegramToken: null,
   telegramChatId: null,
+  router: true, // her router (router.js) sorts what you say and how hard; false: keywords only
   computerWorker: 'claude', // who drives the PC when no one is named: 'claude', 'codex' or 'capri' (her own agent)
   pimAccounts: [],
   pimSecrets: {},

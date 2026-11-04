@@ -172,6 +172,25 @@ async function jsonChat({ model, messages, schema }, signal) {
   return json.message?.content || '';
 }
 
+// A few tokens with how sure the model was of each (her router, router.js): { content, logprobs }.
+// No thinking; her usual context, so she isn't loaded again between chat turns.
+async function pick({ model, messages, numPredict = 8, topLogprobs = 10 }, signal) {
+  const res = await fetch(`${base()}/api/chat`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model, messages, stream: false, keep_alive: '15m', logprobs: true, top_logprobs: topLogprobs,
+      ...(known.get(model)?.thinking && { think: false }),
+      options: { temperature: 0, num_predict: numPredict },
+    }),
+    signal,
+  });
+  if (!res.ok) throw await failure(res);
+  const json = await res.json();
+  if (json.error) throw new Error(json.error);
+  return { content: json.message?.content || '', logprobs: json.logprobs || [] };
+}
+
 // Whether a model can look at pictures (gemma3 can, llama3.2 can't). Can't tell: yes, try it.
 async function canSee(model) {
   const res = await fetch(`${base()}/api/show`, {
@@ -226,4 +245,4 @@ function screenModel(list = []) {
 const retryEmptyVision = (text, attempt) => attempt === 0 && !String(text || '').trim();
 const visionPrompt = (text) => `/no_think\n${String(text || '')}`;
 
-module.exports = { base, models, isCloud, account, freeModels, warm, unload, unloadAll, chat, jsonChat, canSee, findSpokenModel, screenModel, retryEmptyVision, visionPrompt };
+module.exports = { base, models, isCloud, account, freeModels, warm, unload, unloadAll, chat, jsonChat, pick, canSee, findSpokenModel, screenModel, retryEmptyVision, visionPrompt };

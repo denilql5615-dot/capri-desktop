@@ -37,6 +37,7 @@ const telegram = require('./telegram');
 const { Planner, syncReminders } = require('./planner');
 const phonepack = require('./phonepack');
 const photo = require('./photo');
+const { Router, workerSettings } = require('./router');
 const { Comfy } = require('./comfy');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
@@ -991,17 +992,44 @@ function yourWords(messages) {
   return last.split('\n\n(Note for you')[0];
 }
 
-// Who answers a message: Claude or Codex named, a stop, a task on the computer (Claude or Codex by
-// default, computerWorker; her own agent only with her local Ollama model), or her chat model (null).
-function routeOf(text) {
+// Her router (router.js): what a message is and how hard, asked of her own local model, Jev's way. Off
+// (config router: false), or her model in the cloud: the keywords alone, as before.
+const router = new Router({
+  chat: (model, messages, signal) => ollama.pick({ model, messages }, signal),
+});
+const SHORT_MESSAGE = 12; // "привет", "ага": hers, no need to ask
+let recentTurns = []; // the last exchange, for the router ("а теперь так же для видео"): chat:route has only your words
+
+// Who answers a message, and how: { worker, tier, computer }. worker: Claude or Codex (named, or the
+// router found real work for them: computerWorker), 'computer' (her own agent, her local Ollama model
+// only), 'photo' / 'video', 'stop', or null (her chat model). tier: how hard (router.js); computer: it
+// needs hands on the PC (handsFor).
+async function routeOf(text, context = []) {
   const cfg = config.load();
   const media = photo.kind(text); // "скинь фото" / "скинь видео": ComfyUI, whoever is her brain
-  if (media) return media;
-  if (cfg.provider === 'claude') return null;
+  if (media) return { worker: media };
+  if (cfg.provider === 'claude') return { worker: null };
   const named = workers.route(text);
-  if (named) return named; // Claude or Codex named: theirs, the computer included (handsFor)
-  if (!desktopCli.installed || !agent.isComputerTask(text)) return null;
-  return workers.handsWorker(cfg.computerWorker) || (cfg.provider === 'ollama' ? 'computer' : null);
+  if (named === 'stop') return { worker: 'stop' };
+  const canHands = Boolean(desktopCli?.installed);
+  const keyComputer = canHands && agent.isComputerTask(text);
+  if (!named && !keyComputer && String(text || '').trim().length < SHORT_MESSAGE) return { worker: null };
+  const model = cfg.provider === 'ollama' && cfg.router !== false ? pickModel(cfg) : null;
+  const d = await router.decide(text, { model: model && !ollama.isCloud(model) ? model : null, context });
+  const hands = () => workers.handsWorker(cfg.computerWorker) || (cfg.provider === 'ollama' ? 'computer' : null);
+  let worker = null;
+  let computer = false;
+  if (named) { // Claude or Codex named: theirs, the computer included
+    worker = named;
+    computer = keyComputer || (canHands && d.target === 'computer');
+  } else if (keyComputer || (canHands && d.target === 'computer')) {
+    worker = hands();
+    computer = true;
+  } else if (d.target === 'worker') {
+    worker = workers.handsWorker(cfg.computerWorker); // 'capri' chosen, or neither on this PC: hers
+  }
+  console.log(`[capri] route: ${worker || 'capri'}${computer ? ' +pc' : ''} ${d.tier} (${d.by}${d.why ? `; ${d.why}` : ''})`);
+  return { worker, tier: d.tier, computer };
 }
 
 // ---------------------------------------------------------------- her hands on the PC (agent.js, policy.js)
@@ -1024,8 +1052,8 @@ function askUser({ line, why, grantable }) {
 // (asked once a task, the hour covers it: you asked to touch the keyboard as little as possible). Codex
 // gets them out of its sandbox, which can't see your windows: full access for that task. Resolves 'yes',
 // 'no' or null (no computer in it).
-async function handsFor(worker, text) {
-  if (!['claude', 'codex'].includes(worker) || !desktopCli.installed || !agent.isComputerTask(text)) return null;
+async function handsFor(worker, computer) {
+  if (!['claude', 'codex'].includes(worker) || !desktopCli.installed || !computer) return null;
   if (grant.covers('UI_CONTROL')) return 'yes';
   const answer = await askUser(worker === 'claude'
     ? { line: 'Claude будет управлять окнами на ПК', why: null, grantable: true }
@@ -1393,12 +1421,15 @@ function registerIpc() {
         chatsWin?.webContents.send('chats:delta', text); // her Chats window shows it coming too
       };
       const cfg = config.load();
-      // Claude or Codex named in your message: that one answers, as her (workers.js); a task on the
-      // computer: she does it herself with her desktop tool (agent.js)
-      const worker = routeOf(yourWords(messages));
-      const hands = await handsFor(worker, yourWords(messages));
+      // who takes it (routeOf: Claude or Codex named, real work, a task on the PC, or hers) and how hard
+      const route = await routeOf(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-3, -1));
+      const { worker } = route;
+      const hands = await handsFor(worker, route.computer);
       if (hands === 'no') return { ok: true, text: `Ок, окна ${worker === 'codex' ? 'Codex' : 'Claude'} не даю.` };
-      const desktopOpts = { desktop: hands === 'yes', home: desktopCli.home };
+      // how hard it is: Claude's model, Codex's effort (router.js); the task's next turns don't go lighter
+      const tierOpts = workerSettings(route.tier, { computer: hands === 'yes' });
+      if (worker === 'claude' || worker === 'codex') router.hold(route.tier || 'routine');
+      const desktopOpts = { desktop: hands === 'yes', home: desktopCli.home, model: tierOpts.claudeModel, effort: tierOpts.codexEffort };
       const text = worker === 'codex' ? await workers.askCodex(cfg, messages, send, abort.signal, desktopOpts)
         : worker === 'claude' ? await workers.askClaude(cfg, messages, send, abort.signal, desktopOpts)
         : worker === 'computer' ? await computerTask(messages, send, abort.signal)
@@ -1407,6 +1438,7 @@ function registerIpc() {
         : await chatWithFallback(cfg, await withPim(withNotes(messages), yourWords(messages)), send, abort.signal, () => streamed);
       if (cfg.provider === 'claude') saveMemory({ claude: llm.claudeMemory() });
       if (!worker) noteLater([...messages, { role: 'assistant', content: text }]);
+      recentTurns = [{ role: 'user', content: yourWords(messages) }, { role: 'assistant', content: text }];
       return { ok: true, text };
     } catch (err) {
       return { ok: false, error: abort.signal.aborted ? 'stopped' : err.message, code: err.code || null };
@@ -1416,7 +1448,7 @@ function registerIpc() {
   });
   ipcMain.on('chat:stop', (_e, id) => chats.get(id)?.abort());
   // who'll answer this message: 'claude', 'codex', 'computer', 'photo', 'video', 'stop' or null (her chat model)
-  ipcMain.handle('chat:route', (_e, text) => routeOf(text));
+  ipcMain.handle('chat:route', async (_e, text) => (await routeOf(text, recentTurns)).worker);
   // your answer to her question before an action on the PC (policy.js): 'yes', 'hour' or 'no'
   ipcMain.on('policy:answer', (_e, { id, answer }) => {
     asking.get(id)?.(['yes', 'hour'].includes(answer) ? answer : 'no');
