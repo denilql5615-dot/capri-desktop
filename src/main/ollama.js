@@ -41,6 +41,7 @@ async function models() {
 
 // Run on Ollama's servers rather than this PC
 const isCloud = (model) => known.get(model)?.cloud ?? /[:-]cloud$/.test(model || '');
+const canThink = (model) => known.get(model)?.thinking ?? /^(gemma4|qwen3)/i.test(model || '');
 
 // Your Ollama account, when you're signed in to it on this PC: { name, plan }. Signed out: { signin },
 // the page that links this PC to an account. null when Ollama can't tell (asleep, cloud turned off).
@@ -106,8 +107,8 @@ async function unloadAll() {
 // Her answer, streamed: onDelta(piece) as it comes, resolves with all of it.
 async function chat({ model, messages, numPredict = 240 }, onDelta, signal) {
   // cloud models think before they answer, and that counts in num_predict: kept short, with room for it
-  const canThink = known.get(model)?.thinking;
-  const thinks = isCloud(model) && canThink;
+  const thinking = canThink(model);
+  const thinks = isCloud(model) && thinking;
   const res = await fetch(`${base()}/api/chat`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -116,8 +117,8 @@ async function chat({ model, messages, numPredict = 240 }, onDelta, signal) {
       messages,
       stream: true,
       keep_alive: '15m', // she stays loaded while you chat
-      // a local thinking model (qwen3, qwen3.5) thinks by default and spends all 240 tokens on it: she'd answer "…"
-      ...(canThink && { think: thinks ? 'low' : false }),
+      // a local thinking model (gemma4, qwen3, qwen3.5) thinks by default and spends all 240 tokens on it: she'd answer "…"
+      ...(thinking && { think: thinks ? 'low' : false }),
       options: { temperature: 0.85, num_predict: thinks ? 1200 : numPredict },
     }),
     signal,
@@ -161,8 +162,8 @@ async function jsonChat({ model, messages, schema }, signal) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       model, messages, format: schema, stream: false, keep_alive: '15m',
-      ...(known.get(model)?.thinking && { think: false }),
-      options: { temperature: 0.2, num_predict: 400, num_ctx: 16384 },
+      ...(canThink(model) && { think: false }),
+      options: { temperature: 0.2, num_predict: 400 },
     }),
     signal,
   });
@@ -180,7 +181,7 @@ async function pick({ model, messages, numPredict = 8, topLogprobs = 10 }, signa
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       model, messages, stream: false, keep_alive: '15m', logprobs: true, top_logprobs: topLogprobs,
-      ...(known.get(model)?.thinking && { think: false }),
+      ...(canThink(model) && { think: false }),
       options: { temperature: 0, num_predict: numPredict },
     }),
     signal,
@@ -215,13 +216,13 @@ function spokenModelKey(name) {
 }
 
 const SPOKEN_MODELS = {
-  основная: 'qwen3:8b',
-  основную: 'qwen3:8b',
-  новая: 'qwen3.5:4b',
-  новую: 'qwen3.5:4b',
-  зрение: 'qwen3.5:4b',
-  зрения: 'qwen3.5:4b',
-  зрительную: 'qwen3.5:4b',
+  основная: 'gemma4:26b-a4b-it-qat',
+  основную: 'gemma4:26b-a4b-it-qat',
+  новая: 'gemma4:26b-a4b-it-qat',
+  новую: 'gemma4:26b-a4b-it-qat',
+  зрение: 'gemma4:26b-a4b-it-qat',
+  зрения: 'gemma4:26b-a4b-it-qat',
+  зрительную: 'gemma4:26b-a4b-it-qat',
   ролевая: 'hf.co/limloop/MN-12B-Faun-RP-RU-GGUF:Q3_K_M',
   ролевую: 'hf.co/limloop/MN-12B-Faun-RP-RU-GGUF:Q3_K_M',
   qwen38b: 'qwen3:8b',
@@ -239,10 +240,10 @@ function findSpokenModel(list, wanted) {
 }
 
 function screenModel(list = []) {
-  return list.find((model) => model.toLowerCase() === 'qwen3.5:4b') || null;
+  return list.find((model) => model.toLowerCase() === 'gemma4:26b-a4b-it-qat') || null;
 }
 
 const retryEmptyVision = (text, attempt) => attempt === 0 && !String(text || '').trim();
-const visionPrompt = (text) => `/no_think\n${String(text || '')}`;
+const visionPrompt = (text) => String(text || '');
 
 module.exports = { base, models, isCloud, account, freeModels, warm, unload, unloadAll, chat, jsonChat, pick, canSee, findSpokenModel, screenModel, retryEmptyVision, visionPrompt };

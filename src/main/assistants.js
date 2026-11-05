@@ -8,21 +8,28 @@ const claude = require('../../scripts/install-hooks');
 const codex = require('../../scripts/install-codex-hooks');
 const agy = require('../../scripts/install-hooks-agy');
 
-// Claude Code and Codex at once: her hooks in both, each install and removal done for both
+// Claude Code, Codex and Antigravity at once (C.C.A hook): her hooks in all three
 const both = {
   status() {
     const a = claude.status();
     const b = codex.status();
-    return { ...a, installed: a.installed && b.installed, events: [...(a.events || []), ...(b.events || [])] };
+    const c = agy.status();
+    return {
+      ...a,
+      installed: a.installed && b.installed && c.installed,
+      events: [...(a.events || []), ...(b.events || []), ...(c.events || [])],
+    };
   },
   install() {
     const a = claude.install();
     codex.install();
+    agy.install();
     return a;
   },
   uninstall() {
     const a = claude.uninstall();
     codex.uninstall();
+    agy.uninstall();
     return a;
   },
 };
@@ -30,7 +37,7 @@ const both = {
 const ASSISTANTS = {
   claude: { name: 'Claude Code', hooks: claude, help: 'https://code.claude.com/docs/en/quickstart' },
   codex: { name: 'Codex', hooks: codex, help: 'https://learn.chatgpt.com/docs/hooks' },
-  both: { name: 'Claude Code + Codex', hooks: both, help: 'https://code.claude.com/docs/en/quickstart' },
+  both: { name: 'C.C.A hook', hooks: both, help: 'https://code.claude.com/docs/en/quickstart' },
   agy: { name: 'Antigravity', hooks: agy, help: 'https://antigravity.google/docs/hooks' },
 };
 

@@ -15,14 +15,15 @@ const THINK_SAY = 40000;
 const THINK_LONG = 120000;
 
 export class Brain {
-  constructor({ capri, panel, voice, host, mission, lang = 'fr', assistant = 'claude' }) {
+  constructor({ capri, panel, voice, host, mission, lang = 'fr', assistant = 'claude', agyTurbo = false }) {
     this.capri = capri;
     this.panel = panel;
     this.voice = voice;
     this.host = host;
     this.mission = mission; // today's log, for her report card (mission.js)
     this.lang = lang;
-    this.assistant = assistant; // 'claude', 'codex', 'both' (Claude Code and Codex) or 'agy': whose events she follows
+    this.assistant = assistant; // 'claude', 'codex', 'both' (C.C.A hook) or 'agy': whose events she follows
+    this.agyTurbo = agyTurbo;   // Turbo mode: ignore permission_prompt alerts and per-tool spasms, react only to thinking and final Stop
     this.source = 'claude';     // with 'both': whose event she's on (her lines and the name she says go by it)
     this.custom = {};       // what you made her (custom.js): { userName, persona, myLines, memories }
     this.sessions = new Map();
@@ -63,11 +64,11 @@ export class Brain {
     return s;
   }
 
-  // the AI at work under her watch ('claude' or 'codex', not the demo), heard from lately: the one
-  // heard from last when both are (null: none)
+  // the AI at work under her watch ('claude', 'codex' or 'agy', not the demo), heard from lately: the one
+  // heard from last when several are (null: none)
   atWork(now = Date.now()) {
     const busy = [...this.sessions.values()]
-      .filter((s) => s.working && ['claude', 'codex'].includes(s.source) && now - s.seen < 15 * 60 * 1000);
+      .filter((s) => s.working && ['claude', 'codex', 'agy'].includes(s.source) && now - s.seen < 15 * 60 * 1000);
     return busy.sort((a, b) => b.seen - a.seen)[0]?.source || null;
   }
 
@@ -93,7 +94,7 @@ export class Brain {
     // Codex's and Antigravity's hooks mark their sessions (codex:..., agy:...): only the one she watches
     // counts. Another one at work is another AI in your life: she notices (bond.js).
     const source = /^(codex|agy):/.exec(String(evt.session_id || ''))?.[1] || 'claude';
-    const watched = this.assistant === 'both' ? ['claude', 'codex'] : [this.assistant];
+    const watched = this.assistant === 'both' ? ['claude', 'codex', 'agy'] : [this.assistant];
     if (!evt.demo && !watched.includes(source)) {
       this.onRival?.(source === 'agy' ? 'gemini' : source);
       return undefined;
@@ -108,6 +109,7 @@ export class Brain {
     const s = this.session(evt);
     s.source = evt.demo ? 'demo' : source;
     const name = evt.hook_event_name;
+    if (this.agyTurbo && name === 'Notification' && evt.notification_type === 'permission_prompt') return undefined;
     // these three put her somewhere themselves; anything else just brings her out of hiding
     if (name === 'UserPromptSubmit' || name === 'Stop' || name === 'Notification') this.capri.wake();
     else this.capri.attend();
@@ -224,6 +226,12 @@ export class Brain {
       }
     }
     if (this.capri.mode !== 'alert') this.capri.setMode('work');
+    if (this.agyTurbo) {
+      if (s.count === 1) this.capri.pulse();
+      this.panel.setTicker({ verb: this.t.thinking.verb, target: s.title || s.project, thinking: true });
+      this.watchThinking();
+      return;
+    }
     this.capri.pulse();
     if (HACKING_TOOLS.has(evt.tool_name)) this.capri.spark(); // red sparks: she's in the system
     this.panel.setTicker(action);

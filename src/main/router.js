@@ -16,7 +16,7 @@ const BARS = { mechanical: 0.85, routine: 0.6, complex: 0.3, deep: 0 };
 const RISK_BAR = 0.7;   // changes data, money, passwords, sends for you: at least Opus
 const CLAIM_BAR = 0.5;  // the message rates itself ("это легко, хватит хайку"): not below the reference
 const STICKY_MS = 10 * 60 * 1000;
-const TIMEOUT_MS = 4000;
+const TIMEOUT_MS = 12000;
 const CACHE_MS = 60 * 1000;
 
 // what each tier means to them

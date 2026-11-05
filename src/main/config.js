@@ -16,7 +16,7 @@ const DEFAULTS = {
   welcomed: false,   // she has introduced herself (her welcome panel)
   assistant: 'auto', // the coding assistant she watches: 'claude' or 'codex' ('auto': whichever has her hooks)
   linked: false,     // a Claude Code event has reached her at least once
-  chatModel: null,   // the model she talks with (null: the provider's first one)
+  chatModel: 'gemma4:26b-a4b-it-qat', // one local model for chat and vision
   provider: 'ollama', // who answers her chat: a key of llm.js PROVIDERS
   apiKeys: {},       // { openai: 'sk-...' }, else the provider's env variable
   customUrl: '',     // the 'custom' provider: any OpenAI-compatible base URL (http://host:port/v1)
@@ -28,6 +28,7 @@ const DEFAULTS = {
   memories: [],      // things you asked her to remember (her chat)
   claudeMode: 'default', // Claude Code's permission mode in her chat: 'default' only reads, 'acceptEdits' edits without asking
   claude: true,      // she watches Claude Code (off: she just keeps you company, no word of it)
+  agyTurbo: true,    // Turbo mode: ignore hook permission_prompt alerts, react only to thinking/work and final Stop answer
   rest: 'corner',    // where she rests when nothing's going on: 'corner', or 'taskbar' (sitting on it)
   theme: 'nightcity', // her windows: 'nightcity' (the cyberpunk.net HUD), 'classic' (her first ones, violet) or 'arasaka' (Arasaka × Nothing)
   motion: 'auto',    // her animations: 'auto' (like Windows' animation effects), 'full' or 'reduced'

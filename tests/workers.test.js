@@ -2,7 +2,47 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { route, handsWorker, codexBrief } = require('../src/main/workers');
+const { route, handsWorker, workerChain, runWorker, codexBrief, parseAgyEvent, agyModel } = require('../src/main/workers');
+
+test('workerChain and runWorker cascade Claude -> Codex -> Argon -> Opus -> Flash on limits', async () => {
+  assert.deepStrictEqual(workerChain('claude', 'сделай таблицу'), [
+    'claude', 'codex', 'gemini-4-argon-medium', 'claude-opus-5-5-medium', 'gemini-3.8-flash-high',
+  ]);
+  assert.deepStrictEqual(workerChain('gemini', 'Опус, сделай таблицу'), [
+    'claude-opus-5-5-medium', 'gemini-3.8-flash-high',
+  ]);
+
+  const tried = [];
+  const steps = [];
+  const answer = await runWorker('claude', {}, [{ role: 'user', content: 'сделай таблицу' }], () => {}, null, {
+    onStep: (step, prev) => steps.push([step, prev]),
+  }, {
+    claude: async () => { tried.push('claude'); throw new Error('rate limit'); },
+    codex: async () => { tried.push('codex'); throw new Error('5h limit'); },
+    gemini: async (_cfg, _msgs, _send, _sig, { model }) => {
+      tried.push(model);
+      if (model !== 'gemini-3.8-flash-high') throw new Error(`Лимит ${model}`);
+      return 'готово от стажёра Flash';
+    },
+  });
+  assert.strictEqual(answer, 'готово от стажёра Flash');
+  assert.deepStrictEqual(tried, [
+    'claude', 'codex', 'gemini-4-argon-medium', 'claude-opus-5-5-medium', 'gemini-3.8-flash-high',
+  ]);
+  assert.deepStrictEqual(steps.at(-1), [
+    'gemini-3.8-flash-high',
+    ['claude', 'codex', 'gemini-4-argon-medium', 'claude-opus-5-5-medium'],
+  ]);
+});
+
+test('Antigravity worker defaults to Argon Medium and requires an explicit reserve address', () => {
+  assert.strictEqual(agyModel('Аргон, ответь'), 'gemini-4-argon-medium');
+  assert.strictEqual(route('Опус, ответь'), 'gemini');
+  assert.strictEqual(agyModel('Опус, ответь'), 'claude-opus-5-5-medium');
+  assert.strictEqual(route('Флеш, ответь'), 'gemini');
+  assert.strictEqual(agyModel('Флеш, ответь'), 'gemini-3.8-flash-high');
+  assert.strictEqual(route('Расскажи про Flash'), null);
+});
 
 test('handsWorker: your choice drives the PC, the other if it is missing, her own agent if neither', () => {
   const both = { claude: () => 'c', codex: () => 'x' };
@@ -21,6 +61,15 @@ test('route: a worker named goes to it, the first named wins', () => {
   assert.strictEqual(route('пусть Кодекс глянет'), 'codex');
   assert.strictEqual(route('ask Codex, not Claude'), 'codex');
   assert.strictEqual(route('Claude или codex?'), 'claude');
+  assert.strictEqual(route('Гемини, проверь документ'), 'gemini');
+  assert.strictEqual(route('Аргон, подумай ещё раз'), 'gemini');
+  assert.strictEqual(route('Gemini then Codex'), 'gemini');
+});
+
+test('parseAgyEvent: accepts only the terminal result event', () => {
+  assert.deepStrictEqual(parseAgyEvent('{"event":"result","result":{"status":"SUCCESS","response":"готово"}}'), { status: 'SUCCESS', response: 'готово' });
+  assert.strictEqual(parseAgyEvent('{"event":"step_update"}'), null);
+  assert.strictEqual(parseAgyEvent('not json'), null);
 });
 
 test('route: no worker named, her chat model answers', () => {

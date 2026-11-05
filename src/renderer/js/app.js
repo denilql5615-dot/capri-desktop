@@ -103,7 +103,7 @@ async function boot() {
   capri.setScale(config.scale);
 
   const mission = new Mission();
-  const brain = new Brain({ capri, panel, voice, host, mission, lang: config.lang, assistant: config.assistant });
+  const brain = new Brain({ capri, panel, voice, host, mission, lang: config.lang, assistant: config.assistant, agyTurbo: config.agyTurbo !== false });
 
   // Click-through everywhere except on her body, the panel and her biochip.
   let interactive = false;
@@ -664,6 +664,7 @@ async function boot() {
       if (capri.mode === 'work' || capri.mode === 'alert') capri.setMode('idle');
     }
     brain.watching = cfg.claude !== false;
+    brain.agyTurbo = cfg.agyTurbo !== false;
     brain.custom = mine(cfg);
     brain.assistant = cfg.assistant;
     panel.labels = linesFor(cfg.lang, cfg.assistant);

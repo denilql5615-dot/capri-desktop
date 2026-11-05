@@ -230,10 +230,11 @@ const BROWSER = /chrome|edge|firefox|opera|brave|vivaldi|duckduckgo|browser/i;
 // local models this small mostly talk nonsense ("llama3.2:1b", "qwen2.5:0.5b"…)
 const TINY = /[:-](0\.5b|1b|1\.5b|135m|270m|360m)\b/i;
 // while the one you named works on it (no answer streams in from Codex until it's done)
-const WORKER_NAMES = { claude: 'Claude Code', codex: 'Codex' };
+const WORKER_NAMES = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini Argon' };
 const WORKER_WAIT = {
   claude: 'Передала Claude, он работает… (Ctrl+Alt+X — остановить)',
   codex: 'Передала Codex, он думает… (Ctrl+Alt+X — остановить)',
+  gemini: 'Передала Gemini Argon, он думает… (Ctrl+Alt+X — остановить)',
   computer: 'Делаю на компьютере… (Ctrl+Alt+X — остановить)\n',
   photo: 'Щас скину… (полминуты, первый раз дольше)',
   video: 'Снимаю видео… (несколько минут: сначала кадр, потом оживляю)',
@@ -266,7 +267,8 @@ export class Chat {
     this.onAsk = null;     // (line) => void: she asks before an action on your PC (said out loud too)
     this.pending = null;   // that question, waiting for your answer: (answer) => void
     this.waitingWhen = null; // a reminder you asked for without saying when: { text, until }
-    host.onChatDelta(({ id, text }) => this.onDelta(id, text));
+    this.shortModel = '';
+    host.onChatDelta((msg) => this.onDelta(msg.id, msg.text, msg));
   }
 
   get t() {
@@ -316,6 +318,7 @@ export class Chat {
     this.agent = Boolean(status.agent); // Claude Code answers, as her, and really works in your project
     this.listApps();
     const shortModel = status.model.replace(/:latest$/, '').replace(/^models\//, ''); // Ollama's tag, Gemini's prefix
+    this.shortModel = shortModel;
     const tiny = status.provider === 'ollama' && TINY.test(status.model) && this.onBetterModel;
     // angry, sulking, dizzy…: she greets you the way she feels, and her model is told she did
     const feeling = this.bond?.feeling;
@@ -358,6 +361,7 @@ export class Chat {
 
   close(abort = true) {
     if (!this.open) return;
+    if (!abort && this.turn) return; // keep the turn alive if the panel was only displaced while a worker runs
     this.open = false;
     if (abort && this.turn) this.host.chatStop(this.turn);
     this.turn = 0;
@@ -402,10 +406,9 @@ export class Chat {
     this.onAsk?.(`Можно? ${line}.${grantable ? ' Да, на час или нет?' : ' Да или нет?'}`);
   }
 
-  // who's answering this turn, if it's another AI: 'claude' (Claude Code as her AI, or "Клод, …") or
-  // 'codex' ("Кодекс, …"); null when it's her
+  // who's answering this turn, if it's another AI: 'claude', 'codex' or 'agy'; null when it's her
   get thinker() {
-    return this.turn && ['claude', 'codex'].includes(this.by) ? this.by : null;
+    return this.turn && ['claude', 'codex', 'agy'].includes(this.by) ? this.by : null;
   }
 
   // how her chat is, for her Chats window: answering or not, her question waiting
@@ -449,7 +452,8 @@ export class Chat {
     if (route === 'stop') return this.reply(text, STOP_IDLE); // the box is locked while one works: nothing is
     const worker = route;
     const agent = this.agent || Boolean(worker);
-    this.by = this.agent ? 'claude' : worker || 'capri'; // who's thinking (her Claude skin, skin.js)
+    this.by = this.agent ? 'claude' : worker === 'gemini' ? 'agy' : worker || 'capri'; // who's thinking (skin.js)
+    if (!worker && !this.agent && this.shortModel && this.panel.tag) this.panel.tag.textContent = this.shortModel;
     const asked = agent ? null : this.asked(text);
     if (asked?.kind === 'look') return this.sendLook(text, id);
     const early = asked && asked.kind !== 'close' ? this.doNow(asked) : null;
@@ -1113,8 +1117,15 @@ export class Chat {
     ].filter(Boolean);
   }
 
-  onDelta(id, piece) {
+  onDelta(id, piece, meta = {}) {
     if (id !== this.turn) return;
+    if (meta.tag && this.panel.tag) this.panel.tag.textContent = meta.tag;
+    if (meta.worker) this.by = meta.worker;
+    if (meta.status && !this.answer) {
+      this.panel.stream(meta.status);
+      return;
+    }
+    if (!piece) return;
     this.answer += piece;
     this.panel.stream(clean(this.answer));
     this.voice.play('blip'); // her blips as the words come in

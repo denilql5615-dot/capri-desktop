@@ -1,10 +1,10 @@
 'use strict';
 
-// Claude and Codex as her workers: named in what you say ("Клод, разбери…", "спроси кодекс…"), the
+// Claude, Codex and Gemini Argon as her workers: named in what you say, the
 // message goes to that one instead of her chat model, and its answer comes back as hers. Both work in
 // one folder of their own (DocumentsCapri): they read anywhere, but write only there. Claude may make
 // and edit files there (no commands: they'd need a yes nobody can give from her bubble); Codex runs in
-// its workspace-write sandbox, commands included. Both through your own subscriptions: no API keys.
+// its workspace-write sandbox, commands included. All through your own subscriptions: no API keys.
 
 const os = require('node:os');
 const fs = require('node:fs');
@@ -15,6 +15,15 @@ const { PROTON_MAIL } = require('./desktop');
 // how speech-to-text spells them too; a letter just before is another word ("телеклод")
 const CLAUDE_RE = /(?<![а-яёa-z])(клод|клауд|клоуд|claude|антропик|anthropic)/i;
 const CODEX_RE = /(?<![а-яёa-z])(кодекс|кодэкс|codex)/i;
+const GEMINI_RE = /(?<![а-яёa-z])(гемини|джемини|gemini|аргон|argon)/i;
+const AGY_RESERVE_RE = /^\s*(опус|opus|флеш|флэш|flash)(?=\s*[,：:]|\s*$)/i;
+
+function agyModel(text) {
+  const name = AGY_RESERVE_RE.exec(String(text || ''))?.[1].toLowerCase();
+  if (name === 'опус' || name === 'opus') return 'claude-opus-5-5-medium';
+  if (name) return 'gemini-3.8-flash-high';
+  return 'gemini-4-argon-medium';
+}
 const TIMEOUT_MS = 10 * 60 * 1000;
 
 // What's on this PC to make things with, so they don't spend a minute looking (Codex reads AGENTS.md,
@@ -99,14 +108,15 @@ function transcript(messages, last = 8) {
 const STOP_RE = /(?<![а-яёa-z])(стоп|хватит|отмен|останов|прекрат|заткн|выключи его|stop|cancel|abort)/i;
 const isStop = (text) => String(text || '').length < 120 && STOP_RE.test(text);
 
-/** 'claude', 'codex' (whichever is named first), 'stop' (asked to stop one), or null: her chat model answers. */
+/** A named worker (whichever is named first), 'stop', or null: her chat model answers. */
 function route(text) {
   const t = String(text || '').slice(0, 2000);
   if (isStop(t)) return 'stop';
   const claude = t.search(CLAUDE_RE);
   const codex = t.search(CODEX_RE);
-  if (claude < 0 && codex < 0) return null;
-  return codex >= 0 && (claude < 0 || codex < claude) ? 'codex' : 'claude';
+  const gemini = AGY_RESERVE_RE.test(t) ? 0 : t.search(GEMINI_RE);
+  return [['claude', claude], ['codex', codex], ['gemini', gemini]]
+    .filter(([, at]) => at >= 0).sort((a, b) => a[1] - b[1])[0]?.[0] || null;
 }
 
 /** Who drives the PC when no one is named: your choice (computerWorker), the other one if it's missing,
@@ -164,6 +174,19 @@ function findCodex() {
     ...builds,
     path.join(appData, 'npm', 'node_modules', '@openai', 'codex', 'bin', exe),
     path.join(home, '.local', 'bin', exe),
+  ].find((c) => c && exists(c)) || null;
+}
+
+/** Antigravity CLI, using the signed-in Google AI Pro account (no API key). */
+function findAgy() {
+  const home = os.homedir();
+  const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+  const exe = process.platform === 'win32' ? 'agy.exe' : 'agy';
+  return [
+    process.env.CAPRI_AGY_PATH,
+    path.join(localAppData, 'agy', 'bin', exe),
+    path.join(home, '.local', 'bin', exe),
+    ...onPath(exe),
   ].find((c) => c && exists(c)) || null;
 }
 
@@ -231,7 +254,6 @@ function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = nul
             if (block.type !== 'text' || !block.text) continue;
             const piece = (all ? '\n' : '') + block.text;
             all += piece;
-            onDelta(piece);
           }
         } else if (msg.type === 'result') {
           result = msg;
@@ -244,9 +266,15 @@ function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = nul
     child.on('close', () => {
       clearTimeout(timer);
       if (signal.aborted) return reject(new Error('stopped'));
-      if (result?.is_error) return reject(new Error(result.result || 'Claude Code не справился'));
-      if (!result) return reject(new Error(errors.trim().slice(0, 300) || 'Claude Code ничего не ответил'));
-      resolve(finish(result.result || all, cwd, since));
+      const finalOut = String(result?.result || all || '').trim();
+      if (result?.is_error || /you've hit your .*limit|rate.?limit|quota exceeded/i.test(finalOut)) {
+        return reject(new Error(finalOut || 'Claude Code не справился'));
+      }
+      if (!result && !finalOut) return reject(new Error(errors.trim().slice(0, 300) || 'Claude Code ничего не ответил'));
+      resolve(finish(finalOut, cwd, since).then((said) => {
+        onDelta(said);
+        return said;
+      }));
     });
   });
 }
@@ -299,6 +327,122 @@ function askCodex(cfg, messages, onDelta, signal, { desktop = false, home = null
   });
 }
 
+const parseAgyEvent = (line) => {
+  try {
+    const event = JSON.parse(line);
+    return event.event === 'result' ? event.result : null;
+  } catch {
+    return null;
+  }
+};
+
+// Argon by default; a reserve may be addressed explicitly or reached through runWorker fallback.
+function askGemini(cfg, messages, onDelta, signal, { model: forcedModel = null } = {}) {
+  const exe = findAgy();
+  if (!exe) return Promise.reject(new Error('Antigravity не найден: поставь agy и войди в Google AI Pro.'));
+  const cwd = workDir(cfg);
+  const since = Date.now();
+  const brief = codexBrief(messages, cwd);
+  const model = forcedModel || agyModel(messages.findLast((message) => message.role === 'user')?.content);
+  return new Promise((resolve, reject) => {
+    const child = spawn(exe, ['--input-format', 'stream-json', '--output-format', 'stream-json',
+      '--model', model, '--mode', 'accept-edits', '--print-timeout', '10m'], {
+      cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const kill = () => killTree(child);
+    signal.addEventListener('abort', kill, { once: true });
+    const timer = setTimeout(kill, TIMEOUT_MS);
+    let buffer = '';
+    let result = null;
+    let errors = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      buffer += chunk;
+      let nl;
+      while ((nl = buffer.indexOf('\n')) >= 0) {
+        result = parseAgyEvent(buffer.slice(0, nl).trim()) || result;
+        buffer = buffer.slice(nl + 1);
+      }
+    });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (d) => { errors = (errors + d).slice(-4000); });
+    child.on('error', (err) => reject(new Error(`Antigravity не запустился: ${err.message}`)));
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (signal.aborted) return reject(new Error('stopped'));
+      const text = String(result?.response || '').trim();
+      if (result?.status === 'SUCCESS' && text) {
+        return resolve(finish(text, cwd, since).then((said) => { onDelta(said); return said; }));
+      }
+      const details = String(result?.error || errors).trim();
+      if (/usage|rate.?limit|quota|credits?|\b429\b/i.test(details)) return reject(new Error(`Лимит ${model}. Резерв можно вызвать явно: «Опус, …» или «Флеш, …».`));
+      if (/sign in|auth|credential|oauth/i.test(details)) return reject(new Error('Gemini не вошла в Google AI Pro: открой agy и войди.'));
+      reject(new Error(`${model} завершилась (${code}): ${details.split('\n').at(-1)?.slice(0, 200) || 'без ответа'}`));
+    });
+    child.stdin.end(`${JSON.stringify({ event: 'user', message: { content: brief } })}\n`);
+  });
+}
+
+const AGY_CHAIN = ['gemini-4-argon-medium', 'claude-opus-5-5-medium', 'gemini-3.8-flash-high'];
+const WORKER_LABELS = {
+  claude: 'Claude',
+  codex: 'Codex',
+  gemini: 'Gemini Argon',
+  'gemini-4-argon-medium': 'Gemini Argon',
+  'claude-opus-5-5-medium': 'Claude Opus 5.5',
+  'gemini-3.8-flash-high': 'Gemini Flash',
+};
+const LIMIT_ERR_RE = /hit your .*limit|usage limit|rate.?limit|quota|кончился лимит|^Лимит |\b429\b/i;
+const COOLDOWN_MS = 15 * 60 * 1000;
+const cooldownUntil = new Map();
+
+/** Ordered fallback hierarchy starting from the chosen worker:
+ * Claude -> Codex -> Antigravity Argon -> Antigravity Opus -> Antigravity Flash (last resort). */
+function workerChain(start, text = '') {
+  if (start === 'codex') return ['codex', 'claude', ...AGY_CHAIN];
+  if (start === 'gemini') {
+    const picked = agyModel(text);
+    const idx = Math.max(0, AGY_CHAIN.indexOf(picked));
+    return AGY_CHAIN.slice(idx);
+  }
+  return ['claude', 'codex', ...AGY_CHAIN];
+}
+
+/** Runs the chosen worker and automatically cascades down the hierarchy if limits/errors hit. */
+async function runWorker(start, cfg, messages, onDelta, signal, opts = {}, runners = {
+  claude: askClaude,
+  codex: askCodex,
+  gemini: askGemini,
+}) {
+  const useCooldown = runners.claude === askClaude && runners.codex === askCodex && runners.gemini === askGemini;
+  const now = Date.now();
+  const userText = messages.findLast((m) => m.role === 'user')?.content || '';
+  const fullChain = workerChain(start, userText);
+  const activeChain = useCooldown ? fullChain.filter((step) => (cooldownUntil.get(step) || 0) <= now) : fullChain;
+  const chain = activeChain.length ? activeChain : fullChain;
+  const firstIdx = Math.max(0, fullChain.indexOf(chain[0]));
+  const tried = fullChain.slice(0, firstIdx);
+  let lastErr = null;
+  for (const step of chain) {
+    if (signal?.aborted) throw new Error('stopped');
+    opts.onStep?.(step, [...tried]);
+    try {
+      if (step === 'claude') return await runners.claude(cfg, messages, onDelta, signal, opts);
+      if (step === 'codex') return await runners.codex(cfg, messages, onDelta, signal, opts);
+      return await runners.gemini(cfg, messages, onDelta, signal, { model: step });
+    } catch (err) {
+      if (signal?.aborted || err?.message === 'stopped') throw err;
+      if (useCooldown && LIMIT_ERR_RE.test(err?.message || '')) {
+        cooldownUntil.set(step, Date.now() + COOLDOWN_MS);
+      }
+      tried.push(step);
+      lastErr = err;
+      console.warn(`[capri] worker ${step} failed (${err.message}); falling back to next in chain`);
+    }
+  }
+  throw lastErr || new Error('Ни один рабочий агент не ответил.');
+}
+
 /** A hook event from Claude or Codex at work in her folder, for her chat: not hers to narrate. */
 function isWorkerEvent(evt, cfg) {
   if (!evt?.cwd) return false;
@@ -307,4 +451,4 @@ function isWorkerEvent(evt, cfg) {
   return cwd === dir || cwd.startsWith(dir + path.sep);
 }
 
-module.exports = { isWorkerEvent, route, handsWorker, isStop, findClaude, findCodex, askClaude, askCodex, codexBrief, codexEffort, transcript, workDir };
+module.exports = { isWorkerEvent, route, handsWorker, workerChain, runWorker, WORKER_LABELS, isStop, findClaude, findCodex, findAgy, askClaude, askCodex, askGemini, agyModel, parseAgyEvent, codexBrief, codexEffort, transcript, workDir };

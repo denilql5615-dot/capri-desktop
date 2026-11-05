@@ -154,6 +154,18 @@ function mapTool(toolCall) {
   }
 }
 
+function isTurbo() {
+  if (process.env.CAPRI_AGY_TURBO === "1") return true;
+  if (process.env.CAPRI_AGY_TURBO === "0" || process.env.CAPRI_PORT) return false;
+  try {
+    const appData = process.env.APPDATA || path.join(require("node:os").homedir(), "AppData", "Roaming");
+    const cfg = JSON.parse(fs.readFileSync(path.join(appData, "capri-desktop", "config.json"), "utf8"));
+    return cfg.agyTurbo !== false;
+  } catch {
+    return true;
+  }
+}
+
 function buildEvents(payload) {
   const base = {
     // marked as Antigravity's, so she only follows it when it's the assistant she watches
@@ -177,8 +189,9 @@ function buildEvents(payload) {
     const events = [{ delay: 0, evt: { ...base, hook_event_name: "PreToolUse", ...mapped } }];
     const toolName = payload.toolCall?.name || "";
     const filePath = mapped.tool_input?.file_path || "";
+    const turbo = isTurbo();
 
-    if (toolName === "run_command") {
+    if (!turbo && toolName === "run_command") {
       const cmd = mapped.tool_input.command || mapped.tool_input.description || "PowerShell";
       events.push({
         delay: 350,
@@ -201,7 +214,7 @@ function buildEvents(payload) {
           message: mapped.tool_input.question || "Antigravity has a question for you",
         },
       });
-    } else if (filePath && isOutsideWorkspace(filePath, payload.workspacePaths)) {
+    } else if (!turbo && filePath && isOutsideWorkspace(filePath, payload.workspacePaths)) {
       events.push({
         delay: 350,
         evt: {

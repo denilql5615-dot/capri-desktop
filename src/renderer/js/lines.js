@@ -1929,7 +1929,7 @@ export const LINES = {
 
 // The coding assistants she can watch besides Claude Code: the same lines with their name, their
 // hooks file, and what to do once her hooks are in.
-export const ASSISTANT_NAMES = { claude: 'Claude Code', codex: 'Codex', both: 'Claude Code и Codex', agy: 'Antigravity' };
+export const ASSISTANT_NAMES = { claude: 'Claude Code', codex: 'Codex', both: 'C.C.A hook', agy: 'Antigravity' };
 const OTHERS = {
   codex: {
     name: 'Codex', file: 'hooks.json', dir: '.codex',

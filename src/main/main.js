@@ -420,9 +420,14 @@ function toVault(cfg, worker, said, answer) {
   if (cfg.vaultChats === false || hasSecret(said) || worker === 'stop') return;
   try {
     const dir = notesDir();
-    const by = { claude: 'Claude', codex: 'Codex', computer: 'Капри (на ПК)', photo: 'Капри (фото)', video: 'Капри (видео)' }[worker] || 'Капри';
+    const by = {
+      ...workers.WORKER_LABELS,
+      computer: 'Капри (на ПК)',
+      photo: 'Капри (фото)',
+      video: 'Капри (видео)',
+    }[worker] || 'Капри';
     notes.appendChat(dir, { said, answer, by });
-    if (worker === 'claude' || worker === 'codex') notes.writeOutput(dir, { worker: by, task: said, answer, folder: workers.workDir(cfg) });
+    if (worker && worker in workers.WORKER_LABELS) notes.writeOutput(dir, { worker: by, task: said, answer, folder: workers.workDir(cfg) });
   } catch (err) {
     console.warn('[capri] vault:', err.message);
   }
@@ -800,6 +805,13 @@ function rebuildTray() {
           },
         })),
         { label: t.watchNone, type: 'radio', checked: !cfg.claude, click: () => updateConfig({ claude: false }) },
+        { type: 'separator' },
+        {
+          label: t.watchTurbo || 'Турбо-режим (только размышления и ответ, без разрешений)',
+          type: 'checkbox',
+          checked: cfg.agyTurbo !== false,
+          click: (item) => updateConfig({ agyTurbo: item.checked }),
+        },
       ],
     },
     {
@@ -1103,10 +1115,10 @@ async function routeOf(text, context = []) {
   const keyComputer = canHands && agent.isComputerTask(text);
   if (!named && !keyComputer && String(text || '').trim().length < SHORT_MESSAGE) return { worker: null };
   if (!named && !keyComputer && quick.isQuick(text)) return { worker: null }; // her quick answer (quick.js)
-  // the router's model is the one it was tuned on (routerModel, qwen3:8b), and only while it's her chat
+  // Use the configured chat model for routing too; loading a second local model would waste VRAM.
   // model, loaded anyway: with the roleplay one in VRAM a second model wouldn't fit, so keywords then
   const model = cfg.provider === 'ollama' && cfg.router !== false ? pickModel(cfg) : null;
-  const tuned = cfg.routerModel || 'qwen3:8b';
+  const tuned = cfg.routerModel || 'gemma4:26b-a4b-it-qat';
   const d = await router.decide(text, { model: model === tuned ? model : null, context });
   const hands = () => workers.handsWorker(cfg.computerWorker) || (cfg.provider === 'ollama' ? 'computer' : null);
   let worker = null;
@@ -1118,7 +1130,7 @@ async function routeOf(text, context = []) {
     worker = hands();
     computer = true;
   } else if (d.target === 'worker') {
-    worker = workers.handsWorker(cfg.computerWorker); // 'capri' chosen, or neither on this PC: hers
+    worker = workers.handsWorker(cfg.computerWorker) || (cfg.computerWorker !== 'capri' && workers.findAgy() ? 'gemini' : null); // 'capri' chosen, or none on this PC: hers
   }
   console.log(`[capri] route: ${worker || 'capri'}${computer ? ' +pc' : ''} ${d.tier} (${d.by}${d.why ? `; ${d.why}` : ''})`);
   return { worker, tier: d.tier, computer };
@@ -1145,6 +1157,7 @@ function askUser({ line, why, grantable }) {
 // gets them out of its sandbox, which can't see your windows: full access for that task. Resolves 'yes',
 // 'no' or null (no computer in it).
 async function handsFor(worker, computer) {
+  if (worker === 'gemini' && computer) return 'no'; // headless AGY cannot safely ask for tool approval
   if (!['claude', 'codex'].includes(worker) || !desktopCli.installed || !computer) return null;
   if (grant.covers('UI_CONTROL')) return 'yes';
   const answer = await askUser(worker === 'claude'
@@ -1335,7 +1348,7 @@ async function sayAboutSnap({ id, persona, prompt, history = [] }) {
     for (let attempt = 0; ; attempt++) {
       try {
         const text = await llm.chat(cfg.provider, llmConfig(cfg), {
-          model, messages, numPredict: cfg.provider === 'ollama' ? 900 : undefined,
+          model, messages, numPredict: cfg.provider === 'ollama' ? 180 : undefined,
         }, () => {}, AbortSignal.timeout(120000));
         if (cfg.provider === 'ollama' && !String(text || '').trim()) {
           if (ollama.retryEmptyVision(text, attempt)) continue;
@@ -1550,11 +1563,22 @@ function registerIpc() {
       const route = await routeOf(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-3, -1));
       const { worker } = route;
       const hands = await handsFor(worker, route.computer);
-      if (hands === 'no') return { ok: true, text: `Ок, окна ${worker === 'codex' ? 'Codex' : 'Claude'} не даю.` };
+      if (hands === 'no') return { ok: true, text: worker === 'gemini' ? 'Gemini пока не управляет окнами: headless-режим не умеет безопасно спросить подтверждение.' : `Ок, окна ${worker === 'codex' ? 'Codex' : 'Claude'} не даю.` };
       // how hard it is: Claude's model, Codex's effort (router.js); the task's next turns don't go lighter
       const tierOpts = workerSettings(route.tier, { computer: hands === 'yes' });
-      if (worker === 'claude' || worker === 'codex') router.hold(route.tier || 'routine');
-      const desktopOpts = { desktop: hands === 'yes', home: desktopCli.home, model: tierOpts.claudeModel, effort: tierOpts.codexEffort };
+      if (['claude', 'codex', 'gemini'].includes(worker)) router.hold(route.tier || 'routine');
+      let actualWorker = worker;
+      const onStep = (step, prev = []) => {
+        actualWorker = step;
+        const label = workers.WORKER_LABELS[step] || step;
+        const chainText = prev.length
+          ? `${prev.map((p) => workers.WORKER_LABELS[p] || p).join(' → ')} → ${label} думает… (Ctrl+Alt+X — остановить)`
+          : `Передала ${label}, работает… (Ctrl+Alt+X — остановить)`;
+        const skinWorker = step === 'claude' ? 'claude' : step === 'codex' ? 'codex' : 'agy';
+        const tag = step === 'claude' ? 'claude-code' : step === 'codex' ? 'codex' : step.replace(/-medium$|-high$/, '');
+        overlay?.webContents.send('chat:delta', { id, status: chainText, tag, worker: skinWorker });
+      };
+      const desktopOpts = { desktop: hands === 'yes', home: desktopCli.home, model: tierOpts.claudeModel, effort: tierOpts.codexEffort, onStep };
       // a plain question about your schedule: answered from the calendar at once, no model (quick.js)
       const fast = !worker ? await quickAnswer(yourWords(messages)) : null;
       if (fast) {
@@ -1563,8 +1587,7 @@ function registerIpc() {
         toVault(cfg, null, yourWords(messages), fast);
         return { ok: true, text: fast };
       }
-      const text = worker === 'codex' ? await workers.askCodex(cfg, messages, send, abort.signal, desktopOpts)
-        : worker === 'claude' ? await workers.askClaude(cfg, messages, send, abort.signal, desktopOpts)
+      const text = ['claude', 'codex', 'gemini'].includes(worker) ? await workers.runWorker(worker, cfg, messages, send, abort.signal, desktopOpts)
         : worker === 'computer' ? await computerTask(messages, send, abort.signal)
         : worker === 'photo' ? await photoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal)
         : worker === 'video' ? await videoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal)
@@ -1572,7 +1595,7 @@ function registerIpc() {
       if (cfg.provider === 'claude') saveMemory({ claude: llm.claudeMemory() });
       if (!worker) noteLater([...messages, { role: 'assistant', content: text }]);
       recentTurns = [{ role: 'user', content: yourWords(messages) }, { role: 'assistant', content: text }];
-      toVault(cfg, worker, yourWords(messages), text);
+      toVault(cfg, actualWorker, yourWords(messages), text);
       return { ok: true, text };
     } catch (err) {
       return { ok: false, error: abort.signal.aborted ? 'stopped' : err.message, code: err.code || null };
@@ -1947,7 +1970,7 @@ function main() {
   if (process.platform === 'win32') app.setAppUserModelId('capri.desktop');
 
   app.whenReady().then(() => {
-    if (!['codex', 'claude', 'both'].includes(config.load().assistant)) config.save({ assistant: activeAssistant().id });
+    if (!['codex', 'claude', 'both', 'agy'].includes(config.load().assistant)) config.save({ assistant: activeAssistant().id });
     desktopCli = new desktop.Cli(desktop.BIN, path.join(app.getPath('userData'), 'agent-desktop'));
     localPlanner = new Planner(path.join(app.getPath('userData'), 'planner.json'), {
       onChange: () => {
@@ -1985,7 +2008,9 @@ function main() {
       // her own Claude Code chat's hooks would cover its answer with theirs, and Claude's or Codex's at work
       // for her chat (in their folder) too: their permission prompt would close the chat, and kill them
       onEvent: (evt) => {
-        if (llm.isChatSession(evt.session_id) || workers.isWorkerEvent(evt, config.load())) return;
+        const cfg = config.load();
+        if (llm.isChatSession(evt.session_id) || workers.isWorkerEvent(evt, cfg)) return;
+        if (cfg.agyTurbo !== false && evt.hook_event_name === 'Notification' && evt.notification_type === 'permission_prompt') return;
         notifyTelegram(evt);
         overlay?.webContents.send('claude:event', evt);
       },

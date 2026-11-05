@@ -219,4 +219,50 @@ test('Antigravity: its events reach her as its own sessions, and its hook never 
   assert.match(brain.t.guide.claude.there, /Antigravity/);
   const texts = (v) => (typeof v === 'string' ? [v] : v && typeof v === 'object' ? Object.values(v).flatMap(texts) : []);
   assert.doesNotMatch(texts(brain.t).join('\n'), /Claude|settings\.json/); // what she says, not the keys
+
+  // C.C.A hook ('both'): watches Claude, Codex, and Antigravity without treating any of them as a rival
+  const { ASSISTANTS } = require('../src/main/assistants');
+  assert.equal(ASSISTANTS.both.name, 'C.C.A hook');
+  const rivals = [];
+  const ccaBrain = new Brain({
+    capri: stub({ windows: { fg: null, wins: [] }, mode: 'idle', setMode(mode) { this.mode = mode; } }),
+    panel: stub({ say() {}, setTicker() {} }), voice: { play: noop }, host: { cursor: async () => null }, lang: 'ru', assistant: 'both',
+  });
+  ccaBrain.onRival = (r) => rivals.push(r);
+  t.after(() => clearInterval(ccaBrain.thinkTimer));
+  await ccaBrain.handle({ hook_event_name: 'UserPromptSubmit', session_id: 'claude-s1', cwd: '/p1', prompt: 'go' });
+  await ccaBrain.handle({ hook_event_name: 'UserPromptSubmit', session_id: 'codex:s2', cwd: '/p2', prompt: 'go' });
+  await ccaBrain.handle({ hook_event_name: 'UserPromptSubmit', session_id: 'agy:s3', cwd: '/p3', prompt: 'go' });
+  assert.ok(ccaBrain.sessions.has('claude-s1'));
+  assert.ok(ccaBrain.sessions.has('codex:s2'));
+  assert.ok(ccaBrain.sessions.has('agy:s3'));
+  assert.deepEqual(rivals, []);
+
+  // Turbo mode: ignores permission_prompt alerts and keeps Capri in calm 'work' mode without alert spasms
+  let pulses = 0;
+  let sparks = 0;
+  const turboCapri = stub({
+    windows: { fg: null, wins: [] },
+    mode: 'idle',
+    setMode(mode) { this.mode = mode; },
+    pulse() { pulses += 1; },
+    spark() { sparks += 1; },
+  });
+  const turboBrain = new Brain({
+    capri: turboCapri,
+    panel: stub({ say() {}, setTicker(v) { this.ticker = v; } }),
+    voice: { play: noop },
+    host: { cursor: async () => null },
+    lang: 'ru',
+    assistant: 'both',
+    agyTurbo: true,
+  });
+  t.after(() => clearInterval(turboBrain.thinkTimer));
+  await turboBrain.handle({ hook_event_name: 'Notification', notification_type: 'permission_prompt', session_id: 'agy:t1', cwd: '/p', message: 'cmd' });
+  assert.equal(turboCapri.mode, 'idle');
+  await turboBrain.handle({ hook_event_name: 'PreToolUse', tool_name: 'PowerShell', session_id: 'agy:t1', cwd: '/p' });
+  await turboBrain.handle({ hook_event_name: 'PreToolUse', tool_name: 'PowerShell', session_id: 'agy:t1', cwd: '/p' });
+  assert.equal(turboCapri.mode, 'work');
+  assert.equal(pulses, 1);
+  assert.equal(sparks, 0);
 });

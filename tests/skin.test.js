@@ -30,12 +30,15 @@ test('she wears the drawings of the AI thinking, and her own again after', async
   assert.deepEqual(worn, [], 'Claude\'s drawings not loaded yet: she stays herself');
   skin.sets.claude = { dir: 'claude/', full: 'orange' };
   skin.sets.codex = { dir: 'codex/', full: 'violet' };
+  skin.sets.agy = { dir: 'agy/', full: 'google' };
   skin.check();
   who = 'codex';
   skin.check();
+  who = 'agy';
+  skin.check();
   who = null;
   skin.check();
-  assert.deepEqual(worn, ['orange', 'violet', 'her']);
+  assert.deepEqual(worn, ['orange', 'violet', 'google', 'her']);
   assert.equal(globalThis.document.documentElement.dataset.skin, 'capri');
   globalThis.setInterval = realInterval;
   delete globalThis.document;
@@ -48,9 +51,12 @@ test('the AI at work under her hooks: the one heard from last, never the demo', 
     sessions: new Map([
       ['a', { working: true, source: 'claude', seen: 1000 }],
       ['codex:b', { working: true, source: 'codex', seen: 2000 }],
+      ['agy:c', { working: true, source: 'agy', seen: 2200 }],
       ['demo', { working: true, source: 'demo', seen: 3000 }],
     ]),
   });
+  assert.equal(brain.atWork(2500), 'agy');
+  brain.sessions.get('agy:c').working = false;
   assert.equal(brain.atWork(2500), 'codex');
   brain.sessions.get('codex:b').working = false;
   assert.equal(brain.atWork(2500), 'claude');

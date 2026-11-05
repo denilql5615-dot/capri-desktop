@@ -113,10 +113,11 @@ vec3 grade(vec3 c, out float red) {
   hx = mix(hx, uRedHue, red * 0.6 * uGrade);
   h.x = fract(hx);
   h.y = mix(h.y, max(h.y, uRedSat), red * uGrade);
-  h.y = mix(h.y, min(1.0, h.y * 1.1 + 0.06), green * uGrade);
+  float gBoost = step(1.1, uRedLift.x) * uGrade;
+  h.y = mix(h.y, min(1.0, h.y * 1.1 + 0.06), green * gBoost);
   float v = h.z;
   h.z = mix(v, min(1.0, v * uRedLift.x + uRedLift.y), red * uGrade);
-  h.z = mix(h.z, min(1.0, v * 1.5 + 0.1), green * uGrade);
+  h.z = mix(h.z, min(1.0, v * 1.5 + 0.1), green * gBoost);
   return hsv2rgb(h);
 }
 
@@ -476,7 +477,8 @@ export class SpriteRenderer {
     gl.uniform2f(u.uRedLift, g.lift[0], g.lift[1]);
     gl.uniform4f(u.uSil, s.sil[0], s.sil[1], s.sil[2], s.silAmount);
     gl.uniform2f(u.uMisreg, s.misreg[0], s.misreg[1]);
-    gl.uniform3f(u.uRim, 0.48, 0.24, 1.0);
+    const rim = g.rim || [0.48, 0.24, 1.0];
+    gl.uniform3f(u.uRim, rim[0], rim[1], rim[2]);
     gl.uniform1f(u.uAlpha, s.alpha);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }

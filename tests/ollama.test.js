@@ -26,14 +26,15 @@ test('findSpokenModel knows aliases for the models installed with Capri', () => 
 test('findSpokenModel accepts short voice-friendly names', () => {
   const faun = 'hf.co/limloop/MN-12B-Faun-RP-RU-GGUF:Q3_K_M';
   const models = ['qwen3:8b', 'qwen3.5:4b', 'qwen3-vl:4b', faun];
-  assert.equal(findSpokenModel(models, 'основную'), 'qwen3:8b');
-  assert.equal(findSpokenModel(models, 'новую'), 'qwen3.5:4b');
-  assert.equal(findSpokenModel(models, 'зрения'), 'qwen3.5:4b');
+  models.push('gemma4:26b-a4b-it-qat');
+  assert.equal(findSpokenModel(models, 'основную'), 'gemma4:26b-a4b-it-qat');
+  assert.equal(findSpokenModel(models, 'новую'), 'gemma4:26b-a4b-it-qat');
+  assert.equal(findSpokenModel(models, 'зрения'), 'gemma4:26b-a4b-it-qat');
   assert.equal(findSpokenModel(models, 'ролевую'), faun);
 });
 
-test('screenModel selects only Capri\'s local vision model', () => {
-  assert.equal(screenModel(['qwen3:8b', 'qwen3.5:4b', 'qwen3-vl:4b']), 'qwen3.5:4b');
+test('screenModel selects Gemma for vision', () => {
+  assert.equal(screenModel(['qwen3:8b', 'gemma4:26b-a4b-it-qat']), 'gemma4:26b-a4b-it-qat');
   assert.equal(screenModel(['qwen3:8b']), null);
 });
 
@@ -55,8 +56,8 @@ test('an empty cold vision answer is retried only once', () => {
   assert.equal(retryEmptyVision('вижу экран', 0), false);
 });
 
-test('visionPrompt disables hidden Qwen thinking before the screen request', () => {
-  assert.equal(visionPrompt('что на экране?'), '/no_think\nчто на экране?');
+test('visionPrompt passes the request to Gemma unchanged', () => {
+  assert.equal(visionPrompt('что на экране?'), 'что на экране?');
 });
 
 test('chat accepts a larger prediction budget for the vision model', async (t) => {
@@ -68,6 +69,7 @@ test('chat accepts a larger prediction budget for the vision model', async (t) =
     return { ok: true, body: new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }) };
   };
   t.after(() => { global.fetch = before; });
-  assert.equal(await chat({ model: 'qwen3-vl:4b', messages: [], numPredict: 900 }, () => {}), 'вижу');
+  assert.equal(await chat({ model: 'gemma4:26b-a4b-it-qat', messages: [], numPredict: 900 }, () => {}), 'вижу');
+  assert.equal(body.think, false);
   assert.equal(body.options.num_predict, 900);
 });

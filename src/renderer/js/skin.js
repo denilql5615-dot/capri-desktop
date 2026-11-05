@@ -8,6 +8,7 @@ export const SKINS = {
   capri: '../../assets/capri/',
   claude: '../../assets/capri-claude/', // Claude's orange, #D97757
   codex: '../../assets/capri-codex/',   // Codex's violet, #684699
+  agy: '../../assets/capri-agy/',       // Antigravity / Google 4-color (#EA4335, #FBBC05, #34A853, #4285F4)
 };
 // how her body's shader treats her pink (sprite.js grade()): the show's hot red, or the skin's colour as
 // it is in the drawings, neither pulled further nor brightened (hue unwrapped past 1 around red; Codex's
@@ -16,6 +17,7 @@ const GRADES = {
   capri: null,
   claude: { hue: 1.0411, sat: 0.6, lift: [1, 0] },
   codex: { hue: 0.7349, sat: 0.54, lift: [1, 0] },
+  agy: { hue: 1.012, sat: 0.77, lift: [1, 0], rim: [0.259, 0.522, 0.957] },
 };
 const CHECK_MS = 500;
 
@@ -47,7 +49,7 @@ export class Skin {
 
   // the other AIs' drawings, in the background after her start (she doesn't wait for them)
   async load(names) {
-    await Promise.all(['claude', 'codex'].map(async (name) => {
+    await Promise.all(['claude', 'codex', 'agy'].map(async (name) => {
       this.sets[name] = await loadSkin(SKINS[name], names).catch((err) => {
         console.warn(`[capri] ${name} skin unavailable:`, err?.message || err);
         return null;
