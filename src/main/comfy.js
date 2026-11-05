@@ -8,7 +8,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const os = require('node:os');
+const { spawn, execFileSync } = require('node:child_process');
 
 const PORT = 8189; // not Comfy Desktop's own: the two can't clash
 // Comfy Desktop's own ComfyUI, while its window is open: the port it wrote down last (comfy-procs), else its default
@@ -27,11 +28,11 @@ const START_MS = 3 * 60 * 1000;
 const JOB_MS = 10 * 60 * 1000;
 
 const CHECKPOINT = 'noobaiXLNAIXL_epsilonPred11Version(1).safetensors';
-const LORA = 'capri_cp.safetensors';
-// what she looks like, said the way the LoRA learnt her
-const HER = 'capri_cp, 1girl, solo, slender body, black bodysuit, neon green panels, glossy plating, pink spiky hair, green visor';
-const STYLE = 'cel shading, rim lighting, neon glow, glossy highlights, vibrant colors, masterpiece, best quality';
-const NEGATIVE = 'flat color, dull, washed out, blank, unfinished, sketch, bad anatomy, bad hands, extra fingers, blurry, text, watermark, signature, worst quality, low quality';
+const LORA = 'capri_face_and_figure.safetensors';
+// what she looks like, said the way her capri_face_and_figure + capri_body + capri_cp LoRAs learnt her
+const HER = 'capri_face, capri_body, capri_cp, 1girl, solo, pink spiky hair, green visor, black bodysuit, red and green panels, angular shapes, sharp lines, stylized';
+const STYLE = 'flat colors, purple outline, vibrant colors, masterpiece, best quality';
+const NEGATIVE = '3d, photorealistic, realistic skin, human skin, peach skin, nose, lips, glossy, dull, washed out, blank, unfinished, sketch, bad anatomy, bad hands, extra fingers, blurry, text, watermark, signature, worst quality, low quality';
 
 /** Where Comfy Desktop put ComfyUI: its install, Python, model paths, input and output. null: not installed. */
 function locate(appData) {
@@ -67,12 +68,16 @@ function workflow({ prompt, her = true, seed = Math.floor(Math.random() * 2 ** 4
     4: { class_type: 'EmptyLatentImage', inputs: { width, height, batch_size: 1 } },
     5: {
       class_type: 'KSampler',
-      inputs: { seed, steps: 28, cfg: 5, sampler_name: 'euler_ancestral', scheduler: 'normal', denoise: 1, model, positive: ['2', 0], negative: ['3', 0], latent_image: ['4', 0] },
+      inputs: { seed, steps: 30, cfg: 6.5, sampler_name: 'euler_ancestral', scheduler: 'normal', denoise: 1, model, positive: ['2', 0], negative: ['3', 0], latent_image: ['4', 0] },
     },
     6: { class_type: 'VAEDecode', inputs: { samples: ['5', 0], vae: ['1', 2] } },
     7: { class_type: 'SaveImage', inputs: { filename_prefix: 'capri_chat', images: ['6', 0] } },
   };
-  if (her) graph[8] = { class_type: 'LoraLoader', inputs: { lora_name: LORA, strength_model: 0.8, strength_clip: 1, model: ['1', 0], clip: ['1', 1] } };
+  if (her) {
+    graph[10] = { class_type: 'LoraLoader', inputs: { lora_name: 'capri_cp.safetensors', strength_model: 0.35, strength_clip: 0.8, model: ['1', 0], clip: ['1', 1] } };
+    graph[11] = { class_type: 'LoraLoader', inputs: { lora_name: 'capri_body.safetensors', strength_model: 0.45, strength_clip: 0.8, model: ['10', 0], clip: ['10', 1] } };
+    graph[8] = { class_type: 'LoraLoader', inputs: { lora_name: LORA, strength_model: 1.05, strength_clip: 1, model: ['11', 0], clip: ['11', 1] } };
+  }
   return { graph, positive };
 }
 
@@ -142,26 +147,22 @@ const VIDEO_MODELS = {
   vae: 'wan_2.1_vae.safetensors',
 };
 const VIDEO_MS = 25 * 60 * 1000;
-const VIDEO_HER = 'spiky neon pink hair, glowing green rectangle visor over eyes, pitch black face and dark bodysuit with neon green geometric panels, green hands, sharp white grin';
-const VIDEO_NEGATIVE = 'human skin, peach skin, pale skin, flesh, character morphing, changing character, static, frozen, still image, blurry, low quality, distorted face, deformed hands, extra limbs, flicker, watermark, text, subtitles';
+const VIDEO_HER = '2D flat cartoon animation, stylized geometric character, pitch-black face with glowing green rectangular visor and concentric blue circular eyes, sharp white triangular grin, spiky starry neon pink hair with black tips, red and green geometric bodysuit, purple outline';
+const VIDEO_NEGATIVE = 'anime girl face, human face, human skin, peach skin, pale skin, flesh, nose, lips, 3d, photorealistic, character morphing, changing character, white flash, overexposed, static, frozen, still image, blurry, low quality, distorted face, deformed hands, extra limbs, flicker, watermark, text, subtitles';
 
-/** The Wan VACE graph: `image` (in ComfyUI's input folder) brought to life as `prompt` says. Her still is
- * anchored at both the first and last frames (kept, mask 0) and the middle frames are drawn on from it (grey,
- * mask 1) so the 1.3B model never drifts into another character and loops seamlessly. Uses RTX 4060 Ada FP8
- * Tensor Cores (`fp8_e4m3fn_fast`), 15 steps with `uni_pc`, and `crf: 22` VP9 WebM. */
-function videoGraph({ prompt, image, seed = Math.floor(Math.random() * 2 ** 48), width = 480, height = 832, frames = 33, steps = 15 }) {
+/** The Wan VACE graph: `image` (in ComfyUI's input folder) brought to life as `prompt` says. 21 frames fit inside
+ * 8 GB VRAM without system RAM spill (~2x faster) and stay inside the zero-drift window; `shift: 4.2` locks her
+ * green visor, blue ring eyes, and triangular grin. Uses RTX 4060 Ada FP8 Tensor Cores (`fp8_e4m3fn_fast`). */
+function videoGraph({ prompt, image, seed = Math.floor(Math.random() * 2 ** 48), width = 480, height = 832, frames = 21, steps = 15 }) {
   const text = [String(prompt || '').trim(), 'anime style, cel shading, crisp lineart, smooth natural motion, lively expression, consistent character', VIDEO_HER].filter(Boolean).join(', ');
   const empty = (batch, color) => ({ class_type: 'EmptyImage', inputs: { width, height, batch_size: batch, color } });
-  const mid = Math.max(1, frames - 2);
   return {
     13: { class_type: 'ImageScale', inputs: { image: ['6', 0], upscale_method: 'lanczos', width, height, crop: 'center' } },
-    14: empty(mid, 0x7f7f7f),
-    20: { class_type: 'ImageBatch', inputs: { image1: ['13', 0], image2: ['14', 0] } },
-    15: { class_type: 'ImageBatch', inputs: { image1: ['20', 0], image2: ['13', 0] } }, // the control video (first + last anchored)
+    14: empty(frames - 1, 0x7f7f7f),
+    15: { class_type: 'ImageBatch', inputs: { image1: ['13', 0], image2: ['14', 0] } }, // the control video
     16: empty(1, 0x000000),
-    17: empty(mid, 0xffffff),
-    21: { class_type: 'ImageBatch', inputs: { image1: ['16', 0], image2: ['17', 0] } },
-    18: { class_type: 'ImageBatch', inputs: { image1: ['21', 0], image2: ['16', 0] } },
+    17: empty(frames - 1, 0xffffff),
+    18: { class_type: 'ImageBatch', inputs: { image1: ['16', 0], image2: ['17', 0] } },
     19: { class_type: 'ImageToMask', inputs: { image: ['18', 0], channel: 'red' } }, // 0: keep, 1: draw
     1: { class_type: 'UNETLoader', inputs: { unet_name: VIDEO_MODELS.unet, weight_dtype: 'fp8_e4m3fn_fast' } },
     2: { class_type: 'CLIPLoader', inputs: { clip_name: VIDEO_MODELS.clip, type: 'wan', device: 'default' } },
@@ -176,14 +177,14 @@ function videoGraph({ prompt, image, seed = Math.floor(Math.random() * 2 ** 48),
         control_video: ['15', 0], control_masks: ['19', 0], reference_image: ['13', 0],
       },
     },
-    8: { class_type: 'ModelSamplingSD3', inputs: { model: ['1', 0], shift: 8 } },
+    8: { class_type: 'ModelSamplingSD3', inputs: { model: ['1', 0], shift: 4.2 } },
     9: {
       class_type: 'KSampler',
-      inputs: { seed, steps, cfg: 5.5, sampler_name: 'uni_pc', scheduler: 'simple', denoise: 1, model: ['8', 0], positive: ['7', 0], negative: ['7', 1], latent_image: ['7', 2] },
+      inputs: { seed, steps, cfg: 5.0, sampler_name: 'uni_pc', scheduler: 'simple', denoise: 1, model: ['8', 0], positive: ['7', 0], negative: ['7', 1], latent_image: ['7', 2] },
     },
     10: { class_type: 'TrimVideoLatent', inputs: { samples: ['9', 0], trim_amount: ['7', 3] } },
     11: { class_type: 'VAEDecode', inputs: { samples: ['10', 0], vae: ['3', 0] } },
-    12: { class_type: 'SaveWEBM', inputs: { images: ['11', 0], filename_prefix: 'capri_video', codec: 'vp9', fps: 16, crf: 22 } },
+    12: { class_type: 'SaveWEBM', inputs: { images: ['11', 0], filename_prefix: 'capri_video', codec: 'vp9', fps: 16, crf: 20 } },
   };
 }
 
@@ -293,9 +294,44 @@ class Comfy {
       const still = await this.picture({ prompt, her: true });
       await this.api('/free', { method: 'POST', body: { unload_models: true, free_memory: true } }).catch(() => {});
       const image = await this.upload(still.png);
-      const webm = await this.submit(videoGraph({ prompt, image }), VIDEO_MS);
+      const rawWebm = await this.submit(videoGraph({ prompt, image }), VIDEO_MS);
+      const webm = this.smoothLoop(rawWebm);
       return { png: still.png, webm, prompt: still.prompt };
     }));
+  }
+
+  /** Trims the initial VACE mask-transition frames and builds a seamless ping-pong WebM loop (~2s at 16fps). */
+  smoothLoop(webm) {
+    const where = locate(this.d.appData);
+    if (!where?.python) return webm;
+    const tmpIn = path.join(os.tmpdir(), `capri_v_in_${Date.now()}.webm`);
+    const tmpOut = path.join(os.tmpdir(), `capri_v_out_${Date.now()}.webm`);
+    try {
+      fs.writeFileSync(tmpIn, webm);
+      const script = [
+        'import sys, av',
+        'cin = av.open(sys.argv[1])',
+        'imgs = [f.to_image() for f in cin.decode(video=0)]',
+        'cin.close()',
+        'core = imgs[4:] if len(imgs) >= 12 else imgs',
+        'seq = core + core[-2:0:-1]',
+        'cout = av.open(sys.argv[2], mode="w", format="webm")',
+        's = cout.add_stream("libvpx-vp9", rate=16)',
+        's.width, s.height, s.pix_fmt = seq[0].width, seq[0].height, "yuv420p"',
+        's.options = {"crf": "20", "b": "0"}',
+        'for im in seq:',
+        '    for p in s.encode(av.VideoFrame.from_image(im)): cout.mux(p)',
+        'for p in s.encode(): cout.mux(p)',
+        'cout.close()',
+      ].join('\n');
+      execFileSync(where.python, ['-c', script, tmpIn, tmpOut], { timeout: 20000, windowsHide: true });
+      return fs.readFileSync(tmpOut);
+    } catch {
+      return webm;
+    } finally {
+      try { fs.unlinkSync(tmpIn); } catch {}
+      try { fs.unlinkSync(tmpOut); } catch {}
+    }
   }
 
   enqueue(work) {

@@ -36,13 +36,13 @@ test('gallery names and marks: one format, read back out of her answer', () => {
 
 test('comfy workflow: her LoRA and looks when it is her, plain NoobAI otherwise', () => {
   const hers = workflow({ prompt: 'rooftop, rain', her: true, seed: 1 });
-  assert.equal(hers.graph[8].inputs.lora_name, 'capri_cp.safetensors');
+  assert.equal(hers.graph[8].inputs.lora_name, 'capri_face_and_figure.safetensors');
   assert.deepEqual(hers.graph[5].inputs.model, ['8', 0]);
   assert.ok(hers.positive.startsWith(HER) && hers.positive.includes('rooftop, rain'));
   const cat = workflow({ prompt: 'cat on a sofa', her: false, seed: 1 });
   assert.equal(cat.graph[8], undefined);
   assert.deepEqual(cat.graph[2].inputs.clip, ['1', 1]);
-  assert.ok(!cat.positive.includes('capri_cp'));
+  assert.ok(!cat.positive.includes('capri_face'));
 });
 
 test('phone: "скинь фото" comes back with the picture to fetch, the picture behind the token', async () => {
