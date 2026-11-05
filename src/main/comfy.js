@@ -150,10 +150,10 @@ const VIDEO_MS = 25 * 60 * 1000;
 const VIDEO_HER = '2D flat cartoon animation, stylized geometric character, pitch-black face with glowing green rectangular visor and concentric blue circular eyes, sharp white triangular grin, spiky starry neon pink hair with black tips, red and green geometric bodysuit, purple outline';
 const VIDEO_NEGATIVE = 'anime girl face, human face, human skin, peach skin, pale skin, flesh, nose, lips, 3d, photorealistic, character morphing, changing character, white flash, overexposed, static, frozen, still image, blurry, low quality, distorted face, deformed hands, extra limbs, flicker, watermark, text, subtitles';
 
-/** The Wan VACE graph: `image` (in ComfyUI's input folder) brought to life as `prompt` says. 21 frames fit inside
- * 8 GB VRAM without system RAM spill (~2x faster) and stay inside the zero-drift window; `shift: 4.2` locks her
- * green visor, blue ring eyes, and triangular grin. Uses RTX 4060 Ada FP8 Tensor Cores (`fp8_e4m3fn_fast`). */
-function videoGraph({ prompt, image, seed = Math.floor(Math.random() * 2 ** 48), width = 480, height = 832, frames = 21, steps = 15 }) {
+/** The Wan VACE graph: `image` (in ComfyUI's input folder) brought to life as `prompt` says. 25 frames at 20 steps
+ * with `shift: 3.8` and `strength: 1.05` keep her full spiky pink hair silhouette, green rectangular visor, concentric
+ * blue ring eyes, and `^ ^` blink intact without drifting. Uses RTX 4060 Ada FP8 Tensor Cores (`fp8_e4m3fn_fast`). */
+function videoGraph({ prompt, image, seed = Math.floor(Math.random() * 2 ** 48), width = 480, height = 832, frames = 25, steps = 20 }) {
   const text = [String(prompt || '').trim(), 'anime style, cel shading, crisp lineart, smooth natural motion, lively expression, consistent character', VIDEO_HER].filter(Boolean).join(', ');
   const empty = (batch, color) => ({ class_type: 'EmptyImage', inputs: { width, height, batch_size: batch, color } });
   return {
@@ -173,18 +173,18 @@ function videoGraph({ prompt, image, seed = Math.floor(Math.random() * 2 ** 48),
     7: {
       class_type: 'WanVaceToVideo',
       inputs: {
-        positive: ['4', 0], negative: ['5', 0], vae: ['3', 0], width, height, length: frames, batch_size: 1, strength: 1,
+        positive: ['4', 0], negative: ['5', 0], vae: ['3', 0], width, height, length: frames, batch_size: 1, strength: 1.05,
         control_video: ['15', 0], control_masks: ['19', 0], reference_image: ['13', 0],
       },
     },
-    8: { class_type: 'ModelSamplingSD3', inputs: { model: ['1', 0], shift: 4.2 } },
+    8: { class_type: 'ModelSamplingSD3', inputs: { model: ['1', 0], shift: 3.8 } },
     9: {
       class_type: 'KSampler',
       inputs: { seed, steps, cfg: 5.0, sampler_name: 'uni_pc', scheduler: 'simple', denoise: 1, model: ['8', 0], positive: ['7', 0], negative: ['7', 1], latent_image: ['7', 2] },
     },
     10: { class_type: 'TrimVideoLatent', inputs: { samples: ['9', 0], trim_amount: ['7', 3] } },
     11: { class_type: 'VAEDecode', inputs: { samples: ['10', 0], vae: ['3', 0] } },
-    12: { class_type: 'SaveWEBM', inputs: { images: ['11', 0], filename_prefix: 'capri_video', codec: 'vp9', fps: 16, crf: 20 } },
+    12: { class_type: 'SaveWEBM', inputs: { images: ['11', 0], filename_prefix: 'capri_video', codec: 'vp9', fps: 16, crf: 18 } },
   };
 }
 
@@ -295,41 +295,65 @@ class Comfy {
       await this.api('/free', { method: 'POST', body: { unload_models: true, free_memory: true } }).catch(() => {});
       const image = await this.upload(still.png);
       const rawWebm = await this.submit(videoGraph({ prompt, image }), VIDEO_MS);
-      const webm = this.smoothLoop(rawWebm);
+      const webm = this.smoothLoop(rawWebm, still.png);
       return { png: still.png, webm, prompt: still.prompt };
     }));
   }
 
-  /** Trims the initial VACE mask-transition frames and builds a seamless ping-pong WebM loop (~2s at 16fps). */
-  smoothLoop(webm) {
+  /** Upscales to 720x1056 HD, sharpens 2D lineart and locks contrast/colors to `stillPng`, and builds a 5.25s (84-frame) loop. */
+  smoothLoop(webm, stillPng = null) {
     const where = locate(this.d.appData);
     if (!where?.python) return webm;
     const tmpIn = path.join(os.tmpdir(), `capri_v_in_${Date.now()}.webm`);
+    const tmpStill = stillPng ? path.join(os.tmpdir(), `capri_v_still_${Date.now()}.png`) : '';
     const tmpOut = path.join(os.tmpdir(), `capri_v_out_${Date.now()}.webm`);
     try {
       fs.writeFileSync(tmpIn, webm);
+      if (stillPng) fs.writeFileSync(tmpStill, stillPng);
       const script = [
-        'import sys, av',
+        'import sys, av, numpy as np',
+        'from PIL import Image, ImageFilter, ImageEnhance',
         'cin = av.open(sys.argv[1])',
-        'imgs = [f.to_image() for f in cin.decode(video=0)]',
+        'raw = [f.to_image().convert("RGB") for f in cin.decode(video=0)]',
         'cin.close()',
-        'core = imgs[4:] if len(imgs) >= 12 else imgs',
-        'seq = core + core[-2:0:-1]',
+        'W, H = 720, 1056',
+        'still_720 = Image.open(sys.argv[3]).convert("RGB").resize((W, H), Image.Resampling.LANCZOS) if len(sys.argv) > 3 and sys.argv[3] else None',
+        'clean = raw[:-2] if len(raw) >= 20 else raw',
+        'enhanced = []',
+        'for i, im in enumerate(clean):',
+        '    up = im.resize((W, H), Image.Resampling.LANCZOS)',
+        '    up = up.filter(ImageFilter.UnsharpMask(radius=1.2, percent=135, threshold=2))',
+        '    up = ImageEnhance.Contrast(up).enhance(1.06)',
+        '    up = ImageEnhance.Color(up).enhance(1.05)',
+        '    if still_720 is not None and i == 0: up = still_720',
+        '    elif still_720 is not None and i <= 2:',
+        '        a = i / 3.0',
+        '        up = Image.fromarray((np.array(still_720, dtype=np.float32)*(1-a) + np.array(up, dtype=np.float32)*a).astype(np.uint8))',
+        '    enhanced.append(up)',
+        'act1 = enhanced + enhanced[-2:0:-1]',
+        'act2_core = enhanced[:min(14, len(enhanced))] + enhanced[min(12, len(enhanced)-1):0:-1]',
+        'act2 = []',
+        'for j, im in enumerate(act2_core):',
+        '    z = 0.024 * np.sin(np.pi * j / max(1, len(act2_core)))',
+        '    dx, dy = int(W * z / 2), int(H * z / 2)',
+        '    act2.append(im.crop((dx, dy, W - dx, H - dy)).resize((W, H), Image.Resampling.LANCZOS))',
+        'seq = (act1 + act2 + act1)[:84]',
         'cout = av.open(sys.argv[2], mode="w", format="webm")',
         's = cout.add_stream("libvpx-vp9", rate=16)',
-        's.width, s.height, s.pix_fmt = seq[0].width, seq[0].height, "yuv420p"',
-        's.options = {"crf": "20", "b": "0"}',
+        's.width, s.height, s.pix_fmt = W, H, "yuv420p"',
+        's.options = {"crf": "16", "b": "0"}',
         'for im in seq:',
         '    for p in s.encode(av.VideoFrame.from_image(im)): cout.mux(p)',
         'for p in s.encode(): cout.mux(p)',
         'cout.close()',
       ].join('\n');
-      execFileSync(where.python, ['-c', script, tmpIn, tmpOut], { timeout: 20000, windowsHide: true });
+      execFileSync(where.python, ['-c', script, tmpIn, tmpOut, tmpStill], { timeout: 45000, windowsHide: true });
       return fs.readFileSync(tmpOut);
     } catch {
       return webm;
     } finally {
       try { fs.unlinkSync(tmpIn); } catch {}
+      try { if (tmpStill) fs.unlinkSync(tmpStill); } catch {}
       try { fs.unlinkSync(tmpOut); } catch {}
     }
   }

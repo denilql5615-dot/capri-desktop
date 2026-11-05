@@ -90,6 +90,6 @@ test('isQuickMusic, musicNowAnswer, and fast Wan 2.1 FP8 videoGraph', () => {
 
   const g = videoGraph({ prompt: 'waving', image: 'test.png' });
   assert.strictEqual(g[1].inputs.weight_dtype, 'fp8_e4m3fn_fast');
-  assert.strictEqual(g[9].inputs.steps, 15);
-  assert.strictEqual(g[12].inputs.crf, 20);
+  assert.strictEqual(g[9].inputs.steps, 20);
+  assert.strictEqual(g[12].inputs.crf, 18);
 });
