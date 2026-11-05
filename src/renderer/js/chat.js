@@ -503,8 +503,8 @@ export class Chat {
     }
     const answer = clean(res.text) || '…';
     this.warm = true;
-    // a picture she sent (main.js photoTask): kept in the chat as its mark, shown under her line
-    const photos = worker === 'photo' ? photoNames(res.text) : [];
+    // a picture or clip she sent (main.js photoTask / videoTask): kept in the chat as its mark, shown under her line
+    const photos = ['photo', 'video'].includes(worker) ? photoNames(res.text) : [];
     this.remember({ role: 'assistant', content: [answer, ...photos.map((p) => `[[photo:${p}]]`)].join('\n') });
     this.panel.stream(answer, { done: true });
     if (photos.length) this.panel.showPhoto(`capri://gallery/${photos[0]}`);

@@ -142,22 +142,26 @@ const VIDEO_MODELS = {
   vae: 'wan_2.1_vae.safetensors',
 };
 const VIDEO_MS = 25 * 60 * 1000;
-const VIDEO_NEGATIVE = 'static, frozen, still image, blurry, low quality, distorted face, deformed hands, extra limbs, flicker, watermark, text, subtitles';
+const VIDEO_HER = 'spiky neon pink hair, glowing green rectangle visor over eyes, pitch black face and dark bodysuit with neon green geometric panels, green hands, sharp white grin';
+const VIDEO_NEGATIVE = 'human skin, peach skin, pale skin, flesh, character morphing, changing character, static, frozen, still image, blurry, low quality, distorted face, deformed hands, extra limbs, flicker, watermark, text, subtitles';
 
 /** The Wan VACE graph: `image` (in ComfyUI's input folder) brought to life as `prompt` says. Her still is
- * the first frame (kept, mask 0) and the rest are drawn on from it (grey, mask 1): as a reference alone the
- * 1.3B model drew someone else. Uses RTX 4060 Ada FP8 Tensor Cores (`fp8_e4m3fn_fast`), 15 steps with `uni_pc`,
- * and `crf: 22` VP9 WebM for crisp anime lines and ~2x faster rendering on 8 GB VRAM. */
+ * anchored at both the first and last frames (kept, mask 0) and the middle frames are drawn on from it (grey,
+ * mask 1) so the 1.3B model never drifts into another character and loops seamlessly. Uses RTX 4060 Ada FP8
+ * Tensor Cores (`fp8_e4m3fn_fast`), 15 steps with `uni_pc`, and `crf: 22` VP9 WebM. */
 function videoGraph({ prompt, image, seed = Math.floor(Math.random() * 2 ** 48), width = 480, height = 832, frames = 33, steps = 15 }) {
-  const text = [String(prompt || '').trim(), 'anime style, cel shading, crisp lineart, smooth natural motion, lively expression, consistent character'].filter(Boolean).join(', ');
+  const text = [String(prompt || '').trim(), 'anime style, cel shading, crisp lineart, smooth natural motion, lively expression, consistent character', VIDEO_HER].filter(Boolean).join(', ');
   const empty = (batch, color) => ({ class_type: 'EmptyImage', inputs: { width, height, batch_size: batch, color } });
+  const mid = Math.max(1, frames - 2);
   return {
     13: { class_type: 'ImageScale', inputs: { image: ['6', 0], upscale_method: 'lanczos', width, height, crop: 'center' } },
-    14: empty(frames - 1, 0x7f7f7f),
-    15: { class_type: 'ImageBatch', inputs: { image1: ['13', 0], image2: ['14', 0] } }, // the control video
+    14: empty(mid, 0x7f7f7f),
+    20: { class_type: 'ImageBatch', inputs: { image1: ['13', 0], image2: ['14', 0] } },
+    15: { class_type: 'ImageBatch', inputs: { image1: ['20', 0], image2: ['13', 0] } }, // the control video (first + last anchored)
     16: empty(1, 0x000000),
-    17: empty(frames - 1, 0xffffff),
-    18: { class_type: 'ImageBatch', inputs: { image1: ['16', 0], image2: ['17', 0] } },
+    17: empty(mid, 0xffffff),
+    21: { class_type: 'ImageBatch', inputs: { image1: ['16', 0], image2: ['17', 0] } },
+    18: { class_type: 'ImageBatch', inputs: { image1: ['21', 0], image2: ['16', 0] } },
     19: { class_type: 'ImageToMask', inputs: { image: ['18', 0], channel: 'red' } }, // 0: keep, 1: draw
     1: { class_type: 'UNETLoader', inputs: { unet_name: VIDEO_MODELS.unet, weight_dtype: 'fp8_e4m3fn_fast' } },
     2: { class_type: 'CLIPLoader', inputs: { clip_name: VIDEO_MODELS.clip, type: 'wan', device: 'default' } },

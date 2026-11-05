@@ -112,6 +112,33 @@ function serveProtocol() {
     if (target !== base && !target.startsWith(base + path.sep)) {
       return new Response('forbidden', { status: 403 });
     }
+    if (/\.webm$/i.test(target) && fs.existsSync(target)) {
+      const buf = fs.readFileSync(target);
+      const m = /^bytes=(\d+)-(\d*)$/.exec(request.headers.get('range') || '');
+      if (m) {
+        const start = Number(m[1]);
+        const end = m[2] ? Math.min(Number(m[2]), buf.length - 1) : buf.length - 1;
+        if (start < buf.length && start <= end) {
+          return new Response(buf.subarray(start, end + 1), {
+            status: 206,
+            headers: {
+              'Content-Type': 'video/webm',
+              'Content-Range': `bytes ${start}-${end}/${buf.length}`,
+              'Accept-Ranges': 'bytes',
+              'Content-Length': String(end - start + 1),
+            },
+          });
+        }
+      }
+      return new Response(buf, {
+        status: 200,
+        headers: {
+          'Content-Type': 'video/webm',
+          'Accept-Ranges': 'bytes',
+          'Content-Length': String(buf.length),
+        },
+      });
+    }
     return net.fetch(pathToFileURL(target).toString());
   });
 }
