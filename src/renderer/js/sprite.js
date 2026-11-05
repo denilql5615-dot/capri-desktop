@@ -108,7 +108,10 @@ vec3 grade(vec3 c, out float red) {
   vec3 h = rgb2hsv(c);
   float hx = h.x < 0.5 ? h.x + 1.0 : h.x;               // unwrap around red
   float lit = smoothstep(0.1, 0.3, h.z);
-  red = smoothstep(0.78, 0.85, hx) * (1.0 - smoothstep(1.06, 1.1, hx)) * lit * smoothstep(0.06, 0.2, h.y);
+  float redBase = smoothstep(0.78, 0.85, hx) * (1.0 - smoothstep(1.06, 1.1, hx));
+  float hueDist = abs(mod(h.x - fract(uRedHue) + 0.5, 1.0) - 0.5);
+  float skinMane = 1.0 - smoothstep(0.08, 0.14, hueDist);
+  red = max(redBase, skinMane) * lit * smoothstep(0.06, 0.2, h.y);
   float green = smoothstep(0.22, 0.27, h.x) * (1.0 - smoothstep(0.47, 0.52, h.x)) * lit * smoothstep(0.15, 0.3, h.y);
   hx = mix(hx, uRedHue, red * 0.6 * uGrade);
   h.x = fract(hx);

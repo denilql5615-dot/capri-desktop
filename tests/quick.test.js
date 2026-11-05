@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { isQuick, scheduleAnswer } = require('../src/main/quick');
+const { isQuick, isQuickMail, isQuickReminders, scheduleAnswer, remindersAnswer, mailAnswer } = require('../src/main/quick');
 
 test('isQuick: plain questions about the schedule', () => {
   for (const q of ['что у меня завтра?', 'Что у меня сегодня', 'какие планы на неделю', 'а какие у меня встречи в пятницу?',
@@ -49,4 +49,32 @@ test('scheduleAnswer: a long list is cut, the rest counted', () => {
   const out = scheduleAnswer({ now: day(4, 9), from: day(5, 0), to: day(6, 0), plans });
   assert.match(out, /^Завтра у тебя 11 дел:/);
   assert.match(out, /…и ещё 3\.$/);
+});
+
+test('isQuickMail and mailAnswer: instant unread/recent email summary without LLM', () => {
+  for (const q of ['что пришло на почту?', 'что там в почте', 'есть новые письма?', 'проверь почту', 'покажи последние письма']) {
+    assert.ok(isQuickMail(q), q);
+  }
+  assert.ok(!isQuickMail('напиши письмо и отправь на почту'));
+  assert.match(mailAnswer([]), /пусто/);
+  const unread = mailAnswer([
+    { from: '"Proton Team" <no-reply@proton.me>', subject: 'Счёт оплачен', unread: true },
+    { from: 'old@example.com', subject: 'Старое письмо', unread: false },
+  ]);
+  assert.match(unread, /Непрочитанных писем: 1/);
+  assert.match(unread, /Proton Team — Счёт оплачен/);
+  assert.ok(!unread.includes('Старое письмо'));
+});
+
+test('isQuickReminders and remindersAnswer: active reminders from config and planner', () => {
+  assert.ok(isQuickReminders('какие у меня напоминания?'));
+  assert.ok(isQuick('покажи напоминания'));
+  assert.strictEqual(remindersAnswer({ reminders: [], plans: [] }), 'Активных напоминаний сейчас нет.');
+  const out = remindersAnswer({
+    reminders: [{ id: 'r1', text: 'Позвонить', at: day(5, 14).getTime() }],
+    plans: [{ id: 'p2', kind: 'reminder', title: 'Второе', at: day(5, 16).getTime(), status: 'open' }],
+  });
+  assert.match(out, /^У тебя 2 напоминания:/);
+  assert.match(out, /Позвонить/);
+  assert.match(out, /Второе/);
 });

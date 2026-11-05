@@ -28,5 +28,7 @@ test('minutesOf: a time you set, a bad one is 09:00', () => {
 test('text: a greeting and your day; dayOf is your local day', () => {
   const t = text('Сегодня у тебя одно дело:\n• 10:00 — Созвон', at(9), (list) => list[0]);
   assert.equal(t, 'Доброе утро. Сегодня у тебя одно дело:\n• 10:00 — Созвон');
+  const withMail = text('Сегодня у тебя одно дело:\n• 10:00 — Созвон', at(9), (list) => list[0], 'Непрочитанных писем: 2.');
+  assert.equal(withMail, 'Доброе утро. Сегодня у тебя одно дело:\n• 10:00 — Созвон\n\nНепрочитанных писем: 2.');
   assert.equal(dayOf(at(0, 30)), '2026-11-04');
 });

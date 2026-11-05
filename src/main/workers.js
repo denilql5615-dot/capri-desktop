@@ -290,9 +290,18 @@ function askCodex(cfg, messages, onDelta, signal, { desktop = false, home = null
   const effort = picked || codexEffort(messages.findLast((m) => m.role === 'user')?.content || '');
   const brief = [codexBrief(messages, cwd), ...(desktop ? [desktopNote(`"${path.join(AGENT_DESKTOP_DIR, 'agent-desktop.exe')}"`)] : [])].join('\n\n');
   const env = desktop && home ? { ...process.env, AGENT_DESKTOP_HOME: home } : process.env;
+  const codexFastFlags = [
+    '-c', 'mcp_servers.node_repl.enabled=false',
+    '-c', 'mcp_servers.capri-pim.enabled=false',
+    '-c', 'plugins."browser@openai-bundled".enabled=false',
+    '-c', 'plugins."computer-use@openai-bundled".enabled=false',
+    '-c', 'plugins."codex-app-tools@openai-bundled".enabled=false',
+    '-c', 'plugins."visualize@openai-bundled".enabled=false',
+    '-c', 'features.memories=false',
+  ];
   return new Promise((resolve, reject) => {
     const child = spawn(exe, ['exec', '--skip-git-repo-check', '--sandbox', desktop ? 'danger-full-access' : 'workspace-write', '--cd', cwd,
-      '-c', `model_reasoning_effort="${effort}"`, '--output-last-message', out, '-'], {
+      '-c', `model_reasoning_effort="${effort}"`, ...codexFastFlags, '--output-last-message', out, '-'], {
       cwd, env, windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'],
     });
     const kill = () => killTree(child);

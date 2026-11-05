@@ -446,7 +446,16 @@ async function switchSpokenModel(wanted) {
   return { ok: true, model };
 }
 
-// Her morning brief (brief.js): checked each minute; due, she says your day (the calendar, by code).
+async function recentMailList(service, said = '', max = 5) {
+  if (!service) return [];
+  const found = [];
+  for (const accountId of pim.mailAccountIds(said, service.listAccounts())) {
+    try { found.push(...await service.searchMail({ accountId, query: '', limit: max })); } catch {}
+  }
+  return found.sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, max);
+}
+
+// Her morning brief (brief.js): checked each minute; due, she says your day (the calendar + fresh mail, by code).
 const morningBrief = () => ({ ...brief.DEFAULTS, ...config.load().morningBrief });
 let briefing = false;
 async function morningBriefTick(now = new Date()) {
@@ -454,19 +463,31 @@ async function morningBriefTick(now = new Date()) {
   if (briefing || !overlay || !brief.isDue(settings, now)) return;
   briefing = true;
   try {
-    const today = quick.scheduleAnswer(await calendarData(pimService(), 'сегодня'));
+    const service = pimService();
+    const today = quick.scheduleAnswer(await calendarData(service, 'сегодня'));
+    const mails = await recentMailList(service, '', 5);
+    const mailLine = mails.length ? quick.mailAnswer(mails) : '';
     updateConfig({ morningBrief: { ...settings, last: brief.dayOf(now) } }); // once a day, whatever comes next
-    sendCommand('brief', { text: brief.text(today, now) });
+    sendCommand('brief', { text: brief.text(today, now, undefined, mailLine) });
   } finally {
     briefing = false;
   }
 }
 
-// A plain question about your schedule: her answer from the calendar by code, no model (quick.js).
-// null: not one, or the calendar couldn't be read (her model answers then).
+// A plain question about your schedule, reminders, or fresh mail: her answer by code, no model (quick.js).
+// null: not one, or couldn't be read (her model answers then).
 async function quickAnswer(said) {
-  if (!quick.isQuick(said)) return null;
   try {
+    if (quick.isQuickReminders(said)) {
+      return quick.remindersAnswer({ reminders: config.load().reminders || [], plans: localPlanner?.list({ kinds: ['reminder'] }) || [] });
+    }
+    if (quick.isQuickMail(said)) {
+      const service = pimService();
+      if (!service) return null;
+      const mails = await recentMailList(service, said, 5);
+      return quick.mailAnswer(mails);
+    }
+    if (!quick.isQuick(said)) return null;
     return quick.scheduleAnswer(await calendarData(pimService(), said));
   } catch (err) {
     console.warn('[capri] quick answer:', err.message);

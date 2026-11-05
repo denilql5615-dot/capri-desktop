@@ -1,7 +1,7 @@
 'use strict';
 
 // Her morning brief (a task on a schedule): once a day at the time you set (config morningBrief.time,
-// 09:00 by default) she comes out and says your day: what's on the calendar and in her planner.
+// 09:00 by default) she comes out and says your day: what's on the calendar, in her planner, and fresh mail.
 // The PC on later: still that morning, up to LATE_HOURS after; past that, the day goes without one.
 
 const LATE_HOURS = 4;
@@ -29,9 +29,11 @@ function isDue(settings, now = new Date()) {
 
 const GREETINGS = ['Доброе утро.', 'Утро. Я тут.', 'Доброе утро, проснулся?'];
 
-/** Her brief: a greeting and your day (quick.scheduleAnswer's lines for today). */
-function text(schedule, now = new Date(), pick = (list) => list[now.getDate() % list.length]) {
-  return `${pick(GREETINGS)} ${String(schedule || '').trim()}`.trim();
+/** Her brief: a greeting, your day (quick.scheduleAnswer's lines for today), and optional mail summary. */
+function text(schedule, now = new Date(), pick = (list) => list[now.getDate() % list.length], mailLine = '') {
+  const base = `${pick(GREETINGS)} ${String(schedule || '').trim()}`.trim();
+  const extra = String(mailLine || '').trim();
+  return extra ? `${base}\n\n${extra}` : base;
 }
 
 module.exports = { DEFAULTS, LATE_HOURS, isDue, minutesOf, text, dayOf };
