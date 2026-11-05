@@ -8,6 +8,7 @@
 const ASK_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(что\s+у\s+меня|что\s+там\s+у\s+меня|какие\s+(у\s+меня\s+)?(планы|встречи|дела|задачи|события)|мои\s+планы|покажи\s+(мои\s+)?(планы|расписание|встречи)|расписание|я\s+(занят|свобод[еа]н))/i;
 const REMINDER_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(какие\s+(у\s+меня\s+)?напоминания|мои\s+напоминания|покажи\s+(мои\s+)?напоминания|что\s+(там\s+)?по\s+напоминаниям|есть\s+(ли\s+)?напоминания)/i;
 const MAIL_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(что\s+(там\s+)?(пришло|нового|есть)\s+(на\s+почт[уе]|в\s+почт[еу]|в\s+ящик[е]?)|что\s+(там\s+)?в\s+почте|что\s+с\s+почтой|проверь\s+почту|покажи\s+(новые\s+|последние\s+|свежие\s+)?письма|какие\s+(новые\s+|последние\s+|свежие\s+)?письма|есть\s+(ли\s+)?(новые\s+|свежие\s+)?письма|новые\s+письма)/i;
+const MUSIC_NOW_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(что\s+(сейчас\s+|там\s+)?играет|какая\s+(сейчас\s+)?(песня|музыка)\s*(играет)?|какой\s+(сейчас\s+)?трек\s*(играет)?|что\s+по[её]т)/i;
 const MORE_RE = /(?<![а-яё])(перенес|перенос|добав|созда|запланир|назнач|удали|отмени|убери|напомни|измени|поменя|почему|зачем|как\s+лучше|посовету|и\s+ещ[её]|а\s+ещ[её]|потом|затем|напиши|отправ|ответь|сделай|прочитай\s+полностью|о\s+ч[её]м)/i;
 
 function isQuickReminders(said) {
@@ -18,6 +19,11 @@ function isQuickReminders(said) {
 function isQuickMail(said) {
   const t = String(said || '').trim();
   return t.length > 0 && t.length <= 90 && /[а-яё]/i.test(t) && MAIL_RE.test(t) && !MORE_RE.test(t);
+}
+
+function isQuickMusic(said) {
+  const t = String(said || '').trim();
+  return t.length > 0 && t.length <= 80 && /[а-яё]/i.test(t) && MUSIC_NOW_RE.test(t) && !MORE_RE.test(t);
 }
 
 /** A plain question about your schedule, answered by code (Russian only: her lines here are Russian). */
@@ -105,4 +111,10 @@ function mailAnswer(mails = []) {
   return `${header}\n${lines.join('\n')}`;
 }
 
-module.exports = { isQuick, isQuickReminders, isQuickMail, scheduleAnswer, remindersAnswer, mailAnswer };
+function musicNowAnswer(np) {
+  if (!np) return 'Сейчас ни один плеер (Riff, AIMP, Spotify) не запущен.';
+  if (np.playing && np.track) return `Сейчас в ${np.player} играет: ${clip(np.track, 140)}.`;
+  return `${np.player} открыт, но сейчас на паузе.`;
+}
+
+module.exports = { isQuick, isQuickReminders, isQuickMail, isQuickMusic, scheduleAnswer, remindersAnswer, mailAnswer, musicNowAnswer };

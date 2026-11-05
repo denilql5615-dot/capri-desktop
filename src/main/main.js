@@ -478,6 +478,9 @@ async function morningBriefTick(now = new Date()) {
 // null: not one, or couldn't be read (her model answers then).
 async function quickAnswer(said) {
   try {
+    if (quick.isQuickMusic(said)) {
+      return quick.musicNowAnswer(await launch.nowPlaying());
+    }
     if (quick.isQuickReminders(said)) {
       return quick.remindersAnswer({ reminders: config.load().reminders || [], plans: localPlanner?.list({ kinds: ['reminder'] }) || [] });
     }

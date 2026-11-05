@@ -41,9 +41,10 @@ const MEDIA_ASK = [
   ['voldown', /\b(quieter|moins fort)\b|baisse le son|turn (it )?down|baja el volumen|abaixa o volume|тише/i],
   ['mute', /\bmute\b|coupe le son|silencia|sem som|выключи звук/i],
 ];
-const MUSIC_WORD = /musi|chanson|song|track|titre|morceau|spotify|canci|faixa|песн|музык|трек/i;
-// "put X on Spotify", "mets X sur Spotify", "pon X en Spotify", "coloca X no Spotify", "включи X в Spotify"
-const SPOTIFY_ASK = /(?:play|put on|put|mets|joue|lance|écoute|pon|toca|reproduce|coloca|toque|включи|поставь)\s+(?:moi\s+|me\s+)?(.+?)\s+(?:on|sur|en|no|na|в)\s+spotify/i;
+const MUSIC_WORD = /musi|chanson|song|track|titre|morceau|spotify|спотиф|спотик|aimp|аимп|riff|рифф|плеер|canci|faixa|песн|музык|музон|трек/i;
+// "put X on Spotify / AIMP / Riff", "включи X в Spotify / в аимпе / в риффе / в плеере"
+const SPOTIFY_ASK = /(?:play|put on|put|mets|joue|lance|écoute|pon|toca|reproduce|coloca|toque|включи|поставь|запусти)\s+(?:moi\s+|me\s+|мне\s+)?(.+?\s+(?:on|sur|en|no|na|в|через)\s+(?:spotify|спотифа[йею]|спотик[еу]?|aimp|аимп[еу]?|riff|рифф?[еу]?|плеер[еу]?))\s*[.!?]*$/i;
+const PLAYER_VOL_ASK = /(?:громкост\w*|звук|volume|сделай)\s+(?:в\s+|на\s+|у\s+)?(spotify|спотифа[йеюя]|спотик[аеу]?|aimp|аимп[аеу]?|riff|рифф?[аеу]?|плеер[аеу]?)\D{0,14}?(\d{1,3})\s*(?:%|процент)?/i;
 const MEDIA_ACTIONS = new Set(MEDIA_ASK.map(([action]) => action));
 // "mets Bohemian Rhapsody sur YouTube", "play Daft Punk on youtube"
 const YOUTUBE_ASK = /(?:play|put on|put|mets|met|joue|lance|écoute|pon|toca|reproduce|coloca|bota|toque|включи|поставь)(?:[- ]moi|[- ]me|me)?\s+(.+?)\s+(?:on|sur|en|no|na|в)\s+youtube/i;
@@ -642,6 +643,12 @@ export class Chat {
       if (ms >= 1000) return pc('timer', { ms });
     }
     if (count <= 10) {
+      const pVol = PLAYER_VOL_ASK.exec(text);
+      if (pVol && Number(pVol[2]) <= 100) {
+        const rawApp = pVol[1].toLowerCase();
+        const app = /riff|риф/.test(rawApp) ? 'riff' : /aimp|аимп/.test(rawApp) ? 'aimp' : /spotify|споти/.test(rawApp) ? 'spotify' : 'player';
+        return pc('volume', { level: Number(pVol[2]), app });
+      }
       const level = VOLUME_ASK.exec(text)?.[1];
       if (level && Number(level) <= 100) return pc('volume', { level: Number(level) });
       if (UNMUTE_ASK.test(text)) return pc('volume', { mute: false });
@@ -689,7 +696,7 @@ export class Chat {
       }
       case 'volume': {
         this.capri.pulse();
-        const r = await run({ action: 'volume', level: asked.level, mute: asked.mute });
+        const r = await run({ action: 'volume', level: asked.level, mute: asked.mute, app: asked.app });
         if (!r) return null;
         return { line: asked.mute === true ? t.muted : asked.mute === false ? t.unmuted : fmt(t.volume, { level: r.level }), face: 'smug' };
       }
@@ -851,9 +858,15 @@ export class Chat {
       // what came before an "and" first ("ouvre discord et…"), unless it's YouTube, where the song goes anyway
       const first = asked.before && OPEN_ASK.test(asked.before) && !/youtube/i.test(asked.before)
         ? await this.doNow({ kind: 'open', text: asked.before }) : null;
-      // "joue à Brawlhalla" is a game, "lance spotify" an app; anything else, a song
+      // "joue à Brawlhalla" is a game, "lance spotify" an app; anything else goes to the universal music player adapter (Riff / AIMP / Spotify)
       const game = await this.host.findLaunch(asked.song);
-      const then = game && ['steam', 'epic', 'app', 'file'].includes(game.kind) && !game.risky ? await this.openNow(game) : await this.youtube(asked.song);
+      let then = null;
+      if (game && ['steam', 'epic', 'app', 'file'].includes(game.kind) && !game.risky) {
+        then = await this.openNow(game);
+      } else {
+        this.zap();
+        then = (await this.host.music(asked.song)) ? { line: fmt(t.music, { song: asked.song }), face: 'laugh' } : await this.youtube(asked.song);
+      }
       if (!first?.line) return then;
       return { line: [first.line, then?.line].filter(Boolean).join('\n'), face: then?.face || first.face };
     }

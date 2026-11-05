@@ -60,7 +60,8 @@ async function info(what) {
   return null;
 }
 
-// Windows' own volume (the default speakers), through its Core Audio interfaces.
+// Windows' own volume (the default speakers) and per-player session volume (Spotify, AIMP, Riff),
+// through its Core Audio interfaces.
 const AUDIO = `Add-Type -TypeDefinition @"
 using System; using System.Runtime.InteropServices;
 [Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -73,30 +74,96 @@ interface IAudioEndpointVolume {
   int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, Guid context);
   int GetMute(out bool mute);
 }
+[Guid("87CE5498-68D6-44E5-9215-6DA47EF883D8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface ISimpleAudioVolume {
+  int SetMasterVolume(float fLevel, ref Guid EventContext);
+  int GetMasterVolume(out float pfLevel);
+  int SetMute([MarshalAs(UnmanagedType.Bool)] bool bMute, ref Guid EventContext);
+  int GetMute(out bool pbMute);
+}
+[Guid("BFB7FF88-7239-4FC9-8FA2-07C950BE9C6D"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioSessionControl2 {
+  int a(); int b(); int c(); int d(); int e(); int f(); int g(); int h(); int i();
+  int GetSessionIdentifier([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
+  int GetSessionInstanceIdentifier([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
+  int GetProcessId(out uint pRetVal);
+}
+[Guid("E2F5BB11-0570-40CA-ACDD-3AA01277DEE8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioSessionEnumerator {
+  int GetCount(out int SessionCount);
+  int GetSession(int SessionCount, out IAudioSessionControl2 Session);
+}
+[Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioSessionManager2 {
+  int a(); int b();
+  int GetSessionEnumerator(out IAudioSessionEnumerator SessionEnum);
+}
 [Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IMMDevice { int Activate(ref Guid id, int ctx, int p, out IAudioEndpointVolume volume); }
+interface IMMDevice { int Activate(ref Guid id, int ctx, int p, [MarshalAs(UnmanagedType.IUnknown)] out object iface); }
 [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 interface IMMDeviceEnumerator { int f(); int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice device); }
 [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class DeviceEnumerator { }
 public static class CapriAudio {
-  static IAudioEndpointVolume Volume() {
+  static IMMDevice DefaultDevice() {
     IMMDevice device;
     Marshal.ThrowExceptionForHR(((IMMDeviceEnumerator)new DeviceEnumerator()).GetDefaultAudioEndpoint(0, 1, out device));
-    IAudioEndpointVolume volume;
+    return device;
+  }
+  static IAudioEndpointVolume Volume() {
+    object obj;
     var id = typeof(IAudioEndpointVolume).GUID;
-    Marshal.ThrowExceptionForHR(device.Activate(ref id, 23, 0, out volume));
-    return volume;
+    Marshal.ThrowExceptionForHR(DefaultDevice().Activate(ref id, 23, 0, out obj));
+    return (IAudioEndpointVolume)obj;
   }
   public static int Level { get { float v; Marshal.ThrowExceptionForHR(Volume().GetMasterVolumeLevelScalar(out v)); return (int)Math.Round(v * 100); } }
   public static void Set(int level) { Marshal.ThrowExceptionForHR(Volume().SetMasterVolumeLevelScalar(level / 100f, Guid.Empty)); }
   public static void Mute(bool mute) { Marshal.ThrowExceptionForHR(Volume().SetMute(mute, Guid.Empty)); }
+  public static int SetPids(uint[] pids, int level, int muteMode) {
+    object obj;
+    var id = typeof(IAudioSessionManager2).GUID;
+    Marshal.ThrowExceptionForHR(DefaultDevice().Activate(ref id, 23, 0, out obj));
+    IAudioSessionEnumerator en;
+    Marshal.ThrowExceptionForHR(((IAudioSessionManager2)obj).GetSessionEnumerator(out en));
+    int count; en.GetCount(out count);
+    int last = -1; Guid ctx = Guid.Empty;
+    for (int i = 0; i < count; i++) {
+      IAudioSessionControl2 ctl; en.GetSession(i, out ctl);
+      uint pid; ctl.GetProcessId(out pid);
+      if (Array.IndexOf(pids, pid) < 0) continue;
+      var vol = (ISimpleAudioVolume)ctl;
+      if (level >= 0) { vol.SetMasterVolume(level / 100f, ref ctx); vol.SetMute(false, ref ctx); }
+      if (muteMode >= 0) vol.SetMute(muteMode == 1, ref ctx);
+      float cur; vol.GetMasterVolume(out cur);
+      last = (int)Math.Round(cur * 100);
+    }
+    return last;
+  }
 }
 "@
 `;
 
-// { level } (0 to 100, unmuted too), { mute: true | false }, or neither: the level now
-async function volume({ level = null, mute = null } = {}) {
+const PLAYER_PROCS = {
+  spotify: 'Spotify',
+  aimp: 'AIMP,AIMP3,AIMP4',
+  riff: 'Riff',
+  player: 'Riff,AIMP,AIMP3,AIMP4,Spotify,vlc,foobar2000',
+};
+
+// { level } (0 to 100, unmuted too), { mute: true | false }, { app: 'spotify'|'aimp'|'riff'|'player' }, or neither
+async function volume({ level = null, mute = null, app = null } = {}) {
   if (!WIN) return null;
+  const targetApp = app && PLAYER_PROCS[String(app).toLowerCase()];
+  if (targetApp) {
+    const lvl = Number.isFinite(level) ? Math.round(Math.min(100, Math.max(0, level))) : -1;
+    const m = typeof mute === 'boolean' ? (mute ? 1 : 0) : -1;
+    const out = await apps.powershell(
+      `${AUDIO}$pids = [uint32[]]@(Get-Process -Name ${targetApp} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id); `
+      + `if ($pids.Count -gt 0) { $r = [CapriAudio]::SetPids($pids, ${lvl}, ${m}); if ($r -ge 0) { $r; exit } }; `
+      + `${lvl >= 0 ? `[CapriAudio]::Set(${lvl}); [CapriAudio]::Mute($false); ` : m >= 0 ? `[CapriAudio]::Mute($${m === 1}); ` : ''}[CapriAudio]::Level`,
+    ).catch(() => null);
+    const now = Number.parseInt(out, 10);
+    return Number.isFinite(now) ? { level: now, app: String(app).toLowerCase() } : null;
+  }
   let line = '';
   if (Number.isFinite(level)) line = `[CapriAudio]::Set(${Math.round(Math.min(100, Math.max(0, level)))}); [CapriAudio]::Mute($false); `;
   else if (typeof mute === 'boolean') line = `[CapriAudio]::Mute($${mute}); `;
@@ -176,7 +243,7 @@ function act(req = {}, { display } = {}) {
   switch (req.action) {
     case 'settings': return settings(String(req.page));
     case 'info': return info(String(req.what));
-    case 'volume': return volume({ level: Number.isFinite(req.level) ? req.level : null, mute: typeof req.mute === 'boolean' ? req.mute : null });
+    case 'volume': return volume({ level: Number.isFinite(req.level) ? req.level : null, mute: typeof req.mute === 'boolean' ? req.mute : null, app: req.app || null });
     case 'snip': return snip();
     case 'tidy': return tidy(Boolean(req.back));
     case 'arrange': return arrange(String(req.name || '').slice(0, 80), req.side, display);

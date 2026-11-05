@@ -2,7 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { isQuick, isQuickMail, isQuickReminders, scheduleAnswer, remindersAnswer, mailAnswer } = require('../src/main/quick');
+const { isQuick, isQuickMail, isQuickReminders, isQuickMusic, scheduleAnswer, remindersAnswer, mailAnswer, musicNowAnswer } = require('../src/main/quick');
+const { videoGraph } = require('../src/main/comfy');
 
 test('isQuick: plain questions about the schedule', () => {
   for (const q of ['что у меня завтра?', 'Что у меня сегодня', 'какие планы на неделю', 'а какие у меня встречи в пятницу?',
@@ -77,4 +78,18 @@ test('isQuickReminders and remindersAnswer: active reminders from config and pla
   assert.match(out, /^У тебя 2 напоминания:/);
   assert.match(out, /Позвонить/);
   assert.match(out, /Второе/);
+});
+
+test('isQuickMusic, musicNowAnswer, and fast Wan 2.1 FP8 videoGraph', () => {
+  for (const q of ['что сейчас играет?', 'какой трек играет?', 'какая песня играет', 'что поёт?']) {
+    assert.ok(isQuickMusic(q), q);
+  }
+  assert.strictEqual(musicNowAnswer(null), 'Сейчас ни один плеер (Riff, AIMP, Spotify) не запущен.');
+  assert.strictEqual(musicNowAnswer({ player: 'AIMP', track: 'Perturbator — Future Club', playing: true }), 'Сейчас в AIMP играет: Perturbator — Future Club.');
+  assert.strictEqual(musicNowAnswer({ player: 'Spotify', track: null, playing: false }), 'Spotify открыт, но сейчас на паузе.');
+
+  const g = videoGraph({ prompt: 'waving', image: 'test.png' });
+  assert.strictEqual(g[1].inputs.weight_dtype, 'fp8_e4m3fn_fast');
+  assert.strictEqual(g[9].inputs.steps, 15);
+  assert.strictEqual(g[12].inputs.crf, 22);
 });

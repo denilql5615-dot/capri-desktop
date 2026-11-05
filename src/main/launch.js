@@ -205,10 +205,10 @@ async function launch({ kind, id } = {}) {
   return undefined;
 }
 
-// The media keys, as if pressed on the keyboard: whatever plays music (Spotify, a browser…) reacts.
+// The media keys, as if pressed on the keyboard: whatever plays music (Spotify, AIMP, Riff, a browser…) reacts.
 // Play and pause are the same key; the volume moves a few steps at a time. Sent as keys (their virtual
 // key codes), not typed: typed, they come out as "³" or "°" on a German keyboard.
-const MEDIA = { pause: [0xb3, 1], play: [0xb3, 1], next: [0xb0, 1], previous: [0xb1, 1], volup: [0xaf, 5], voldown: [0xae, 5], mute: [0xad, 1] };
+const MEDIA = { pause: [0xb3, 1], play: [0xb3, 1], stop: [0xb2, 1], next: [0xb0, 1], previous: [0xb1, 1], volup: [0xaf, 5], voldown: [0xae, 5], mute: [0xad, 1] };
 const KEY_DOWN = 1; // KEYEVENTF_EXTENDEDKEY
 const KEY_UP = 3;   // ...and KEYEVENTF_KEYUP
 
@@ -221,10 +221,196 @@ async function media(action) {
   ).then(() => true, () => false);
 }
 
-// A Spotify search for it: in the app if it's installed, else on the web.
-async function music(query) {
-  const q = String(query || '').trim().slice(0, 200);
-  if (!q) return false;
+// Universal player definitions: Riff (upcoming main replacement), AIMP (local hi-fi player), Spotify, and common players.
+const PLAYERS = {
+  riff: {
+    label: 'Riff',
+    procs: ['Riff', 'riff'],
+    idleTitles: /^(?:riff|riff music|riff player)$/i,
+    paths: [
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Riff', 'Riff.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Riff', 'Riff.exe'),
+      path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Riff', 'Riff.exe'),
+    ],
+  },
+  aimp: {
+    label: 'AIMP',
+    procs: ['AIMP', 'AIMP3', 'AIMP4'],
+    idleTitles: /^aimp(?:\s+v?[\d.]+)?$/i,
+    paths: [
+      path.join(process.env.ProgramFiles || 'C:\\Program Files', 'AIMP', 'AIMP.exe'),
+      path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'AIMP', 'AIMP.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'AIMP', 'AIMP.exe'),
+    ],
+  },
+  spotify: {
+    label: 'Spotify',
+    procs: ['Spotify'],
+    idleTitles: /^spotify(?:\s+(?:free|premium))?$/i,
+    paths: [
+      path.join(process.env.APPDATA || '', 'Spotify', 'Spotify.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WindowsApps', 'Spotify.exe'),
+    ],
+  },
+};
+
+const AUDIO_EXT = /\.(mp3|flac|wav|m4a|ogg|opus|aac|wma)$/i;
+const PLAYER_TAG_RE = /\s+(?:on|sur|en|no|na|в|через)\s+(spotify|спотифа[йею]|спотик[еу]?|aimp|аимп[еу]?|riff|рифф?[еу]?|плеер[еу]?)\s*$/i;
+const VAGUE_MUSIC_RE = /^(?:музык[уа]|песн[юи]|трек|музон|что-нибудь|music|song|something|плеер|аимп|aimp|спотифай|спотик|spotify|рифф?|riff)?$/i;
+
+function normalizePlayerName(raw) {
+  const s = String(raw || '').toLowerCase().trim();
+  if (/riff|риф/.test(s)) return 'riff';
+  if (/aimp|аимп/.test(s)) return 'aimp';
+  if (/spotify|споти/.test(s)) return 'spotify';
+  return null;
+}
+
+function parsePlayerRequest(raw) {
+  const text = String(raw || '').trim();
+  const m = PLAYER_TAG_RE.exec(text);
+  if (m) {
+    return {
+      player: normalizePlayerName(m[1]),
+      query: text.slice(0, m.index).trim(),
+    };
+  }
+  const direct = normalizePlayerName(text);
+  if (direct && text.split(/\s+/).length <= 2) {
+    return { player: direct, query: '' };
+  }
+  return { player: null, query: text };
+}
+
+function findPlayerExe(id) {
+  const p = PLAYERS[id];
+  if (!p) return null;
+  for (const candidate of p.paths) {
+    if (candidate && fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/** Checks running media players (Riff, AIMP, Spotify, VLC, foobar2000) and returns { id, player, track, playing } or null. */
+async function nowPlaying() {
+  if (!WIN) return null;
+  const script = 'Get-Process -Name Riff, AIMP, AIMP3, AIMP4, Spotify, vlc, foobar2000 -ErrorAction SilentlyContinue | '
+    + 'Where-Object { $_.MainWindowHandle -ne 0 -or $_.MainWindowTitle } | '
+    + 'Select-Object ProcessName, MainWindowTitle | ConvertTo-Json -Compress';
+  const out = await powershell(script, 5000).catch(() => '');
+  if (!out) return null;
+  let list = [];
+  try { list = [].concat(JSON.parse(out)); } catch { return null; }
+  for (const row of list) {
+    const proc = String(row?.ProcessName || '');
+    const title = String(row?.MainWindowTitle || '').trim();
+    if (!proc) continue;
+    const id = normalizePlayerName(proc) || proc.toLowerCase();
+    const def = PLAYERS[id];
+    const label = def?.label || proc;
+    const idle = !title || (def?.idleTitles ? def.idleTitles.test(title) : /^vlc media player$/i.test(title));
+    if (!idle) {
+      return { id, player: label, track: title.replace(/\s*-\s*VLC media player$/i, '').trim(), playing: true };
+    }
+  }
+  const first = list[0];
+  if (first?.ProcessName) {
+    const id = normalizePlayerName(first.ProcessName) || first.ProcessName.toLowerCase();
+    return { id, player: PLAYERS[id]?.label || first.ProcessName, track: null, playing: false };
+  }
+  return null;
+}
+
+function findLocalAudioFile(query) {
+  const qWords = words(query);
+  if (!qWords.length) return null;
+  const roots = ['music', 'downloads', 'desktop'].map((k) => {
+    try { return app.getPath(k); } catch { return null; }
+  }).filter(Boolean);
+  let best = null;
+  const scan = (dir, depth = 0) => {
+    if (depth > 2) return;
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory() && !e.name.startsWith('.')) {
+        scan(full, depth + 1);
+      } else if (e.isFile() && AUDIO_EXT.test(e.name)) {
+        const nameWords = words(e.name.replace(AUDIO_EXT, ''));
+        const hits = qWords.filter((w) => nameWords.some((nw) => nw.includes(w) || w.includes(nw)));
+        if (hits.length > 0 && (!best || hits.length > best.hits)) {
+          best = { path: full, name: e.name.replace(AUDIO_EXT, ''), hits: hits.length };
+        }
+      }
+    }
+  };
+  for (const r of roots) scan(r, 0);
+  return best?.path || null;
+}
+
+// Universal music launcher & controller for Riff, AIMP, and Spotify.
+async function music(rawQuery) {
+  const { player: askedPlayer, query: rawSong } = parsePlayerRequest(rawQuery);
+  const q = String(rawSong || '').trim().slice(0, 200);
+  const vague = !q || VAGUE_MUSIC_RE.test(q);
+
+  let target = askedPlayer;
+  if (!target) {
+    const active = await nowPlaying().catch(() => null);
+    if (active?.id && PLAYERS[active.id] && (vague || active.id !== 'aimp' || findLocalAudioFile(q))) {
+      target = active.id;
+    } else if (findPlayerExe('riff') || (WIN && app.getApplicationNameForProtocol('riff://'))) {
+      target = 'riff';
+    } else if ((vague || findLocalAudioFile(q)) && findPlayerExe('aimp')) {
+      target = 'aimp';
+    } else {
+      target = 'spotify';
+    }
+  }
+
+  if (target === 'aimp') {
+    const exe = findPlayerExe('aimp');
+    const audioFile = !vague ? findLocalAudioFile(q) : null;
+    if (exe && audioFile) {
+      spawn(exe, [audioFile], { detached: true, windowsHide: false, stdio: 'ignore' }).on('error', () => {}).unref();
+      return true;
+    }
+    if (exe) {
+      spawn(exe, [], { detached: true, windowsHide: false, stdio: 'ignore' }).on('error', () => {}).unref();
+      setTimeout(() => media('play'), 900);
+      return true;
+    }
+  }
+
+  if (target === 'riff') {
+    const hasProto = WIN && Boolean(app.getApplicationNameForProtocol('riff://'));
+    if (hasProto && !vague) {
+      await shell.openExternal(`riff://search?q=${encodeURIComponent(q)}`).catch(() => {});
+      return true;
+    }
+    const exe = findPlayerExe('riff');
+    if (exe) {
+      spawn(exe, !vague ? [q] : [], { detached: true, windowsHide: false, stdio: 'ignore' }).on('error', () => {}).unref();
+      if (vague) setTimeout(() => media('play'), 900);
+      return true;
+    }
+    if (hasProto) {
+      await shell.openExternal('riff://').catch(() => {});
+      return true;
+    }
+  }
+
+  // Spotify (or fallback when requested player is not installed yet)
+  if (vague) {
+    const exe = findPlayerExe('spotify');
+    if (exe) {
+      spawn(exe, [], { detached: true, windowsHide: false, stdio: 'ignore' }).on('error', () => {}).unref();
+      setTimeout(() => media('play'), 1000);
+      return true;
+    }
+    return media('play');
+  }
   try {
     await shell.openExternal(`spotify:search:${encodeURIComponent(q)}`);
   } catch {
@@ -298,4 +484,4 @@ async function site(address) {
   return true;
 }
 
-module.exports = { launchables, match, find, launch, media, music, youtube, roblox, site, siteUrl, risky };
+module.exports = { launchables, match, find, launch, media, music, nowPlaying, parsePlayerRequest, PLAYERS, youtube, roblox, site, siteUrl, risky };
