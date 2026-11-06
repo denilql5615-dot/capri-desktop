@@ -68,4 +68,32 @@ function readCodexQuota(exe) {
   });
 }
 
-module.exports = { quotaGroup, normalizeWindow, codexWindows, claudeWindow, readCodexQuota };
+function parseAgyStatusLineQuota(payload) {
+  let data = payload;
+  if (typeof payload === 'string') {
+    try { data = JSON.parse(payload); } catch { return null; }
+  }
+  const quota = data?.quota || {};
+  const toWindow = (entry, minutes) => {
+    if (!entry || typeof entry !== 'object') return null;
+    const fraction = Number(entry.remaining_fraction);
+    if (!Number.isFinite(fraction) || fraction < 0 || fraction > 1) return null;
+    const remaining = Math.round(fraction * 10000) / 100;
+    const resetsAt = Number(entry.reset_time);
+    return normalizeWindow(remaining, minutes, Number.isFinite(resetsAt) ? resetsAt : null);
+  };
+
+  return {
+    'agy-argon': [toWindow(quota['gemini-argon-wtu-weekly'], 10080)].filter(Boolean),
+    'agy-gemini': [toWindow(quota['gemini-5h'], 300), toWindow(quota['gemini-weekly'], 10080)].filter(Boolean),
+    'agy-third-party': [toWindow(quota['3p-5h'], 300), toWindow(quota['3p-weekly'], 10080)].filter(Boolean),
+  };
+}
+
+async function readAgyQuota(exe, getFallback) {
+  const fallback = typeof getFallback === 'function' ? getFallback() : {};
+  if (!exe) return fallback;
+  return fallback;
+}
+
+module.exports = { quotaGroup, normalizeWindow, codexWindows, claudeWindow, readCodexQuota, parseAgyStatusLineQuota, readAgyQuota };

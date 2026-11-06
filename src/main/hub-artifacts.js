@@ -13,7 +13,12 @@ async function artifactPath(root, run, name) {
   const realRoot = await fs.realpath(root);
   const dir = path.join(realRoot, run);
   const target = path.join(dir, name);
-  const [actualDir, stat] = await Promise.all([fs.realpath(dir), fs.lstat(target)]);
+  let actualDir, stat;
+  try {
+    [actualDir, stat] = await Promise.all([fs.realpath(dir), fs.lstat(target)]);
+  } catch {
+    throw new Error('Вложение недоступно.');
+  }
   if (actualDir !== dir || !stat.isFile() || !stat.size) throw new Error('Вложение недоступно.');
   return target;
 }

@@ -112,3 +112,83 @@ test('parseModelCommand: the model asked for, or null', () => {
   assert.strictEqual(parseModelCommand('смени модель на основную модель'), 'основную');
   assert.strictEqual(parseModelCommand('как дела'), null);
 });
+
+test('bridge: /agents endpoints (list, sessions, create, send, stop, quota, artifact)', async () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const os = require('node:os');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'phone-artifact-test-'));
+  const dummyFile = path.join(tmpDir, 'test.png');
+  fs.writeFileSync(dummyFile, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+  const bridge = new PhoneBridge({
+    token: () => 'agent-key',
+    agentsList: async () => ({
+      sessions: [{ id: 's1', agent: 'gemini', title: 'Test Session', active: false }],
+      models: { gemini: ['gemini-2.5-pro'] },
+    }),
+    agentSessions: async (agent) => [{ id: 's1', agent: agent || 'gemini', title: 'Test Session' }],
+    agentCreate: async (agent) => `s-new-${agent}`,
+    agentHistory: async (id) => [{ role: 'user', content: 'hello' }, { role: 'assistant', content: 'world' }],
+    agentSend: async ({ id, model, text }) => ({ ok: true, text: `reply to ${text}` }),
+    agentStop: async (id) => true,
+    agentQuota: async ({ agent, model, refresh }) => ({ group: 'agy-argon', windows: [{ usedPercent: 12 }] }),
+    agentArtifact: async ({ id, run, name }) => (name === 'test.png' ? dummyFile : null),
+  });
+
+  const port = await bridge.start(0, '127.0.0.1');
+  const url = (p) => `http://127.0.0.1:${port}${p}`;
+  const get = (p) => fetch(url(p), { headers: { 'x-capri-token': 'agent-key' } });
+  const post = (p, body) => fetch(url(p), { method: 'POST', headers: { 'x-capri-token': 'agent-key' }, body: JSON.stringify(body) });
+
+  try {
+    const listRes = await get('/agents');
+    assert.strictEqual(listRes.status, 200);
+    const listData = await listRes.json();
+    assert.strictEqual(listData.sessions.length, 1);
+    assert.strictEqual(listData.sessions[0].id, 's1');
+
+    const sessionsRes = await get('/agents/sessions?agent=gemini');
+    assert.strictEqual(sessionsRes.status, 200);
+    const sessions = await sessionsRes.json();
+    assert.strictEqual(sessions[0].agent, 'gemini');
+
+    const createRes = await post('/agents/sessions', { agent: 'claude' });
+    assert.strictEqual(createRes.status, 200);
+    const created = await createRes.json();
+    assert.strictEqual(created.id, 's-new-claude');
+
+    const histRes = await get('/agents/session?id=s1');
+    assert.strictEqual(histRes.status, 200);
+    const hist = await histRes.json();
+    assert.strictEqual(hist.messages.length, 2);
+
+    const sendRes = await post('/agents/send', { id: 's1', model: 'm', text: 'ping' });
+    assert.strictEqual(sendRes.status, 200);
+    const sendData = await sendRes.json();
+    assert.strictEqual(sendData.text, 'reply to ping');
+
+    const stopRes = await post('/agents/stop', { id: 's1' });
+    assert.strictEqual(stopRes.status, 200);
+    const stopData = await stopRes.json();
+    assert.strictEqual(stopData.ok, true);
+
+    const quotaRes = await get('/agents/quota?agent=gemini&model=gemini-2.5-pro');
+    assert.strictEqual(quotaRes.status, 200);
+    const quotaData = await quotaRes.json();
+    assert.strictEqual(quotaData.group, 'agy-argon');
+
+    const artRes = await get('/agents/artifact?id=s1&run=r1&name=test.png');
+    assert.strictEqual(artRes.status, 200);
+    assert.strictEqual(artRes.headers.get('content-type'), 'image/png');
+    const artBytes = await artRes.arrayBuffer();
+    assert.strictEqual(artBytes.byteLength, 4);
+
+    const missingArtRes = await get('/agents/artifact?id=s1&run=r1&name=missing.png');
+    assert.strictEqual(missingArtRes.status, 404);
+  } finally {
+    await bridge.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

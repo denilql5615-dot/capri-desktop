@@ -30,7 +30,7 @@ const agent = require('./agent');
 const chatLog = require('./chats');
 const { AgentSessions, MODELS: SESSION_MODELS } = require('./agent-sessions');
 const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
-const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota } = require('./agent-quotas');
+const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
 const { artifactPath, listArtifacts } = require('./hub-artifacts');
 const notes = require('./notes');
 const pim = require('./pim');
@@ -347,6 +347,9 @@ function agyQuotaSnapshots() {
   try { return JSON.parse(fs.readFileSync(agyQuotaFile(), 'utf8')); } catch { return {}; }
 }
 
+let agyQuotaLive = null;
+let agyQuotaPending = null;
+
 async function hubQuota(agent, model, refresh) {
   const group = quotaGroup(agent, model);
   if (group === 'codex') {
@@ -363,11 +366,22 @@ async function hubQuota(agent, model, refresh) {
       (!window.scope || window.scope === model) && (window.resetsAt || Date.now() - window.checkedAt < 600000));
     return { group, windows, checkedAt: windows.length ? Math.max(...windows.map((window) => window.checkedAt)) : null };
   }
-  return { group, windows: [], ...(group.startsWith('agy-') && agyQuotaSnapshots()[group]) };
+  if (group.startsWith('agy-')) {
+    if (!agyQuotaLive || refresh || Date.now() - (agyQuotaLive[group]?.checkedAt || 0) > 120000) {
+      agyQuotaPending ??= readAgyQuota(workers.findAgy(), agyQuotaSnapshots).then((result) => {
+        if (result) agyQuotaLive = result;
+      }).finally(() => { agyQuotaPending = null; });
+      await agyQuotaPending;
+    }
+    const current = agyQuotaLive?.[group] || agyQuotaSnapshots()[group];
+    const checkedAt = current?.checkedAt || null;
+    const stale = checkedAt ? (Date.now() - checkedAt > 600000) : false;
+    return { group, windows: current?.windows || [], checkedAt, stale };
+  }
+  return { group, windows: [] };
 }
 
-function hubSessions(event) {
-  if (event.sender !== chatsWin?.webContents) throw new Error('Доступно только из Hub Capri.');
+function ensureAgentSessions() {
   agentSessions ??= new AgentSessions(path.join(app.getPath('userData'), 'agent-sessions.json'),
     async (agent, model, messages, signal, delta) => {
       const cfg = config.load();
@@ -390,6 +404,11 @@ function hubSessions(event) {
       ] }, delta, signal);
     }, (id, delta) => chatsWin?.webContents.send('agents:update', { id, delta }));
   return agentSessions;
+}
+
+function hubSessions(event) {
+  if (event.sender !== chatsWin?.webContents) throw new Error('Доступно только из Hub Capri.');
+  return ensureAgentSessions();
 }
 
 // Her long memory: notes in your Obsidian vault (notes.js)
@@ -1144,6 +1163,26 @@ async function applyPhone() {
         chatLog.write(chatsFile(), store);
         chatsWin?.webContents.send('chats:changed');
         toVault(config.load(), null, said, answer.replace(/\n?\[\[photo:[^\]]*\]\]/g, ''));
+      },
+      agentsList: async () => ({
+        sessions: ensureAgentSessions().summaries(),
+        models: SESSION_MODELS,
+      }),
+      agentSessions: async (agent) => {
+        const all = ensureAgentSessions().summaries();
+        return agent ? all.filter((s) => s.agent === agent) : all;
+      },
+      agentCreate: async (agent) => ensureAgentSessions().create(agent),
+      agentHistory: async (id) => ensureAgentSessions().history(id),
+      agentSend: async ({ id, model, text, retry }) => ensureAgentSessions().send(id, model, text, retry === true),
+      agentStop: async (id) => ensureAgentSessions().stop(id),
+      agentQuota: async ({ agent, model, refresh }) => hubQuota(agent, model, refresh === true),
+      agentArtifact: async ({ id, run, name }) => {
+        const history = ensureAgentSessions().history(id);
+        if (!history.some((message) => message.artifacts?.some((item) => item.run === run && item.name === name))) {
+          return null;
+        }
+        return artifactPath(hubArtifactRoot(), run, name);
       },
     });
   }

@@ -12,8 +12,10 @@
 // on the PC, Claude and Codex included. Her voice is kept in memory a few minutes, never on disk.
 
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
+const path = require('node:path');
 
 const MAX_BODY = 64 * 1024;
 const AUDIO_TTL_MS = 10 * 60 * 1000;
@@ -56,6 +58,27 @@ function controlPatch(body) {
   if (!body || typeof body !== 'object') return null;
   for (const [k, v] of Object.entries(body)) if (typeof v !== CONTROL_KEYS[k]) return null;
   return body;
+}
+
+function mimeFor(name) {
+  const ext = path.extname(name || '').toLowerCase();
+  switch (ext) {
+    case '.png': return 'image/png';
+    case '.jpg': case '.jpeg': return 'image/jpeg';
+    case '.webp': return 'image/webp';
+    case '.gif': return 'image/gif';
+    case '.mp4': return 'video/mp4';
+    case '.webm': return 'video/webm';
+    case '.mov': return 'video/quicktime';
+    case '.pdf': return 'application/pdf';
+    case '.txt': return 'text/plain; charset=utf-8';
+    case '.md': return 'text/markdown; charset=utf-8';
+    case '.csv': return 'text/csv; charset=utf-8';
+    case '.wav': return 'audio/wav';
+    case '.mp3': return 'audio/mpeg';
+    case '.json': return 'application/json; charset=utf-8';
+    default: return 'application/octet-stream';
+  }
 }
 
 class PhoneBridge {
@@ -177,6 +200,52 @@ class PhoneBridge {
         if (!text) return this.send(res, 400, { error: 'empty' });
         this.queue = this.queue.catch(() => {}).then(() => this.turn(text, body.voice === true));
         return this.send(res, 200, await this.queue);
+      }
+      if (req.method === 'GET' && url.pathname === '/agents') {
+        const data = await this.d.agentsList?.();
+        return this.send(res, 200, data || { agents: [] });
+      }
+      if (req.method === 'GET' && url.pathname === '/agents/sessions') {
+        const agent = url.searchParams.get('agent') || '';
+        const list = await this.d.agentSessions?.(agent);
+        return this.send(res, 200, list || []);
+      }
+      if (req.method === 'POST' && url.pathname === '/agents/sessions') {
+        const body = await this.readJson(req);
+        const id = await this.d.agentCreate?.(body.agent);
+        return this.send(res, 200, { id });
+      }
+      if (req.method === 'GET' && url.pathname === '/agents/session') {
+        const id = url.searchParams.get('id') || '';
+        const history = await this.d.agentHistory?.(id);
+        return this.send(res, 200, { id, messages: history || [] });
+      }
+      if (req.method === 'POST' && url.pathname === '/agents/send') {
+        const body = await this.readJson(req);
+        const result = await this.d.agentSend?.(body);
+        return this.send(res, 200, result || { ok: false });
+      }
+      if (req.method === 'POST' && url.pathname === '/agents/stop') {
+        const body = await this.readJson(req);
+        await this.d.agentStop?.(body.id);
+        return this.send(res, 200, { ok: true });
+      }
+      if (req.method === 'GET' && url.pathname === '/agents/quota') {
+        const agent = url.searchParams.get('agent') || '';
+        const model = url.searchParams.get('model') || '';
+        const refresh = url.searchParams.get('refresh') === 'true';
+        const q = await this.d.agentQuota?.({ agent, model, refresh });
+        return this.send(res, 200, q || {});
+      }
+      if (req.method === 'GET' && url.pathname === '/agents/artifact') {
+        const id = url.searchParams.get('id') || '';
+        const run = url.searchParams.get('run') || '';
+        const name = url.searchParams.get('name') || '';
+        const file = await this.d.agentArtifact?.({ id, run, name });
+        if (!file || !fs.existsSync(file)) return this.send(res, 404, { error: 'file not found' });
+        const buf = fs.readFileSync(file);
+        res.writeHead(200, { 'content-type': mimeFor(name), 'content-length': buf.length });
+        return res.end(buf);
       }
       return this.send(res, 404, { error: 'not found' });
     } catch (err) {

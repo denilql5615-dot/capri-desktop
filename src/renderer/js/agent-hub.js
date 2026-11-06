@@ -28,7 +28,7 @@ async function loadQuota(refresh = false) {
   if (quota.hidden || !models[agent]?.length) return;
   $('quota-group').textContent = '';
   $('quota-values').textContent = 'Проверка квоты…';
-  $('quota-refresh').hidden = agent !== 'codex';
+  $('quota-refresh').hidden = !['codex', 'gemini'].includes(agent);
   $('quota-edit').hidden = agent !== 'gemini';
   const argon = /^gemini-4-argon/.test(model);
   $('quota-short-label').hidden = argon;
@@ -46,7 +46,8 @@ async function loadQuota(refresh = false) {
       return `${window.scope ? window.scope + ' · ' : ''}${period}: ${left}%${reset}`;
     });
     if (result.checkedAt && (agent === 'gemini' || Date.now() - result.checkedAt > 120000)) {
-      values.push(`снимок ${new Date(result.checkedAt).toLocaleString('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`);
+      const tag = result.stale ? 'устарело' : 'снимок';
+      values.push(`${tag} ${new Date(result.checkedAt).toLocaleString('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`);
     }
     $('quota-values').textContent = windows.length ? values.join('  /  ') : agent === 'claude'
       ? 'Клиент пока не сообщил остаток' : 'Нет актуальных данных';
