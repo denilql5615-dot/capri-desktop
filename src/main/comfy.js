@@ -138,9 +138,16 @@ function loadWorkflow(file) {
   }
 }
 
-// "Скинь видео": Wan 2.1 VACE 1.3B (Comfy-Org's repack, in ComfyUI's own models: diffusion_models,
-// text_encoders, vae), her still as the reference, two seconds at 16 fps, portrait 480×832, saved as
-// WebM (VP9: Electron and Android both play it). ~11 GB on disk; on 8 GB of VRAM it takes a few minutes.
+// "Скинь видео": prefers Wan 2.1 AniSora I2V 14B (Bilibili's anime/2D-trained 14B I2V in FP8) + Lightx2v
+// step/cfg-distill LoRA + CLIP Vision H when present in ComfyUI's models folder; falls back to Wan 2.1 VACE 1.3B
+// while the 14B models are downloading. Portrait 480×720 upscaled to 720×1056 HD WebM (VP9, 16 fps).
+const VIDEO_MODELS_14B = {
+  unet: 'Wan2_1-Anisora-I2V-480P-14B_fp8_e4m3fn.safetensors',
+  lora: 'lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors',
+  clipVision: 'clip_vision_h.safetensors',
+  clip: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
+  vae: 'wan_2.1_vae.safetensors',
+};
 const VIDEO_MODELS = {
   unet: 'wan2.1_vace_1.3B_fp16.safetensors',
   clip: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
@@ -150,11 +157,47 @@ const VIDEO_MS = 25 * 60 * 1000;
 const VIDEO_HER = '2D flat cartoon animation, stylized geometric character, pitch-black face with glowing green rectangular visor and concentric blue circular eyes, sharp white triangular grin, spiky starry neon pink hair with black tips, red and green geometric bodysuit, purple outline';
 const VIDEO_NEGATIVE = 'anime girl face, human face, human skin, peach skin, pale skin, flesh, nose, lips, 3d, photorealistic, character morphing, changing character, white flash, overexposed, static, frozen, still image, blurry, low quality, distorted face, deformed hands, extra limbs, flicker, watermark, text, subtitles';
 
-/** The Wan VACE graph: `image` (in ComfyUI's input folder) brought to life as `prompt` says. 25 frames at 20 steps
- * with `shift: 3.8` and `strength: 1.05` keep her full spiky pink hair silhouette, green rectangular visor, concentric
- * blue ring eyes, and `^ ^` blink intact without drifting. Uses RTX 4060 Ada FP8 Tensor Cores (`fp8_e4m3fn_fast`). */
-function videoGraph({ prompt, image, seed = Math.floor(Math.random() * 2 ** 48), width = 480, height = 832, frames = 25, steps = 20 }) {
-  const text = [String(prompt || '').trim(), 'anime style, cel shading, crisp lineart, smooth natural motion, lively expression, consistent character', VIDEO_HER].filter(Boolean).join(', ');
+/** Whether all 14B AniSora I2V files are installed in `modelsRoot`. */
+function has14BVideoModels(modelsRoot) {
+  if (!modelsRoot) return false;
+  const where = { unet: 'diffusion_models', lora: 'loras', clipVision: 'clip_vision', clip: 'text_encoders', vae: 'vae' };
+  return Object.entries(VIDEO_MODELS_14B).every(([k, file]) => fs.existsSync(path.join(modelsRoot, where[k], file)));
+}
+
+/** The Wan video graph: uses 14B AniSora I2V (`WanImageToVideo` + `CLIPVisionEncode` + Lightx2v 8-step LoRA) when `mode === '14b'`,
+ * or falls back to Wan VACE 1.3B with relaxed `strength: 0.85` and 49 continuous frames (no ping-pong spasms). */
+function videoGraph({ prompt, image, seed = Math.floor(Math.random() * 2 ** 48), width = 480, height = 720, frames = 49, steps, mode = 'vace' }) {
+  const text = [String(prompt || '').trim(), 'anime style, 2D cel animation, crisp lineart, fluid natural character motion, expressive gesture, consistent character proportions', VIDEO_HER].filter(Boolean).join(', ');
+  if (mode === '14b') {
+    const runSteps = steps ?? 8;
+    return {
+      1: { class_type: 'UNETLoader', inputs: { unet_name: VIDEO_MODELS_14B.unet, weight_dtype: 'fp8_e4m3fn_fast' } },
+      10: { class_type: 'LoraLoaderModelOnly', inputs: { model: ['1', 0], lora_name: VIDEO_MODELS_14B.lora, strength_model: 1.0 } },
+      2: { class_type: 'CLIPLoader', inputs: { clip_name: VIDEO_MODELS_14B.clip, type: 'wan', device: 'default' } },
+      3: { class_type: 'VAELoader', inputs: { vae_name: VIDEO_MODELS_14B.vae } },
+      4: { class_type: 'CLIPTextEncode', inputs: { text, clip: ['2', 0] } },
+      5: { class_type: 'CLIPTextEncode', inputs: { text: VIDEO_NEGATIVE, clip: ['2', 0] } },
+      6: { class_type: 'LoadImage', inputs: { image } },
+      13: { class_type: 'ImageScale', inputs: { image: ['6', 0], upscale_method: 'lanczos', width, height, crop: 'center' } },
+      14: { class_type: 'CLIPVisionLoader', inputs: { clip_name: VIDEO_MODELS_14B.clipVision } },
+      15: { class_type: 'CLIPVisionEncode', inputs: { clip_vision: ['14', 0], image: ['13', 0], crop: 'none' } },
+      7: {
+        class_type: 'WanImageToVideo',
+        inputs: {
+          positive: ['4', 0], negative: ['5', 0], vae: ['3', 0], width, height, length: frames, batch_size: 1,
+          clip_vision_output: ['15', 0], start_image: ['13', 0],
+        },
+      },
+      8: { class_type: 'ModelSamplingSD3', inputs: { model: ['10', 0], shift: 3.0 } },
+      9: {
+        class_type: 'KSampler',
+        inputs: { seed, steps: runSteps, cfg: 1.0, sampler_name: 'uni_pc', scheduler: 'simple', denoise: 1, model: ['8', 0], positive: ['7', 0], negative: ['7', 1], latent_image: ['7', 2] },
+      },
+      11: { class_type: 'VAEDecode', inputs: { samples: ['9', 0], vae: ['3', 0] } },
+      12: { class_type: 'SaveWEBM', inputs: { images: ['11', 0], filename_prefix: 'capri_video', codec: 'vp9', fps: 16, crf: 18 } },
+    };
+  }
+  const runSteps = steps ?? 20;
   const empty = (batch, color) => ({ class_type: 'EmptyImage', inputs: { width, height, batch_size: batch, color } });
   return {
     13: { class_type: 'ImageScale', inputs: { image: ['6', 0], upscale_method: 'lanczos', width, height, crop: 'center' } },
@@ -173,14 +216,14 @@ function videoGraph({ prompt, image, seed = Math.floor(Math.random() * 2 ** 48),
     7: {
       class_type: 'WanVaceToVideo',
       inputs: {
-        positive: ['4', 0], negative: ['5', 0], vae: ['3', 0], width, height, length: frames, batch_size: 1, strength: 1.05,
+        positive: ['4', 0], negative: ['5', 0], vae: ['3', 0], width, height, length: frames, batch_size: 1, strength: 0.85,
         control_video: ['15', 0], control_masks: ['19', 0], reference_image: ['13', 0],
       },
     },
     8: { class_type: 'ModelSamplingSD3', inputs: { model: ['1', 0], shift: 3.8 } },
     9: {
       class_type: 'KSampler',
-      inputs: { seed, steps, cfg: 5.0, sampler_name: 'uni_pc', scheduler: 'simple', denoise: 1, model: ['8', 0], positive: ['7', 0], negative: ['7', 1], latent_image: ['7', 2] },
+      inputs: { seed, steps: runSteps, cfg: 5.0, sampler_name: 'uni_pc', scheduler: 'simple', denoise: 1, model: ['8', 0], positive: ['7', 0], negative: ['7', 1], latent_image: ['7', 2] },
     },
     10: { class_type: 'TrimVideoLatent', inputs: { samples: ['9', 0], trim_amount: ['7', 3] } },
     11: { class_type: 'VAEDecode', inputs: { samples: ['10', 0], vae: ['3', 0] } },
@@ -190,6 +233,7 @@ function videoGraph({ prompt, image, seed = Math.floor(Math.random() * 2 ** 48),
 
 /** Whether the video models are in ComfyUI's models folder (`modelsRoot`): the ones missing. */
 function missingVideoModels(modelsRoot) {
+  if (has14BVideoModels(modelsRoot)) return [];
   const where = { unet: 'diffusion_models', clip: 'text_encoders', vae: 'vae' };
   return Object.entries(VIDEO_MODELS).filter(([k, file]) => !fs.existsSync(path.join(modelsRoot, where[k], file))).map(([, file]) => file);
 }
@@ -211,8 +255,7 @@ class Comfy {
     return Boolean(locate(this.d.appData));
   }
 
-  /** The video models not in ComfyUI's models folder yet ([] : ready; null: no ComfyUI). */
-  videoMissing() {
+  modelsRoot() {
     const where = locate(this.d.appData);
     if (!where) return null;
     let root = path.join(where.root, 'ComfyUI', 'models');
@@ -221,7 +264,18 @@ class Comfy {
       const m = /^[ \t]+base_path:[ \t]*'([^']+)'/m.exec(fs.readFileSync(where.models, 'utf8'));
       if (m) root = m[1];
     } catch {}
+    return root;
+  }
+
+  /** The video models not in ComfyUI's models folder yet ([] : ready; null: no ComfyUI). */
+  videoMissing() {
+    const root = this.modelsRoot();
+    if (!root) return null;
     return missingVideoModels(root);
+  }
+
+  videoMode() {
+    return has14BVideoModels(this.modelsRoot()) ? '14b' : 'vace';
   }
 
   async api(route, { method = 'GET', body, timeout = 15000 } = {}) {
@@ -288,19 +342,19 @@ class Comfy {
   }
 
   /** A short clip of her: { png (the still it starts from), webm, prompt }. The still is drawn like a picture
-   * (your workflow if you set one), then Wan 2.1 VACE brings it to life. In turn with any other. */
+   * (your workflow if you set one), then Wan 2.1 AniSora 14B (or VACE 1.3B fallback) brings it to life. */
   animate({ prompt }) {
     return this.enqueue(() => this.session(async () => {
       const still = await this.picture({ prompt, her: true });
       await this.api('/free', { method: 'POST', body: { unload_models: true, free_memory: true } }).catch(() => {});
       const image = await this.upload(still.png);
-      const rawWebm = await this.submit(videoGraph({ prompt, image }), VIDEO_MS);
+      const rawWebm = await this.submit(videoGraph({ prompt, image, mode: this.videoMode() }), VIDEO_MS);
       const webm = this.smoothLoop(rawWebm, still.png);
       return { png: still.png, webm, prompt: still.prompt };
     }));
   }
 
-  /** Upscales to 720x1056 HD, sharpens 2D lineart and locks contrast/colors to `stillPng`, and builds a 5.25s (84-frame) loop. */
+  /** Upscales to 720x1056 HD, sharpens 2D lineart and locks the opening frame to `stillPng`, preserving continuous motion without ping-pong spasms. */
   smoothLoop(webm, stillPng = null) {
     const where = locate(this.d.appData);
     if (!where?.python) return webm;
@@ -318,26 +372,22 @@ class Comfy {
         'cin.close()',
         'W, H = 720, 1056',
         'still_720 = Image.open(sys.argv[3]).convert("RGB").resize((W, H), Image.Resampling.LANCZOS) if len(sys.argv) > 3 and sys.argv[3] else None',
-        'clean = raw[:-2] if len(raw) >= 20 else raw',
-        'enhanced = []',
+        'clean = raw[:-1] if len(raw) >= 24 else raw',
+        'seq = []',
         'for i, im in enumerate(clean):',
         '    up = im.resize((W, H), Image.Resampling.LANCZOS)',
-        '    up = up.filter(ImageFilter.UnsharpMask(radius=1.2, percent=135, threshold=2))',
-        '    up = ImageEnhance.Contrast(up).enhance(1.06)',
-        '    up = ImageEnhance.Color(up).enhance(1.05)',
+        '    up = up.filter(ImageFilter.UnsharpMask(radius=1.1, percent=125, threshold=2))',
+        '    up = ImageEnhance.Contrast(up).enhance(1.04)',
+        '    up = ImageEnhance.Color(up).enhance(1.04)',
         '    if still_720 is not None and i == 0: up = still_720',
-        '    elif still_720 is not None and i <= 2:',
-        '        a = i / 3.0',
-        '        up = Image.fromarray((np.array(still_720, dtype=np.float32)*(1-a) + np.array(up, dtype=np.float32)*a).astype(np.uint8))',
-        '    enhanced.append(up)',
-        'act1 = enhanced + enhanced[-2:0:-1]',
-        'act2_core = enhanced[:min(14, len(enhanced))] + enhanced[min(12, len(enhanced)-1):0:-1]',
-        'act2 = []',
-        'for j, im in enumerate(act2_core):',
-        '    z = 0.024 * np.sin(np.pi * j / max(1, len(act2_core)))',
-        '    dx, dy = int(W * z / 2), int(H * z / 2)',
-        '    act2.append(im.crop((dx, dy, W - dx, H - dy)).resize((W, H), Image.Resampling.LANCZOS))',
-        'seq = (act1 + act2 + act1)[:84]',
+        '    elif still_720 is not None and i == 1:',
+        '        up = Image.fromarray((np.array(still_720, dtype=np.float32)*0.4 + np.array(up, dtype=np.float32)*0.6).astype(np.uint8))',
+        '    seq.append(up)',
+        'if still_720 is not None and len(seq) >= 16:',
+        '    for k, w in enumerate((0.25, 0.55, 0.85)):',
+        '        last = np.array(seq[-1], dtype=np.float32)',
+        '        base = np.array(still_720, dtype=np.float32)',
+        '        seq.append(Image.fromarray((last*(1-w) + base*w).astype(np.uint8)))',
         'cout = av.open(sys.argv[2], mode="w", format="webm")',
         's = cout.add_stream("libvpx-vp9", rate=16)',
         's.width, s.height, s.pix_fmt = W, H, "yuv420p"',
@@ -425,5 +475,5 @@ class Comfy {
 }
 
 module.exports = {
-  Comfy, locate, workflow, checkWorkflow, fillWorkflow, loadWorkflow, videoGraph, missingVideoModels, VIDEO_MODELS, PLACEHOLDER, PORT, HER,
+  Comfy, locate, workflow, checkWorkflow, fillWorkflow, loadWorkflow, videoGraph, missingVideoModels, has14BVideoModels, VIDEO_MODELS, VIDEO_MODELS_14B, PLACEHOLDER, PORT, HER,
 };

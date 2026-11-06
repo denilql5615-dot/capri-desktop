@@ -47,16 +47,17 @@ test('fillWorkflow: an empty request leaves no stray commas', () => {
   assert.equal(fillWorkflow(yours(), { prompt: '' }).graph[2].inputs.text, 'capri_cp, capri_body, masterpiece');
 });
 
-const { videoGraph, missingVideoModels } = require('../src/main/comfy');
+const { videoGraph, missingVideoModels, has14BVideoModels } = require('../src/main/comfy');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-test('videoGraph: Wan VACE from her still, trimmed, saved as WebM', () => {
+test('videoGraph: Wan VACE fallback and 14B AniSora I2V from her still, saved as WebM', () => {
   const g = videoGraph({ prompt: 'waving, beach', image: 'capri_still_1.png', seed: 3 });
   assert.equal(g[6].inputs.image, 'capri_still_1.png');
   assert.deepEqual(g[7].inputs.reference_image, ['13', 0]);
-  assert.equal(g[7].inputs.length, 25);
+  assert.equal(g[7].inputs.length, 49);
+  assert.equal(g[7].inputs.strength, 0.85);
   assert.deepEqual(g[7].inputs.control_video, ['15', 0]);
   assert.deepEqual(g[7].inputs.control_masks, ['19', 0]);
   assert.equal(g[8].inputs.shift, 3.8);
@@ -67,10 +68,22 @@ test('videoGraph: Wan VACE from her still, trimmed, saved as WebM', () => {
   for (const node of Object.values(g)) {
     for (const v of Object.values(node.inputs)) if (Array.isArray(v)) assert.ok(g[v[0]], `link to ${v[0]}`);
   }
+
+  const g14 = videoGraph({ prompt: 'waving, beach', image: 'capri_still_1.png', seed: 9, mode: '14b' });
+  assert.equal(g14[1].inputs.unet_name, 'Wan2_1-Anisora-I2V-480P-14B_fp8_e4m3fn.safetensors');
+  assert.equal(g14[10].class_type, 'LoraLoaderModelOnly');
+  assert.equal(g14[7].class_type, 'WanImageToVideo');
+  assert.equal(g14[7].inputs.length, 49);
+  assert.equal(g14[9].inputs.steps, 8);
+  assert.equal(g14[9].inputs.cfg, 1.0);
+  for (const node of Object.values(g14)) {
+    for (const v of Object.values(node.inputs)) if (Array.isArray(v)) assert.ok(g14[v[0]], `14b link to ${v[0]}`);
+  }
 });
 
 test('missingVideoModels: the files not in the models folder', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'comfy-models-'));
+  assert.equal(has14BVideoModels(root), false);
   assert.equal(missingVideoModels(root).length, 3);
   fs.mkdirSync(path.join(root, 'vae'));
   fs.writeFileSync(path.join(root, 'vae', 'wan_2.1_vae.safetensors'), '');
