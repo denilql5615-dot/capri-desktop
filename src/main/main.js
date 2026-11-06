@@ -1174,7 +1174,26 @@ async function applyPhone() {
       },
       agentCreate: async (agent) => ensureAgentSessions().create(agent),
       agentHistory: async (id) => ensureAgentSessions().history(id),
-      agentSend: async ({ id, model, text, retry }) => ensureAgentSessions().send(id, model, text, retry === true),
+      agentSend: async ({ id, model, text, retry, files }) => {
+        let promptText = text;
+        if (Array.isArray(files) && files.length) {
+          const cfg = config.load();
+          const uploadsDir = path.join(hubArtifactRoot(cfg), 'uploads', id);
+          fs.mkdirSync(uploadsDir, { recursive: true });
+          const saved = [];
+          for (const f of files) {
+            if (!f.name || !f.data) continue;
+            const safeName = path.basename(f.name);
+            const target = path.join(uploadsDir, safeName);
+            fs.writeFileSync(target, Buffer.from(f.data, 'base64'));
+            saved.push(`- ${safeName} (${target})`);
+          }
+          if (saved.length) {
+            promptText += `\n\n[Прикреплённые пользователем файлы]:\n${saved.join('\n')}`;
+          }
+        }
+        return ensureAgentSessions().send(id, model, promptText, retry === true);
+      },
       agentStop: async (id) => ensureAgentSessions().stop(id),
       agentQuota: async ({ agent, model, refresh }) => hubQuota(agent, model, refresh === true),
       agentArtifact: async ({ id, run, name }) => {
@@ -1892,6 +1911,11 @@ function registerIpc() {
   ipcMain.handle('agents:history', (event, id) => hubSessions(event).history(id));
   ipcMain.handle('agents:create', (event, agent) => hubSessions(event).create(agent));
   ipcMain.handle('agents:send', (event, { id, model, text, retry }) => hubSessions(event).send(id, model, text, retry === true));
+  ipcMain.handle('agents:voice-stt', async (event, wav) => {
+    hubSessions(event);
+    const cfg = config.load();
+    return speech.transcribe(Buffer.from(wav), cfg.voice);
+  });
   ipcMain.handle('agents:stop', (event, id) => hubSessions(event).stop(id));
   ipcMain.handle('agents:artifact', async (event, { id, run, name, action }) => {
     const history = hubSessions(event).history(id);

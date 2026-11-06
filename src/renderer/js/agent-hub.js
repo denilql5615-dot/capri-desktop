@@ -269,6 +269,53 @@ $('quota-form').onsubmit = async (event) => {
 $('input').oninput = () => drafts.set(current()?.id, $('input').value);
 $('compose').onsubmit = (event) => { event.preventDefault(); send(); };
 $('retry').onclick = () => send(true);
+
+let mediaRecorder = null;
+let recordingChunks = [];
+
+async function toggleVoiceRecording() {
+  const micBtn = $('mic');
+  if (!micBtn) return;
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+    micBtn.textContent = '🎤';
+    micBtn.classList.remove('is-active');
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    recordingChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordingChunks.push(e.data); };
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      const blob = new Blob(recordingChunks, { type: 'audio/wav' });
+      const arrayBuffer = await blob.arrayBuffer();
+      try {
+        micBtn.textContent = '· · ·';
+        const recognized = await host.agentsVoiceStt(new Uint8Array(arrayBuffer));
+        if (recognized) {
+          const prev = $('input').value;
+          $('input').value = prev ? `${prev} ${recognized}` : recognized;
+          drafts.set(current()?.id, $('input').value);
+          $('input').focus();
+        }
+      } catch (err) {
+        console.warn('Voice STT error:', err);
+      } finally {
+        micBtn.textContent = '🎤';
+      }
+    };
+    mediaRecorder.start();
+    micBtn.textContent = '⏺';
+    micBtn.classList.add('is-active');
+  } catch (err) {
+    console.warn('Microphone error:', err);
+  }
+}
+
+if ($('mic')) $('mic').onclick = toggleVoiceRecording;
+
 host.onAgentsUpdate(({ id, delta }) => {
   if (typeof delta === 'string') {
     streams.set(id, (streams.get(id) || '') + delta);

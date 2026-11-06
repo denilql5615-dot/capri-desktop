@@ -68,6 +68,7 @@ contextBridge.exposeInMainWorld('host', {
   agentsCreate: (agent) => ipcRenderer.invoke('agents:create', agent),
   agentsSend: (request) => ipcRenderer.invoke('agents:send', request),
   agentsStop: (id) => ipcRenderer.invoke('agents:stop', id),
+  agentsVoiceStt: (wav) => ipcRenderer.invoke('agents:voice-stt', wav),
   agentsArtifact: (request) => ipcRenderer.invoke('agents:artifact', request),
   agentsImport: (agent, local) => ipcRenderer.invoke('agents:import', agent, local),
   onAgentsUpdate: (fn) => ipcRenderer.on('agents:update', (_event, data) => fn(data)),
