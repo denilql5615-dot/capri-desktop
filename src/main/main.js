@@ -1175,6 +1175,15 @@ async function applyPhone() {
       agentCreate: async (agent) => ensureAgentSessions().create(agent),
       agentHistory: async (id) => ensureAgentSessions().history(id),
       agentSend: async ({ id, model, text, retry, files }) => {
+        const mgr = ensureAgentSessions();
+        const session = mgr.sessions.find((item) => item.id === id);
+        let chosenModel = typeof model === 'string' ? model : '';
+        if (session && Object.hasOwn(SESSION_MODELS, session.agent)) {
+          const validModels = SESSION_MODELS[session.agent];
+          if (!validModels.some(([key]) => key === chosenModel)) {
+            chosenModel = validModels[0]?.[0] ?? '';
+          }
+        }
         let promptText = text;
         if (Array.isArray(files) && files.length) {
           const cfg = config.load();
@@ -1192,7 +1201,7 @@ async function applyPhone() {
             promptText += `\n\n[Прикреплённые пользователем файлы]:\n${saved.join('\n')}`;
           }
         }
-        return ensureAgentSessions().send(id, model, promptText, retry === true);
+        return mgr.send(id, chosenModel, promptText, retry === true);
       },
       agentStop: async (id) => ensureAgentSessions().stop(id),
       agentQuota: async ({ agent, model, refresh }) => hubQuota(agent, model, refresh === true),

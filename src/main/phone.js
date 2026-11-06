@@ -249,9 +249,9 @@ class PhoneBridge {
       }
       return this.send(res, 404, { error: 'not found' });
     } catch (err) {
-      const status = err.status || 500;
-      if (status === 500) console.warn('[capri] phone bridge:', err.message);
-      if (!res.headersSent) this.send(res, status, { error: status === 500 ? 'internal error' : err.message });
+      const status = err.status || 400;
+      if (status >= 500) console.warn('[capri] phone bridge:', err.message);
+      if (!res.headersSent) this.send(res, status, { error: err.message || 'error' });
     }
   }
 
