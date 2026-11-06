@@ -16,8 +16,8 @@ body:has(> .hud) {
 .hud { gap: 10px; }
 .hud__bar {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-areas: 'brand nav close' 'title title title';
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas: 'brand nav' 'title title';
   gap: 8px 18px;
   padding: 2px 4px 0;
   text-transform: none;
@@ -26,18 +26,17 @@ body:has(> .hud) {
 .hud__brand {
   grid-area: brand;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   font-family: var(--font-mono);
   letter-spacing: .12em;
 }
 .hud .hud__who { color: #f2f2f3; }
-.hud .hud__who::before { content: '● '; color: var(--hub-signal); }
+.hud .hud__who::before { content: none; }
 .hud .hud__tag { margin: 0; color: var(--hub-muted); font: inherit; }
 .hud .hud__tag::before { content: none; }
 .hud__tabs { grid-area: nav; margin: 0; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .hud__title { grid-area: title; margin: 0; font: 650 23px/1.2 'Segoe UI', sans-serif; letter-spacing: -.03em; }
-.hud__close { grid-area: close; min-height: 34px; }
 .hud .hud__tab {
   flex: none;
   padding: 8px 11px;
@@ -126,6 +125,10 @@ body:has(> .hud) {
 .hud .line .line__name { color: var(--hub-muted); font: 600 11px/1.4 var(--font-mono); }
 .hud .line.is-her .line__name::before { content: '● '; color: var(--hub-signal); }
 .hud .line .line__text { color: #ededee; font: 400 14px/1.55 'Segoe UI', sans-serif; }
+.hud .line__text a { color: #ff9ba0; text-decoration: underline; overflow-wrap: anywhere; }
+.hub__link-error { color: var(--hub-signal); font-size: 12px; }
+.agents__artifact { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px; margin-top: 8px; border: 1px solid var(--hub-rule); border-radius: 6px; }
+.agents__artifact strong { flex: 1 1 100%; overflow-wrap: anywhere; }
 .hud .log__compose { border-color: var(--hub-rule); }
 .hud .log__hint:empty { display: none; }
 
@@ -170,7 +173,8 @@ body:has(> .hud) {
 .agents__model { max-width: 160px; }
 
 @media (max-width: 720px) {
-  .hud__bar { grid-template-areas: 'brand title close' 'nav nav nav'; gap: 4px 10px; }
+  .hud__bar { grid-template-areas: 'brand title' 'nav nav'; gap: 4px 10px; }
+  .hud__title { justify-self: end; }
   .hud__title { font-size: 18px; }
   .hud .chats { padding: 8px; }
   .hud .agents__providers .panel__action { padding-inline: 3px !important; font-size: 12px; }

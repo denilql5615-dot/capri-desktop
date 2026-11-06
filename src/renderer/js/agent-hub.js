@@ -1,3 +1,5 @@
+import { appendHubText } from './hub-links.js';
+
 const host = window.host;
 const labels = { claude: 'Claude', codex: 'Codex', gemini: 'Antigravity', gemma: 'Gemma', faun: 'Faun RP' };
 const $ = (name) => document.querySelector(`.agents__${name}`);
@@ -118,7 +120,7 @@ function renderLines() {
   const rows = historyId === session?.id ? [...history] : [];
   const partial = streams.get(session?.id);
   if (partial) rows.push({ role: 'assistant', content: partial });
-  lines.replaceChildren(...rows.map(({ role, content, model }) => {
+  lines.replaceChildren(...rows.map(({ role, content, model, artifacts }) => {
     const item = document.createElement('li');
     item.className = `line ${role === 'user' ? 'is-you' : 'is-her'}`;
     const name = document.createElement('span');
@@ -126,8 +128,28 @@ function renderLines() {
     name.textContent = role === 'user' ? 'Ты' : [labels[agent], model].filter(Boolean).join(' · ');
     const body = document.createElement('p');
     body.className = 'line__text';
-    body.textContent = content;
+    appendHubText(body, content);
     item.append(name, body);
+    for (const artifact of artifacts || []) {
+      const card = document.createElement('div');
+      card.className = 'agents__artifact';
+      const filename = document.createElement('strong');
+      filename.textContent = artifact.name;
+      card.append(filename);
+      for (const [action, title] of [['open', 'Открыть'], ['save', 'Сохранить копию'], ['copy', 'Копировать путь']]) {
+        const control = button(title, async () => {
+          try {
+            await host.agentsArtifact({ id: session.id, ...artifact, action });
+            if (action === 'copy') $('status').textContent = 'Путь скопирован.';
+          } catch (err) {
+            $('status').textContent = err.message;
+          }
+        });
+        control.removeAttribute('aria-pressed');
+        card.append(control);
+      }
+      item.append(card);
+    }
     return item;
   }));
   lines.scrollTop = lines.scrollHeight;

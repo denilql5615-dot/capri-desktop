@@ -31,6 +31,7 @@ const chatLog = require('./chats');
 const { AgentSessions, MODELS: SESSION_MODELS } = require('./agent-sessions');
 const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota } = require('./agent-quotas');
+const { artifactPath, listArtifacts } = require('./hub-artifacts');
 const notes = require('./notes');
 const pim = require('./pim');
 const pimImap = require('./pim-imap');
@@ -50,10 +51,13 @@ const activeHooks = () => activeAssistant().hooks;
 const demoSteps = require('../../scripts/demo-sequence');
 
 const ROOT = path.resolve(__dirname, '..', '..');
+const HUB_NAME = 'ARASAKA AI: GENESIS HUB';
+const HUB_ICON = path.join(ROOT, 'assets', 'icons', 'capri.png');
 // Her data (config, memory, chats) in %APPDATA%capri-desktop whether she runs from the repo or installed:
 // installed, Electron would name the folder after her product name ("Capri Desktop"), and "Capri" is
 // GENESIS's, the Capri before her, still installed alongside
 app.setPath('userData', path.join(app.getPath('appData'), 'capri-desktop'));
+app.setName(HUB_NAME);
 const DEV = process.argv.includes('--dev');
 const PORT = Number(process.env.CAPRI_PORT) || 47823;
 const SOUND_EXT = /\.(mp3|wav|ogg|m4a)$/i;
@@ -238,6 +242,7 @@ function createOverlay() {
     maximizable: false,
     fullscreenable: false,
     skipTaskbar: true,
+    icon: HUB_ICON,
     focusable: false,
     hasShadow: false,
     alwaysOnTop: true,
@@ -314,6 +319,7 @@ let demoWin = null;
 const chatsFile = () => path.join(app.getPath('userData'), 'chats.json');
 let chatsWin = null;
 let agentSessions;
+const hubArtifactRoot = (cfg = config.load()) => path.join(workers.workDir(cfg), 'hub-artifacts');
 let codexQuota;
 let codexQuotaPending;
 let claudeQuotas;
@@ -366,7 +372,18 @@ function hubSessions(event) {
     async (agent, model, messages, signal, delta) => {
       const cfg = config.load();
       const run = { claude: workers.askClaude, codex: workers.askCodex, gemini: workers.askGemini }[agent];
-      if (run) return run(cfg, messages, delta, signal, { model, onQuota: recordClaudeQuota });
+      if (run) {
+        const output = randomUUID();
+        const root = hubArtifactRoot(cfg);
+        const destination = path.join(root, output);
+        const instruction = [
+          'Отвечай средствами выбранного облачного агента. Не запускай локальные ComfyUI, Wan или другие локальные генераторы.',
+          `Если текущая задача требует файл и твои инструменты это поддерживают, создай каталог "${destination}" и положи туда только готовые файлы непосредственно, без подпапок.`,
+          'Если у тебя нет нужного инструмента, скажи об этом. Не выдавай ссылку или описание за созданный файл.',
+        ].join('\n');
+        const text = await run(cfg, [{ role: 'system', content: instruction }, ...messages], delta, signal, { model, onQuota: recordClaudeQuota });
+        return { text, artifacts: await listArtifacts(root, output) };
+      }
       return ollama.chat({ model, keepAlive: agent === 'faun' ? 0 : '15m', messages: [
         { role: 'system', content: agent === 'faun' ? 'Веди ролевую сцену на русском, следуя сеттингу пользователя.' : 'Ты Капри. Отвечай по-русски.' },
         ...messages,
@@ -640,6 +657,7 @@ function openNotes() {
 
 function openChats() {
   if (chatsWin) {
+    if (chatsWin.isMinimized()) chatsWin.restore();
     chatsWin.show();
     chatsWin.focus();
     return;
@@ -649,7 +667,8 @@ function openChats() {
   const height = Math.min(660, b.height - 80);
   chatsWin = new BrowserWindow({
     x: Math.round(b.x + (b.width - width) / 2), y: Math.round(b.y + (b.height - height) / 2), width, height,
-    minWidth: 620, minHeight: 420, frame: false, show: false, title: 'Capri · Хаб', backgroundColor: '#13110e',
+    minWidth: 620, minHeight: 420, show: false, title: HUB_NAME, backgroundColor: '#101112',
+    icon: HUB_ICON, frame: true, skipTaskbar: false, autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload.js'),
       contextIsolation: true,
@@ -658,6 +677,8 @@ function openChats() {
     },
   });
   chatsWin.loadURL(`capri://app/src/renderer/chats.html?lang=${encodeURIComponent(resolveLang(config.load().lang))}`);
+  chatsWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  chatsWin.webContents.on('will-navigate', (event) => event.preventDefault());
   chatsWin.once('ready-to-show', () => chatsWin?.show());
   chatsWin.on('closed', () => { chatsWin = null; });
 }
@@ -1519,8 +1540,8 @@ async function pickClaudeFolder() {
 function createTray() {
   const icon = nativeImage.createFromPath(path.join(ROOT, 'assets', 'icons', 'tray.png'));
   tray = new Tray(icon);
-  tray.setToolTip('Capri');
-  tray.on('click', () => sendCommand('status'));
+  tray.setToolTip(HUB_NAME);
+  tray.on('click', () => openChats());
   rebuildTray();
 }
 
@@ -1833,6 +1854,22 @@ function registerIpc() {
   ipcMain.handle('agents:create', (event, agent) => hubSessions(event).create(agent));
   ipcMain.handle('agents:send', (event, { id, model, text, retry }) => hubSessions(event).send(id, model, text, retry === true));
   ipcMain.handle('agents:stop', (event, id) => hubSessions(event).stop(id));
+  ipcMain.handle('agents:artifact', async (event, { id, run, name, action }) => {
+    const history = hubSessions(event).history(id);
+    if (!history.some((message) => message.artifacts?.some((item) => item.run === run && item.name === name))) {
+      throw new Error('Файл не прикреплён к этому чату.');
+    }
+    const file = await artifactPath(hubArtifactRoot(), run, name);
+    if (action === 'copy') { clipboard.writeText(file); return; }
+    if (action === 'open') {
+      const error = await shell.openPath(file);
+      if (error) throw new Error(error);
+      return;
+    }
+    if (action !== 'save') throw new Error('Неизвестное действие.');
+    const { canceled, filePath } = await dialog.showSaveDialog(chatsWin, { defaultPath: name });
+    if (!canceled && filePath) await fs.promises.copyFile(file, filePath, fs.constants.COPYFILE_EXCL);
+  });
   ipcMain.handle('agents:import', async (event, agent, local) => {
     const sessions = hubSessions(event);
     if (!['claude', 'codex', 'gemini'].includes(agent)) throw new Error('Импорт доступен для облачных агентов.');
@@ -1870,6 +1907,12 @@ function registerIpc() {
     return { ids: sessions.import(agent, transcripts), errors, limited: filePaths.length > 500 || totalBytes > 128 * 1024 * 1024 };
   });
   ipcMain.on('chats:open', () => openChats());
+  ipcMain.handle('chats:open-link', (event, value) => {
+    if (event.sender !== chatsWin?.webContents) throw new Error('Доступно только из Hub.');
+    const url = new URL(value);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Небезопасная ссылка.');
+    return shell.openExternal(url.href);
+  });
   ipcMain.on('chats:close', () => chatsWin?.close());
   // her Chats window talks through her chat on the overlay (chat.js): the same brain, workers, looks,
   // questions before an action on your PC; she answers there too
@@ -2164,7 +2207,7 @@ function main() {
     app.quit();
     return;
   }
-  app.on('second-instance', () => sendCommand('status'));
+  app.on('second-instance', () => { if (app.isReady()) openChats(); });
   if (process.platform === 'win32') app.setAppUserModelId('capri.desktop');
 
   app.whenReady().then(() => {
@@ -2192,6 +2235,7 @@ function main() {
     registerIpc();
     createOverlay();
     createTray();
+    openChats();
     windowWatch = startWindowWatch({
       overlay,
       onUpdate: (data) => {

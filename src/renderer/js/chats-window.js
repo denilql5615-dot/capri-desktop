@@ -4,6 +4,8 @@
 // her questions before an action on your PC (answered here with buttons). What was said is put in as
 // text, never as markup: it can hold anything, a page's text she read out included.
 
+import { appendHubText } from './hub-links.js';
+
 const T = {
   ru: {
     title: 'Чаты', search: 'Поиск по чатам…', empty: 'Пока пусто: напиши ей внизу.', none: 'Ничего не нашлось.',
@@ -141,7 +143,7 @@ function line(role, content, at, q) {
   // a picture she sent ("скинь фото"): its mark becomes the picture under her words
   const photos = [...content.matchAll(PHOTO_MARK)].map((m) => m[1]);
   const text = el('p', 'line__text');
-  text.append(marked(content.replace(PHOTO_MARK, '').trim(), q));
+  appendHubText(text, content.replace(PHOTO_MARK, '').trim(), (part) => marked(part, q));
   item.append(who, text);
   for (const name of photos) {
     const clip = /\.webm$/i.test(name); // a clip she sent ("скинь видео"): looped, silent
@@ -260,7 +262,6 @@ delBtn.addEventListener('click', () => {
   current = null;
   following = true;
 });
-$('.hud__close').addEventListener('click', () => host.closeChats());
 addEventListener('keydown', (e) => {
   if (e.key === 'Escape') host.closeChats();
 });
