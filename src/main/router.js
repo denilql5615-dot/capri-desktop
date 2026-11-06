@@ -184,7 +184,8 @@ class Router {
   hold(tier) { this.last = { tier: higher(tier, this.last && this.now() - this.last.at < STICKY_MS ? this.last.tier : tier), at: this.now() }; }
 
   /** Hers, her hands or a worker's, and how hard: { target: 'capri'|'computer'|'worker'|null, tier, by, why }. */
-  async decide(text, { model, context = [] } = {}) {
+  async decide(text, { model, context = [], signal } = {}) {
+    signal?.throwIfAborted();
     const key = String(text || '');
     const hit = this.cache.get(key);
     if (hit && this.now() - hit.at < CACHE_MS) return hit.decision;
@@ -196,15 +197,18 @@ class Router {
       const abort = new AbortController();
       const timer = setTimeout(() => abort.abort(), this.timeoutMs);
       try {
-        judged = parse(await this.chat(model, messagesFor(key, context), abort.signal));
+        const combined = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
+        judged = parse(await this.chat(model, messagesFor(key, context), combined));
         if (riskyByCode(key)) judged.risk = Math.max(judged.risk, 0.8);
         if (claimsByCode(key)) judged.selfClaim = Math.max(judged.selfClaim, 0.8);
       } catch (err) {
+        signal?.throwIfAborted();
         console.warn('[capri] router:', abort.signal.aborted ? 'too slow' : err.message);
       } finally {
         clearTimeout(timer);
       }
     }
+    signal?.throwIfAborted();
     let tier = pin || (judged ? tierOf(judged, { reference }) : riskyByCode(key) ? higher(reference, 'complex') : reference);
     // a task carries on: the tier holds within it (a pin is yours: it wins)
     if (!pin && this.last && this.now() - this.last.at < STICKY_MS) tier = higher(tier, this.last.tier);

@@ -110,7 +110,15 @@ function renderList() {
     const title = el('div', 'chats__title');
     title.append(marked(chat.title, q));
     item.append(when, title);
+    item.tabIndex = 0;
+    item.setAttribute('role', 'button');
+    item.setAttribute('aria-pressed', String(chat.id === current));
     item.addEventListener('click', () => show(chat.id));
+    item.addEventListener('keydown', (event) => {
+      if (!['Enter', ' '].includes(event.key)) return;
+      event.preventDefault();
+      show(chat.id);
+    });
     return item;
   }));
   emptyEl.hidden = shown.length > 0;

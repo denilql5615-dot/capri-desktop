@@ -28,6 +28,9 @@ const policy = require('./policy');
 const desktop = require('./desktop');
 const agent = require('./agent');
 const chatLog = require('./chats');
+const { AgentSessions, MODELS: SESSION_MODELS } = require('./agent-sessions');
+const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
+const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota } = require('./agent-quotas');
 const notes = require('./notes');
 const pim = require('./pim');
 const pimImap = require('./pim-imap');
@@ -310,6 +313,67 @@ let demoWin = null;
 // Her Chats window (chats.html): your conversations with her, to read back
 const chatsFile = () => path.join(app.getPath('userData'), 'chats.json');
 let chatsWin = null;
+let agentSessions;
+let codexQuota;
+let codexQuotaPending;
+let claudeQuotas;
+const claudeQuotaFile = () => path.join(app.getPath('userData'), 'claude-quota.json');
+function getClaudeQuotas() {
+  if (claudeQuotas) return claudeQuotas;
+  claudeQuotas = new Map();
+  try {
+    const windows = JSON.parse(fs.readFileSync(claudeQuotaFile(), 'utf8'));
+    for (const window of windows) claudeQuotas.set(`${window.scope || 'all'}:${window.minutes}`, window);
+  } catch { /* No previous snapshot. */ }
+  return claudeQuotas;
+}
+
+function recordClaudeQuota(event) {
+  const window = claudeWindow(event);
+  if (!window) return;
+  const quotas = getClaudeQuotas();
+  quotas.set(`${window.scope || 'all'}:${window.minutes}`, { ...window, checkedAt: Date.now() });
+  try { fs.writeFileSync(claudeQuotaFile(), JSON.stringify([...quotas.values()]), 'utf8'); } catch { /* Keep the live reading. */ }
+}
+
+const agyQuotaFile = () => path.join(app.getPath('userData'), 'antigravity-quota.json');
+function agyQuotaSnapshots() {
+  try { return JSON.parse(fs.readFileSync(agyQuotaFile(), 'utf8')); } catch { return {}; }
+}
+
+async function hubQuota(agent, model, refresh) {
+  const group = quotaGroup(agent, model);
+  if (group === 'codex') {
+    if (!codexQuota || refresh || Date.now() - codexQuota.checkedAt > 120000) {
+      codexQuotaPending ??= readCodexQuota(workers.findCodex()).then((windows) => {
+        if (windows.length || !codexQuota) codexQuota = { windows, checkedAt: Date.now() };
+      }).finally(() => { codexQuotaPending = null; });
+      await codexQuotaPending;
+    }
+    return { group, ...codexQuota };
+  }
+  if (group === 'claude') {
+    const windows = [...getClaudeQuotas().values()].filter((window) =>
+      (!window.scope || window.scope === model) && (window.resetsAt || Date.now() - window.checkedAt < 600000));
+    return { group, windows, checkedAt: windows.length ? Math.max(...windows.map((window) => window.checkedAt)) : null };
+  }
+  return { group, windows: [], ...(group.startsWith('agy-') && agyQuotaSnapshots()[group]) };
+}
+
+function hubSessions(event) {
+  if (event.sender !== chatsWin?.webContents) throw new Error('Доступно только из Hub Capri.');
+  agentSessions ??= new AgentSessions(path.join(app.getPath('userData'), 'agent-sessions.json'),
+    async (agent, model, messages, signal, delta) => {
+      const cfg = config.load();
+      const run = { claude: workers.askClaude, codex: workers.askCodex, gemini: workers.askGemini }[agent];
+      if (run) return run(cfg, messages, delta, signal, { model, onQuota: recordClaudeQuota });
+      return ollama.chat({ model, keepAlive: agent === 'faun' ? 0 : '15m', messages: [
+        { role: 'system', content: agent === 'faun' ? 'Веди ролевую сцену на русском, следуя сеттингу пользователя.' : 'Ты Капри. Отвечай по-русски.' },
+        ...messages,
+      ] }, delta, signal);
+    }, (id, delta) => chatsWin?.webContents.send('agents:update', { id, delta }));
+  return agentSessions;
+}
 
 // Her long memory: notes in your Obsidian vault (notes.js)
 const notesDir = () => notes.dirOf({ notesDir: config.load().notesDir, appData: app.getPath('appData'), documents: app.getPath('documents') });
@@ -1155,7 +1219,7 @@ let recentTurns = []; // the last exchange, for the router ("а теперь т�
 // router found real work for them: computerWorker), 'computer' (her own agent, her local Ollama model
 // only), 'photo' / 'video', 'stop', or null (her chat model). tier: how hard (router.js); computer: it
 // needs hands on the PC (handsFor).
-async function routeOf(text, context = []) {
+async function routeOf(text, context = [], signal) {
   const cfg = config.load();
   const media = photo.kind(text); // "скинь фото" / "скинь видео": ComfyUI, whoever is her brain
   if (media) return { worker: media };
@@ -1170,7 +1234,7 @@ async function routeOf(text, context = []) {
   // model, loaded anyway: with the roleplay one in VRAM a second model wouldn't fit, so keywords then
   const model = cfg.provider === 'ollama' && cfg.router !== false ? pickModel(cfg) : null;
   const tuned = cfg.routerModel || 'gemma4:26b-a4b-it-qat';
-  const d = await router.decide(text, { model: model === tuned ? model : null, context });
+  const d = await router.decide(text, { model: model === tuned ? model : null, context, signal });
   const hands = () => workers.handsWorker(cfg.computerWorker) || (cfg.provider === 'ollama' ? 'computer' : null);
   let worker = null;
   let computer = false;
@@ -1194,11 +1258,20 @@ const asking = new Map(); // her questions waiting for your answer: id -> resolv
 const ASK_TIMEOUT_MS = 2 * 60 * 1000;
 
 // Her question in the chat (buttons: yes, allow for an hour, no). No answer in two minutes: no.
-function askUser({ line, why, grantable }) {
+function askUser({ line, why, grantable }, signal) {
+  signal?.throwIfAborted();
   const id = randomUUID();
   return new Promise((resolve) => {
-    const timer = setTimeout(() => { asking.delete(id); resolve('no'); }, ASK_TIMEOUT_MS);
-    asking.set(id, (answer) => { clearTimeout(timer); resolve(answer); });
+    const cancel = () => finish('no');
+    const finish = (answer) => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', cancel);
+      asking.delete(id);
+      resolve(answer);
+    };
+    const timer = setTimeout(cancel, ASK_TIMEOUT_MS);
+    asking.set(id, finish);
+    signal?.addEventListener('abort', cancel, { once: true });
     sendCommand('confirm', { id, line, why: why || null, grantable });
   });
 }
@@ -1207,13 +1280,14 @@ function askUser({ line, why, grantable }) {
 // (asked once a task, the hour covers it: you asked to touch the keyboard as little as possible). Codex
 // gets them out of its sandbox, which can't see your windows: full access for that task. Resolves 'yes',
 // 'no' or null (no computer in it).
-async function handsFor(worker, computer) {
+async function handsFor(worker, computer, signal) {
   if (worker === 'gemini' && computer) return 'no'; // headless AGY cannot safely ask for tool approval
   if (!['claude', 'codex'].includes(worker) || !desktopCli.installed || !computer) return null;
   if (grant.covers('UI_CONTROL')) return 'yes';
   const answer = await askUser(worker === 'claude'
     ? { line: 'Claude будет управлять окнами на ПК', why: null, grantable: true }
-    : { line: 'Codex будет управлять окнами на ПК', why: 'без своей песочницы: полный доступ к ПК на эту задачу', grantable: true });
+    : { line: 'Codex будет управлять окнами на ПК', why: 'без своей песочницы: полный доступ к ПК на эту задачу', grantable: true }, signal);
+  signal.throwIfAborted();
   if (answer === 'hour') {
     grant.grant();
     rebuildTray();
@@ -1230,7 +1304,7 @@ async function computerTask(messages, send, signal) {
     driver: desktopCli,
     origin: 'pc',
     chat: (msgs, schema, sig) => ollama.jsonChat({ model, messages: msgs, schema }, sig),
-    confirm: askUser,
+    confirm: (question) => askUser(question, signal),
     covered: (cls, ask) => grant.covers(cls, ask),
     grant: () => {
       grant.grant();
@@ -1611,9 +1685,11 @@ function registerIpc() {
       };
       const cfg = config.load();
       // who takes it (routeOf: Claude or Codex named, real work, a task on the PC, or hers) and how hard
-      const route = await routeOf(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-3, -1));
+      const route = await routeOf(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-3, -1), abort.signal);
+      abort.signal.throwIfAborted();
       const { worker } = route;
-      const hands = await handsFor(worker, route.computer);
+      const hands = await handsFor(worker, route.computer, abort.signal);
+      abort.signal.throwIfAborted();
       if (hands === 'no') return { ok: true, text: worker === 'gemini' ? 'Gemini пока не управляет окнами: headless-режим не умеет безопасно спросить подтверждение.' : `Ок, окна ${worker === 'codex' ? 'Codex' : 'Claude'} не даю.` };
       // how hard it is: Claude's model, Codex's effort (router.js); the task's next turns don't go lighter
       const tierOpts = workerSettings(route.tier, { computer: hands === 'yes' });
@@ -1629,9 +1705,10 @@ function registerIpc() {
         const tag = step === 'claude' ? 'claude-code' : step === 'codex' ? 'codex' : step.replace(/-medium$|-high$/, '');
         overlay?.webContents.send('chat:delta', { id, status: chainText, tag, worker: skinWorker });
       };
-      const desktopOpts = { desktop: hands === 'yes', home: desktopCli.home, model: tierOpts.claudeModel, effort: tierOpts.codexEffort, onStep };
+      const desktopOpts = { desktop: hands === 'yes', home: desktopCli.home, model: tierOpts.claudeModel, effort: tierOpts.codexEffort, onStep, onQuota: recordClaudeQuota };
       // a plain question about your schedule: answered from the calendar at once, no model (quick.js)
       const fast = !worker ? await quickAnswer(yourWords(messages)) : null;
+      abort.signal.throwIfAborted();
       if (fast) {
         send(fast);
         recentTurns = [{ role: 'user', content: yourWords(messages) }, { role: 'assistant', content: fast }];
@@ -1656,13 +1733,27 @@ function registerIpc() {
   });
   ipcMain.on('chat:stop', (_e, id) => chats.get(id)?.abort());
   // who'll answer this message: 'claude', 'codex', 'computer', 'photo', 'video', 'stop' or null (her chat model)
-  ipcMain.handle('chat:route', async (_e, text) => (await routeOf(text, recentTurns)).worker);
+  ipcMain.handle('chat:route', async (_e, text, id) => {
+    const abort = new AbortController();
+    chats.set(id, abort);
+    try {
+      return (await routeOf(text, recentTurns, abort.signal)).worker;
+    } finally {
+      chats.delete(id);
+    }
+  });
   // your answer to her question before an action on the PC (policy.js): 'yes', 'hour' or 'no'
   ipcMain.on('policy:answer', (_e, { id, answer }) => {
     asking.get(id)?.(['yes', 'hour'].includes(answer) ? answer : 'no');
-    asking.delete(id);
   });
   // her voice (speech.js): what you said, written down; her line, said
+  ipcMain.on('voice:wake-trace', (event, stage) => {
+    if (event.sender !== overlay?.webContents) return;
+    if (['ready', 'mic-error', 'segment', 'stt-busy', 'stt-error', 'stt-empty', 'stt-ok',
+      'no-name', 'chat-busy', 'stop', 'accepted'].includes(stage)) {
+      console.log(`[capri:wake] ${new Date().toISOString()} ${stage}`);
+    }
+  });
   ipcMain.handle('voice:transcribe', async (_e, wav, opts) => {
     const { voice } = config.load();
     try {
@@ -1722,6 +1813,62 @@ function registerIpc() {
     chatsWin?.webContents.send('chats:changed');
   });
   ipcMain.handle('chats:list', () => chatLog.list(chatLog.read(chatsFile())));
+  ipcMain.handle('agents:list', (event) => ({ sessions: hubSessions(event).summaries(), models: SESSION_MODELS }));
+  ipcMain.handle('agents:quota', (event, { agent, model, refresh }) => {
+    hubSessions(event);
+    if (!Object.hasOwn(SESSION_MODELS, agent) || !SESSION_MODELS[agent].some(([id]) => id === model)) return null;
+    return hubQuota(agent, model, refresh === true);
+  });
+  ipcMain.handle('agents:quota-snapshot', (event, { model, values }) => {
+    hubSessions(event);
+    if (!SESSION_MODELS.gemini.some(([id]) => id === model) || !Array.isArray(values)) throw new Error('Неверная квота Antigravity.');
+    const group = quotaGroup('gemini', model);
+    const periods = group === 'agy-argon' ? [10080] : [300, 10080];
+    const windows = periods.map((minutes, i) => normalizeWindow(values[i], minutes, null));
+    if (windows.some((window) => !window)) throw new Error('Укажи остаток от 0 до 100%.');
+    const data = { ...agyQuotaSnapshots(), [group]: { windows, checkedAt: Date.now() } };
+    fs.writeFileSync(agyQuotaFile(), JSON.stringify(data), 'utf8');
+  });
+  ipcMain.handle('agents:history', (event, id) => hubSessions(event).history(id));
+  ipcMain.handle('agents:create', (event, agent) => hubSessions(event).create(agent));
+  ipcMain.handle('agents:send', (event, { id, model, text, retry }) => hubSessions(event).send(id, model, text, retry === true));
+  ipcMain.handle('agents:stop', (event, id) => hubSessions(event).stop(id));
+  ipcMain.handle('agents:import', async (event, agent, local) => {
+    const sessions = hubSessions(event);
+    if (!['claude', 'codex', 'gemini'].includes(agent)) throw new Error('Импорт доступен для облачных агентов.');
+    let filePaths;
+    if (local === true) {
+      const home = app.getPath('home');
+      const codexHome = process.env.CODEX_HOME || path.join(home, '.codex');
+      if (agent === 'gemini') throw new Error('Для Antigravity выбери экспорт JSON или JSONL.');
+      const roots = agent === 'claude' ? [path.join(home, '.claude', 'projects')]
+        : ['sessions', 'archived_sessions'].map((dir) => path.join(codexHome, dir));
+      filePaths = await collectLocalTranscripts(roots);
+    } else {
+      const chosen = await dialog.showOpenDialog(chatsWin, {
+        title: 'Импорт переписки агента',
+        properties: ['openFile', 'multiSelections'],
+        filters: [{ name: 'История чатов', extensions: ['json', 'jsonl'] }],
+      });
+      if (chosen.canceled) return null;
+      filePaths = chosen.filePaths;
+    }
+    const transcripts = [];
+    const errors = [];
+    let totalBytes = 0;
+    for (const file of filePaths.slice(0, 500)) {
+      try {
+        const stat = await fs.promises.stat(file);
+        if (!stat.isFile() || stat.size > 24 * 1024 * 1024) throw new Error('Файл должен быть меньше 24 МБ.');
+        totalBytes += stat.size;
+        if (totalBytes > 128 * 1024 * 1024) throw new Error('Достигнут предел импорта.');
+        transcripts.push(parseTranscript(await fs.promises.readFile(file, 'utf8')));
+      } catch {
+        errors.push(path.basename(file));
+      }
+    }
+    return { ids: sessions.import(agent, transcripts), errors, limited: filePaths.length > 500 || totalBytes > 128 * 1024 * 1024 };
+  });
   ipcMain.on('chats:open', () => openChats());
   ipcMain.on('chats:close', () => chatsWin?.close());
   // her Chats window talks through her chat on the overlay (chat.js): the same brain, workers, looks,
@@ -2100,6 +2247,7 @@ function main() {
   });
 
   app.on('will-quit', () => {
+    agentSessions?.stopAll();
     globalShortcut.unregisterAll();
     speech.stopWhisper();
     comfy.stop(); // ComfyUI goes with her

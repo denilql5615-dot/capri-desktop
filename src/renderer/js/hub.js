@@ -1,4 +1,6 @@
-// Her hub (chats.html): three tabs in one window. Chats (chats-window.js); Plans, her planner (meetings,
+import { loadAgentHub } from './agent-hub.js';
+
+// Her hub (chats.html): Chats (chats-window.js); Plans, her planner (meetings,
 // tasks, reminders, notes: what you, Claude and Codex put in it), with a meeting sent on to Proton
 // Calendar; Settings, her tray menu laid out by section (main.js menuModel: the same items, clicked
 // by their path, so the two never drift apart). Text from the planner goes in as text, never markup.
@@ -7,7 +9,7 @@ import { pick, byDay, protonPhrase, fromInput, when } from './plans.js';
 
 const T = {
   ru: {
-    tabs: { chats: 'Чаты', plans: 'Планы', gallery: 'Галерея', settings: 'Настройки' },
+    tabs: { chats: 'Чаты', agents: 'Агенты', plans: 'Планы', gallery: 'Галерея', settings: 'Настройки' },
     kinds: { event: 'Встреча', task: 'Задача', reminder: 'Напоминание', note: 'Заметка' },
     views: { soon: 'Впереди', done: 'Сделано', all: 'Всё' },
     title: 'Что записать', at: 'Когда', end: 'До', notes: 'Подробности', add: 'Добавить',
@@ -17,7 +19,7 @@ const T = {
     needAt: 'Нужно время.', needTitle: 'Нужно название.', failed: 'Не вышло: ', main: 'Главное', settingsNote: 'То же, что в меню у трея и по правому клику на Капри.',
   },
   en: {
-    tabs: { chats: 'Chats', plans: 'Plans', gallery: 'Gallery', settings: 'Settings' },
+    tabs: { chats: 'Chats', agents: 'Agents', plans: 'Plans', gallery: 'Gallery', settings: 'Settings' },
     kinds: { event: 'Meeting', task: 'Task', reminder: 'Reminder', note: 'Note' },
     views: { soon: 'Ahead', done: 'Done', all: 'All' },
     title: 'What to note', at: 'When', end: 'Until', notes: 'Details', add: 'Add',
@@ -47,14 +49,20 @@ function button(label, cls, onClick) {
 
 // ---------------------------------------------------------------- tabs
 
-const TABS = ['chats', 'plans', 'gallery', 'settings'];
+const TABS = ['chats', 'plans', 'gallery', 'settings', 'agents'];
 const tabsEl = document.querySelector('.hud__tabs');
 const shown = { plans: false, gallery: false, settings: false };
 let tab = 'chats';
 
 function select(name) {
+  if (!TABS.includes(name)) name = 'chats';
   tab = name;
-  for (const b of tabsEl.children) b.classList.toggle('is-current', b.dataset.tab === name);
+  for (const b of tabsEl.children) {
+    const active = b.dataset.tab === name;
+    b.classList.toggle('is-current', active);
+    if (active) b.setAttribute('aria-current', 'page');
+    else b.removeAttribute('aria-current');
+  }
   for (const plate of document.querySelectorAll('.hud__plate')) plate.hidden = plate.dataset.tab !== name;
   document.querySelector('.hud__title').textContent = t.tabs[name];
   document.querySelector('.hud__new').hidden = name !== 'chats';
@@ -62,6 +70,7 @@ function select(name) {
   if (name === 'plans') loadPlans();
   if (name === 'gallery') loadGallery();
   if (name === 'settings') loadMenu();
+  if (name === 'agents') loadAgentHub();
   shown[name] = true;
 }
 
@@ -73,7 +82,7 @@ for (const name of TABS) {
   tabsEl.append(b);
 }
 addEventListener('keydown', (e) => {
-  if (e.ctrlKey && /^[1234]$/.test(e.key)) select(TABS[Number(e.key) - 1]);
+  if (e.ctrlKey && /^[12345]$/.test(e.key)) select(TABS[Number(e.key) - 1]);
 });
 
 // ---------------------------------------------------------------- plans

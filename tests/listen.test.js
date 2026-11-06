@@ -105,10 +105,10 @@ test('Segmenter: a segment from a little before speech to a pause; a click is no
   const loud = new Float32Array(1600).fill(0.3);
   for (let i = 0; i < 10; i++) seg.push(quiet, 100);
   seg.push(loud, 100); // 100 ms: a click
-  for (let i = 0; i < 10; i++) seg.push(quiet, 100);
+  for (let i = 0; i < 16; i++) seg.push(quiet, 100);
   assert.deepStrictEqual(got, []);
   for (let i = 0; i < 8; i++) seg.push(loud, 100); // 0.8 s of speech
   for (let i = 0; i < 7; i++) seg.push(quiet, 100);
   assert.strictEqual(got.length, 1);
-  assert.strictEqual(got[0], 3 + 8 + 7); // 300 ms before, the speech, the pause
+  assert.strictEqual(got[0], 6 + 8 + 7); // six 100 ms blocks before speech, then speech and pause
 });

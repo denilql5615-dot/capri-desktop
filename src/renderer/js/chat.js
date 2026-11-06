@@ -364,7 +364,7 @@ export class Chat {
     if (!this.open) return;
     if (!abort && this.turn) return; // keep the turn alive if the panel was only displaced while a worker runs
     this.open = false;
-    if (abort && this.turn) this.host.chatStop(this.turn);
+    if (abort && this.turn) this.stopTurn();
     this.turn = 0;
     this.report();
     this.host.focusOverlay(false);
@@ -375,6 +375,12 @@ export class Chat {
   // Ctrl+Alt+X: the answer under way stops (Claude or Codex at work: killed, with what it started)
   stopTurn() {
     if (this.turn) this.host.chatStop(this.turn);
+    this.pending?.('no');
+    if (this.turn && this.routing === this.turn) {
+      this.turn = 0;
+      this.panel.stream('Остановила.', { done: true });
+      this.panel.setChatBusy(false);
+    }
   }
 
   // Before an action on your PC (main.js > policy.js): her question under what she's done so far, and
@@ -438,8 +444,10 @@ export class Chat {
     if (this.turn || !this.open) return;
     const id = Date.now();
     this.turn = id;
+    this.routing = id;
     this.answer = '';
-    this.history.push({ role: 'user', content: text });
+    const entry = { role: 'user', content: text };
+    this.history.push(entry);
     this.host.chatLog?.({ role: 'user', content: text }); // her Chats window
     this.panel.setChatBusy(true);
     this.panel.setActions([]); // a close button she offered before goes with a new message
@@ -449,7 +457,16 @@ export class Chat {
     // what you asked for plainly happens right away (the music, the volume, an app you named): her
     // line about it comes under her answer (Claude Code, answering her chat, does things its own way)
     // Claude or Codex named ("Клод, …"): that one answers as her, and does things its own way (workers.js)
-    const route = this.agent ? null : await this.host.chatRoute(text).catch(() => null);
+    const route = this.agent ? null : await this.host.chatRoute(text, id).catch(() => null);
+    if (this.turn === id && route !== 'stop') {
+      await Promise.race([this.appsReady, new Promise((r) => setTimeout(r, 1500))]);
+    }
+    if (this.routing === id) this.routing = 0;
+    if (this.turn !== id) {
+      const at = this.history.indexOf(entry);
+      if (at >= 0) this.history.splice(at, 1);
+      return;
+    }
     if (route === 'stop') return this.reply(text, STOP_IDLE); // the box is locked while one works: nothing is
     const worker = route;
     const agent = this.agent || Boolean(worker);
@@ -459,7 +476,6 @@ export class Chat {
     if (asked?.kind === 'look') return this.sendLook(text, id);
     const early = asked && asked.kind !== 'close' ? this.doNow(asked) : null;
     this.bond?.heard(text); // "sorry": she lets it go
-    await Promise.race([this.appsReady, new Promise((r) => setTimeout(r, 1500))]);
     // what she greeted you with (angry, sulking…), in the conversation before your message, so her
     // answer carries on from it (after another answer of hers: added to that one, never two in a row)
     if (this.opening) {
@@ -494,6 +510,7 @@ export class Chat {
     }
     this.turn = 0;
     if (!res.ok) {
+      if (res.error === 'stopped') this.pending?.('no');
       this.history.pop();
       this.panel.setFace('wide');
       // too busy or gone even after trying other models (main.js): said plainly, not the server's JSON

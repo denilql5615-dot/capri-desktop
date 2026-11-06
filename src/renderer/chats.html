@@ -8,20 +8,21 @@
   <link rel="stylesheet" href="styles/capri.css">
   <link rel="stylesheet" href="styles/chats.css">
   <link rel="stylesheet" href="styles/arasaka.css">
+  <link rel="stylesheet" href="styles/hub-layout.css?v=3">
 </head>
 <body>
   <div class="hud">
     <header class="hud__bar">
-      <span class="hud__who">CAPRI</span><span class="hud__tag">HUB</span>
-      <nav class="hud__tabs"></nav>
-      <span class="hud__title"></span>
-      <span class="hud__count"></span>
-      <button class="panel__action is-primary hud__new" type="button"></button>
-      <button class="panel__action hud__close" type="button" aria-label="✕">✕</button>
+      <div class="hud__brand"><span class="hud__who">CAPRI</span><span class="hud__tag">HUB</span></div>
+      <nav class="hud__tabs" aria-label="Разделы"></nav>
+      <h1 class="hud__title"></h1>
+      <button class="panel__action hud__close" type="button" aria-label="Закрыть Hub">✕</button>
     </header>
     <div class="hud__plate" data-tab="chats">
       <aside class="chats">
-        <input class="panel__input chats__search" type="search" maxlength="80" spellcheck="false">
+        <div class="chats__heading"><span>Разговоры</span><span class="hud__count"></span></div>
+        <button class="panel__action is-primary hud__new" type="button"></button>
+        <input class="panel__input chats__search" type="search" maxlength="80" spellcheck="false" aria-label="Поиск по чатам Capri">
         <ol class="chats__list"></ol>
         <p class="chats__empty" hidden></p>
       </aside>
@@ -46,6 +47,54 @@
           <button class="panel__action is-primary log__send" type="submit"></button>
         </form>
         <p class="log__hint" hidden></p>
+      </main>
+    </div>
+    <div class="hud__plate" data-tab="agents" hidden>
+      <nav class="agents__providers" aria-label="Агенты"></nav>
+      <aside class="chats">
+        <div class="chats__heading"><span>Разговоры</span><span class="agents__count"></span></div>
+        <button class="panel__action is-primary agents__new" type="button">＋ Новый разговор</button>
+        <input class="panel__input agents__search" type="search" maxlength="80" placeholder="Найти разговор…" aria-label="Поиск разговоров агента">
+        <div class="chats__list agents__list"></div>
+        <details class="agents__history-tools" hidden>
+          <summary>Импорт истории</summary>
+          <button class="panel__action agents__local" type="button" hidden>Найти локальные чаты</button>
+          <button class="panel__action agents__import" type="button" hidden>Выбрать файл</button>
+        </details>
+      </aside>
+      <main class="log">
+        <header class="log__meta agents__meta">
+          <div><span class="agents__label"></span><h2 class="agents__title">Выбери разговор</h2></div>
+          <span class="agents__run" hidden>В работе</span>
+        </header>
+        <div class="agents__quota" hidden>
+          <span class="agents__quota-group"></span>
+          <span class="agents__quota-values" aria-live="polite"></span>
+          <button class="panel__action agents__quota-refresh" type="button">Обновить</button>
+          <details class="agents__quota-edit" hidden>
+            <summary>Снимок квоты</summary>
+            <form class="agents__quota-form">
+              <label class="agents__quota-short-label">5 ч, остаток % <input class="agents__quota-short panel__input" type="number" min="0" max="100" step="0.01"></label>
+              <label>Неделя, остаток % <input class="agents__quota-week panel__input" type="number" min="0" max="100" step="0.01" required></label>
+              <button class="panel__action" type="submit">Записать</button>
+            </form>
+          </details>
+        </div>
+        <div class="agents__welcome" hidden>
+          <span class="agents__welcome-mark" aria-hidden="true"></span>
+          <strong>Начни разговор</strong>
+          <span>Выбери чат слева или создай новый.</span>
+        </div>
+        <ol class="log__lines agents__lines" aria-label="Переписка"></ol>
+        <p class="log__hint agents__status" role="status"></p>
+        <form class="log__compose agents__compose" autocomplete="off">
+          <textarea class="panel__input agents__input" maxlength="8000" rows="2" aria-label="Сообщение" placeholder="Написать агенту…"></textarea>
+          <div class="agents__actions">
+            <label class="agents__model-label">Модель <select class="panel__input agents__model"></select></label>
+            <button class="panel__action agents__retry" type="button" hidden>Повторить</button>
+            <button class="panel__action is-primary agents__send" type="submit">Отправить</button>
+          </div>
+        </form>
       </main>
     </div>
     <div class="hud__plate hud__plate--one" data-tab="plans" hidden>

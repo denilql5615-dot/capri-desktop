@@ -10,6 +10,7 @@ const os = require('node:os');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn, execFile } = require('node:child_process');
+const { randomUUID } = require('node:crypto');
 const { PROTON_MAIL } = require('./desktop');
 
 // how speech-to-text spells them too; a letter just before is another word ("телеклод")
@@ -214,12 +215,12 @@ const desktopNote = (cmd) => [
 // Claude: one-shot `claude -p` in her folder; edits there go through without asking (acceptEdits),
 // anything needing a yes (a command) is refused, and it says so. With `desktop`, agent-desktop is the one
 // command it may run.
-function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = null, model = null } = {}, find = findClaude) {
+function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = null, model = null, onQuota } = {}, find = findClaude) {
   const exe = find();
   if (!exe) return Promise.reject(new Error('Claude Code не найден на этом ПК: поставь его и войди.'));
   const cwd = workDir(cfg);
   const since = Date.now();
-  const personaFile = path.join(os.tmpdir(), `capri-worker-${process.pid}.txt`);
+  const personaFile = path.join(os.tmpdir(), `capri-worker-${randomUUID()}.txt`);
   fs.writeFileSync(personaFile, [...messages.filter((m) => m.role === 'system').map((m) => m.content), folderNote(cwd),
     ...(desktop ? [desktopNote('agent-desktop')] : [])].join('\n\n'));
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
@@ -249,6 +250,7 @@ function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = nul
         buffer = buffer.slice(nl + 1);
         let msg;
         try { msg = JSON.parse(line); } catch { continue; }
+        if (msg.type === 'rate_limit_event') onQuota?.(msg);
         if (msg.type === 'assistant') {
           for (const block of msg.message?.content || []) {
             if (block.type !== 'text' || !block.text) continue;
@@ -281,12 +283,12 @@ function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = nul
 
 // Codex: `codex exec` in its workspace-write sandbox. With `desktop` (a computer task, after your yes in
 // main.js handsFor): out of the sandbox, which can't see your windows, with agent-desktop to drive them.
-function askCodex(cfg, messages, onDelta, signal, { desktop = false, home = null, effort: picked = null } = {}) {
+function askCodex(cfg, messages, onDelta, signal, { desktop = false, home = null, effort: picked = null, model = null } = {}) {
   const exe = findCodex();
   if (!exe) return Promise.reject(new Error('Codex не найден на этом ПК: поставь Codex и войди в него.'));
   const cwd = workDir(cfg);
   const since = Date.now();
-  const out = path.join(os.tmpdir(), `capri-codex-${process.pid}-${Date.now()}.txt`);
+  const out = path.join(os.tmpdir(), `capri-codex-${randomUUID()}.txt`);
   const effort = picked || codexEffort(messages.findLast((m) => m.role === 'user')?.content || '');
   const brief = [codexBrief(messages, cwd), ...(desktop ? [desktopNote(`"${path.join(AGENT_DESKTOP_DIR, 'agent-desktop.exe')}"`)] : [])].join('\n\n');
   const env = desktop && home ? { ...process.env, AGENT_DESKTOP_HOME: home } : process.env;
@@ -301,7 +303,7 @@ function askCodex(cfg, messages, onDelta, signal, { desktop = false, home = null
   ];
   return new Promise((resolve, reject) => {
     const child = spawn(exe, ['exec', '--skip-git-repo-check', '--sandbox', desktop ? 'danger-full-access' : 'workspace-write', '--cd', cwd,
-      '-c', `model_reasoning_effort="${effort}"`, ...codexFastFlags, '--output-last-message', out, '-'], {
+      ...(model ? ['--model', model] : []), '-c', `model_reasoning_effort="${effort}"`, ...codexFastFlags, '--output-last-message', out, '-'], {
       cwd, env, windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'],
     });
     const kill = () => killTree(child);

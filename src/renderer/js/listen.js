@@ -81,7 +81,7 @@ export function parseModelCommand(text) {
 
 // Speech in a stream that's always on: a segment from the first loud bit (and a little before it) until a
 // pause, handed over as WAV. For her name, so: short.
-const WAKE = { preMs: 300, silenceMs: 700, minMs: 350, maxMs: 8000 };
+const WAKE = { preMs: 640, silenceMs: 700, minMs: 350, maxMs: 8000 };
 export class Segmenter {
   constructor(onSegment) {
     this.onSegment = onSegment;
@@ -175,8 +175,10 @@ export class Listen {
         return;
       }
       this.wake = { stream, ctx, node };
+      this.host.wakeTrace?.('ready');
     } catch {
       this.wake = null;
+      this.host.wakeTrace?.('mic-error');
     }
   }
 
@@ -189,14 +191,23 @@ export class Listen {
   }
 
   async heard(wav) {
-    if (this.hearing) return; // one at a time: Whisper's still on the last one
+    this.host.wakeTrace?.('segment');
+    if (this.hearing) {
+      this.host.wakeTrace?.('stt-busy');
+      return;
+    }
     this.hearing = true;
     try {
       const pending = Boolean(this.chat.pending);
       const res = await this.host.transcribe(wav, { wake: true });
-      if (!res.ok || !res.text) return;
+      if (!res.ok || !res.text) {
+        this.host.wakeTrace?.(res.ok ? 'stt-empty' : 'stt-error');
+        return;
+      }
+      this.host.wakeTrace?.('stt-ok');
       const wake = parseWake(res.text);
       if (wake && parseControl(wake.rest) === 'stop') {
+        this.host.wakeTrace?.('stop');
         this.hush();
         this.chat.stopTurn();
         return;
@@ -208,8 +219,10 @@ export class Listen {
         return;
       }
       if (pending) return;
-      if (!wake) return;
-      if (this.chat.turn) return; // she's busy with the last thing you asked
+      if (!wake || this.chat.turn) {
+        this.host.wakeTrace?.(wake ? 'chat-busy' : 'no-name');
+        return;
+      }
       if (!wake.rest) return this.toggle(); // her name alone: she listens
       const wantedModel = parseModelCommand(wake.rest);
       if (wantedModel) {
@@ -223,7 +236,10 @@ export class Listen {
         return;
       }
       if (!this.chat.open) await this.chat.start();
-      if (this.chat.open && !this.chat.turn) this.chat.send(wake.rest);
+      if (this.chat.open && !this.chat.turn) {
+        this.host.wakeTrace?.('accepted');
+        this.chat.send(wake.rest);
+      }
     } finally {
       this.hearing = false;
     }

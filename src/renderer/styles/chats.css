@@ -826,3 +826,27 @@ mark {
   font-size: var(--text-data);
   color: var(--paper-3);
 }
+.agents__providers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.agents__list {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+}
+
+.agents__list button {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.agents__input {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+}

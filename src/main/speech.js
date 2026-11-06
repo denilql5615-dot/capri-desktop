@@ -114,7 +114,8 @@ async function ensureWhisper(voice, { wait = false, dir = WHISPER_DIR } = {}) {
 
 function startWhisper(dir) {
   const python = path.join(dir, '.venv', 'Scripts', 'python.exe');
-  const script = path.join(dir, 'server.py');
+  const script = process.env.CAPRI_WHISPER_DIR ? path.join(dir, 'server.py')
+    : path.join(__dirname, 'whisper-server.py').replace(/([\\/])app\.asar([\\/])/, '$1app.asar.unpacked$2');
   if (!fs.existsSync(python) || !fs.existsSync(script)) return; // setup.bat never ran
   const child = spawn(python, [script], { cwd: dir, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
   let tail = '';

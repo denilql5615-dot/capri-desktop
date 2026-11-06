@@ -168,3 +168,13 @@ test('Router: the same words asked twice in a minute: one call', async () => {
   await r.decide('как дела у тебя сегодня', { model: 'q' });
   assert.strictEqual(calls, 2);
 });
+
+test('Router: stopping a turn aborts classification without caching a fallback', async () => {
+  const abort = new AbortController();
+  const r = new Router({ chat: async (_model, _messages, signal) => {
+    abort.abort();
+    signal.throwIfAborted();
+  } });
+  await assert.rejects(r.decide('открой блокнот', { model: 'q', signal: abort.signal }), { name: 'AbortError' });
+  assert.ok(!r.recall('открой блокнот'));
+});
