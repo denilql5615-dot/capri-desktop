@@ -348,6 +348,48 @@ if ($('presets')) {
     return chip;
   }));
 }
+function attachBrowserFile(file) {
+  const id = current()?.id;
+  if (!id || !file) return;
+  if (file.size > 2 * 1024 * 1024) {
+    $('status').textContent = 'Файл должен быть меньше 2 МБ.';
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const result = String(reader.result || '');
+    const comma = result.indexOf(',');
+    if (comma < 0) return;
+    const ext = (file.type === 'image/png' ? '.png' : file.type === 'image/jpeg' ? '.jpg' : '');
+    const name = file.name && file.name !== 'image.png' ? file.name : `clipboard-${Date.now()}${ext || '.png'}`;
+    attachments.set(id, { name, data: result.slice(comma + 1) });
+    render();
+    $('input').focus();
+  };
+  reader.readAsDataURL(file);
+}
+
+const agentsPlate = document.querySelector('.hud__plate[data-tab="agents"]');
+if (agentsPlate) {
+  agentsPlate.addEventListener('dragover', (e) => {
+    if (e.dataTransfer?.types?.includes('Files')) e.preventDefault();
+  });
+  agentsPlate.addEventListener('drop', (e) => {
+    const file = e.dataTransfer?.files?.[0];
+    if (file) {
+      e.preventDefault();
+      attachBrowserFile(file);
+    }
+  });
+}
+$('input').addEventListener('paste', (e) => {
+  const file = e.clipboardData?.files?.[0];
+  if (file) {
+    e.preventDefault();
+    attachBrowserFile(file);
+  }
+});
+
 if ($('mic')) $('mic').onclick = toggleVoiceRecording;
 if ($('attach')) {
   $('attach').onclick = async () => {

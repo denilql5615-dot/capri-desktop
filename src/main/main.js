@@ -412,7 +412,7 @@ function ensureAgentSessions() {
         }
         return { text, artifacts };
       }
-      return ollama.chat({ model, keepAlive: agent === 'faun' ? 0 : '15m', messages: [
+      return ollama.chat({ model, keepAlive: agent === 'faun' ? 0 : '5m', messages: [
         { role: 'system', content: agent === 'faun' ? 'Веди ролевую сцену на русском, следуя сеттингу пользователя.' : `Ты Капри. Отвечай по-русски. ${hints}` },
         ...messages,
       ] }, delta, signal);
@@ -503,10 +503,15 @@ function syncPlannerReminders() {
   syncingReminders = true;
   try {
     const list = config.load().reminders || [];
-    const { add, done } = syncReminders(localPlanner.list({ kinds: ['reminder'] }), list);
+    const plannerReminders = localPlanner.list({ kinds: ['reminder'] });
+    const { add, done } = syncReminders(plannerReminders, list);
     if (add.length) updateConfig({ reminders: [...list, ...add] });
     localPlanner.markPushed(add.map((r) => r.planId));
-    for (const id of done) localPlanner.complete(id);
+    for (const id of done) {
+      const fired = plannerReminders.find((r) => r.id === id);
+      if (fired?.title) telegramBot?.send(`⏰ Напоминание: ${fired.title}`).catch(() => {});
+      localPlanner.complete(id);
+    }
   } catch (err) {
     console.warn('[capri] planner reminders:', err.message);
   } finally {
@@ -657,9 +662,27 @@ async function quickAnswer(said) {
       const title = notes.write(notesDir(), { title: memo.split(/\s+/).slice(0, 5).join(' '), type: 'о тебе', text: memo });
       return `Записала в память Obsidian${title ? ` ([[${title}]])` : ''}: «${memo.slice(0, 140)}».`;
     }
+    const planCmd = quick.parseQuickPlanCommand(said);
+    if (planCmd && localPlanner) {
+      const entry = localPlanner.create(planCmd);
+      try { notes.writePlanNote(notesDir(), entry); } catch {}
+      if (planCmd.kind === 'reminder') {
+        const when = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' }).format(new Date(planCmd.at));
+        return `Поставила напоминание на ${when}: «${planCmd.title}». Пришлю и в Telegram, когда сработает.`;
+      }
+      return `Добавила задачу в Планировщик и Obsidian: «${planCmd.title}».`;
+    }
+    const remoteCmd = quick.parseQuickRemoteCommand(said);
+    if (remoteCmd) {
+      if (remoteCmd.type === 'media') await launch.media(remoteCmd.action);
+      else if (remoteCmd.type === 'volume') await system.act({ action: 'volume', level: remoteCmd.level ?? null, mute: remoteCmd.mute ?? null });
+      else if (remoteCmd.type === 'lock') await system.act({ action: 'power', what: 'lock' });
+      return remoteCmd.label;
+    }
     if (quick.isQuickFreeMemory(said)) {
       const beforeRam = await system.info('ram');
       const unloaded = await ollama.unloadAll().catch(() => []);
+      if (unloaded.length) await new Promise((r) => setTimeout(r, 800));
       const [afterRam, gpu] = await Promise.all([
         system.info('ram'),
         system.info('gpu').catch(() => null),
@@ -1235,6 +1258,27 @@ async function applyPhone() {
       },
       speak: (text) => (config.load().voice.tts ? speech.speak(text, config.load().voice) : Promise.resolve(null)),
       event: (kind) => PHONE_REACT[kind] && sendCommand('phone', { kind: PHONE_REACT[kind] }),
+      status: async () => {
+        const [ram, gpu] = await Promise.all([
+          system.info('ram').catch(() => null),
+          system.info('gpu').catch(() => null),
+        ]);
+        let diskDFreeGb = null;
+        try {
+          const s = fs.statfsSync('D:\\');
+          diskDFreeGb = Math.round(((s.bavail * s.bsize) / (1024 ** 3)) * 10) / 10;
+        } catch {}
+        const busyAgents = ensureAgentSessions().summaries().filter((s) => s.busy).length;
+        return {
+          ramUsedGb: ram ? Math.round((ram.used / (1024 ** 3)) * 10) / 10 : null,
+          ramTotalGb: ram ? Math.round((ram.total / (1024 ** 3)) * 10) / 10 : null,
+          vramUsedMb: gpu?.usedMb ?? null,
+          vramTotalMb: gpu?.totalMb ?? null,
+          gpuTemp: gpu?.temp ?? null,
+          diskDFreeGb,
+          busyAgents,
+        };
+      },
       control: phoneControl,
       sprites: phonePack,
       // "скинь фото" from the phone: drawn here like one asked on the PC, shown in her hub's gallery too

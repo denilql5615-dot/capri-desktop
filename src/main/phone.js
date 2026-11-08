@@ -185,6 +185,10 @@ class PhoneBridge {
         res.writeHead(200, { 'content-type': 'audio/mpeg', 'content-length': a.data.byteLength });
         return res.end(Buffer.from(a.data));
       }
+      if (req.method === 'GET' && url.pathname === '/status') {
+        const s = await this.d.status?.();
+        return this.send(res, 200, s || {});
+      }
       if (req.method === 'GET' && url.pathname === '/control') return this.send(res, 200, this.d.control());
       if (req.method === 'POST' && url.pathname === '/control') {
         const patch = controlPatch(await this.readJson(req));

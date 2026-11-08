@@ -33,6 +33,76 @@ function parseQuickSearchCommand(said) {
   return q && q.length >= 2 && q.length <= 120 ? q : null;
 }
 
+const REMIND_IN_RE = /^\s*(?:капри,?\s+)?напомни\s+через\s+(\d{1,3})\s*(минут[а-я]*|мин\.?|час[а-я]*|ч\.?)\s*[,:—-]?\s*(.+)$/i;
+const REMIND_AT_RE = /^\s*(?:капри,?\s+)?напомни\s+(?:(сегодня|завтра)\s+)?в\s+(\d{1,2})[:.](\d{2})\s*[,:—-]?\s*(.+)$/i;
+const QUICK_TASK_RE = /^\s*(?:капри,?\s+)?(?:добавь|создай|запиши)\s+(?:задачу|в\s+планы|план)\s*[,:—-]?\s*(.+)$/i;
+
+function parseQuickPlanCommand(said, now = new Date()) {
+  const t = String(said || '').trim();
+  const inMatch = REMIND_IN_RE.exec(t);
+  if (inMatch) {
+    const count = Number(inMatch[1]);
+    const isHours = /^ч/i.test(inMatch[2]);
+    const title = inMatch[3].replace(/[.!?]+$/, '').trim();
+    if (count > 0 && title) {
+      const ms = count * (isHours ? 3600_000 : 60_000);
+      return { kind: 'reminder', title, at: now.getTime() + ms };
+    }
+  }
+  const atMatch = REMIND_AT_RE.exec(t);
+  if (atMatch) {
+    const dayWord = (atMatch[1] || '').toLowerCase();
+    const h = Number(atMatch[2]);
+    const m = Number(atMatch[3]);
+    const title = atMatch[4].replace(/[.!?]+$/, '').trim();
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59 && title) {
+      const target = new Date(now);
+      target.setHours(h, m, 0, 0);
+      if (dayWord === 'завтра' || (!dayWord && target.getTime() <= now.getTime())) {
+        target.setDate(target.getDate() + 1);
+      }
+      return { kind: 'reminder', title, at: target.getTime() };
+    }
+  }
+  const taskMatch = QUICK_TASK_RE.exec(t);
+  if (taskMatch) {
+    const title = taskMatch[1].replace(/[.!?]+$/, '').trim();
+    if (title.length >= 2) return { kind: 'task', title };
+  }
+  return null;
+}
+
+function parseQuickRemoteCommand(said) {
+  const t = String(said || '').trim();
+  if (/^\s*(?:капри,?\s+)?(?:поставь\s+(?:музыку\s+)?на\s+паузу|пауза|стоп\s+музык[ау]|останови\s+музыку)\s*[.!?]*$/i.test(t)) {
+    return { type: 'media', action: 'pause', label: 'Поставила плеер на паузу.' };
+  }
+  if (/^\s*(?:капри,?\s+)?(?:продолжи\s+музыку|сними\s+с\s+паузы|включи\s+плеер)\s*[.!?]*$/i.test(t)) {
+    return { type: 'media', action: 'play', label: 'Продолжаю воспроизведение.' };
+  }
+  if (/^\s*(?:капри,?\s+)?(?:следующий\s+трек|дальше\s+трек|скипни\s+трек|переключи\s+трек)\s*[.!?]*$/i.test(t)) {
+    return { type: 'media', action: 'next', label: 'Переключила на следующий трек.' };
+  }
+  if (/^\s*(?:капри,?\s+)?(?:предыдущий\s+трек|прошлый\s+трек|верни\s+трек)\s*[.!?]*$/i.test(t)) {
+    return { type: 'media', action: 'prev', label: 'Вернула предыдущий трек.' };
+  }
+  const volMatch = /^\s*(?:капри,?\s+)?(?:поставь\s+|сделай\s+)?громкость\s+(?:на\s+)?(\d{1,3})\s*(?:%|процент[а-я]*)?\s*[.!?]*$/i.exec(t);
+  if (volMatch) {
+    const level = Math.min(100, Math.max(0, Number(volMatch[1])));
+    return { type: 'volume', level, label: `Поставила громкость ПК на ${level}%.` };
+  }
+  if (/^\s*(?:капри,?\s+)?(?:выключи\s+звук|без\s+звука|замуть(?:\s+пк)?)\s*[.!?]*$/i.test(t)) {
+    return { type: 'volume', mute: true, label: 'Выключила звук на ПК.' };
+  }
+  if (/^\s*(?:капри,?\s+)?(?:включи\s+звук|размуть(?:\s+пк)?)\s*[.!?]*$/i.test(t)) {
+    return { type: 'volume', mute: false, label: 'Включила звук на ПК.' };
+  }
+  if (/^\s*(?:капри,?\s+)?заблокируй\s+(?:пк|комп|компьютер|ноутбук|экран)\s*[.!?]*$/i.test(t)) {
+    return { type: 'lock', label: 'Заблокировала экран ноутбука.' };
+  }
+  return null;
+}
+
 function isQuickReminders(said) {
   const t = String(said || '').trim();
   return t.length > 0 && t.length <= 90 && /[а-яё]/i.test(t) && REMINDER_RE.test(t) && !MORE_RE.test(t);
@@ -208,6 +278,6 @@ function agentsStatusAnswer(summaries = []) {
 
 module.exports = {
   isQuick, isQuickReminders, isQuickMail, isQuickMusic, isQuickPcStatus, isQuickAgentsStatus,
-  isQuickFreeMemory, parseRememberCommand, parseQuickSearchCommand,
+  isQuickFreeMemory, parseRememberCommand, parseQuickSearchCommand, parseQuickPlanCommand, parseQuickRemoteCommand,
   scheduleAnswer, remindersAnswer, mailAnswer, musicNowAnswer, pcStatusAnswer, quickSearchAnswer, agentsStatusAnswer,
 };

@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const {
   isQuick, isQuickMail, isQuickReminders, isQuickMusic, isQuickPcStatus, isQuickAgentsStatus,
-  isQuickFreeMemory, parseRememberCommand, parseQuickSearchCommand,
+  isQuickFreeMemory, parseRememberCommand, parseQuickSearchCommand, parseQuickPlanCommand, parseQuickRemoteCommand,
   scheduleAnswer, remindersAnswer, mailAnswer, musicNowAnswer, pcStatusAnswer, quickSearchAnswer, agentsStatusAnswer,
 } = require('../src/main/quick');
 const { kind: mediaKind } = require('../src/main/photo');
@@ -149,4 +149,18 @@ test('isQuickPcStatus, pcStatusAnswer, isQuickAgentsStatus, and agentsStatusAnsw
   assert.strictEqual(mediaKind('скинь скриншот экрана'), 'screen');
   assert.strictEqual(mediaKind('покажи экран пк'), 'screen');
   assert.strictEqual(mediaKind('что сейчас на мониторе?'), 'screen');
+
+  const now = new Date(2026, 10, 8, 12, 0, 0);
+  const remIn = parseQuickPlanCommand('Капри, напомни через 30 минут позвонить паблишеру', now);
+  assert.deepStrictEqual(remIn, { kind: 'reminder', title: 'позвонить паблишеру', at: now.getTime() + 30 * 60_000 });
+  const remAt = parseQuickPlanCommand('напомни завтра в 15:30 проверить билд', now);
+  assert.strictEqual(remAt.kind, 'reminder');
+  assert.strictEqual(remAt.title, 'проверить билд');
+  const taskCmd = parseQuickPlanCommand('добавь задачу: подготовить питч для ALTA', now);
+  assert.deepStrictEqual(taskCmd, { kind: 'task', title: 'подготовить питч для ALTA' });
+
+  assert.deepStrictEqual(parseQuickRemoteCommand('поставь на паузу'), { type: 'media', action: 'pause', label: 'Поставила плеер на паузу.' });
+  assert.deepStrictEqual(parseQuickRemoteCommand('следующий трек'), { type: 'media', action: 'next', label: 'Переключила на следующий трек.' });
+  assert.deepStrictEqual(parseQuickRemoteCommand('громкость на 40%'), { type: 'volume', level: 40, label: 'Поставила громкость ПК на 40%.' });
+  assert.deepStrictEqual(parseQuickRemoteCommand('заблокируй пк'), { type: 'lock', label: 'Заблокировала экран ноутбука.' });
 });

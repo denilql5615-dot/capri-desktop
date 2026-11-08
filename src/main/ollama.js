@@ -78,7 +78,7 @@ function warm(model) {
   fetch(`${base()}/api/generate`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model, keep_alive: '15m' }),
+    body: JSON.stringify({ model, keep_alive: '5m' }),
   }).catch(() => {});
 }
 
@@ -105,7 +105,7 @@ async function unloadAll() {
 }
 
 // Her answer, streamed: onDelta(piece) as it comes, resolves with all of it.
-async function chat({ model, messages, numPredict = 240, keepAlive = '15m' }, onDelta, signal) {
+async function chat({ model, messages, numPredict = 240, keepAlive = '5m' }, onDelta, signal) {
   // cloud models think before they answer, and that counts in num_predict: kept short, with room for it
   const thinking = canThink(model);
   const thinks = isCloud(model) && thinking;
