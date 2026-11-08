@@ -67,6 +67,7 @@ contextBridge.exposeInMainWorld('host', {
   agentsHistory: (id) => ipcRenderer.invoke('agents:history', id),
   agentsCreate: (agent) => ipcRenderer.invoke('agents:create', agent),
   agentsSend: (request) => ipcRenderer.invoke('agents:send', request),
+  agentsPickFile: () => ipcRenderer.invoke('agents:pick-file'),
   agentsStop: (id) => ipcRenderer.invoke('agents:stop', id),
   agentsVoiceStt: (wav) => ipcRenderer.invoke('agents:voice-stt', wav),
   agentsArtifact: (request) => ipcRenderer.invoke('agents:artifact', request),

@@ -8,7 +8,7 @@ const { fingerprint } = require('./agent-import');
 const MODELS = {
   claude: [['', 'По умолчанию'], ['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku']],
   codex: [['', 'По умолчанию'], ['gpt-6.1-sol', 'GPT‑6.1 Sol'], ['gpt-6-astra', 'GPT‑6 Astra'], ['gpt-6-sol', 'GPT‑6 Sol'], ['gpt-5.6-sol', 'GPT‑5.6 Sol'], ['gpt-5.6-terra', 'GPT‑5.6 Terra']],
-  gemini: [['gemini-4-argon-medium', 'Argon'], ['claude-opus-5-5-medium', 'Opus'], ['claude-sonnet-5-5-medium', 'Sonnet'], ['gemini-3.8-flash-high', 'Flash High']],
+  gemini: [['gemini-4-argon-medium', 'Argon'], ['claude-opus-5-5-medium', 'Opus'], ['claude-sonnet-5-5-medium', 'Sonnet'], ['gemini-3.8-flash-high', 'Flash High'], ['gemini-cli-free', 'Gemini CLI (Free)']],
   gemma: [['gemma4:26b-a4b-it-qat', 'Gemma 4']],
   faun: [['hf.co/limloop/MN-12B-Faun-RP-RU-GGUF:Q3_K_M', 'Faun RP RU']],
 };
@@ -90,7 +90,7 @@ class AgentSessions {
     const session = this.sessions.find((item) => item.id === id);
     if (!session || !MODELS[session.agent]?.some(([key]) => key === model)) throw new Error('Чат или модель недоступны.');
     if (session.queued || this.active.has(id)) throw new Error('В этом чате уже есть задача.');
-    if (typeof text !== 'string' || !text.trim() || text.length > 8000) throw new Error('Сообщение должно содержать от 1 до 8000 символов.');
+    if (typeof text !== 'string' || !text.trim() || text.length > 24000) throw new Error('Сообщение должно содержать от 1 до 24000 символов.');
     this.save(this.sessions.map((item) => item.id === id
       ? { ...item, queued: { model, text: text.trim() }, queueCancelled: undefined, updated: Date.now() } : item));
     this.notify(id);
@@ -129,7 +129,7 @@ class AgentSessions {
       throw new Error('Локальная модель уже отвечает в другом чате.');
     }
     if (retry && (!session.pending || session.messages.at(-1)?.role !== 'user')) throw new Error('Нет запроса для повтора.');
-    if (!retry && (typeof text !== 'string' || !text.trim() || text.length > 8000)) throw new Error('Сообщение должно содержать от 1 до 8000 символов.');
+    if (!retry && (typeof text !== 'string' || !text.trim() || text.length > 24000)) throw new Error('Сообщение должно содержать от 1 до 24000 символов.');
     const messages = retry ? session.messages : [...session.messages, { role: 'user', content: text.trim() }];
     const abort = new AbortController();
     const commit = (rows, pending) => this.save(this.sessions.map((item) => item.id === id

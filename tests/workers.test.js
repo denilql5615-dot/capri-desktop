@@ -117,3 +117,14 @@ test('isWorkerEvent: events from their folder are theirs, not hers to narrate', 
   assert.strictEqual(isWorkerEvent({ cwd: p.resolve('/Capri/genesis-src') }, cfg), false);
   assert.strictEqual(isWorkerEvent({}, cfg), false);
 });
+
+test('skillHints and cheatsheet include domain references, anti-slop rules, and document compilers', () => {
+  const { skillHints, cheatsheet, WORKER_LABELS } = require('../src/main/workers');
+  assert.match(skillHints('Собери GDD и баланс для ALTA'), /game-studios-reference/);
+  assert.match(skillHints('Напиши питч и лендинг для Steam store page'), /marketingskills/);
+  assert.match(skillHints('Сделай UI/UX и CSS вёрстку экрана'), /impeccable-ui/);
+  assert.match(skillHints('Экспортируй отчёт в PDF и схему в SVG'), /NAME\.pdf\.md/);
+  assert.match(cheatsheet(), /NAME\.pdf\.md/);
+  assert.match(cheatsheet(), /NAME\.png\.svg/);
+  assert.strictEqual(WORKER_LABELS['gemini-cli-free'], 'Gemini CLI (Free)');
+});

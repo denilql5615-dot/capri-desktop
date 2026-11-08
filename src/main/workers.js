@@ -31,58 +31,146 @@ const TIMEOUT_MS = 10 * 60 * 1000;
 // Claude Code CLAUDE.md). Written once; yours to edit after that.
 // The Python python-docx was installed in: by full path, as \`py\` finds no Python inside Codex's sandbox.
 const PYTHON = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs', 'Python', 'Python313', 'python.exe');
+const SOFFICE = process.env.CAPRI_SOFFICE_PATH || 'C:\\Program Files\\LibreOffice\\program\\soffice.exe';
+const INKSCAPE = process.env.CAPRI_INKSCAPE_PATH || 'C:\\Program Files\\Inkscape\\bin\\inkscape.exe';
 
 const cheatsheet = () => `# Capri's work folder
 
-You were asked through Capri, the user's desktop companion. Be quick: short tasks, no exploring, no skills to read.
+You were asked through Capri, the user's desktop companion. Be quick: short tasks, no exploring, no skills to read unless needed.
 
-- Write only in this folder. Read anywhere.
-- A Word document (.docx): don't build one, and don't look for Python, Word or libraries. Write its
-  content as Markdown (# headings, - bullets, 1. lists, **bold**) in NAME.docx.md: right after you're
-  done, Capri turns it into NAME.docx and removes the .md. Say NAME.docx in your answer.
+- Write only in this folder (or the Hub run output folder when specified). Read anywhere.
+- A Word document (.docx): don't build one manually. Write its content as Markdown (# headings, - bullets, 1. lists, **bold**) in NAME.docx.md: right after you're done, Capri turns it into NAME.docx and removes the .md. Say NAME.docx in your answer.
+- A PDF document (.pdf): write Markdown in NAME.pdf.md — Capri compiles it to NAME.pdf via LibreOffice headless and removes the .md. Say NAME.pdf in your answer.
+- A PNG diagram/icon (.png): write clean SVG markup in NAME.png.svg — Capri renders it to NAME.png via Inkscape and removes the .svg. Say NAME.png in your answer.
+- Obsidian Excalidraw diagrams: save as NAME.excalidraw.md in D:\\Obsidian\\C.A.P.R.I\\Результаты.
+- To read binary office files (.pdf, .docx, .xlsx, .pptx), run markitdown.exe on the file.
+- Local reference packs in C:\\Capri_Tools: game-studios-reference (GDD/balance/level design), marketingskills (marketing/GTM/copy), impeccable-ui (UI/UX), stop-slop (natural prose without AI clichés), kensaku (search).
 - Name files plainly (brief-capri.docx.md), never overwrite one that's there: add -2, -3.
 - Reply in the user's language, one to three sentences: what you made and its file name.
 `;
 
+function skillHints(text) {
+  const t = String(text || '');
+  const hints = ['Пиши живым русским языком без штампов нейросетей и канцелярита (правила C:\\Capri_Tools\\stop-slop).'];
+  if (/(?<![а-яёa-z])(gdd|game\s*design|геймдиз|баланс|левел|level\s*design|alta|альта|механик|игр[аыеуой]|combat|narrative|нарратив|квест|quest|hud)/i.test(t)) {
+    hints.push('Для геймдизайна и GDD опирайся на референсы в C:\\Capri_Tools\\game-studios-reference.');
+  }
+  if (/(?<![а-яёa-z])(маркетинг|лендинг|landing|питч|pitch|store\s*page|steam|aso|seo|копирайт|продвижен|релиз|воронка|конверси|gtm|launch)/i.test(t)) {
+    hints.push('Для маркетинга, питчей и страниц магазина используй фреймворки из C:\\Capri_Tools\\marketingskills\\skills.');
+  }
+  if (/(?<![а-яёa-z])(ui|ux|интерфейс|дизайн|вёрстк|верстк|css|layout|типографик|цвет|компонент|экра[нны]|фронт|frontend)/i.test(t)) {
+    hints.push('Для UI/UX и вёрстки используй референсы из C:\\Capri_Tools\\impeccable-ui.');
+  }
+  if (/(?<![а-яёa-z])(pdf|docx|xlsx|pptx|таблиц|отчёт|отчет|документ|презентац|диаграмм|схем|svg|excalidraw)/i.test(t)) {
+    hints.push('Для генерации файлов: NAME.docx.md -> NAME.docx, NAME.pdf.md -> NAME.pdf (LibreOffice), NAME.png.svg -> NAME.png (Inkscape), либо .excalidraw.md в D:\\Obsidian\\C.A.P.R.I\\Результаты.');
+  }
+  return hints.join(' ');
+}
+
 const MD2DOCX = path.join(__dirname, '..', '..', 'scripts', 'md2docx.py').replace('app.asar', 'app.asar.unpacked');
 
-// After a worker: each NAME.docx.md it wrote turned into NAME.docx (never over another file), the .md
-// removed. Resolves with the names made.
-async function convertDocs(dir, since) {
+function uniqueOutPath(dir, base, ext) {
+  let out = path.join(dir, `${base}${ext}`);
+  for (let i = 2; fs.existsSync(out); i++) out = path.join(dir, `${base}-${i}${ext}`);
+  return out;
+}
+
+// After a worker: each NAME.docx.md -> NAME.docx, NAME.pdf.md -> NAME.pdf, NAME.png.svg -> NAME.png.
+async function convertDocs(dir, since, bins = { python: PYTHON, soffice: SOFFICE, inkscape: INKSCAPE }) {
+  if (!dir || !fs.existsSync(dir)) return [];
   const made = [];
   for (const name of fs.readdirSync(dir)) {
-    if (!/\.docx\.md$/i.test(name)) continue;
-    const md = path.join(dir, name);
-    if (fs.statSync(md).mtimeMs < since - 1000) continue;
-    const base = name.replace(/\.docx\.md$/i, '');
-    let out = path.join(dir, `${base}.docx`);
-    for (let i = 2; fs.existsSync(out); i++) out = path.join(dir, `${base}-${i}.docx`);
-    const ok = await new Promise((resolve) => {
-      execFile(PYTHON, ['-s', MD2DOCX, md, out], { windowsHide: true, timeout: 60000 }, (err, _o, stderr) => {
-        if (err) console.warn('[capri] md2docx:', String(stderr || err.message).trim().split('\n').at(-1));
-        resolve(!err);
+    const full = path.join(dir, name);
+    let stat;
+    try { stat = fs.statSync(full); } catch { continue; }
+    if (!stat.isFile() || stat.mtimeMs < since - 1000) continue;
+
+    if (/\.docx\.md$/i.test(name)) {
+      const base = name.replace(/\.docx\.md$/i, '');
+      const out = uniqueOutPath(dir, base, '.docx');
+      const ok = await new Promise((resolve) => {
+        execFile(bins.python, ['-s', MD2DOCX, full, out], { windowsHide: true, timeout: 60000 }, (err, _o, stderr) => {
+          if (err) console.warn('[capri] md2docx:', String(stderr || err.message).trim().split('\n').at(-1));
+          resolve(!err);
+        });
       });
-    });
-    if (!ok) continue;
-    fs.rmSync(md, { force: true });
-    made.push(path.basename(out));
+      if (ok) {
+        fs.rmSync(full, { force: true });
+        made.push(path.basename(out));
+      }
+      continue;
+    }
+
+    if (/\.pdf\.md$/i.test(name)) {
+      const base = name.replace(/\.pdf\.md$/i, '');
+      const tmpStem = `_tmp_${randomUUID()}`;
+      const tmpDocx = path.join(dir, `${tmpStem}.docx`);
+      const docxOk = await new Promise((resolve) => {
+        execFile(bins.python, ['-s', MD2DOCX, full, tmpDocx], { windowsHide: true, timeout: 60000 }, (err) => resolve(!err));
+      });
+      if (!docxOk) continue;
+      if (fs.existsSync(bins.soffice)) {
+        const pdfOk = await new Promise((resolve) => {
+          execFile(bins.soffice, ['--headless', '--convert-to', 'pdf', '--outdir', dir, tmpDocx], { windowsHide: true, timeout: 60000 }, (err) => resolve(!err));
+        });
+        const generatedPdf = path.join(dir, `${tmpStem}.pdf`);
+        fs.rmSync(tmpDocx, { force: true });
+        if (pdfOk && fs.existsSync(generatedPdf)) {
+          const out = uniqueOutPath(dir, base, '.pdf');
+          fs.renameSync(generatedPdf, out);
+          fs.rmSync(full, { force: true });
+          made.push(path.basename(out));
+        }
+      } else {
+        const out = uniqueOutPath(dir, base, '.docx');
+        fs.renameSync(tmpDocx, out);
+        fs.rmSync(full, { force: true });
+        made.push(path.basename(out));
+      }
+      continue;
+    }
+
+    if (/\.png\.svg$/i.test(name) && fs.existsSync(bins.inkscape)) {
+      const base = name.replace(/\.png\.svg$/i, '');
+      const out = uniqueOutPath(dir, base, '.png');
+      const ok = await new Promise((resolve) => {
+        execFile(bins.inkscape, ['--export-type=png', `--export-filename=${out}`, full], { windowsHide: true, timeout: 60000 }, (err) => resolve(!err));
+      });
+      if (ok && fs.existsSync(out)) {
+        fs.rmSync(full, { force: true });
+        made.push(path.basename(out));
+      }
+    }
   }
   return made;
 }
 
-// a worker's answer once its documents are made: the .md names it said become the .docx ones
+// a worker's answer once its documents are made: the .md/.svg names it said become the compiled ones
 async function finish(text, dir, since) {
   const made = await convertDocs(dir, since).catch(() => []);
-  return made.length ? text.replace(/\.docx\.md\b/gi, '.docx') : text;
+  if (!made.length) return text;
+  return text
+    .replace(/\.docx\.md\b/gi, '.docx')
+    .replace(/\.pdf\.md\b/gi, '.pdf')
+    .replace(/\.png\.svg\b/gi, '.png');
 }
 
 /** Their folder (made if missing): where what they make for you lands. */
 function workDir(cfg) {
   const dir = cfg.workDir || path.join(os.homedir(), 'Documents', 'Capri');
   fs.mkdirSync(dir, { recursive: true });
+  const sheet = cheatsheet();
   for (const name of ['AGENTS.md', 'CLAUDE.md']) {
     const file = path.join(dir, name);
-    if (!fs.existsSync(file)) fs.writeFileSync(file, cheatsheet());
+    const shouldWrite = !fs.existsSync(file) || (() => {
+      try {
+        const cur = fs.readFileSync(file, 'utf8');
+        return cur.startsWith('# Capri\'s work folder') && !cur.includes('NAME.pdf.md');
+      } catch {
+        return false;
+      }
+    })();
+    if (shouldWrite) fs.writeFileSync(file, sheet);
   }
   return dir;
 }
@@ -187,6 +275,18 @@ function findAgy() {
     process.env.CAPRI_AGY_PATH,
     path.join(localAppData, 'agy', 'bin', exe),
     path.join(home, '.local', 'bin', exe),
+    ...onPath(exe),
+  ].find((c) => c && exists(c)) || null;
+}
+
+/** Official @google/gemini-cli using personal OAuth free tier (1000-1500 req/day). */
+function findGeminiCli() {
+  const home = os.homedir();
+  const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+  const exe = process.platform === 'win32' ? 'gemini.cmd' : 'gemini';
+  return [
+    process.env.CAPRI_GEMINI_CLI_PATH,
+    path.join(appData, 'npm', exe),
     ...onPath(exe),
   ].find((c) => c && exists(c)) || null;
 }
@@ -347,8 +447,49 @@ const parseAgyEvent = (line) => {
   }
 };
 
+function askGeminiCli(cfg, messages, onDelta, signal, find = findGeminiCli) {
+  const exe = find();
+  if (!exe) return Promise.reject(new Error('Gemini CLI не найден: установи @google/gemini-cli и войди.'));
+  const cwd = workDir(cfg);
+  const since = Date.now();
+  const brief = codexBrief(messages, cwd);
+  const env = { ...process.env };
+  delete env.GOOGLE_CLOUD_PROJECT;
+  delete env.GOOGLE_CLOUD_PROJECT_ID;
+  const cmd = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : exe;
+  const args = process.platform === 'win32'
+    ? ['/d', '/s', '/c', `"${exe}" -y -o text -p ""`]
+    : ['-y', '-o', 'text', '-p', ''];
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, {
+      cwd, env, windowsHide: true, windowsVerbatimArguments: process.platform === 'win32', stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const kill = () => killTree(child);
+    signal?.addEventListener('abort', kill, { once: true });
+    const timer = setTimeout(kill, TIMEOUT_MS);
+    let out = '';
+    let errors = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { out += chunk; });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (d) => { errors = (errors + d).slice(-4000); });
+    child.on('error', (err) => reject(new Error(`Gemini CLI не запустился: ${err.message}`)));
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (signal?.aborted) return reject(new Error('stopped'));
+      const text = out.trim();
+      if (text) {
+        return resolve(finish(text, cwd, since).then((said) => { onDelta(said); return said; }));
+      }
+      reject(new Error(`Gemini CLI завершился (${code}): ${errors.trim().split('\n').at(-1)?.slice(0, 200) || 'без ответа'}`));
+    });
+    child.stdin.end(brief);
+  });
+}
+
 // Argon by default; a reserve may be addressed explicitly or reached through runWorker fallback.
 function askGemini(cfg, messages, onDelta, signal, { model: forcedModel = null } = {}) {
+  if (forcedModel === 'gemini-cli-free') return askGeminiCli(cfg, messages, onDelta, signal);
   const exe = findAgy();
   if (!exe) return Promise.reject(new Error('Antigravity не найден: поставь agy и войди в Google AI Pro.'));
   const cwd = workDir(cfg);
@@ -402,6 +543,7 @@ const WORKER_LABELS = {
   'gemini-4-argon-medium': 'Gemini Argon',
   'claude-opus-5-5-medium': 'Claude Opus 5.5',
   'gemini-3.8-flash-high': 'Gemini Flash',
+  'gemini-cli-free': 'Gemini CLI (Free)',
 };
 const LIMIT_ERR_RE = /hit your .*limit|usage limit|rate.?limit|quota|кончился лимит|^Лимит |\b429\b/i;
 const COOLDOWN_MS = 15 * 60 * 1000;
@@ -462,4 +604,4 @@ function isWorkerEvent(evt, cfg) {
   return cwd === dir || cwd.startsWith(dir + path.sep);
 }
 
-module.exports = { isWorkerEvent, route, handsWorker, workerChain, runWorker, WORKER_LABELS, isStop, findClaude, findCodex, findAgy, askClaude, askCodex, askGemini, agyModel, parseAgyEvent, codexBrief, codexEffort, transcript, workDir };
+module.exports = { isWorkerEvent, route, handsWorker, workerChain, runWorker, WORKER_LABELS, isStop, findClaude, findCodex, findAgy, findGeminiCli, askClaude, askCodex, askGemini, askGeminiCli, agyModel, parseAgyEvent, codexBrief, codexEffort, transcript, workDir, convertDocs, skillHints, cheatsheet };

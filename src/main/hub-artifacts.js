@@ -1,10 +1,15 @@
 'use strict';
 
 const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
 
-const ALLOWED = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.mp4', '.webm', '.mov',
+const ALLOWED = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.mp4', '.webm', '.mov',
   '.pdf', '.docx', '.xlsx', '.pptx', '.txt', '.md', '.csv', '.wav', '.mp3']);
+const TEXT_EXTS = new Set(['.txt', '.md', '.csv']);
+const MARKITDOWN_EXTS = new Set(['.pdf', '.docx', '.xlsx', '.pptx']);
 const validRun = (run) => typeof run === 'string' && /^[0-9a-f-]{36}$/i.test(run);
 const validName = (name) => typeof name === 'string' && !/[\\/:]/.test(name) && ALLOWED.has(path.extname(name).toLowerCase());
 
@@ -65,4 +70,50 @@ async function saveUpload(root, sessionId, files) {
   return target;
 }
 
-module.exports = { artifactPath, listArtifacts, saveUpload, MAX_UPLOAD_BYTES };
+function findMarkItDown() {
+  const home = os.homedir();
+  const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+  const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+  const exe = process.platform === 'win32' ? 'markitdown.exe' : 'markitdown';
+  const candidates = [
+    process.env.CAPRI_MARKITDOWN_PATH,
+    path.join(appData, 'Python', 'Python313', 'Scripts', exe),
+    path.join(localAppData, 'Programs', 'Python', 'Python313', 'Scripts', exe),
+    ...(process.env.PATH || '').split(path.delimiter).filter(Boolean).map((dir) => path.join(dir, exe)),
+  ];
+  return candidates.find((c) => c && fsSync.existsSync(c)) || null;
+}
+
+async function extractDocumentText(filePath, { maxChars = 12000, markitdownBin = findMarkItDown() } = {}) {
+  if (typeof filePath !== 'string' || !filePath) return { text: '', extractedFile: null };
+  const ext = path.extname(filePath).toLowerCase();
+  if (TEXT_EXTS.has(ext)) {
+    try {
+      const raw = (await fs.readFile(filePath, 'utf8')).trim();
+      return { text: raw.slice(0, maxChars), extractedFile: null };
+    } catch {
+      return { text: '', extractedFile: null };
+    }
+  }
+  if (!MARKITDOWN_EXTS.has(ext) || !markitdownBin) return { text: '', extractedFile: null };
+  const stdout = await new Promise((resolve) => {
+    execFile(markitdownBin, [filePath], {
+      windowsHide: true,
+      timeout: 25000,
+      maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+    }, (err, out) => {
+      resolve(err ? '' : String(out || '').trim());
+    });
+  });
+  if (!stdout) return { text: '', extractedFile: null };
+  const extractedFile = `${filePath}.extracted.md`;
+  try {
+    await fs.writeFile(extractedFile, stdout, 'utf8');
+  } catch {
+    return { text: stdout.slice(0, maxChars), extractedFile: null };
+  }
+  return { text: stdout.slice(0, maxChars), extractedFile };
+}
+
+module.exports = { artifactPath, listArtifacts, saveUpload, extractDocumentText, findMarkItDown, MAX_UPLOAD_BYTES };

@@ -5,7 +5,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-const { artifactPath, listArtifacts, saveUpload } = require('../src/main/hub-artifacts');
+const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('../src/main/hub-artifacts');
 
 test('phone uploads preserve same-name files and reject traversal and malformed data', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'capri-hub-upload-'));
@@ -33,4 +33,13 @@ test('Hub only attaches nonempty allowed files produced in the specific run dire
   await fs.writeFile(path.join(root, 'previous.txt'), 'previous');
   assert.deepEqual(await listArtifacts(root, run), [{ run, name: 'result.txt' }]);
   await assert.rejects(artifactPath(root, run, '../previous.txt'), /Недопустимое/);
+});
+
+test('extractDocumentText reads text/csv directly and extracts office documents via markitdown', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'capri-hub-extract-'));
+  const txtFile = path.join(root, 'notes.md');
+  await fs.writeFile(txtFile, '# План ALTA\n\nБаланс экономики.');
+  const direct = await extractDocumentText(txtFile);
+  assert.equal(direct.text, '# План ALTA\n\nБаланс экономики.');
+  assert.equal(direct.extractedFile, null);
 });

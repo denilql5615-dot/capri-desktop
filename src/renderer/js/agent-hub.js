@@ -4,6 +4,7 @@ const host = window.host;
 const labels = { claude: 'Claude', codex: 'Codex', gemini: 'Antigravity', gemma: 'Gemma', faun: 'Faun RP' };
 const $ = (name) => document.querySelector(`.agents__${name}`);
 const drafts = new Map();
+const attachments = new Map();
 const searches = new Map();
 const selected = new Map();
 const picked = new Map();
@@ -107,6 +108,11 @@ function render() {
   $('history-tools').hidden = $('import').hidden;
   $('input').value = drafts.get(id) || '';
   $('input').disabled = !session || busy;
+  if ($('attach')) {
+    const att = attachments.get(id);
+    $('attach').textContent = att ? `📎 ${att.name.slice(0, 18)}` : '📎';
+    $('attach').disabled = !session || busy;
+  }
   $('send').textContent = busy ? 'Стоп' : 'Отправить';
   $('send').classList.toggle('is-danger', Boolean(busy));
   $('send').disabled = !session;
@@ -137,11 +143,12 @@ function renderLines() {
       const filename = document.createElement('strong');
       filename.textContent = artifact.name;
       card.append(filename);
-      for (const [action, title] of [['open', 'Открыть'], ['save', 'Сохранить копию'], ['copy', 'Копировать путь']]) {
+      for (const [action, title] of [['open', 'Открыть'], ['obsidian', 'В Obsidian'], ['save', 'Сохранить копию'], ['copy', 'Копировать путь']]) {
         const control = button(title, async () => {
           try {
             await host.agentsArtifact({ id: session.id, ...artifact, action });
             if (action === 'copy') $('status').textContent = 'Путь скопирован.';
+            if (action === 'obsidian') $('status').textContent = 'Сохранено в Obsidian (Результаты).';
           } catch (err) {
             $('status').textContent = err.message;
           }
@@ -207,15 +214,20 @@ async function send(retry = false) {
     await host.agentsStop(id).catch((err) => { $('status').textContent = err.message; });
     return;
   }
-  const text = $('input').value.trim();
+  const att = attachments.get(id);
+  const text = $('input').value.trim() || (att ? `Разбери файл ${att.name}` : '');
   if (!retry && !text) return;
   const model = $('model').value;
+  const files = !retry && att ? [att] : undefined;
   submitting.add(id);
   status.delete(id);
   render();
   try {
-    const result = await host.agentsSend({ id, model, text, retry });
-    if (!retry) drafts.delete(id);
+    const result = await host.agentsSend({ id, model, text, retry, files });
+    if (!retry) {
+      drafts.delete(id);
+      attachments.delete(id);
+    }
     if (!result.ok) status.set(id, result.stopped ? 'Остановлено.' : result.error);
   } catch (err) {
     status.set(id, err.message);
@@ -315,6 +327,27 @@ async function toggleVoiceRecording() {
 }
 
 if ($('mic')) $('mic').onclick = toggleVoiceRecording;
+if ($('attach')) {
+  $('attach').onclick = async () => {
+    const id = current()?.id;
+    if (!id) return;
+    if (attachments.has(id)) {
+      attachments.delete(id);
+      render();
+      return;
+    }
+    try {
+      const pickedFile = await host.agentsPickFile();
+      if (pickedFile) {
+        attachments.set(id, pickedFile);
+        render();
+        $('input').focus();
+      }
+    } catch (err) {
+      $('status').textContent = err.message;
+    }
+  };
+}
 
 host.onAgentsUpdate(({ id, delta }) => {
   if (typeof delta === 'string') {

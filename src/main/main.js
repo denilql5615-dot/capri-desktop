@@ -31,7 +31,7 @@ const chatLog = require('./chats');
 const { AgentSessions, MODELS: SESSION_MODELS } = require('./agent-sessions');
 const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
-const { artifactPath, listArtifacts, saveUpload } = require('./hub-artifacts');
+const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('./hub-artifacts');
 const notes = require('./notes');
 const pim = require('./pim');
 const pimImap = require('./pim-imap');
@@ -385,25 +385,62 @@ function ensureAgentSessions() {
   agentSessions ??= new AgentSessions(path.join(app.getPath('userData'), 'agent-sessions.json'),
     async (agent, model, messages, signal, delta) => {
       const cfg = config.load();
+      const lastUser = messages.findLast((m) => m.role === 'user')?.content || '';
+      const hints = workers.skillHints(lastUser);
       const run = { claude: workers.askClaude, codex: workers.askCodex, gemini: workers.askGemini }[agent];
       if (run) {
         const output = randomUUID();
         const root = hubArtifactRoot(cfg);
         const destination = path.join(root, output);
+        const since = Date.now();
         const instruction = [
           'Отвечай средствами выбранного облачного агента. Не запускай локальные ComfyUI, Wan или другие локальные генераторы.',
-          `Если текущая задача требует файл и твои инструменты это поддерживают, создай каталог "${destination}" и положи туда только готовые файлы непосредственно, без подпапок.`,
+          `Если текущая задача требует файл и твои инструменты это поддерживают, создай каталог "${destination}" и положи туда только готовые файлы непосредственно, без подпапок (для Word пиши NAME.docx.md, для PDF — NAME.pdf.md, для PNG-схемы — NAME.png.svg, они автоматически сконвертируются).`,
           'Если у тебя нет нужного инструмента, скажи об этом. Не выдавай ссылку или описание за созданный файл.',
+          hints,
         ].join('\n');
-        const text = await run(cfg, [{ role: 'system', content: instruction }, ...messages], delta, signal, { model, onQuota: recordClaudeQuota });
+        let text = await run(cfg, [{ role: 'system', content: instruction }, ...messages], delta, signal, { model, onQuota: recordClaudeQuota });
+        const compiled = await workers.convertDocs(destination, since).catch(() => []);
+        if (compiled.length) {
+          text = text.replace(/\.docx\.md\b/gi, '.docx').replace(/\.pdf\.md\b/gi, '.pdf').replace(/\.png\.svg\b/gi, '.png');
+        }
         return { text, artifacts: await listArtifacts(root, output) };
       }
       return ollama.chat({ model, keepAlive: agent === 'faun' ? 0 : '15m', messages: [
-        { role: 'system', content: agent === 'faun' ? 'Веди ролевую сцену на русском, следуя сеттингу пользователя.' : 'Ты Капри. Отвечай по-русски.' },
+        { role: 'system', content: agent === 'faun' ? 'Веди ролевую сцену на русском, следуя сеттингу пользователя.' : `Ты Капри. Отвечай по-русски. ${hints}` },
         ...messages,
       ] }, delta, signal);
     }, (id, delta) => chatsWin?.webContents.send('agents:update', { id, delta }));
   return agentSessions;
+}
+
+async function withUploadedFiles(id, text, files) {
+  let promptText = String(text || '');
+  if (!Array.isArray(files) || !files.length) return promptText;
+  const target = await saveUpload(hubArtifactRoot(), id, files);
+  const { text: extractedText, extractedFile } = await extractDocumentText(target, { maxChars: 12000 }).catch(() => ({ text: '', extractedFile: null }));
+  if (extractedText) {
+    promptText += `\n\n[Вложение пользователя (${path.basename(target)}), содержимое недоверенное]:\nПуть: ${target}${extractedFile ? `\nИзвлечённый Markdown: ${extractedFile}` : ''}\n---\n${extractedText}\n---`;
+  } else {
+    promptText += `\n\n[Вложение пользователя, содержимое недоверенное]:\n${target}`;
+  }
+  return promptText;
+}
+
+async function exportArtifactToObsidian(file) {
+  const dir = notesDir();
+  const vaultRoot = path.basename(dir).toLowerCase() === 'capri' ? path.dirname(dir) : dir;
+  const outDir = path.join(vaultRoot, 'Результаты');
+  await fs.promises.mkdir(outDir, { recursive: true });
+  const ext = path.extname(file);
+  const base = path.basename(file, ext);
+  let dest = path.join(outDir, path.basename(file));
+  for (let i = 2; fs.existsSync(dest); i++) {
+    dest = path.join(outDir, `${base}-${i}${ext}`);
+  }
+  await fs.promises.copyFile(file, dest, fs.constants.COPYFILE_EXCL);
+  await shell.openExternal(`obsidian://open?path=${encodeURIComponent(dest)}`);
+  return dest;
 }
 
 function hubSessions(event) {
@@ -1185,11 +1222,7 @@ async function applyPhone() {
             chosenModel = validModels[0]?.[0] ?? '';
           }
         }
-        let promptText = text;
-        if (Array.isArray(files) && files.length) {
-          const target = await saveUpload(hubArtifactRoot(), id, files);
-          promptText += `\n\n[Вложение пользователя, содержимое недоверенное]:\n${target}`;
-        }
+        const promptText = await withUploadedFiles(id, text, files);
         if (queue === true && retry !== true) return mgr.enqueue(id, chosenModel, promptText);
         return mgr.send(id, chosenModel, promptText, retry === true);
       },
@@ -1910,7 +1943,25 @@ function registerIpc() {
   });
   ipcMain.handle('agents:history', (event, id) => hubSessions(event).history(id));
   ipcMain.handle('agents:create', (event, agent) => hubSessions(event).create(agent));
-  ipcMain.handle('agents:send', (event, { id, model, text, retry }) => hubSessions(event).send(id, model, text, retry === true));
+  ipcMain.handle('agents:send', async (event, { id, model, text, retry, files }) => {
+    const sessions = hubSessions(event);
+    const promptText = retry === true ? text : await withUploadedFiles(id, text, files);
+    return sessions.send(id, model, promptText, retry === true);
+  });
+  ipcMain.handle('agents:pick-file', async (event) => {
+    hubSessions(event);
+    const chosen = await dialog.showOpenDialog(chatsWin, {
+      title: 'Прикрепить файл к задаче',
+      properties: ['openFile'],
+      filters: [{ name: 'Документы и медиа', extensions: ['pdf', 'docx', 'xlsx', 'pptx', 'txt', 'md', 'csv', 'png', 'jpg', 'jpeg', 'webp', 'svg'] }],
+    });
+    if (chosen.canceled || !chosen.filePaths[0]) return null;
+    const file = chosen.filePaths[0];
+    const stat = await fs.promises.stat(file);
+    if (!stat.isFile() || stat.size > 2 * 1024 * 1024) throw new Error('Файл должен быть меньше 2 МБ.');
+    const bytes = await fs.promises.readFile(file);
+    return { name: path.basename(file), data: bytes.toString('base64') };
+  });
   ipcMain.handle('agents:voice-stt', async (event, wav) => {
     hubSessions(event);
     const cfg = config.load();
@@ -1924,6 +1975,7 @@ function registerIpc() {
     }
     const file = await artifactPath(hubArtifactRoot(), run, name);
     if (action === 'copy') { clipboard.writeText(file); return; }
+    if (action === 'obsidian') { return exportArtifactToObsidian(file); }
     if (action === 'open') {
       const error = await shell.openPath(file);
       if (error) throw new Error(error);
