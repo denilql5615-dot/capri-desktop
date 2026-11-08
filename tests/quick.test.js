@@ -4,9 +4,10 @@ const test = require('node:test');
 const assert = require('node:assert');
 const {
   isQuick, isQuickMail, isQuickReminders, isQuickMusic, isQuickPcStatus, isQuickAgentsStatus,
-  scheduleAnswer, remindersAnswer, mailAnswer, musicNowAnswer, pcStatusAnswer, agentsStatusAnswer,
-  parseRememberCommand,
+  isQuickFreeMemory, parseRememberCommand, parseQuickSearchCommand,
+  scheduleAnswer, remindersAnswer, mailAnswer, musicNowAnswer, pcStatusAnswer, quickSearchAnswer, agentsStatusAnswer,
 } = require('../src/main/quick');
+const { kind: mediaKind } = require('../src/main/photo');
 const { videoGraph } = require('../src/main/comfy');
 
 test('isQuick: plain questions about the schedule', () => {
@@ -122,4 +123,30 @@ test('isQuickPcStatus, pcStatusAnswer, isQuickAgentsStatus, and agentsStatusAnsw
   assert.strictEqual(parseRememberCommand('Капри, запомни: сервер в локальной сети на 192.168.1.10'), 'сервер в локальной сети на 192.168.1.10');
   assert.strictEqual(parseRememberCommand('запиши в память что билд ALTA готов к тесту'), 'билд ALTA готов к тесту');
   assert.strictEqual(parseRememberCommand('просто разговор без команды'), null);
+
+  for (const q of ['кто жрёт память?', 'топ процессов', 'сколько видеопамяти', 'статус гпу']) {
+    assert.ok(isQuickPcStatus(q), q);
+  }
+  const pcFull = pcStatusAnswer({
+    gpu: { name: 'RTX 4060', usedMb: 1200, totalMb: 8188, util: 14, temp: 52 },
+    topProcesses: [{ name: 'electron', mb: 950 }, { name: 'ollama', mb: 420 }],
+  });
+  assert.match(pcFull, /GPU \(RTX 4060\): VRAM 1200 \/ 8188 МБ \(нагрузка 14%, 52°C\)/);
+  assert.match(pcFull, /Топ ОЗУ: electron \(950 МБ\), ollama \(420 МБ\)/);
+
+  for (const q of ['освободи память', 'выгрузи модели', 'очисти vram', 'Капри, освободи ОЗУ!']) {
+    assert.ok(isQuickFreeMemory(q), q);
+  }
+  assert.strictEqual(parseQuickSearchCommand('Капри, найди в обсидиане ALTA'), 'ALTA');
+  assert.strictEqual(parseQuickSearchCommand('что в заметках про баланс оружия?'), 'баланс оружия');
+  assert.strictEqual(parseQuickSearchCommand('найди файл отчёт'), 'отчёт');
+  assert.match(quickSearchAnswer({
+    query: 'ALTA',
+    vaultHits: [{ title: 'ALTA План', file: 'ALTA/План.md', text: 'Дорожная карта релиза' }],
+    fileHits: [{ name: 'GDD.pdf', folder: 'Документы', snippet: 'Баланс классов и экономика' }],
+  }), /\[Obsidian\] ALTA План[\s\S]*\[Файл\] GDD\.pdf \(Документы\) — Баланс классов/);
+
+  assert.strictEqual(mediaKind('скинь скриншот экрана'), 'screen');
+  assert.strictEqual(mediaKind('покажи экран пк'), 'screen');
+  assert.strictEqual(mediaKind('что сейчас на мониторе?'), 'screen');
 });

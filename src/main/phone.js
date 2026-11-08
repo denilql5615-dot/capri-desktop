@@ -239,6 +239,11 @@ class PhoneBridge {
         const q = await this.d.agentQuota?.({ agent, model, refresh });
         return this.send(res, 200, q || {});
       }
+      if (req.method === 'POST' && url.pathname === '/agents/artifact') {
+        const body = await this.readJson(req);
+        const result = await this.d.agentArtifactAction?.(body);
+        return this.send(res, 200, result || { ok: false });
+      }
       if (req.method === 'GET' && url.pathname === '/agents/artifact') {
         const id = url.searchParams.get('id') || '';
         const run = url.searchParams.get('run') || '';

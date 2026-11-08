@@ -657,6 +657,27 @@ async function quickAnswer(said) {
       const title = notes.write(notesDir(), { title: memo.split(/\s+/).slice(0, 5).join(' '), type: 'о тебе', text: memo });
       return `Записала в память Obsidian${title ? ` ([[${title}]])` : ''}: «${memo.slice(0, 140)}».`;
     }
+    if (quick.isQuickFreeMemory(said)) {
+      const beforeRam = await system.info('ram');
+      const unloaded = await ollama.unloadAll().catch(() => []);
+      const [afterRam, gpu] = await Promise.all([
+        system.info('ram'),
+        system.info('gpu').catch(() => null),
+      ]);
+      const freedMb = Math.max(0, Math.round(((beforeRam?.used || 0) - (afterRam?.used || 0)) / (1024 ** 2)));
+      const modelsLine = unloaded.length ? `Выгрузила из Ollama: ${unloaded.join(', ')}.` : 'В Ollama сейчас не было загруженных локальных моделей.';
+      const gpuLine = gpu?.totalMb ? ` VRAM: ${gpu.usedMb} / ${gpu.totalMb} МБ.` : '';
+      const ramLine = afterRam?.total ? ` ОЗУ: ${Math.round((afterRam.used / (1024 ** 3)) * 10) / 10} / ${Math.round((afterRam.total / (1024 ** 3)) * 10) / 10} ГБ${freedMb > 20 ? ` (освобождено ~${freedMb} МБ)` : ''}.` : '';
+      return `${modelsLine}${ramLine}${gpuLine}`;
+    }
+    const searchQ = quick.parseQuickSearchCommand(said);
+    if (searchQ) {
+      const [vaultHits, fileHits] = await Promise.all([
+        Promise.resolve(notes.searchVault(notesDir(), searchQ, 4)).catch(() => []),
+        files.search(searchQ).catch(() => []),
+      ]);
+      return quick.quickSearchAnswer({ query: searchQ, vaultHits, fileHits });
+    }
     if (quick.isQuickAgentsStatus(said)) {
       return quick.agentsStatusAnswer(ensureAgentSessions().summaries());
     }
@@ -669,12 +690,14 @@ async function quickAnswer(said) {
           return null;
         }
       }).filter(Boolean);
-      const [ram, battery, ipInfo] = await Promise.all([
+      const [ram, gpu, topProcesses, battery, ipInfo] = await Promise.all([
         system.info('ram'),
+        system.info('gpu').catch(() => null),
+        system.info('topProcesses').catch(() => []),
         system.info('battery').catch(() => null),
         system.info('ip').catch(() => null),
       ]);
-      return quick.pcStatusAnswer({ disks, ram, battery, ip: ipInfo?.ip });
+      return quick.pcStatusAnswer({ disks, ram, gpu, topProcesses, battery, ip: ipInfo?.ip });
     }
     if (quick.isQuickMusic(said)) {
       return quick.musicNowAnswer(await launch.nowPlaying());
@@ -1216,7 +1239,7 @@ async function applyPhone() {
       sprites: phonePack,
       // "скинь фото" from the phone: drawn here like one asked on the PC, shown in her hub's gallery too
       mediaKind: photo.kind,
-      photo: (text, kind, history) => (kind === 'video' ? videoTask(text, history) : photoTask(text, history)),
+      photo: (text, kind, history) => (kind === 'screen' ? screenPhotoTask(text) : kind === 'video' ? videoTask(text, history) : photoTask(text, history)),
       galleryFile: (name) => {
         if (!photo.GALLERY_FILE.test(name)) return null;
         try { return fs.readFileSync(path.join(galleryDir(), name)); } catch { return null; }
@@ -1272,6 +1295,18 @@ async function applyPhone() {
           return null;
         }
         return artifactPath(hubArtifactRoot(), run, name);
+      },
+      agentArtifactAction: async ({ id, run, name, action }) => {
+        const history = ensureAgentSessions().history(id);
+        if (!history.some((message) => message.artifacts?.some((item) => item.run === run && item.name === name))) {
+          throw new Error('Файл не прикреплён к этому чату.');
+        }
+        const file = await artifactPath(hubArtifactRoot(), run, name);
+        if (action === 'obsidian') {
+          const dest = await exportArtifactToObsidian(file);
+          return { ok: true, path: dest };
+        }
+        return { ok: false };
       },
     });
   }
@@ -1544,6 +1579,23 @@ async function videoTask(said, history = [], signal) {
   fs.writeFileSync(path.join(galleryDir(), photo.metaName(name)), JSON.stringify({ said, prompt, her: true, video: true, at: Date.now() }, null, 2));
   chatsWin?.webContents.send('gallery:changed');
   return `${plan.caption || 'Держи.'}\n[[photo:${name}]]`;
+}
+
+async function screenPhotoTask(said = 'Скриншот экрана ПК') {
+  const d = targetDisplay();
+  const k = d.scaleFactor || 1;
+  const fit = Math.min(1, 1440 / (d.bounds.width * k));
+  const size = { width: Math.round(d.bounds.width * k * fit), height: Math.round(d.bounds.height * k * fit) };
+  const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: size });
+  const src = sources.find((s) => s.display_id === String(d.id)) || sources[0];
+  if (!src || src.thumbnail.isEmpty()) throw new Error('Не удалось захватить экран ПК');
+  const png = src.thumbnail.toPNG();
+  const name = photo.galleryName(new Date(), Math.random(), 'png');
+  fs.mkdirSync(galleryDir(), { recursive: true });
+  fs.writeFileSync(path.join(galleryDir(), name), png);
+  fs.writeFileSync(path.join(galleryDir(), photo.metaName(name)), JSON.stringify({ said, prompt: 'screenshot', her: false, at: Date.now() }, null, 2));
+  chatsWin?.webContents.send('gallery:changed');
+  return `Вот что сейчас на экране ноутбука.\n[[photo:${name}]]`;
 }
 
 /** Her pictures, newest first: [{ name, said, at }]. */

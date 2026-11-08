@@ -50,6 +50,24 @@ async function info(what) {
     }
   }
   if (what === 'ram') return { total: os.totalmem(), used: os.totalmem() - os.freemem() };
+  if (what === 'gpu') {
+    const csv = await new Promise((resolve) => {
+      execFile('nvidia-smi', ['--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu', '--format=csv,noheader,nounits'], { windowsHide: true, timeout: 4000 }, (err, stdout) => resolve(err ? '' : String(stdout || '').trim()));
+    });
+    if (!csv) return null;
+    const [name, usedMb, totalMb, util, temp] = csv.split(/\r?\n/)[0].split(',').map((s) => s.trim());
+    return { name, usedMb: Number(usedMb) || 0, totalMb: Number(totalMb) || 0, util: Number(util) || 0, temp: Number(temp) || 0 };
+  }
+  if (what === 'topProcesses') {
+    const out = WIN && await apps.powershell('Get-Process | Group-Object ProcessName | ForEach-Object { [PSCustomObject]@{ name = $_.Name; mb = [math]::Round(($_.Group | Measure-Object WorkingSet64 -Sum).Sum / 1MB) } } | Sort-Object mb -Descending | Select-Object -First 5 | ConvertTo-Json -Compress').catch(() => '');
+    if (!out) return [];
+    try {
+      const parsed = JSON.parse(out);
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      return [];
+    }
+  }
   if (what === 'ip') {
     const local = Object.entries(os.networkInterfaces())
       .filter(([name]) => !/virtual|vethernet|vmware|loopback|vbox|wsl|hyper-v/i.test(name))

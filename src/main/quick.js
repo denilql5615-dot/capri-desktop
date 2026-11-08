@@ -9,7 +9,9 @@ const ASK_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(что\s+
 const REMINDER_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(какие\s+(у\s+меня\s+)?напоминания|мои\s+напоминания|покажи\s+(мои\s+)?напоминания|что\s+(там\s+)?по\s+напоминаниям|есть\s+(ли\s+)?напоминания)/i;
 const MAIL_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(что\s+(там\s+)?(пришло|нового|есть)\s+(на\s+почт[уе]|в\s+почт[еу]|в\s+ящик[е]?)|что\s+(там\s+)?в\s+почте|что\s+с\s+почтой|проверь\s+почту|покажи\s+(новые\s+|последние\s+|свежие\s+)?письма|какие\s+(новые\s+|последние\s+|свежие\s+)?письма|есть\s+(ли\s+)?(новые\s+|свежие\s+)?письма|новые\s+письма)/i;
 const MUSIC_NOW_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(что\s+(сейчас\s+|там\s+)?играет|какая\s+(сейчас\s+)?(песня|музыка)\s*(играет)?|какой\s+(сейчас\s+)?трек\s*(играет)?|что\s+по[её]т)/i;
-const PC_STATUS_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(сколько\s+(свободного\s+)?места(\s+на\s+диск[еах])?|сколько\s+(сейчас\s+)?(оперативки|озу|памяти\s+занято|ram)|какой\s+(сейчас\s+)?(заряд(\s+батареи)?|у\s+меня\s+ip|айпи)|статус\s+(пк|системы|компьютера|пекарни)|состояние\s+(пк|системы|компьютера))/i;
+const PC_STATUS_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(сколько\s+(свободного\s+)?места(\s+на\s+диск[еах])?|сколько\s+(сейчас\s+)?(оперативки|озу|памяти\s+занято|ram|видеопамяти|vram)|какой\s+(сейчас\s+)?(заряд(\s+батареи)?|у\s+меня\s+ip|айпи)|статус\s+(пк|системы|компьютера|пекарни|гпу|gpu|видеокарты)|состояние\s+(пк|системы|компьютера)|кто\s+(сейчас\s+)?жр[её]т\s+(память|озу|оперативку)|топ\s+процессов|нагрузка\s+(на\s+)?(пк|систему)|температура\s+(гпу|gpu|видеокарты))/i;
+const FREE_MEM_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(освободи\s+(память|озу|оперативку|vram|видеопамять)|выгрузи\s+(модели|ollama|олламу)|очисти\s+(память|озу|vram|видеопамять))\s*[.!?]*$/i;
+const QUICK_SEARCH_RE = /^\s*(?:капри,?\s+)?(?:найди\s+в\s+(?:обсидиан[е]?|obsidian|баз[е]|заметках)|что\s+в\s+(?:обсидиан[е]?|заметках|баз[е])\s+(?:про|о|об)|найди\s+(?:файл|документ|заметку))\s*[,:—-]?\s*(.+)$/i;
 const AGENTS_STATUS_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(что\s+(там\s+)?в\s+хабе|кто\s+(сейчас\s+)?работает\s+в\s+хабе|какие\s+задачи\s+в\s+(работе|хабе)|статус\s+(агентов|хаба)|чем\s+заняты\s+агенты)/i;
 const REMEMBER_RE = /^\s*(?:капри,?\s+)?(?:запомни|запиши\s+в\s+память|сохрани\s+в\s+память|запиши\s+заметку)(?:\s*,?\s*что)?\s*[,:—-]?\s*(.+)$/is;
 const MORE_RE = /(?<![а-яё])(перенес|перенос|добав|созда|запланир|назнач|удали|отмени|убери|напомни|измени|поменя|почему|зачем|как\s+лучше|посовету|и\s+ещ[её]|а\s+ещ[её]|потом|затем|напиши|отправ|ответь|сделай|прочитай\s+полностью|о\s+ч[её]м)/i;
@@ -18,6 +20,17 @@ function parseRememberCommand(said) {
   const m = REMEMBER_RE.exec(String(said || '').trim());
   const text = m?.[1]?.trim();
   return text && text.length >= 3 && text.length <= 1000 ? text : null;
+}
+
+function isQuickFreeMemory(said) {
+  const t = String(said || '').trim();
+  return t.length > 0 && t.length <= 80 && FREE_MEM_RE.test(t);
+}
+
+function parseQuickSearchCommand(said) {
+  const m = QUICK_SEARCH_RE.exec(String(said || '').trim());
+  const q = m?.[1]?.replace(/[.!?]+$/, '').trim();
+  return q && q.length >= 2 && q.length <= 120 ? q : null;
 }
 
 function isQuickReminders(said) {
@@ -140,7 +153,7 @@ function gb(bytes) {
   return Math.round((Number(bytes || 0) / (1024 ** 3)) * 10) / 10;
 }
 
-function pcStatusAnswer({ disks = [], ram = null, battery = null, ip = null } = {}) {
+function pcStatusAnswer({ disks = [], ram = null, gpu = null, topProcesses = [], battery = null, ip = null } = {}) {
   const parts = [];
   if (disks.length) {
     parts.push(`Диски: ${disks.map((d) => `${d.drive} свободно ${gb(d.free)} ГБ из ${gb(d.total)} ГБ`).join('; ')}.`);
@@ -149,11 +162,32 @@ function pcStatusAnswer({ disks = [], ram = null, battery = null, ip = null } = 
     const pct = Math.round((ram.used / ram.total) * 100);
     parts.push(`ОЗУ: занято ${gb(ram.used)} из ${gb(ram.total)} ГБ (${pct}%).`);
   }
+  if (gpu?.totalMb) {
+    parts.push(`GPU (${gpu.name || 'RTX'}): VRAM ${gpu.usedMb} / ${gpu.totalMb} МБ (нагрузка ${gpu.util}%, ${gpu.temp}°C).`);
+  }
+  if (topProcesses.length) {
+    parts.push(`Топ ОЗУ: ${topProcesses.slice(0, 5).map((p) => `${p.name} (${p.mb} МБ)`).join(', ')}.`);
+  }
   if (battery && !battery.none && Number.isFinite(battery.percent)) {
     parts.push(`Батарея: ${battery.percent}% (${battery.charging ? 'на зарядке' : 'от аккумулятора'}).`);
   }
   if (ip) parts.push(`Локальный IP: ${ip}.`);
   return parts.join(' ') || 'Не удалось прочитать метрики ПК.';
+}
+
+function quickSearchAnswer({ query, vaultHits = [], fileHits = [] } = {}) {
+  if (!vaultHits.length && !fileHits.length) {
+    return `По запросу «${query}» в Obsidian и документах ничего не нашлось.`;
+  }
+  const lines = [];
+  for (const v of vaultHits.slice(0, 4)) {
+    lines.push(`• [Obsidian] ${v.title} (${v.file}): ${clip(v.text, 140)}`);
+  }
+  for (const f of fileHits.slice(0, 4)) {
+    const snip = f.snippet ? ` — ${clip(f.snippet, 120)}` : '';
+    lines.push(`• [Файл] ${f.name} (${f.folder})${snip}`);
+  }
+  return `Нашла по запросу «${query}»:\n${lines.join('\n')}`;
 }
 
 function agentsStatusAnswer(summaries = []) {
@@ -173,6 +207,7 @@ function agentsStatusAnswer(summaries = []) {
 }
 
 module.exports = {
-  isQuick, isQuickReminders, isQuickMail, isQuickMusic, isQuickPcStatus, isQuickAgentsStatus, parseRememberCommand,
-  scheduleAnswer, remindersAnswer, mailAnswer, musicNowAnswer, pcStatusAnswer, agentsStatusAnswer,
+  isQuick, isQuickReminders, isQuickMail, isQuickMusic, isQuickPcStatus, isQuickAgentsStatus,
+  isQuickFreeMemory, parseRememberCommand, parseQuickSearchCommand,
+  scheduleAnswer, remindersAnswer, mailAnswer, musicNowAnswer, pcStatusAnswer, quickSearchAnswer, agentsStatusAnswer,
 };
