@@ -122,7 +122,8 @@ function isQuickAlta(said) {
 
 function altaStatusAnswer({ planMarkdown = '', tasks = [] } = {}) {
   const lines = [];
-  const bullets = String(planMarkdown || '')
+  const cleanMd = String(planMarkdown || '').replace(/^---[\s\S]*?---\r?\n/, '');
+  const bullets = cleanMd
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l.startsWith('- '))

@@ -682,10 +682,10 @@ async function quickAnswer(said) {
     const clipCmd = quick.parseClipboardCommand(said);
     if (clipCmd) {
       if (clipCmd.type === 'set') {
-        clipboard.writeText(clipCmd.text);
+        await clipboard.writeText(clipCmd.text);
         return `Скопировала в буфер обмена ПК: «${clipCmd.text.slice(0, 120)}».`;
       }
-      const cur = String(clipboard.readText() || '').trim();
+      const cur = String((await clipboard.readText()) || '').trim();
       return cur ? `В буфере обмена ПК сейчас:\n${cur.slice(0, 1500)}` : 'Буфер обмена ПК сейчас пуст (или там не текст).';
     }
     if (quick.isQuickAlta(said)) {
@@ -1332,9 +1332,9 @@ async function applyPhone() {
         const text = await quickAnswer('освободи память');
         return { ok: true, text };
       },
-      getClipboard: () => String(clipboard.readText() || ''),
-      setClipboard: (text) => {
-        clipboard.writeText(String(text || ''));
+      getClipboard: async () => String((await clipboard.readText()) || ''),
+      setClipboard: async (text) => {
+        await clipboard.writeText(String(text || ''));
         return true;
       },
       control: phoneControl,
