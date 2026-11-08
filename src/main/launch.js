@@ -423,6 +423,14 @@ async function music(rawQuery) {
 // browser. { title } of what it found, or { title: null } when it could only open the search.
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
 const VIDEO = /"videoRenderer":\{"videoId":"([\w-]{11})"[\s\S]*?"title":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"/;
+const FREETUBE_PATHS = [
+  path.join(process.env.LOCALAPPDATA || '', 'Programs', 'FreeTube', 'FreeTube.exe'),
+  path.join(process.env.ProgramFiles || 'C:\\Program Files', 'FreeTube', 'FreeTube.exe'),
+];
+
+function findFreeTube() {
+  return FREETUBE_PATHS.find((p) => p && fs.existsSync(p)) || null;
+}
 
 async function youtube(query) {
   const q = String(query || '').trim().slice(0, 200);
@@ -440,7 +448,13 @@ async function youtube(query) {
   } catch {
     // offline or YouTube changed its page: the search still opens
   }
-  await shell.openExternal(video ? `https://www.youtube.com/watch?v=${video.id}` : search);
+  const targetUrl = video ? `https://www.youtube.com/watch?v=${video.id}` : search;
+  const ftExe = WIN ? findFreeTube() : null;
+  if (ftExe) {
+    spawn(ftExe, [targetUrl], { detached: true, windowsHide: false, stdio: 'ignore' }).on('error', () => {}).unref();
+    return { title: video?.title || null, player: 'FreeTube' };
+  }
+  await shell.openExternal(targetUrl);
   return { title: video?.title || null };
 }
 
@@ -484,4 +498,4 @@ async function site(address) {
   return true;
 }
 
-module.exports = { launchables, match, find, launch, media, music, nowPlaying, parsePlayerRequest, PLAYERS, youtube, roblox, site, siteUrl, risky };
+module.exports = { launchables, match, find, launch, media, music, nowPlaying, parsePlayerRequest, PLAYERS, youtube, findFreeTube, roblox, site, siteUrl, risky };

@@ -198,11 +198,11 @@ function appendChat(dir, { said, answer, by = 'Капри', at = Date.now() }) {
 function writeOutIndex(folder) {
   const rows = fs.readdirSync(folder).filter((n) => n.endsWith('.md') && !n.startsWith('_')).sort().reverse()
     .map((name) => `- [[${name.slice(0, -3)}]]`);
-  fs.writeFileSync(path.join(folder, OUT_INDEX), `# Результаты\n\nЧто Claude и Codex сделали по твоим просьбам через Капри.\n\n${rows.join('\n')}\n`, 'utf8');
+  fs.writeFileSync(path.join(folder, OUT_INDEX), `# Результаты\n\nЧто Claude, Codex и Antigravity сделали по твоим просьбам через Капри и GENESIS HUB.\n\n${rows.join('\n')}\n`, 'utf8');
 }
 
 /** What a worker did for you, as a note in <vault>/Результаты. Returns its path in the vault. */
-function writeOutput(dir, { worker, task, answer, folder: workFolder, at = Date.now() }) {
+function writeOutput(dir, { worker, task, answer, folder: workFolder, artifacts = [], at = Date.now() }) {
   const body = String(answer || '').trim();
   const asked = String(task || '').trim();
   if (!body || !asked) return null;
@@ -212,9 +212,12 @@ function writeOutput(dir, { worker, task, answer, folder: workFolder, at = Date.
   const base = fileName(`${localDay(d)} ${pad(d.getHours())}-${pad(d.getMinutes())} ${asked.slice(0, 50)}`);
   let name = base;
   for (let n = 2; fs.existsSync(path.join(folder, `${name}.md`)); n++) name = `${base} (${n})`;
+  const artLines = Array.isArray(artifacts) && artifacts.length
+    ? `\n\n**Созданные файлы:**\n${artifacts.map((a) => `- \`${typeof a === 'string' ? a : a.name}\``).join('\n')}`
+    : '';
   const files = workFolder ? `\n\nФайлы — в папке ${workFolder}` : '';
   fs.writeFileSync(path.join(folder, `${name}.md`),
-    `---\nтип: результат\nкто: ${worker}\nсоздано: ${localDay(d)}\n---\n**Задача:** ${asked.slice(0, 2000)}\n\n${body.slice(0, 20000)}${files}\n\n[[${OUT_INDEX.slice(0, -3)}]]\n`, 'utf8');
+    `---\nтип: результат\nкто: ${worker}\nсоздано: ${localDay(d)}\n---\n**Задача:** ${asked.slice(0, 2000)}\n\n${body.slice(0, 20000)}${artLines}${files}\n\n[[${OUT_INDEX.slice(0, -3)}]]\n`, 'utf8');
   writeOutIndex(folder);
   return `${OUT_DIR}/${name}.md`;
 }

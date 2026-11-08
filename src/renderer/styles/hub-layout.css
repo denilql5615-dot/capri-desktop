@@ -167,6 +167,9 @@ body:has(> .hud) {
 .agents__welcome strong { color: #fff; font-size: 20px; }
 .agents__welcome-mark { width: 38px; height: 38px; background: radial-gradient(circle, var(--hub-signal) 1.5px, transparent 2px) 0 0 / 7px 7px; }
 .hud .agents__compose { display: grid; gap: 6px; padding: 8px; background: var(--hub-panel); border: 1px solid var(--hub-rule); border-radius: 8px; }
+.agents__presets { display: flex; flex-wrap: wrap; gap: 5px; padding-bottom: 4px; border-bottom: 1px solid var(--hub-rule); }
+.hud .agents__presets .panel__action { min-height: 24px; padding-inline: 8px !important; font-size: 11px; color: var(--hub-muted); background: var(--hub-base); }
+.hud .agents__presets .panel__action:hover:not(:disabled) { color: #fff; border-color: var(--hub-signal); }
 .hud .agents__input { width: 100%; min-height: 42px; max-height: 120px; padding: 6px; border: 0; background: transparent; }
 .agents__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; }
 .agents__model-label { margin-right: auto; color: var(--hub-muted); font-size: 12px; }

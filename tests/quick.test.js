@@ -2,7 +2,10 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { isQuick, isQuickMail, isQuickReminders, isQuickMusic, scheduleAnswer, remindersAnswer, mailAnswer, musicNowAnswer } = require('../src/main/quick');
+const {
+  isQuick, isQuickMail, isQuickReminders, isQuickMusic, isQuickPcStatus, isQuickAgentsStatus,
+  scheduleAnswer, remindersAnswer, mailAnswer, musicNowAnswer, pcStatusAnswer, agentsStatusAnswer,
+} = require('../src/main/quick');
 const { videoGraph } = require('../src/main/comfy');
 
 test('isQuick: plain questions about the schedule', () => {
@@ -92,4 +95,26 @@ test('isQuickMusic, musicNowAnswer, and fast Wan 2.1 FP8 videoGraph', () => {
   assert.strictEqual(g[1].inputs.weight_dtype, 'fp8_e4m3fn_fast');
   assert.strictEqual(g[9].inputs.steps, 20);
   assert.strictEqual(g[12].inputs.crf, 18);
+});
+
+test('isQuickPcStatus, pcStatusAnswer, isQuickAgentsStatus, and agentsStatusAnswer', () => {
+  for (const q of ['сколько места на диске?', 'сколько оперативки занято', 'какой у меня ip?', 'статус пк', 'состояние системы']) {
+    assert.ok(isQuickPcStatus(q), q);
+  }
+  const pc = pcStatusAnswer({
+    disks: [{ drive: 'C:', free: 80 * (1024 ** 3), total: 200 * (1024 ** 3) }],
+    ram: { used: 16 * (1024 ** 3), total: 32 * (1024 ** 3) },
+    battery: { percent: 95, charging: true },
+    ip: '192.168.1.50',
+  });
+  assert.match(pc, /C: свободно 80 ГБ из 200 ГБ/);
+  assert.match(pc, /ОЗУ: занято 16 из 32 ГБ \(50%\)/);
+  assert.match(pc, /Батарея: 95% \(на зарядке\)/);
+  assert.match(pc, /Локальный IP: 192\.168\.1\.50/);
+
+  for (const q of ['что там в хабе?', 'кто сейчас работает в хабе?', 'какие задачи в работе?', 'статус агентов']) {
+    assert.ok(isQuickAgentsStatus(q), q);
+  }
+  assert.match(agentsStatusAnswer([{ agent: 'codex', title: 'Сборка APK', busy: true, queued: false }]), /В работе \(codex\): Сборка APK/);
+  assert.match(agentsStatusAnswer([{ agent: 'claude', title: 'Прошлый чат', busy: false, queued: false }]), /активных задач нет/);
 });

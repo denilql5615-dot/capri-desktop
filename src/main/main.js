@@ -404,7 +404,9 @@ function ensureAgentSessions() {
         if (compiled.length) {
           text = text.replace(/\.docx\.md\b/gi, '.docx').replace(/\.pdf\.md\b/gi, '.pdf').replace(/\.png\.svg\b/gi, '.png');
         }
-        return { text, artifacts: await listArtifacts(root, output) };
+        const artifacts = await listArtifacts(root, output);
+        toVault(cfg, model && model in workers.WORKER_LABELS ? model : agent, lastUser, text, artifacts);
+        return { text, artifacts };
       }
       return ollama.chat({ model, keepAlive: agent === 'faun' ? 0 : '15m', messages: [
         { role: 'system', content: agent === 'faun' ? 'Веди ролевую сцену на русском, следуя сеттингу пользователя.' : `Ты Капри. Отвечай по-русски. ${hints}` },
@@ -580,7 +582,7 @@ async function calendarData(service, said) {
 
 // The exchange in your vault (notes.js): the talk in Сырьё/Чаты, what Claude or Codex made in Результаты.
 // A message with a key or password in it isn't written down. Off: config vaultChats false.
-function toVault(cfg, worker, said, answer) {
+function toVault(cfg, worker, said, answer, artifacts = []) {
   if (cfg.vaultChats === false || hasSecret(said) || worker === 'stop') return;
   try {
     const dir = notesDir();
@@ -591,7 +593,7 @@ function toVault(cfg, worker, said, answer) {
       video: 'Капри (видео)',
     }[worker] || 'Капри';
     notes.appendChat(dir, { said, answer, by });
-    if (worker && worker in workers.WORKER_LABELS) notes.writeOutput(dir, { worker: by, task: said, answer, folder: workers.workDir(cfg) });
+    if (worker && worker in workers.WORKER_LABELS) notes.writeOutput(dir, { worker: by, task: said, answer, folder: workers.workDir(cfg), artifacts });
   } catch (err) {
     console.warn('[capri] vault:', err.message);
   }
@@ -642,6 +644,25 @@ async function morningBriefTick(now = new Date()) {
 // null: not one, or couldn't be read (her model answers then).
 async function quickAnswer(said) {
   try {
+    if (quick.isQuickAgentsStatus(said)) {
+      return quick.agentsStatusAnswer(ensureAgentSessions().summaries());
+    }
+    if (quick.isQuickPcStatus(said)) {
+      const disks = ['C:', 'D:'].map((drive) => {
+        try {
+          const s = fs.statfsSync(`${drive}\\`);
+          return { drive, free: s.bavail * s.bsize, total: s.blocks * s.bsize };
+        } catch {
+          return null;
+        }
+      }).filter(Boolean);
+      const [ram, battery, ipInfo] = await Promise.all([
+        system.info('ram'),
+        system.info('battery').catch(() => null),
+        system.info('ip').catch(() => null),
+      ]);
+      return quick.pcStatusAnswer({ disks, ram, battery, ip: ipInfo?.ip });
+    }
     if (quick.isQuickMusic(said)) {
       return quick.musicNowAnswer(await launch.nowPlaying());
     }
@@ -1341,7 +1362,9 @@ async function routeOf(text, context = [], signal) {
   const canHands = Boolean(desktopCli?.installed);
   const keyComputer = canHands && agent.isComputerTask(text);
   if (!named && !keyComputer && String(text || '').trim().length < SHORT_MESSAGE) return { worker: null };
-  if (!named && !keyComputer && quick.isQuick(text)) return { worker: null }; // her quick answer (quick.js)
+  const isFast = quick.isQuick(text) || quick.isQuickMail(text) || quick.isQuickMusic(text)
+    || quick.isQuickPcStatus(text) || quick.isQuickAgentsStatus(text);
+  if (!named && !keyComputer && isFast) return { worker: null }; // her quick answer (quick.js)
   // Use the configured chat model for routing too; loading a second local model would waste VRAM.
   // model, loaded anyway: with the roleplay one in VRAM a second model wouldn't fit, so keywords then
   const model = cfg.provider === 'ollama' && cfg.router !== false ? pickModel(cfg) : null;

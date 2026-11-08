@@ -326,6 +326,27 @@ async function toggleVoiceRecording() {
   }
 }
 
+const PRESETS = [
+  ['📄 В PDF', '[Собери результат в готовый PDF-документ (NAME.pdf.md -> NAME.pdf)]: '],
+  ['📝 В DOCX', '[Собери результат в готовый Word-документ (NAME.docx.md -> NAME.docx)]: '],
+  ['📊 Схема PNG', '[Нарисуй чистую векторную схему в NAME.png.svg (сконвертируется в NAME.png)]: '],
+  ['🎮 GDD / Баланс', '[Опирайся на референсы геймдизайна C:\\Capri_Tools\\game-studios-reference]: '],
+  ['🚀 Питч / Store', '[Используй фреймворки C:\\Capri_Tools\\marketingskills и напиши без ИИ-штампов]: '],
+];
+if ($('presets')) {
+  $('presets').replaceChildren(...PRESETS.map(([label, prefix]) => {
+    const chip = button(label, () => {
+      const id = current()?.id;
+      if (!id) return;
+      const cur = $('input').value;
+      $('input').value = cur.includes(prefix.trim()) ? cur : `${prefix}${cur}`;
+      drafts.set(id, $('input').value);
+      $('input').focus();
+    });
+    chip.removeAttribute('aria-pressed');
+    return chip;
+  }));
+}
 if ($('mic')) $('mic').onclick = toggleVoiceRecording;
 if ($('attach')) {
   $('attach').onclick = async () => {

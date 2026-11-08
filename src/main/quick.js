@@ -9,6 +9,8 @@ const ASK_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(что\s+
 const REMINDER_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(какие\s+(у\s+меня\s+)?напоминания|мои\s+напоминания|покажи\s+(мои\s+)?напоминания|что\s+(там\s+)?по\s+напоминаниям|есть\s+(ли\s+)?напоминания)/i;
 const MAIL_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(что\s+(там\s+)?(пришло|нового|есть)\s+(на\s+почт[уе]|в\s+почт[еу]|в\s+ящик[е]?)|что\s+(там\s+)?в\s+почте|что\s+с\s+почтой|проверь\s+почту|покажи\s+(новые\s+|последние\s+|свежие\s+)?письма|какие\s+(новые\s+|последние\s+|свежие\s+)?письма|есть\s+(ли\s+)?(новые\s+|свежие\s+)?письма|новые\s+письма)/i;
 const MUSIC_NOW_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(что\s+(сейчас\s+|там\s+)?играет|какая\s+(сейчас\s+)?(песня|музыка)\s*(играет)?|какой\s+(сейчас\s+)?трек\s*(играет)?|что\s+по[её]т)/i;
+const PC_STATUS_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(сколько\s+(свободного\s+)?места(\s+на\s+диск[еах])?|сколько\s+(сейчас\s+)?(оперативки|озу|памяти\s+занято|ram)|какой\s+(сейчас\s+)?(заряд(\s+батареи)?|у\s+меня\s+ip|айпи)|статус\s+(пк|системы|компьютера|пекарни)|состояние\s+(пк|системы|компьютера))/i;
+const AGENTS_STATUS_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(что\s+(там\s+)?в\s+хабе|кто\s+(сейчас\s+)?работает\s+в\s+хабе|какие\s+задачи\s+в\s+(работе|хабе)|статус\s+(агентов|хаба)|чем\s+заняты\s+агенты)/i;
 const MORE_RE = /(?<![а-яё])(перенес|перенос|добав|созда|запланир|назнач|удали|отмени|убери|напомни|измени|поменя|почему|зачем|как\s+лучше|посовету|и\s+ещ[её]|а\s+ещ[её]|потом|затем|напиши|отправ|ответь|сделай|прочитай\s+полностью|о\s+ч[её]м)/i;
 
 function isQuickReminders(said) {
@@ -24,6 +26,16 @@ function isQuickMail(said) {
 function isQuickMusic(said) {
   const t = String(said || '').trim();
   return t.length > 0 && t.length <= 80 && /[а-яё]/i.test(t) && MUSIC_NOW_RE.test(t) && !MORE_RE.test(t);
+}
+
+function isQuickPcStatus(said) {
+  const t = String(said || '').trim();
+  return t.length > 0 && t.length <= 90 && /[а-яё]/i.test(t) && PC_STATUS_RE.test(t) && !MORE_RE.test(t);
+}
+
+function isQuickAgentsStatus(said) {
+  const t = String(said || '').trim();
+  return t.length > 0 && t.length <= 90 && /[а-яё]/i.test(t) && AGENTS_STATUS_RE.test(t) && !MORE_RE.test(t);
 }
 
 /** A plain question about your schedule, answered by code (Russian only: her lines here are Russian). */
@@ -117,4 +129,43 @@ function musicNowAnswer(np) {
   return `${np.player} открыт, но сейчас на паузе.`;
 }
 
-module.exports = { isQuick, isQuickReminders, isQuickMail, isQuickMusic, scheduleAnswer, remindersAnswer, mailAnswer, musicNowAnswer };
+function gb(bytes) {
+  return Math.round((Number(bytes || 0) / (1024 ** 3)) * 10) / 10;
+}
+
+function pcStatusAnswer({ disks = [], ram = null, battery = null, ip = null } = {}) {
+  const parts = [];
+  if (disks.length) {
+    parts.push(`Диски: ${disks.map((d) => `${d.drive} свободно ${gb(d.free)} ГБ из ${gb(d.total)} ГБ`).join('; ')}.`);
+  }
+  if (ram?.total) {
+    const pct = Math.round((ram.used / ram.total) * 100);
+    parts.push(`ОЗУ: занято ${gb(ram.used)} из ${gb(ram.total)} ГБ (${pct}%).`);
+  }
+  if (battery && !battery.none && Number.isFinite(battery.percent)) {
+    parts.push(`Батарея: ${battery.percent}% (${battery.charging ? 'на зарядке' : 'от аккумулятора'}).`);
+  }
+  if (ip) parts.push(`Локальный IP: ${ip}.`);
+  return parts.join(' ') || 'Не удалось прочитать метрики ПК.';
+}
+
+function agentsStatusAnswer(summaries = []) {
+  const busy = summaries.filter((s) => s.busy);
+  const queued = summaries.filter((s) => s.queued);
+  if (!busy.length && !queued.length) {
+    const recent = summaries.slice(0, 3).map((s) => `• ${s.agent}: ${clip(s.title || 'Новый разговор', 60)}`);
+    return recent.length
+      ? `Сейчас в Хабе активных задач нет. Последние чаты:\n${recent.join('\n')}`
+      : 'В Хабе пока нет активных задач.';
+  }
+  const lines = [
+    ...busy.map((s) => `• В работе (${s.agent}): ${clip(s.title || 'Задача', 70)}`),
+    ...queued.map((s) => `• В очереди (${s.agent}): ${clip(s.title || 'Задача', 70)}`),
+  ];
+  return `Задачи в Хабе (${lines.length}):\n${lines.join('\n')}`;
+}
+
+module.exports = {
+  isQuick, isQuickReminders, isQuickMail, isQuickMusic, isQuickPcStatus, isQuickAgentsStatus,
+  scheduleAnswer, remindersAnswer, mailAnswer, musicNowAnswer, pcStatusAnswer, agentsStatusAnswer,
+};

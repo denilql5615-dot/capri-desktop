@@ -30,13 +30,14 @@ test('appendChat: a file a day in Сырьё/Чаты, exchanges added in order'
 test('writeOutput: a note per task in Результаты, an index linking them, no overwrite', () => {
   const { root, dir } = vault();
   const at = new Date(2026, 10, 4, 9, 30).getTime();
-  const one = notes.writeOutput(dir, { worker: 'Claude', task: 'сделай план тренировок', answer: 'Готово: plan.docx', folder: 'C:\\Docs\\Capri', at });
+  const one = notes.writeOutput(dir, { worker: 'Claude', task: 'сделай план тренировок', answer: 'Готово: plan.docx', folder: 'C:\\Docs\\Capri', artifacts: [{ name: 'plan.docx' }], at });
   const two = notes.writeOutput(dir, { worker: 'Codex', task: 'сделай план тренировок', answer: 'ещё раз', at });
   assert.equal(one, 'Результаты/2026-11-04 09-30 сделай план тренировок.md');
   assert.equal(two, 'Результаты/2026-11-04 09-30 сделай план тренировок (2).md');
   const note = fs.readFileSync(path.join(root, one), 'utf8');
   assert.match(note, /кто: Claude/);
   assert.match(note, /\*\*Задача:\*\* сделай план тренировок/);
+  assert.match(note, /\*\*Созданные файлы:\*\*\n- `plan\.docx`/);
   assert.match(note, /Файлы — в папке C:\\Docs\\Capri/);
   const index = fs.readFileSync(path.join(root, 'Результаты', '_Результаты.md'), 'utf8');
   assert.ok(index.includes('[[2026-11-04 09-30 сделай план тренировок]]'));

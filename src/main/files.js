@@ -8,6 +8,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { app, shell, desktopCapturer, screen } = require('electron');
 const { powershell } = require('./apps');
+const { extractDocumentText } = require('./hub-artifacts');
+const SNIPPET_EXTS = new Set(['.pdf', '.docx', '.xlsx', '.pptx', '.txt', '.md', '.csv']);
 
 const LIMIT = 8;
 const found = new Set(); // what a search showed you: the only paths she opens from here
@@ -48,11 +50,14 @@ async function indexed(terms, exts) {
   return [...new Set(paths.map((l) => decodeURIComponent(l.slice(5)).replace(/\//g, '\\')))];
 }
 
-// The walk, when the index isn't there: your usual folders, a few levels down, by name and type.
+// The walk, when the index isn't there: your usual folders + Obsidian vault + D:\Capri, a few levels down, by name and type.
 function walked(terms, exts) {
-  const roots = ['desktop', 'documents', 'downloads', 'pictures', 'music', 'videos'].map((k) => app.getPath(k));
-  const onedrive = process.env.OneDrive;
-  if (onedrive) roots.push(onedrive);
+  const roots = [
+    ...['desktop', 'documents', 'downloads', 'pictures', 'music', 'videos'].map((k) => {
+      try { return app.getPath(k); } catch { return null; }
+    }).filter(Boolean),
+    ...['D:\\Obsidian\\C.A.P.R.I', 'D:\\Capri'].filter((p) => fs.existsSync(p)),
+  ];
   const hits = [];
   const queue = roots.map((dir) => [dir, 0]);
   let seen = 0;
@@ -77,14 +82,28 @@ function walked(terms, exts) {
   return hits;
 }
 
-// [{ path, name, folder }], the newest first, at most LIMIT. `query`: words of the name; `exts`:
+// [{ path, name, folder, snippet? }], the newest first, at most LIMIT. `query`: words of the name; `exts`:
 // the kinds of file it is (["aep"] for an After Effects project), when that's what was asked.
 async function search({ query = '', exts = [] } = {}) {
   const terms = words(query);
   if (!terms.length && !exts.length) return [];
   const paths = await indexed(terms, exts);
-  const results = listed(paths?.length ? paths : walked(terms, exts));
-  return results.length || !paths?.length ? results : listed(walked(terms, exts));
+  const rawResults = listed(paths?.length ? paths : walked(terms, exts));
+  const results = rawResults.length || !paths?.length ? rawResults : listed(walked(terms, exts));
+  let snippetsAdded = 0;
+  for (const item of results) {
+    if (snippetsAdded >= 2) break;
+    const ext = path.extname(item.path).toLowerCase();
+    if (!SNIPPET_EXTS.has(ext)) continue;
+    try {
+      const { text } = await extractDocumentText(item.path, { maxChars: 600 });
+      if (text) {
+        item.snippet = text.replace(/\s+/g, ' ').trim().slice(0, 400);
+        snippetsAdded++;
+      }
+    } catch { /* ignore extraction failure during search */ }
+  }
+  return results;
 }
 
 function listed(paths) {
