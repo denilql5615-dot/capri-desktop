@@ -253,4 +253,4 @@ function act(req = {}, { display } = {}) {
   }
 }
 
-module.exports = { act, SETTINGS };
+module.exports = { act, info, SETTINGS };
