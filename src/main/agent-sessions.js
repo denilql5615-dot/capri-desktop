@@ -21,6 +21,7 @@ class AgentSessions {
     this.run = run;
     this.notify = notify;
     this.active = new Map();
+    this.draining = false;
     try {
       this.sessions = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (!Array.isArray(this.sessions)) throw new Error('Неверный формат истории агентов.');
@@ -42,8 +43,10 @@ class AgentSessions {
   }
 
   summaries() {
-    return this.sessions.map(({ id, agent, model, updated, messages, pending }) => ({
+    return this.sessions.map(({ id, agent, model, updated, messages, pending, queued, queueCancelled }) => ({
       id, agent, model, updated, busy: this.active.has(id),
+      queued: Boolean(queued),
+      queueCancelled: Boolean(queueCancelled),
       title: messages.find((message) => message.role === 'user')?.content.slice(0, 72),
       canRetry: pending === true && messages.at(-1)?.role === 'user',
     })).sort((a, b) => b.updated - a.updated);
@@ -75,19 +78,53 @@ class AgentSessions {
   }
 
   stop(id) {
+    const session = this.sessions.find((item) => item.id === id);
+    if (session?.queued && !this.active.has(id)) {
+      this.save(this.sessions.map((item) => item.id === id ? { ...item, queued: undefined, queueCancelled: true } : item));
+      this.notify(id);
+    }
     this.active.get(id)?.abort();
+  }
+
+  enqueue(id, model, text) {
+    const session = this.sessions.find((item) => item.id === id);
+    if (!session || !MODELS[session.agent]?.some(([key]) => key === model)) throw new Error('Чат или модель недоступны.');
+    if (session.queued || this.active.has(id)) throw new Error('В этом чате уже есть задача.');
+    if (typeof text !== 'string' || !text.trim() || text.length > 8000) throw new Error('Сообщение должно содержать от 1 до 8000 символов.');
+    this.save(this.sessions.map((item) => item.id === id
+      ? { ...item, queued: { model, text: text.trim() }, queueCancelled: undefined, updated: Date.now() } : item));
+    this.notify(id);
+    void this.drain();
+    return { ok: true, queued: true };
+  }
+
+  async drain() {
+    if (this.draining || this.active.size) return;
+    this.draining = true;
+    try {
+      while (!this.active.size) {
+        const next = this.sessions.filter((item) => item.queued).sort((a, b) => a.updated - b.updated)[0];
+        if (!next) break;
+        await this.send(next.id, next.queued.model, next.queued.text, false, true);
+      }
+    } catch (err) {
+      console.warn('[agent queue]', err.message);
+    } finally {
+      this.draining = false;
+    }
   }
 
   stopAll() {
     for (const abort of this.active.values()) abort.abort();
   }
 
-  async send(id, model, text, retry = false) {
+  async send(id, model, text, retry = false, fromQueue = false) {
     const session = this.sessions.find((item) => item.id === id);
     if (!session || !Object.hasOwn(MODELS, session.agent) || !MODELS[session.agent].some(([key]) => key === model)) {
       throw new Error('Чат или модель недоступны.');
     }
     if (this.active.has(id)) throw new Error('Чат уже отвечает.');
+    if (session.queued && !fromQueue) throw new Error('В этом чате уже есть задача.');
     if (isLocal(session.agent) && this.sessions.some((item) => isLocal(item.agent) && this.active.has(item.id))) {
       throw new Error('Локальная модель уже отвечает в другом чате.');
     }
@@ -96,7 +133,7 @@ class AgentSessions {
     const messages = retry ? session.messages : [...session.messages, { role: 'user', content: text.trim() }];
     const abort = new AbortController();
     const commit = (rows, pending) => this.save(this.sessions.map((item) => item.id === id
-      ? { ...item, model, messages: rows, pending, updated: Date.now() } : item));
+      ? { ...item, model, messages: rows, pending, queued: undefined, updated: Date.now() } : item));
     commit(messages, true);
     this.active.set(id, abort);
     this.notify(id);
@@ -116,6 +153,7 @@ class AgentSessions {
     } finally {
       this.active.delete(id);
       this.notify(id);
+      void this.drain();
     }
   }
 }

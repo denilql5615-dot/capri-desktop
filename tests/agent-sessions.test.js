@@ -14,6 +14,21 @@ function make(run) {
   return { file, hub: new AgentSessions(file, run, () => {}) };
 }
 
+test('queued work survives reopening and runs once when the bridge starts again', async () => {
+  const { hub, file } = make(async () => 'unused');
+  const id = hub.create('claude');
+  hub.active.set('other', new AbortController());
+  hub.enqueue(id, 'sonnet', 'queued prompt');
+  assert.equal(hub.summaries()[0].queued, true);
+  let calls = 0;
+  const reopened = new AgentSessions(file, async () => { calls++; return 'answer'; }, () => {});
+  await reopened.drain();
+  await reopened.drain();
+  assert.equal(calls, 1);
+  assert.deepEqual(reopened.history(id).map((m) => m.content), ['queued prompt', 'answer']);
+  assert.equal(reopened.summaries()[0].queued, false);
+});
+
 test('a stopped run affects only its own chat; the other history survives reopening', async () => {
   const { hub, file } = make((agent, model, messages, signal) => agent === 'codex'
     ? new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))

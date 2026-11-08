@@ -16,6 +16,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
+const { MAX_UPLOAD_BYTES } = require('./hub-artifacts');
 
 const MAX_BODY = 64 * 1024;
 const AUDIO_TTL_MS = 10 * 60 * 1000;
@@ -123,20 +124,21 @@ class PhoneBridge {
     res.end(buf);
   }
 
-  readJson(req) {
+  readJson(req, limit = MAX_BODY) {
     return new Promise((resolve, reject) => {
       const chunks = [];
       let size = 0;
       req.on('data', (c) => {
         size += c.length;
-        if (size > MAX_BODY) {
+        if (size > limit) {
           reject(Object.assign(new Error('too large'), { status: 413 }));
-          req.destroy();
+          chunks.length = 0;
           return;
         }
         chunks.push(c);
       });
       req.on('end', () => {
+        if (size > limit) return;
         try {
           const v = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
           resolve(v && typeof v === 'object' && !Array.isArray(v) ? v : {});
@@ -221,7 +223,7 @@ class PhoneBridge {
         return this.send(res, 200, { id, messages: history || [] });
       }
       if (req.method === 'POST' && url.pathname === '/agents/send') {
-        const body = await this.readJson(req);
+        const body = await this.readJson(req, MAX_BODY + Math.ceil(MAX_UPLOAD_BYTES / 3) * 4);
         const result = await this.d.agentSend?.(body);
         return this.send(res, 200, result || { ok: false });
       }
