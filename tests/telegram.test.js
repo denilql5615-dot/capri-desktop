@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { TelegramBot, eventNotice, LONG_MS, LONG_ACTIONS } = require('../src/main/telegram');
+const { TelegramBot, eventNotice, hubNotice, LONG_MS, LONG_ACTIONS } = require('../src/main/telegram');
 
 test('Telegram links only from a private /start and sends no incoming commands', async () => {
   const calls = [];
@@ -33,4 +33,14 @@ test('Telegram notices only when input is needed or a long task is done', () => 
   eventNotice(sessions, { ...base, hook_event_name: 'UserPromptSubmit' }, 3000);
   for (let i = 0; i < LONG_ACTIONS; i += 1) eventNotice(sessions, { ...base, hook_event_name: 'PreToolUse' }, 3001 + i);
   assert.match(eventNotice(sessions, { ...base, hook_event_name: 'Stop', last_assistant_message: 'Всё готово.' }, 4000), /закончил долгую задачу[\s\S]*Всё готово/);
+
+  const notice = hubNotice({
+    agent: 'Claude Code',
+    model: 'claude-sonnet-4-6',
+    task: 'Собери GDD в PDF',
+    text: 'Документ собран и проверен.',
+    artifacts: [{ name: 'GDD.pdf' }],
+  });
+  assert.match(notice, /✅ \[HUB · Claude Code · claude-sonnet-4-6\] Собери GDD в PDF/);
+  assert.match(notice, /📎 Файлы: GDD\.pdf/);
 });

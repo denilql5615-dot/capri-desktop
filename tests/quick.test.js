@@ -5,6 +5,7 @@ const assert = require('node:assert');
 const {
   isQuick, isQuickMail, isQuickReminders, isQuickMusic, isQuickPcStatus, isQuickAgentsStatus,
   scheduleAnswer, remindersAnswer, mailAnswer, musicNowAnswer, pcStatusAnswer, agentsStatusAnswer,
+  parseRememberCommand,
 } = require('../src/main/quick');
 const { videoGraph } = require('../src/main/comfy');
 
@@ -117,4 +118,8 @@ test('isQuickPcStatus, pcStatusAnswer, isQuickAgentsStatus, and agentsStatusAnsw
   }
   assert.match(agentsStatusAnswer([{ agent: 'codex', title: 'Сборка APK', busy: true, queued: false }]), /В работе \(codex\): Сборка APK/);
   assert.match(agentsStatusAnswer([{ agent: 'claude', title: 'Прошлый чат', busy: false, queued: false }]), /активных задач нет/);
+
+  assert.strictEqual(parseRememberCommand('Капри, запомни: сервер в локальной сети на 192.168.1.10'), 'сервер в локальной сети на 192.168.1.10');
+  assert.strictEqual(parseRememberCommand('запиши в память что билд ALTA готов к тесту'), 'билд ALTA готов к тесту');
+  assert.strictEqual(parseRememberCommand('просто разговор без команды'), null);
 });

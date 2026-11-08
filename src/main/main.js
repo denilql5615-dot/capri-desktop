@@ -405,7 +405,11 @@ function ensureAgentSessions() {
           text = text.replace(/\.docx\.md\b/gi, '.docx').replace(/\.pdf\.md\b/gi, '.pdf').replace(/\.png\.svg\b/gi, '.png');
         }
         const artifacts = await listArtifacts(root, output);
-        toVault(cfg, model && model in workers.WORKER_LABELS ? model : agent, lastUser, text, artifacts);
+        const agentLabel = model && model in workers.WORKER_LABELS ? model : agent;
+        toVault(cfg, agentLabel, lastUser, text, artifacts);
+        if (text) {
+          telegramBot?.send(telegram.hubNotice({ agent: workers.WORKER_LABELS[agentLabel] || agentLabel, model, task: lastUser, text, artifacts })).catch(() => {});
+        }
         return { text, artifacts };
       }
       return ollama.chat({ model, keepAlive: agent === 'faun' ? 0 : '15m', messages: [
@@ -634,7 +638,9 @@ async function morningBriefTick(now = new Date()) {
     const mails = await recentMailList(service, '', 5);
     const mailLine = mails.length ? quick.mailAnswer(mails) : '';
     updateConfig({ morningBrief: { ...settings, last: brief.dayOf(now) } }); // once a day, whatever comes next
-    sendCommand('brief', { text: brief.text(today, now, undefined, mailLine) });
+    const briefText = brief.text(today, now, undefined, mailLine);
+    sendCommand('brief', { text: briefText });
+    telegramBot?.send(`☀️ ${briefText}`).catch(() => {});
   } finally {
     briefing = false;
   }
@@ -644,6 +650,13 @@ async function morningBriefTick(now = new Date()) {
 // null: not one, or couldn't be read (her model answers then).
 async function quickAnswer(said) {
   try {
+    const memo = quick.parseRememberCommand(said);
+    if (memo) {
+      const cfg = config.load();
+      config.save({ memories: [...new Set([...(cfg.memories || []), memo])] });
+      const title = notes.write(notesDir(), { title: memo.split(/\s+/).slice(0, 5).join(' '), type: 'о тебе', text: memo });
+      return `Записала в память Obsidian${title ? ` ([[${title}]])` : ''}: «${memo.slice(0, 140)}».`;
+    }
     if (quick.isQuickAgentsStatus(said)) {
       return quick.agentsStatusAnswer(ensureAgentSessions().summaries());
     }
@@ -1187,10 +1200,14 @@ async function applyPhone() {
       token: phoneToken,
       persona: phonePersona,
       chat: async (messages, signal) => {
+        const said = messages.findLast((m) => m.role === 'user')?.content || '';
+        const fast = await quickAnswer(said);
+        if (fast) return { text: fast, brain: 'quick' };
         const cfg = config.load();
         if (!chatModels) await refreshModels();
         const model = pickModel(cfg);
-        const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages }, () => {}, signal);
+        const enriched = await withPim(withNotes(messages), said);
+        const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages: enriched }, () => {}, signal);
         return { text, brain: model || cfg.provider };
       },
       speak: (text) => (config.load().voice.tts ? speech.speak(text, config.load().voice) : Promise.resolve(null)),
@@ -2000,6 +2017,7 @@ function registerIpc() {
     if (action === 'copy') { clipboard.writeText(file); return; }
     if (action === 'obsidian') { return exportArtifactToObsidian(file); }
     if (action === 'open') {
+      if (/\.excalidraw\.md$/i.test(name)) return exportArtifactToObsidian(file);
       const error = await shell.openPath(file);
       if (error) throw new Error(error);
       return;

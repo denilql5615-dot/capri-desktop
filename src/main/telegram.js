@@ -69,4 +69,12 @@ class TelegramBot {
   }
 }
 
-module.exports = { TelegramBot, eventNotice, LONG_MS, LONG_ACTIONS };
+function hubNotice({ agent, model, task, text, artifacts = [] } = {}) {
+  const who = [agent, model].filter(Boolean).join(' · ') || 'HUB';
+  const files = Array.isArray(artifacts) && artifacts.length
+    ? `\n📎 Файлы: ${artifacts.map((a) => (typeof a === 'string' ? a : a.name)).join(', ')}`
+    : '';
+  return `✅ [HUB · ${who}] ${clip(task, 90)}\n${clip(text, 400)}${files}`;
+}
+
+module.exports = { TelegramBot, eventNotice, hubNotice, LONG_MS, LONG_ACTIONS };

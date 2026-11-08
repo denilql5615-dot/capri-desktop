@@ -11,7 +11,14 @@ const MAIL_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(что\s
 const MUSIC_NOW_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(что\s+(сейчас\s+|там\s+)?играет|какая\s+(сейчас\s+)?(песня|музыка)\s*(играет)?|какой\s+(сейчас\s+)?трек\s*(играет)?|что\s+по[её]т)/i;
 const PC_STATUS_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(сколько\s+(свободного\s+)?места(\s+на\s+диск[еах])?|сколько\s+(сейчас\s+)?(оперативки|озу|памяти\s+занято|ram)|какой\s+(сейчас\s+)?(заряд(\s+батареи)?|у\s+меня\s+ip|айпи)|статус\s+(пк|системы|компьютера|пекарни)|состояние\s+(пк|системы|компьютера))/i;
 const AGENTS_STATUS_RE = /^\s*(а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(что\s+(там\s+)?в\s+хабе|кто\s+(сейчас\s+)?работает\s+в\s+хабе|какие\s+задачи\s+в\s+(работе|хабе)|статус\s+(агентов|хаба)|чем\s+заняты\s+агенты)/i;
+const REMEMBER_RE = /^\s*(?:капри,?\s+)?(?:запомни|запиши\s+в\s+память|сохрани\s+в\s+память|запиши\s+заметку)(?:\s*,?\s*что)?\s*[,:—-]?\s*(.+)$/is;
 const MORE_RE = /(?<![а-яё])(перенес|перенос|добав|созда|запланир|назнач|удали|отмени|убери|напомни|измени|поменя|почему|зачем|как\s+лучше|посовету|и\s+ещ[её]|а\s+ещ[её]|потом|затем|напиши|отправ|ответь|сделай|прочитай\s+полностью|о\s+ч[её]м)/i;
+
+function parseRememberCommand(said) {
+  const m = REMEMBER_RE.exec(String(said || '').trim());
+  const text = m?.[1]?.trim();
+  return text && text.length >= 3 && text.length <= 1000 ? text : null;
+}
 
 function isQuickReminders(said) {
   const t = String(said || '').trim();
@@ -166,6 +173,6 @@ function agentsStatusAnswer(summaries = []) {
 }
 
 module.exports = {
-  isQuick, isQuickReminders, isQuickMail, isQuickMusic, isQuickPcStatus, isQuickAgentsStatus,
+  isQuick, isQuickReminders, isQuickMail, isQuickMusic, isQuickPcStatus, isQuickAgentsStatus, parseRememberCommand,
   scheduleAnswer, remindersAnswer, mailAnswer, musicNowAnswer, pcStatusAnswer, agentsStatusAnswer,
 };

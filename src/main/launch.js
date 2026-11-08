@@ -166,6 +166,25 @@ const FOLDERS = [
   ['videos', /\bvid[ée]os\b|v[íi]deos|видео/i],
 ];
 
+const SPECIAL_APPS = [
+  ['Recordly', /запис\S*\s+экран|рекордер|recordly/i, () => path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Recordly', 'Recordly.exe')],
+  ['FreeTube', /фритюб|фритуб|freetube|ютуб\s*плеер/i, () => path.join(process.env.LOCALAPPDATA || '', 'Programs', 'FreeTube', 'FreeTube.exe')],
+  ['Obsidian', /обсидиан|obsidian|баз\S*\s+знани/i, () => path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Obsidian', 'Obsidian.exe')],
+  ['LibreOffice', /либре\s*офис|libreoffice|\bворд\b|\bэксел[ья]\b/i, () => 'C:\\Program Files\\LibreOffice\\program\\soffice.exe'],
+  ['GIMP', /\bгим[пб]\b|\bgimp\b|фотошоп|photoshop/i, () => path.join(process.env.LOCALAPPDATA || '', 'Programs', 'GIMP 3', 'bin', 'gimp-3.exe')],
+  ['Inkscape', /инкскейп|inkscape|иллюстратор|illustrator/i, () => 'C:\\Program Files\\Inkscape\\bin\\inkscape.exe'],
+  ['Kdenlive', /кденлайв|kdenlive|видеоредактор/i, () => 'C:\\Program Files\\kdenlive\\bin\\kdenlive.exe'],
+];
+
+function specialApp(text) {
+  for (const [name, re, getExe] of SPECIAL_APPS) {
+    if (!re.test(text)) continue;
+    const exe = getExe();
+    if (exe && fs.existsSync(exe)) return { name, kind: 'special', id: exe };
+  }
+  return null;
+}
+
 function knownFolder(text) {
   const hit = FOLDERS.find(([, re]) => re.test(text));
   return hit ? { name: hit[0], kind: 'known', id: hit[0] } : null;
@@ -177,15 +196,21 @@ function openKnown(id) {
   return shell.openPath(app.getPath(id));
 }
 
-// What you asked to open: an app or a game, something on your desktop, else a folder by what it is.
+// What you asked to open: a special tool alias, an app or a game, something on your desktop, else a folder by what it is.
 async function find(text) {
-  return match([...desktopItems(), ...(await launchables())], text) || knownFolder(text);
+  return specialApp(text) || match([...desktopItems(), ...(await launchables())], text) || knownFolder(text);
 }
 
 // Opens one of them (only something she listed herself): a Start menu app through its AppsFolder
 // entry (desktop and Store apps alike), a game through its launcher's link, a file or folder from
 // your desktop, a folder by what it is.
 async function launch({ kind, id } = {}) {
+  if (kind === 'special') {
+    const allowed = SPECIAL_APPS.map(([, , getExe]) => getExe()).filter(Boolean);
+    if (!allowed.includes(id) || !fs.existsSync(id)) throw new Error('not found');
+    spawn(id, [], { detached: true, windowsHide: false, stdio: 'ignore' }).on('error', () => {}).unref();
+    return undefined;
+  }
   if (kind === 'known') {
     if (!FOLDERS.some(([key]) => key === id)) throw new Error('not found');
     await openKnown(id);

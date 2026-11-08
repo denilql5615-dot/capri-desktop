@@ -330,6 +330,7 @@ const PRESETS = [
   ['📄 В PDF', '[Собери результат в готовый PDF-документ (NAME.pdf.md -> NAME.pdf)]: '],
   ['📝 В DOCX', '[Собери результат в готовый Word-документ (NAME.docx.md -> NAME.docx)]: '],
   ['📊 Схема PNG', '[Нарисуй чистую векторную схему в NAME.png.svg (сконвертируется в NAME.png)]: '],
+  ['📐 Excalidraw', '[Создай схему в формате Obsidian Excalidraw (NAME.excalidraw.md)]: '],
   ['🎮 GDD / Баланс', '[Опирайся на референсы геймдизайна C:\\Capri_Tools\\game-studios-reference]: '],
   ['🚀 Питч / Store', '[Используй фреймворки C:\\Capri_Tools\\marketingskills и напиши без ИИ-штампов]: '],
 ];
