@@ -679,6 +679,25 @@ async function quickAnswer(said) {
       else if (remoteCmd.type === 'lock') await system.act({ action: 'power', what: 'lock' });
       return remoteCmd.label;
     }
+    const clipCmd = quick.parseClipboardCommand(said);
+    if (clipCmd) {
+      if (clipCmd.type === 'set') {
+        clipboard.writeText(clipCmd.text);
+        return `Скопировала в буфер обмена ПК: «${clipCmd.text.slice(0, 120)}».`;
+      }
+      const cur = String(clipboard.readText() || '').trim();
+      return cur ? `В буфере обмена ПК сейчас:\n${cur.slice(0, 1500)}` : 'Буфер обмена ПК сейчас пуст (или там не текст).';
+    }
+    if (quick.isQuickAlta(said)) {
+      const dir = notesDir();
+      const vaultRoot = path.basename(dir).toLowerCase() === 'capri' ? path.dirname(dir) : dir;
+      let planMarkdown = '';
+      try {
+        planMarkdown = fs.readFileSync(path.join(vaultRoot, 'ALTA', 'План ALTA.md'), 'utf8');
+      } catch {}
+      const tasks = localPlanner ? localPlanner.list({ kinds: ['task'] }) : [];
+      return quick.altaStatusAnswer({ planMarkdown, tasks });
+    }
     if (quick.isQuickFreeMemory(said)) {
       const beforeRam = await system.info('ram');
       const unloaded = await ollama.unloadAll().catch(() => []);
@@ -879,6 +898,36 @@ async function applyTelegram() {
 function notifyTelegram(evt) {
   const text = telegram.eventNotice(telegramSessions, evt);
   if (text) telegramBot?.send(text);
+}
+
+let telegramPolling = false;
+async function pollTelegramTick() {
+  if (!telegramBot || telegramPolling) return;
+  telegramPolling = true;
+  try {
+    await telegramBot.pollCommands(async (text) => {
+      const cmd = String(text || '').trim();
+      const low = cmd.toLowerCase();
+      if (low === '/start' || low === '/help') {
+        return [
+          '🤖 GENESIS HUB Bot активен:',
+          '/status — ОЗУ, VRAM, диски и топ процессов ПК',
+          '/free — Выгрузить локальные модели из VRAM/ОЗУ',
+          '/alta — Статус проекта ALTA',
+          '/hub — Задачи в Agent Hub',
+          'Или напиши команду: «запомни: …», «добавь задачу: …», «напомни через 15 минут …», «найди в обсидиане …»',
+        ].join('\n');
+      }
+      if (low === '/status') return quickAnswer('статус пк');
+      if (low === '/free') return quickAnswer('освободи память');
+      if (low === '/alta') return quickAnswer('что по альта');
+      if (low === '/hub') return quickAnswer('что делают агенты');
+      const fast = await quickAnswer(cmd);
+      return fast || null;
+    });
+  } finally {
+    telegramPolling = false;
+  }
 }
 
 function updateConfig(patch) {
@@ -1279,6 +1328,15 @@ async function applyPhone() {
           busyAgents,
         };
       },
+      freeVram: async () => {
+        const text = await quickAnswer('освободи память');
+        return { ok: true, text };
+      },
+      getClipboard: () => String(clipboard.readText() || ''),
+      setClipboard: (text) => {
+        clipboard.writeText(String(text || ''));
+        return true;
+      },
       control: phoneControl,
       sprites: phonePack,
       // "скинь фото" from the phone: drawn here like one asked on the PC, shown in her hub's gallery too
@@ -1459,7 +1517,11 @@ async function routeOf(text, context = [], signal) {
   const keyComputer = canHands && agent.isComputerTask(text);
   if (!named && !keyComputer && String(text || '').trim().length < SHORT_MESSAGE) return { worker: null };
   const isFast = quick.isQuick(text) || quick.isQuickMail(text) || quick.isQuickMusic(text)
-    || quick.isQuickPcStatus(text) || quick.isQuickAgentsStatus(text);
+    || quick.isQuickPcStatus(text) || quick.isQuickAgentsStatus(text)
+    || quick.isQuickAlta(text) || quick.isQuickFreeMemory(text)
+    || Boolean(quick.parseClipboardCommand(text)) || Boolean(quick.parseQuickPlanCommand(text))
+    || Boolean(quick.parseQuickRemoteCommand(text)) || Boolean(quick.parseQuickSearchCommand(text))
+    || Boolean(quick.parseRememberCommand(text));
   if (!named && !keyComputer && isFast) return { worker: null }; // her quick answer (quick.js)
   // Use the configured chat model for routing too; loading a second local model would waste VRAM.
   // model, loaded anyway: with the roleplay one in VRAM a second model wouldn't fit, so keywords then
@@ -2103,6 +2165,47 @@ function registerIpc() {
     const cfg = config.load();
     return speech.transcribe(Buffer.from(wav), cfg.voice);
   });
+  ipcMain.handle('agents:free-vram', async (event) => {
+    hubSessions(event);
+    return quickAnswer('освободи память');
+  });
+  ipcMain.handle('agents:export-message', async (event, { id, text, format }) => {
+    const sessions = hubSessions(event);
+    const session = sessions.sessions.find((item) => item.id === id);
+    const content = String(text || '').trim();
+    if (!content) throw new Error('Пустое сообщение.');
+    const fmt = String(format || '').toLowerCase();
+    const titleSlug = (session?.title || 'otvet-agenta')
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ')
+      .trim()
+      .slice(0, 48) || 'otvet-agenta';
+    if (fmt === 'obsidian') {
+      const dir = notesDir();
+      const vaultRoot = path.basename(dir).toLowerCase() === 'capri' ? path.dirname(dir) : dir;
+      const outDir = path.join(vaultRoot, 'Результаты');
+      await fs.promises.mkdir(outDir, { recursive: true });
+      const stamp = new Date().toISOString().slice(0, 10);
+      let dest = path.join(outDir, `${stamp} — ${titleSlug}.md`);
+      for (let i = 2; fs.existsSync(dest); i++) {
+        dest = path.join(outDir, `${stamp} — ${titleSlug}-${i}.md`);
+      }
+      await fs.promises.writeFile(dest, `# ${session?.title || 'Ответ агента'}\n\n${content}\n`, 'utf8');
+      await shell.openExternal(`obsidian://open?path=${encodeURIComponent(dest)}`);
+      return { ok: true, file: dest, message: `Сохранено в Obsidian: ${path.basename(dest)}` };
+    }
+    if (fmt !== 'pdf' && fmt !== 'docx') throw new Error('Неподдерживаемый формат.');
+    const run = `export-${randomUUID()}`;
+    const destDir = path.join(hubArtifactRoot(), run);
+    await fs.promises.mkdir(destDir, { recursive: true });
+    const since = Date.now() - 1000;
+    const mdFile = path.join(destDir, `${titleSlug}.${fmt}.md`);
+    await fs.promises.writeFile(mdFile, content, 'utf8');
+    const compiled = await workers.convertDocs(destDir, since);
+    const out = compiled[0];
+    if (!out || !fs.existsSync(out)) throw new Error(`Не удалось сконвертировать в ${fmt.toUpperCase()}. Проверь LibreOffice.`);
+    await shell.openPath(out);
+    return { ok: true, file: out, message: `Готово: ${path.basename(out)} открыт.` };
+  });
   ipcMain.handle('agents:stop', (event, id) => hubSessions(event).stop(id));
   ipcMain.handle('agents:artifact', async (event, { id, run, name, action }) => {
     const history = hubSessions(event).history(id);
@@ -2483,6 +2586,7 @@ function main() {
     });
     syncPlannerReminders();
     setInterval(() => morningBriefTick().catch((err) => console.warn('[capri] morning brief:', err.message)), 60 * 1000);
+    setInterval(() => pollTelegramTick().catch((err) => console.warn('[capri] telegram poll:', err.message)), 15 * 1000);
     serveProtocol();
     registerIpc();
     createOverlay();

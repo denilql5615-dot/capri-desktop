@@ -74,7 +74,7 @@ async function freeModels() {
 // Loads the model into memory ahead of the first message (the first answer after a fresh start
 // otherwise waits for it to load, which can take a while). Nothing to load for a cloud model.
 function warm(model) {
-  if (isCloud(model)) return;
+  if (!model || isCloud(model) || /26b/i.test(model)) return;
   fetch(`${base()}/api/generate`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

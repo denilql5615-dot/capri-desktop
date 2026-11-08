@@ -158,6 +158,24 @@ function renderLines() {
       }
       item.append(card);
     }
+    if (role === 'assistant' && content && content !== partial) {
+      const exportsBar = document.createElement('div');
+      exportsBar.className = 'agents__artifact';
+      for (const [format, label] of [['pdf', '📄 В PDF'], ['docx', '📝 В DOCX'], ['obsidian', '📓 В Obsidian']]) {
+        const btn = button(label, async () => {
+          try {
+            $('status').textContent = `Экспортирую в ${format.toUpperCase()}…`;
+            const res = await host.agentsExportMessage({ id: session.id, text: content, format });
+            $('status').textContent = res?.message || 'Готово.';
+          } catch (err) {
+            $('status').textContent = err.message;
+          }
+        });
+        btn.removeAttribute('aria-pressed');
+        exportsBar.append(btn);
+      }
+      item.append(exportsBar);
+    }
     return item;
   }));
   lines.scrollTop = lines.scrollHeight;
@@ -391,6 +409,17 @@ $('input').addEventListener('paste', (e) => {
 });
 
 if ($('mic')) $('mic').onclick = toggleVoiceRecording;
+if ($('free-vram')) {
+  $('free-vram').onclick = async () => {
+    try {
+      $('status').textContent = 'Выгружаю модели из VRAM…';
+      const msg = await host.agentsFreeVram();
+      $('status').textContent = msg || 'VRAM очищена.';
+    } catch (err) {
+      $('status').textContent = err.message;
+    }
+  };
+}
 if ($('attach')) {
   $('attach').onclick = async () => {
     const id = current()?.id;

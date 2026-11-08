@@ -103,6 +103,41 @@ function parseQuickRemoteCommand(said) {
   return null;
 }
 
+const CLIPBOARD_GET_RE = /^\s*(?:капри,?\s+)?(?:что\s+в\s+буфере(?:\s+пк)?|скинь\s+буфер(?:\s+пк)?|покажи\s+буфер(?:\s+пк)?|буфер\s+обмена(?:\s+пк)?)\s*[.!?]*$/i;
+const CLIPBOARD_SET_RE = /^\s*(?:капри,?\s+)?(?:скопируй\s+на\s+пк|в\s+буфер\s+пк|запиши\s+в\s+буфер)\s*[,:—-]?\s*(.+)$/is;
+const ALTA_STATUS_RE = /^\s*(?:\/alta|(?:а\s+|ну\s+|слушай,?\s+|капри,?\s+)*(?:что\s+(?:там\s+)?по\s+(?:альт[еа]|alta)|статус\s+(?:альт[ыа]|alta)|план\s+(?:альт[ыа]|alta)|сводка\s+(?:по\s+)?(?:альт[еа]|alta)|дедлайны\s+(?:альт[ыа]|alta)))\s*[.!?]*$/i;
+
+function parseClipboardCommand(said) {
+  const t = String(said || '').trim();
+  if (CLIPBOARD_GET_RE.test(t)) return { type: 'get', action: 'get' };
+  const m = CLIPBOARD_SET_RE.exec(t);
+  if (m && m[1]?.trim()) return { type: 'set', action: 'set', text: m[1].trim() };
+  return null;
+}
+
+function isQuickAlta(said) {
+  const t = String(said || '').trim();
+  return t.length > 0 && t.length <= 80 && ALTA_STATUS_RE.test(t);
+}
+
+function altaStatusAnswer({ planMarkdown = '', tasks = [] } = {}) {
+  const lines = [];
+  const bullets = String(planMarkdown || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith('- '))
+    .slice(0, 7)
+    .map((l) => `• ${l.slice(2).replace(/\[\[([^\]]+)\]\]/g, '$1')}`);
+  if (bullets.length) {
+    lines.push('Ключевые вехи ALTA (из Obsidian):', ...bullets);
+  }
+  const altaTasks = tasks.filter((t) => /alta|альт/i.test(`${t.title} ${t.notes || ''}`) && t.status !== 'done');
+  if (altaTasks.length) {
+    lines.push('Задачи в Планировщике:', ...altaTasks.slice(0, 5).map((t) => `• ${clip(t.title, 100)}`));
+  }
+  return lines.length ? lines.join('\n') : 'В базе Obsidian не найден файл ALTA/План ALTA.md.';
+}
+
 function isQuickReminders(said) {
   const t = String(said || '').trim();
   return t.length > 0 && t.length <= 90 && /[а-яё]/i.test(t) && REMINDER_RE.test(t) && !MORE_RE.test(t);
@@ -278,6 +313,6 @@ function agentsStatusAnswer(summaries = []) {
 
 module.exports = {
   isQuick, isQuickReminders, isQuickMail, isQuickMusic, isQuickPcStatus, isQuickAgentsStatus,
-  isQuickFreeMemory, parseRememberCommand, parseQuickSearchCommand, parseQuickPlanCommand, parseQuickRemoteCommand,
-  scheduleAnswer, remindersAnswer, mailAnswer, musicNowAnswer, pcStatusAnswer, quickSearchAnswer, agentsStatusAnswer,
+  isQuickFreeMemory, isQuickAlta, parseRememberCommand, parseQuickSearchCommand, parseQuickPlanCommand, parseQuickRemoteCommand, parseClipboardCommand,
+  scheduleAnswer, remindersAnswer, mailAnswer, musicNowAnswer, pcStatusAnswer, quickSearchAnswer, agentsStatusAnswer, altaStatusAnswer,
 };

@@ -44,3 +44,29 @@ test('Telegram notices only when input is needed or a long task is done', () => 
   assert.match(notice, /✅ \[HUB · Claude Code · claude-sonnet-4-6\] Собери GDD в PDF/);
   assert.match(notice, /📎 Файлы: GDD\.pdf/);
 });
+
+test('TelegramBot.pollCommands processes only messages from linked private chatId', async () => {
+  const sent = [];
+  const fetchImpl = async (url, options) => {
+    const method = url.split('/').at(-1);
+    const body = JSON.parse(options.body);
+    if (method === 'getUpdates') {
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          result: [
+            { update_id: 10, message: { text: '/status', chat: { id: 999, type: 'private' } } },
+            { update_id: 11, message: { text: '/alta', chat: { id: 42, type: 'private' } } },
+          ],
+        }),
+      };
+    }
+    sent.push(body);
+    return { ok: true, json: async () => ({ ok: true, result: { message_id: 1 } }) };
+  };
+  const bot = new TelegramBot({ token: `123456:${'a'.repeat(30)}`, chatId: '42', fetchImpl });
+  const count = await bot.pollCommands(async (text) => `Ответ на ${text}`);
+  assert.equal(count, 1);
+  assert.deepEqual(sent, [{ chat_id: '42', text: 'Ответ на /alta' }]);
+});

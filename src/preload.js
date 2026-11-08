@@ -70,6 +70,8 @@ contextBridge.exposeInMainWorld('host', {
   agentsPickFile: () => ipcRenderer.invoke('agents:pick-file'),
   agentsStop: (id) => ipcRenderer.invoke('agents:stop', id),
   agentsVoiceStt: (wav) => ipcRenderer.invoke('agents:voice-stt', wav),
+  agentsFreeVram: () => ipcRenderer.invoke('agents:free-vram'),
+  agentsExportMessage: (request) => ipcRenderer.invoke('agents:export-message', request),
   agentsArtifact: (request) => ipcRenderer.invoke('agents:artifact', request),
   agentsImport: (agent, local) => ipcRenderer.invoke('agents:import', agent, local),
   onAgentsUpdate: (fn) => ipcRenderer.on('agents:update', (_event, data) => fn(data)),

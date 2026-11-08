@@ -5,6 +5,7 @@ const assert = require('node:assert');
 const {
   isQuick, isQuickMail, isQuickReminders, isQuickMusic, isQuickPcStatus, isQuickAgentsStatus,
   isQuickFreeMemory, parseRememberCommand, parseQuickSearchCommand, parseQuickPlanCommand, parseQuickRemoteCommand,
+  parseClipboardCommand, isQuickAlta, altaStatusAnswer,
   scheduleAnswer, remindersAnswer, mailAnswer, musicNowAnswer, pcStatusAnswer, quickSearchAnswer, agentsStatusAnswer,
 } = require('../src/main/quick');
 const { kind: mediaKind } = require('../src/main/photo');
@@ -163,4 +164,19 @@ test('isQuickPcStatus, pcStatusAnswer, isQuickAgentsStatus, and agentsStatusAnsw
   assert.deepStrictEqual(parseQuickRemoteCommand('следующий трек'), { type: 'media', action: 'next', label: 'Переключила на следующий трек.' });
   assert.deepStrictEqual(parseQuickRemoteCommand('громкость на 40%'), { type: 'volume', level: 40, label: 'Поставила громкость ПК на 40%.' });
   assert.deepStrictEqual(parseQuickRemoteCommand('заблокируй пк'), { type: 'lock', label: 'Заблокировала экран ноутбука.' });
+
+  assert.deepStrictEqual(parseClipboardCommand('что в буфере пк?'), { type: 'get', action: 'get' });
+  assert.deepStrictEqual(parseClipboardCommand('скинь буфер'), { type: 'get', action: 'get' });
+  assert.deepStrictEqual(parseClipboardCommand('скопируй на пк: https://example.com'), { type: 'set', action: 'set', text: 'https://example.com' });
+
+  assert.ok(isQuickAlta('что по альта?'));
+  assert.ok(isQuickAlta('/alta'));
+  assert.ok(isQuickAlta('статус ALTA'));
+  const altaAns = altaStatusAnswer({
+    planMarkdown: '- [x] Прототип боёвки\n- [ ] Собрать GDD для паблишера\n- [ ] Настроить баланс урона',
+    tasks: [{ title: 'ALTA: питч-дек', status: 'open' }],
+  });
+  assert.match(altaAns, /Ключевые вехи ALTA/);
+  assert.match(altaAns, /Собрать GDD для паблишера/);
+  assert.match(altaAns, /ALTA: питч-дек/);
 });

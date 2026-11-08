@@ -67,6 +67,26 @@ class TelegramBot {
     if (!this.chatId || !clip(text)) return false;
     return Boolean(await this.request('sendMessage', { chat_id: this.chatId, text: clip(text, 900) }));
   }
+
+  async pollCommands(onCommand) {
+    if (!this.chatId || typeof onCommand !== 'function') return 0;
+    const params = { allowed_updates: ['message'] };
+    if (this.offset) params.offset = this.offset;
+    const updates = await this.request('getUpdates', params);
+    if (!Array.isArray(updates) || !updates.length) return 0;
+    let handled = 0;
+    for (const u of updates) {
+      if (Number.isFinite(u.update_id)) this.offset = u.update_id + 1;
+      const msg = u.message;
+      if (!msg || msg.chat?.type !== 'private' || String(msg.chat?.id) !== this.chatId) continue;
+      const text = String(msg.text || '').trim();
+      if (!text || text === '/start') continue;
+      const reply = await Promise.resolve(onCommand(text)).catch(() => null);
+      if (reply) await this.send(reply);
+      handled += 1;
+    }
+    return handled;
+  }
 }
 
 function hubNotice({ agent, model, task, text, artifacts = [] } = {}) {

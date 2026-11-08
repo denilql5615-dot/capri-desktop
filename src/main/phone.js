@@ -189,6 +189,18 @@ class PhoneBridge {
         const s = await this.d.status?.();
         return this.send(res, 200, s || {});
       }
+      if (req.method === 'POST' && url.pathname === '/free-vram') {
+        const r = await this.d.freeVram?.();
+        return this.send(res, 200, r || { ok: true });
+      }
+      if (req.method === 'GET' && url.pathname === '/clipboard') {
+        return this.send(res, 200, { text: String(this.d.getClipboard?.() || '') });
+      }
+      if (req.method === 'POST' && url.pathname === '/clipboard') {
+        const body = await this.readJson(req);
+        this.d.setClipboard?.(String(body.text ?? '').slice(0, 20000));
+        return this.send(res, 200, { ok: true });
+      }
       if (req.method === 'GET' && url.pathname === '/control') return this.send(res, 200, this.d.control());
       if (req.method === 'POST' && url.pathname === '/control') {
         const patch = controlPatch(await this.readJson(req));

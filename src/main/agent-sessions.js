@@ -9,7 +9,7 @@ const MODELS = {
   claude: [['', 'По умолчанию'], ['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku']],
   codex: [['', 'По умолчанию'], ['gpt-6.1-sol', 'GPT‑6.1 Sol'], ['gpt-6-astra', 'GPT‑6 Astra'], ['gpt-6-sol', 'GPT‑6 Sol'], ['gpt-5.6-sol', 'GPT‑5.6 Sol'], ['gpt-5.6-terra', 'GPT‑5.6 Terra']],
   gemini: [['gemini-4-argon-medium', 'Argon'], ['claude-opus-5-5-medium', 'Opus'], ['claude-sonnet-5-5-medium', 'Sonnet'], ['gemini-3.8-flash-high', 'Flash High'], ['gemini-cli-free', 'Gemini CLI (Free)']],
-  gemma: [['gemma4:26b-a4b-it-qat', 'Gemma 4']],
+  gemma: [['gemma4:26b-a4b-it-qat', 'Gemma 4 26B'], ['qwen3:8b', 'Qwen 3 8B (Fast VRAM)'], ['qwen3.5:4b', 'Qwen 3.5 4B (Lite)']],
   faun: [['hf.co/limloop/MN-12B-Faun-RP-RU-GGUF:Q3_K_M', 'Faun RP RU']],
 };
 
