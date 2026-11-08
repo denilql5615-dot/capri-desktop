@@ -357,7 +357,7 @@ function askGemini(cfg, messages, onDelta, signal, { model: forcedModel = null }
   const model = forcedModel || agyModel(messages.findLast((message) => message.role === 'user')?.content);
   return new Promise((resolve, reject) => {
     const child = spawn(exe, ['--input-format', 'stream-json', '--output-format', 'stream-json',
-      '--model', model, '--mode', 'accept-edits', '--print-timeout', '10m'], {
+      '--model', model, '--mode', 'accept-edits', '--dangerously-skip-permissions', '--print-timeout', '10m'], {
       cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
     });
     const kill = () => killTree(child);

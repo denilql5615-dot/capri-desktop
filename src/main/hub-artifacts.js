@@ -38,4 +38,31 @@ async function listArtifacts(root, run) {
   return artifacts;
 }
 
-module.exports = { artifactPath, listArtifacts };
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
+
+async function saveUpload(root, sessionId, files) {
+  const file = files?.[0];
+  if (!validRun(sessionId) || !Array.isArray(files) || files.length !== 1 ||
+      !validName(file?.name) || /[<>|"\x00-\x1f?*]/.test(file.name) ||
+      /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(file.name) ||
+      typeof file.data !== 'string' || file.data.length > Math.ceil(MAX_UPLOAD_BYTES / 3) * 4) {
+    throw new Error('Недопустимое вложение.');
+  }
+  const bytes = Buffer.from(file.data, 'base64');
+  if (!bytes.length || bytes.length > MAX_UPLOAD_BYTES || bytes.toString('base64') !== file.data) {
+    throw new Error('Недопустимое вложение.');
+  }
+  await fs.mkdir(root, { recursive: true });
+  const realRoot = await fs.realpath(root);
+  const uploads = path.join(realRoot, 'uploads');
+  const dir = path.join(uploads, sessionId);
+  for (const folder of [uploads, dir]) {
+    await fs.mkdir(folder, { recursive: true });
+    if (await fs.realpath(folder) !== folder) throw new Error('Папка вложений недоступна.');
+  }
+  const target = path.join(await fs.mkdtemp(path.join(dir, 'file-')), file.name);
+  await fs.writeFile(target, bytes, { flag: 'wx' });
+  return target;
+}
+
+module.exports = { artifactPath, listArtifacts, saveUpload, MAX_UPLOAD_BYTES };

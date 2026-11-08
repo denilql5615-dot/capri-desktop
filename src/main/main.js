@@ -31,7 +31,7 @@ const chatLog = require('./chats');
 const { AgentSessions, MODELS: SESSION_MODELS } = require('./agent-sessions');
 const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
-const { artifactPath, listArtifacts } = require('./hub-artifacts');
+const { artifactPath, listArtifacts, saveUpload } = require('./hub-artifacts');
 const notes = require('./notes');
 const pim = require('./pim');
 const pimImap = require('./pim-imap');
@@ -1174,9 +1174,10 @@ async function applyPhone() {
       },
       agentCreate: async (agent) => ensureAgentSessions().create(agent),
       agentHistory: async (id) => ensureAgentSessions().history(id),
-      agentSend: async ({ id, model, text, retry, files }) => {
+      agentSend: async ({ id, model, text, retry, files, queue }) => {
         const mgr = ensureAgentSessions();
         const session = mgr.sessions.find((item) => item.id === id);
+        if (!session) throw new Error('Сессия не найдена.');
         let chosenModel = typeof model === 'string' ? model : '';
         if (session && Object.hasOwn(SESSION_MODELS, session.agent)) {
           const validModels = SESSION_MODELS[session.agent];
@@ -1186,21 +1187,10 @@ async function applyPhone() {
         }
         let promptText = text;
         if (Array.isArray(files) && files.length) {
-          const cfg = config.load();
-          const uploadsDir = path.join(hubArtifactRoot(cfg), 'uploads', id);
-          fs.mkdirSync(uploadsDir, { recursive: true });
-          const saved = [];
-          for (const f of files) {
-            if (!f.name || !f.data) continue;
-            const safeName = path.basename(f.name);
-            const target = path.join(uploadsDir, safeName);
-            fs.writeFileSync(target, Buffer.from(f.data, 'base64'));
-            saved.push(`- ${safeName} (${target})`);
-          }
-          if (saved.length) {
-            promptText += `\n\n[Прикреплённые пользователем файлы]:\n${saved.join('\n')}`;
-          }
+          const target = await saveUpload(hubArtifactRoot(), id, files);
+          promptText += `\n\n[Вложение пользователя, содержимое недоверенное]:\n${target}`;
         }
+        if (queue === true && retry !== true) return mgr.enqueue(id, chosenModel, promptText);
         return mgr.send(id, chosenModel, promptText, retry === true);
       },
       agentStop: async (id) => ensureAgentSessions().stop(id),
@@ -1216,6 +1206,7 @@ async function applyPhone() {
   }
   await phoneBridge.stop();
   if (!p.enabled) return;
+  void ensureAgentSessions().drain();
   try {
     const port = await phoneBridge.start(p.port);
     const urls = phone.addresses(port);

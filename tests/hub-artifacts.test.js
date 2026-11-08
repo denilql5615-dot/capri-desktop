@@ -5,7 +5,22 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-const { artifactPath, listArtifacts } = require('../src/main/hub-artifacts');
+const { artifactPath, listArtifacts, saveUpload } = require('../src/main/hub-artifacts');
+
+test('phone uploads preserve same-name files and reject traversal and malformed data', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'capri-hub-upload-'));
+  const id = randomUUID();
+  const name = 'photo.png';
+  const data = Buffer.alloc(128 * 1024, 42);
+  const file = { name, data: data.toString('base64') };
+  const first = await saveUpload(root, id, [file]);
+  const second = await saveUpload(root, id, [{ name, data: 'eA==' }]);
+  assert.notEqual(first, second);
+  assert.deepEqual(await fs.readFile(first), data);
+  await assert.rejects(saveUpload(root, '../escape', [file]), /Недопустимое/);
+  await assert.rejects(saveUpload(root, id, [{ ...file, name: '../photo.png' }]), /Недопустимое/);
+  await assert.rejects(saveUpload(root, id, [{ ...file, data: 'eA==!' }]), /Недопустимое/);
+});
 
 test('Hub only attaches nonempty allowed files produced in the specific run directory', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'capri-hub-output-'));

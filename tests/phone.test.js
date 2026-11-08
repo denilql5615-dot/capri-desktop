@@ -168,6 +168,9 @@ test('bridge: /agents endpoints (list, sessions, create, send, stop, quota, arti
     assert.strictEqual(sendRes.status, 200);
     const sendData = await sendRes.json();
     assert.strictEqual(sendData.text, 'reply to ping');
+    const files = [{ name: 'photo.png', data: Buffer.alloc(128 * 1024).toString('base64') }];
+    assert.strictEqual((await post('/agents/send', { id: 's1', text: 'photo', files })).status, 200);
+    assert.strictEqual((await post('/control', { files })).status, 413);
 
     const stopRes = await post('/agents/stop', { id: 's1' });
     assert.strictEqual(stopRes.status, 200);
