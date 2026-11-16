@@ -16,7 +16,8 @@ const DEFAULTS = {
   welcomed: false,   // she has introduced herself (her welcome panel)
   assistant: 'auto', // the coding assistant she watches: 'claude' or 'codex' ('auto': whichever has her hooks)
   linked: false,     // a Claude Code event has reached her at least once
-  chatModel: 'gemma4:26b-a4b-it-qat', // one local model for chat and vision
+  chatModel: 'auto', // 'auto': her two brains (brains.js), the fast E4B and the main 26B; else one model by name
+  rp: false,         // roleplay mode: an explicit-style prompt added to her own chat (brains.js), never to work or emergencies
   provider: 'ollama', // who answers her chat: a key of llm.js PROVIDERS
   apiKeys: {},       // { openai: 'sk-...' }, else the provider's env variable
   customUrl: '',     // the 'custom' provider: any OpenAI-compatible base URL (http://host:port/v1)

@@ -1,7 +1,7 @@
 import { appendHubText } from './hub-links.js';
 
 const host = window.host;
-const labels = { claude: 'Claude', codex: 'Codex', gemini: 'Antigravity', gemma: 'Gemma', faun: 'Faun RP' };
+const labels = { claude: 'Claude', codex: 'Codex', gemini: 'Antigravity', gemma: 'Gemma', faun: 'RP' };
 const $ = (name) => document.querySelector(`.agents__${name}`);
 const drafts = new Map();
 const attachments = new Map();
