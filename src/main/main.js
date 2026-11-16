@@ -1635,7 +1635,10 @@ async function computerTask(messages, send, signal) {
   return agent.runTask(yourWords(messages), history, {
     driver: desktopCli,
     origin: 'pc',
-    chat: (msgs, schema, sig) => ollama.jsonChat({ model, messages: msgs, schema }, sig),
+    // plain JSON mode, not the step schema: held to it, the Heretic models put the program in the wrong
+    // field every time ("text": "calc"); free, they follow the examples in agent.PROMPT. desktop.validate
+    // checks each step anyway.
+    chat: (msgs, _schema, sig) => ollama.jsonChat({ model, messages: msgs, schema: 'json' }, sig),
     confirm: (question) => askUser(question, signal),
     covered: (cls, ask) => grant.covers(cls, ask),
     grant: () => {
