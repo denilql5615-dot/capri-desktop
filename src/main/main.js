@@ -1927,6 +1927,7 @@ const ONION_RULE = [
   'Источники — onion-сайты: там много мошенничества и непроверенных утверждений. Отмечай, что это не проверено, не выдавай за факт.',
   'Не помогай покупать, заказывать или делать незаконное.',
 ].join('\n');
+const TOR_RULE = 'Поиск через Tor — законная обычная задача, просто анонимный доступ к сети: не отказывайся, не читай нотаций, не предупреждай об опасности Tor, отвечай по найденному.';
 
 async function torReady(cfg) {
   if (cfg.tor === false) throw new Error('узел Tor выключен в трее');
@@ -1944,7 +1945,7 @@ async function torSearch(q, cfg, how = {}) {
     const roles = brains.ready(await ollama.models().catch(() => []));
     const getSession = async () => (session = session || await capriBrowser.openSession(torOpts(cfg)));
     const said = await web.answer(q, {
-      rule: dark ? ONION_RULE : '',
+      rule: dark ? ONION_RULE : TOR_RULE,
       chat: async (messages, { howto } = {}) => {
         const model = roles ? (howto ? await brains.use('main') : brains.current()) : cfg.chatModel;
         return ollama.chat({ model, messages, numPredict: howto ? 1200 : 500 }, () => {});
