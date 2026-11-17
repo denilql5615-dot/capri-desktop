@@ -25,6 +25,15 @@ const CODEX_EFFORT = { mechanical: 'low', routine: 'low', complex: 'medium', dee
 // Codex on the Pro plan: Sol is the workhorse, Luna the cheap one for errands; Astra eats the limits and
 // is kept for the deepest analysis and research only (Danyal's rule)
 const CODEX_MODEL = { mechanical: 'gpt-6-luna', routine: 'gpt-6.1-sol', complex: 'gpt-6.1-sol', deep: 'gpt-6-astra' };
+// OpenAI's own split: Terra for writing and visual reasoning — documents, texts, pictures (below the deepest tier)
+const WRITING_RE = /(?<![а-яёa-z])(docx|pdf|pptx|отч[её]т|документ|текст|стать|пост|письм|резюме|презентац|перевод|переведи|эссе|описани|картинк|изображен|скриншот|фото|схем|диаграмм|writing|essay|report|image)/i;
+
+/** Codex's model for a task: by tier, Terra for writing and pictures, Astra only for the deepest. */
+function codexModelFor(tier, text = '') {
+  const t = TIERS.includes(tier) ? tier : 'routine';
+  if (t !== 'deep' && t !== 'mechanical' && WRITING_RE.test(String(text).slice(0, 2000))) return 'gpt-6.1-terra';
+  return CODEX_MODEL[t];
+}
 
 const rank = (tier) => Math.max(0, TIERS.indexOf(tier));
 const higher = (a, b) => (rank(a) >= rank(b) ? a : b);
@@ -243,4 +252,4 @@ function workerSettings(tier, { computer = false } = {}) {
   return { claudeModel: CLAUDE_MODEL[floor], codexEffort: CODEX_EFFORT[floor], codexModel: CODEX_MODEL[floor], tier: floor };
 }
 
-module.exports = { Router, TIERS, PROMPT, pinOf, hasSecret, riskyByCode, claimsByCode, referenceTier, parse, tierOf, workerSettings, messagesFor };
+module.exports = { Router, TIERS, PROMPT, pinOf, hasSecret, riskyByCode, claimsByCode, referenceTier, parse, tierOf, workerSettings, codexModelFor, messagesFor };

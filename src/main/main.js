@@ -46,7 +46,7 @@ const capriBrowser = require('./browser');
 const tor = require('./tor');
 const gemini = require('./gemini');
 const photo = require('./photo');
-const { Router, workerSettings, hasSecret } = require('./router');
+const { Router, workerSettings, codexModelFor, hasSecret } = require('./router');
 const quick = require('./quick');
 const brief = require('./brief');
 const { Comfy, checkWorkflow } = require('./comfy');
@@ -2261,7 +2261,7 @@ function registerIpc() {
         const tag = step === 'claude' ? 'claude-code' : step === 'codex' ? 'codex' : step.replace(/-(low|medium|high|xhigh)$/, '');
         overlay?.webContents.send('chat:delta', { id, status: chainText, tag, worker: skinWorker });
       };
-      const desktopOpts = { desktop: hands === 'yes', home: desktopCli.home, model: tierOpts.claudeModel, effort: tierOpts.codexEffort, codexModel: tierOpts.codexModel, tier: tierOpts.tier, onStep, onQuota: recordClaudeQuota };
+      const desktopOpts = { desktop: hands === 'yes', home: desktopCli.home, model: tierOpts.claudeModel, effort: tierOpts.codexEffort, codexModel: codexModelFor(tierOpts.tier, yourWords(messages)), tier: tierOpts.tier, onStep, onQuota: recordClaudeQuota };
       // a plain question about your schedule: answered from the calendar at once, no model (quick.js)
       const fast = !worker ? await quickAnswer(yourWords(messages)) : null;
       abort.signal.throwIfAborted();

@@ -88,6 +88,15 @@ test('tierOf: the guards only raise it', () => {
   assert.strictEqual(tierOf({ probs: probs(0.9, 0.1, 0, 0), risk: 0.5, selfClaim: 0.4 }, { reference: 'complex' }), 'mechanical');
 });
 
+test('codexModelFor: Terra for writing and pictures, Luna for errands, Astra only for the deepest', () => {
+  const { codexModelFor } = require('../src/main/router');
+  assert.strictEqual(codexModelFor('routine', 'собери отчёт в docx'), 'gpt-6.1-terra');
+  assert.strictEqual(codexModelFor('complex', 'опиши что на скриншоте'), 'gpt-6.1-terra');
+  assert.strictEqual(codexModelFor('routine', 'почини тест в router.js'), 'gpt-6.1-sol');
+  assert.strictEqual(codexModelFor('mechanical', 'переименуй файл в отчёт.docx'), 'gpt-6-luna');
+  assert.strictEqual(codexModelFor('deep', 'глубокий отчёт по архитектуре'), 'gpt-6-astra');
+});
+
 test('workerSettings: Claude model and Codex effort per tier, a computer task never below routine', () => {
   assert.deepStrictEqual(workerSettings('mechanical'), { claudeModel: 'haiku', codexEffort: 'low', codexModel: 'gpt-6-luna', tier: 'mechanical' });
   assert.deepStrictEqual(workerSettings('complex'), { claudeModel: 'opus', codexEffort: 'medium', codexModel: 'gpt-6.1-sol', tier: 'complex' });
