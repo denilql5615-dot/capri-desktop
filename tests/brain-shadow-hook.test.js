@@ -6,7 +6,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { replay } = require('../src/main/brain');
-const { createShadowHook, classifyError } = require('../src/main/brain/shadow-hook');
+const { createShadowHook, classifyError, contextMentionsTor, MAX_PENDING_WRITES } = require('../src/main/brain/shadow-hook');
+const tor = require('../src/main/tor');
 
 const mkDir = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'brain-hook-')), 'brain-journal');
 
@@ -321,4 +322,46 @@ test('journal never contains message text, error messages, file paths, or render
   }
   const rows = content.trim().split('\n').slice(1).map((l) => JSON.parse(l));
   assert.ok(rows.every((r) => r.event.task_id.startsWith('00000000-0000-4000-8000-')));
+});
+
+test('Tor screen covers the whole context, every role, and fails closed on unreadable content', () => {
+  const clean = [
+    { role: 'system', content: 'Ты Капри.' },
+    { role: 'user', content: 'Привет, как дела?' },
+    { role: 'assistant', content: [{ type: 'text', text: 'Хорошо!' }, { type: 'image', image: 'x' }] },
+    { role: 'user', content: 'Расскажи про погоду' },
+  ];
+  assert.equal(contextMentionsTor(clean, tor), false);
+  // Tor wording in an earlier turn, last message innocent: still excluded
+  assert.equal(contextMentionsTor([{ role: 'user', content: 'найди через тор новости' }, ...clean], tor), true);
+  // .onion link only in an assistant reply
+  const onion = `http://${'a'.repeat(56)}.onion/page`;
+  assert.equal(contextMentionsTor([...clean.slice(0, 2), { role: 'assistant', content: onion }, clean[3]], tor), true);
+  assert.equal(contextMentionsTor([{ role: 'user', content: [{ type: 'text', text: 'зайди в даркнет' }] }], tor), true);
+  // unreadable shapes fail closed
+  assert.equal(contextMentionsTor(null, tor), true);
+  assert.equal(contextMentionsTor([{ role: 'user', content: 42 }], tor), true);
+  assert.equal(contextMentionsTor([{ role: 'user', content: [{ type: 'text', text: null }] }], tor), true);
+});
+
+test('own publish chain is bounded: overflow beyond MAX_PENDING_WRITES is discarded, never queued', async () => {
+  let releaseAppend;
+  const gate = new Promise((r) => { releaseAppend = r; });
+  let appended = 0;
+  const hook = createShadowHook({
+    dir: mkDir(),
+    now: makeClock(),
+    uuid: makeUuid(7000),
+    openJournal: async () => ({
+      appendBatch: async () => { await gate; appended++; return { status: 'accepted' }; },
+      close: async () => {},
+    }),
+  });
+  const total = MAX_PENDING_WRITES + 10;
+  for (let i = 0; i < total; i++) hook.start({ worker: null }).complete({ verified: true, utility: 1 });
+  assert.equal(hook.stats().discarded, 10);
+  releaseAppend();
+  await hook.close();
+  assert.equal(appended, MAX_PENDING_WRITES);
+  assert.deepEqual(hook.stats(), { published: MAX_PENDING_WRITES, discarded: 10, observer_errors: 0 });
 });

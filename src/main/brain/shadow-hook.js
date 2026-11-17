@@ -11,6 +11,30 @@ const { openRotatingJournal, MAX_DAY_TIME_MS } = require('./rotating-journal');
 const { freezeSnapshot } = require('./snapshot');
 
 const NOOP_TURN = Object.freeze({ complete() {}, fail() {}, cancel() {} });
+const MAX_PENDING_WRITES = 64; // own publish chain is bounded too, not only the journal's queue
+
+// Fail-closed Tor screen over the WHOLE chat context (every role, every turn), not only the last
+// message: any Tor/dark wording or .onion link anywhere, or a message shape we cannot read as text,
+// means the turn is not observed. Predicates are injected (main passes tor.js).
+function contextMentionsTor(messages, { wantsTor, onionLink }) {
+  if (!Array.isArray(messages)) return true;
+  for (const m of messages) {
+    const c = m?.content;
+    let parts;
+    if (typeof c === 'string') parts = [c];
+    else if (Array.isArray(c)) {
+      parts = [];
+      for (const part of c) {
+        if (typeof part === 'string') parts.push(part);
+        else if (part && typeof part === 'object' && typeof part.text === 'string') parts.push(part.text);
+        else if (!(part && typeof part === 'object' && part.type && part.type !== 'text')) return true;
+      }
+    } else if (c === undefined || c === null) parts = [];
+    else return true;
+    for (const text of parts) if (wantsTor(text) || onionLink(text)) return true;
+  }
+  return false;
+}
 
 function safeTime(raw) {
   const n = Number(raw);
@@ -48,6 +72,7 @@ function createShadowHook({
   let closed = false;
   let closing = null;
   let writeChain = Promise.resolve();
+  let pendingWrites = 0;
 
   async function ensureJournal() {
     if (journal) return journal;
@@ -61,8 +86,9 @@ function createShadowHook({
   }
 
   function enqueuePublish(batch) {
-    if (disabled || closed) { counts.discarded++; return; }
+    if (disabled || closed || pendingWrites >= MAX_PENDING_WRITES) { counts.discarded++; return; }
     const envelopes = batch.map((event) => ({ privacy: 'ordinary', event }));
+    pendingWrites++;
     writeChain = writeChain.then(async () => {
       if (disabled) { counts.discarded++; return; }
       let j;
@@ -81,7 +107,7 @@ function createShadowHook({
       } catch {
         counts.observer_errors++;
       }
-    });
+    }).finally(() => { pendingWrites--; });
   }
 
   function isEligible(route, opts) {
@@ -275,4 +301,4 @@ function createShadowHook({
   });
 }
 
-module.exports = { createShadowHook, classifyError };
+module.exports = { contextMentionsTor, MAX_PENDING_WRITES, createShadowHook, classifyError };

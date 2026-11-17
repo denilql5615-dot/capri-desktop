@@ -1802,7 +1802,7 @@ async function prepLocal(cfg, messages, { main = false } = {}) {
   return rp ? brainsLib.withRp(enriched) : enriched;
 }
 
-async function chatWithFallback(cfg, messages, send, signal, streamed) {
+async function chatWithFallback(cfg, messages, send, signal, streamed, onSwitch) {
   let model = pickModel(cfg);
   const tried = new Set();
   let busy = 0;
@@ -1822,6 +1822,7 @@ async function chatWithFallback(cfg, messages, send, signal, streamed) {
       if (!next || tried.size >= 3) throw err;
       model = next;
       busy = 0;
+      try { onSwitch?.(model); } catch {} // e.g. the brain shadow stops watching: the turn left its local model
     }
   }
 }
@@ -2339,15 +2340,16 @@ function registerIpc() {
         let shadowTurn = null;
         if (cfg.brainShadow === true && worker === null) {
           try {
-            const said = yourWords(messages);
             const model = pickModel(cfg);
-            if (model && llm.isLocal(cfg.provider, cfg, model) && !tor.wantsTor(said) && !tor.onionLink(said)) {
+            const { contextMentionsTor } = require('./brain/shadow-hook');
+            if (model && llm.isLocal(cfg.provider, cfg, model) && !contextMentionsTor(messages, tor)) {
               shadowTurn = getBrainShadowHook().start(route, { signal: abort.signal, local: true, rp: cfg.rp === true });
             }
           } catch {}
         }
         try {
-          text = await chatWithFallback(cfg, await prepLocal(cfg, messages), send, abort.signal, () => streamed);
+          // any switch to another model (possibly a cloud one) abandons the observation
+          text = await chatWithFallback(cfg, await prepLocal(cfg, messages), send, abort.signal, () => streamed, () => shadowTurn?.cancel());
           try { shadowTurn?.complete(); } catch {}
         } catch (err) {
           try { if (abort.signal.aborted || err?.message === 'stopped' || err?.name === 'AbortError') shadowTurn?.cancel(); else shadowTurn?.fail(err); } catch {}
