@@ -174,11 +174,11 @@ async function askIn(page, prompt, { chat = null, model = null, files = [], clip
   if (inline.length) full = `${text}\n\n${await inlineFiles(inline, { extract })}`;
   if (images.length) {
     if (!clipboard) throw new Error('картинки передаются через буфер обмена — он здесь недоступен');
-    const kept = clipboard.save();
+    const kept = await clipboard.save();
     try {
       for (const img of images) {
         const before2 = await page.evaluate(() => document.querySelectorAll('uploader-file-preview, gem-media-attachment').length);
-        clipboard.putImage(img);
+        await clipboard.putImage(img);
         await page.click('rich-textarea .ql-editor');
         await page.keyboard.down('Control');
         await page.keyboard.press('v');
@@ -192,7 +192,7 @@ async function askIn(page, prompt, { chat = null, model = null, files = [], clip
       }
       await pause(1500); // its upload of the last one
     } finally {
-      clipboard.restore(kept);
+      await clipboard.restore(kept);
     }
   }
   // the prompt goes in as one paste-like insert (typing it key by key would take minutes for a long one);
@@ -262,22 +262,25 @@ function ask(prompt, { open, chat, model, files, minGapMs = 4000, ...rest } = {}
 }
 
 /** The Windows clipboard through Electron, for pasting images; what was on it is kept and put back. */
+// (this Electron's clipboard is the async web one: read/write with ClipboardItem, as main.js uses it)
 function electronClipboard() {
-  const { clipboard, nativeImage } = require('electron');
+  const { clipboard, nativeImage, ClipboardItem } = require('electron');
   return {
-    save: () => {
-      const image = clipboard.readImage();
-      return { text: clipboard.readText(), image: image.isEmpty() ? null : image };
+    save: async () => {
+      const items = clipboard.read ? await clipboard.read().catch(() => null) : null;
+      const text = await Promise.resolve(clipboard.readText()).catch(() => '');
+      return { items, text };
     },
-    putImage: (file) => {
+    putImage: async (file) => {
       const img = nativeImage.createFromPath(file);
       if (img.isEmpty()) throw new Error(`не читается как картинка: ${path.basename(file)}`);
-      clipboard.writeImage(img);
+      await clipboard.write([new ClipboardItem({ 'image/png': new Blob([img.toPNG()], { type: 'image/png' }) })]);
     },
-    restore: (kept) => {
-      clipboard.clear();
-      if (kept && kept.image) clipboard.writeImage(kept.image);
-      else if (kept && kept.text) clipboard.writeText(kept.text);
+    restore: async (kept) => {
+      if (kept && kept.items && kept.items.length) {
+        try { await clipboard.write(kept.items); return; } catch { /* fall back to its text */ }
+      }
+      await Promise.resolve(clipboard.writeText(String((kept && kept.text) || ''))).catch(() => {});
     },
   };
 }
