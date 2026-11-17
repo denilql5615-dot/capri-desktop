@@ -1949,6 +1949,7 @@ const ONION_RULE = [
 const TOR_RULE = 'Поиск через Tor — законная обычная задача, просто анонимный доступ к сети: не отказывайся, не читай нотаций, не предупреждай об опасности Tor, отвечай по найденному.';
 
 async function torReady(cfg) {
+  try { brainShadowHook?.torTouched(); } catch {} // the brain shadow drops whatever it was watching (shadow-hook.js)
   if (cfg.tor === false) throw new Error('узел Tor выключен в трее');
   await tor.ensure({ exe: cfg.torExe, torrc: cfg.torrc, logFile: cfg.torLog, socksPort: cfg.torSocksPort });
   tor.ensureProfile(torOpts(cfg).profile, cfg.torSocksPort);
@@ -2276,6 +2277,11 @@ function registerIpc() {
         chatsWin?.webContents.send('chats:delta', text); // her Chats window shows it coming too
       };
       const cfg = config.load();
+      if (cfg.brainShadow === true && brainShadowHook) {
+        try {
+          brainShadowHook.resolvePending(messages, { get said() { return yourWords(messages); }, tor, rp: cfg.rp === true });
+        } catch {}
+      }
       // "включи / выключи ролевой режим": a mode of hers (brains.js), not a message to answer
       const rpTurn = brainsLib.rpCommand(yourWords(messages));
       if (rpTurn !== null) {
@@ -2343,14 +2349,21 @@ function registerIpc() {
             const model = pickModel(cfg);
             const { contextMentionsTor } = require('./brain/shadow-hook');
             if (model && llm.isLocal(cfg.provider, cfg, model) && !contextMentionsTor(messages, tor)) {
-              shadowTurn = getBrainShadowHook().start(route, { signal: abort.signal, local: true, rp: cfg.rp === true });
+              const { salience } = require('./brain/amygdala');
+              const features = salience(yourWords(messages));
+              shadowTurn = getBrainShadowHook().start(route, { signal: abort.signal, local: true, rp: cfg.rp === true, features });
             }
           } catch {}
         }
         try {
           // any switch to another model (possibly a cloud one) abandons the observation
           text = await chatWithFallback(cfg, await prepLocal(cfg, messages), send, abort.signal, () => streamed, () => shadowTurn?.cancel());
-          try { shadowTurn?.complete(); } catch {}
+          try {
+            if (shadowTurn) {
+              brainShadowHook?.hold(shadowTurn);
+              shadowTurn = null;
+            }
+          } catch {}
         } catch (err) {
           try { if (abort.signal.aborted || err?.message === 'stopped' || err?.name === 'AbortError') shadowTurn?.cancel(); else shadowTurn?.fail(err); } catch {}
           throw err;

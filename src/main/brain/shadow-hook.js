@@ -9,9 +9,12 @@ const { CONFIG } = require('./index');
 const { createTaskBuffer } = require('./task-buffer');
 const { openRotatingJournal, MAX_DAY_TIME_MS } = require('./rotating-journal');
 const { freezeSnapshot } = require('./snapshot');
+const { verdictOf } = require('./amygdala');
 
 const NOOP_TURN = Object.freeze({ complete() {}, fail() {}, cancel() {} });
 const MAX_PENDING_WRITES = 64; // own publish chain is bounded too, not only the journal's queue
+const DEFAULT_PENDING_TTL_MS = 120000;
+const bit = (v) => (v === 1 ? 1 : 0);
 
 // Fail-closed Tor screen over the WHOLE chat context (every role, every turn), not only the last
 // message: any Tor/dark wording or .onion link anywhere, or a message shape we cannot read as text,
@@ -63,16 +66,32 @@ function createShadowHook({
   uuid = crypto.randomUUID,
   openJournal = openRotatingJournal,
   bufferOptions,
+  pendingTtlMs = DEFAULT_PENDING_TTL_MS,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
 } = {}) {
   const buffer = createTaskBuffer(bufferOptions);
   const counts = { published: 0, discarded: 0, observer_errors: 0 };
   const activeTurns = new Set();
+  let pending = null;
   let journal = null;
   let disabled = false;
   let closed = false;
   let closing = null;
   let writeChain = Promise.resolve();
   let pendingWrites = 0;
+
+  function clearPending({ cancel = true } = {}) {
+    if (!pending) return;
+    const entry = pending;
+    pending = null;
+    if (entry.timer != null) {
+      try { clearTimer(entry.timer); } catch {}
+    }
+    if (cancel) {
+      try { entry.turn.cancel(); } catch { counts.observer_errors++; }
+    }
+  }
 
   async function ensureJournal() {
     if (journal) return journal;
@@ -125,7 +144,7 @@ function createShadowHook({
     return snap !== null && typeof snap === 'object' && snap.worker === null && !snap.computer;
   }
 
-  function openTurnOnRoot(root, signal) {
+  function openTurnOnRoot(root, signal, features) {
     const task_id = uuid();
     const source_id = uuid();
     let seq = 0;
@@ -153,8 +172,8 @@ function createShadowHook({
       route: 'unknown',
       novelty: 0,
       uncertainty: 0,
-      contradiction: 0,
-      urgency: 0,
+      contradiction: bit(features?.contradiction),
+      urgency: bit(features?.urgency),
     }));
     if (initial.status !== 'buffered') {
       buffer.cancel(root);
@@ -171,6 +190,7 @@ function createShadowHook({
       if (signal && typeof signal.removeEventListener === 'function') {
         signal.removeEventListener('abort', onAbort);
       }
+      if (pending?.turn === turn) clearPending({ cancel: false });
       activeTurns.delete(turn);
       buffer.cancel(root);
     };
@@ -239,11 +259,57 @@ function createShadowHook({
     let root = null;
     try {
       root = buffer.open('ordinary');
-      return openTurnOnRoot(root, opts?.signal);
+      return openTurnOnRoot(root, opts?.signal, opts?.features);
     } catch {
       counts.observer_errors++;
       if (root) buffer.cancel(root);
       return NOOP_TURN;
+    }
+  }
+
+  function hold(turn) {
+    try {
+      if (!turn || !activeTurns.has(turn)) return;
+      if (disabled || closed) { turn.cancel(); return; }
+      clearPending({ cancel: true });
+      const heldAt = Number(now());
+      const entry = { turn, timer: null, heldAt };
+      pending = entry;
+      entry.timer = setTimer(() => {
+        if (pending !== entry) return;
+        pending = null;
+        try { turn.cancel(); } catch { counts.observer_errors++; }
+      }, pendingTtlMs);
+      entry.timer?.unref?.();
+    } catch {
+      counts.observer_errors++;
+      try { turn?.cancel?.(); } catch {}
+    }
+  }
+
+  function resolvePending(messages, opts) {
+    if (!pending) return;
+    const entry = pending;
+    try {
+      const curNow = Number(now());
+      const expired = Number.isFinite(entry.heldAt) && Number.isFinite(curNow) && curNow - entry.heldAt >= pendingTtlMs;
+      if (disabled || closed || expired || opts?.rp === true) {
+        clearPending({ cancel: true });
+        return;
+      }
+      const torPreds = opts?.tor;
+      if (!torPreds || typeof torPreds.wantsTor !== 'function' || typeof torPreds.onionLink !== 'function'
+          || contextMentionsTor(messages, torPreds)) {
+        clearPending({ cancel: true });
+        return;
+      }
+      const v = verdictOf(opts?.said);
+      clearPending({ cancel: false });
+      if (v === 1 || v === -1) entry.turn.complete({ verified: true, utility: v });
+      else entry.turn.cancel();
+    } catch {
+      counts.observer_errors++;
+      clearPending({ cancel: true });
     }
   }
 
@@ -254,7 +320,7 @@ function createShadowHook({
     return buffer.withTask('ordinary', async (root) => {
       let turn = NOOP_TURN;
       try {
-        turn = openTurnOnRoot(root, options?.signal);
+        turn = openTurnOnRoot(root, options?.signal, options?.features);
       } catch {
         counts.observer_errors++;
         buffer.cancel(root);
@@ -281,6 +347,7 @@ function createShadowHook({
     if (closing) return closing;
     closed = true;
     closing = (async () => {
+      clearPending({ cancel: true });
       for (const turn of [...activeTurns]) turn.cancel();
       await flush();
       if (journal) {
@@ -292,8 +359,20 @@ function createShadowHook({
     return closing;
   }
 
+  // Any Tor activity anywhere in Capri (renderer Tor search, agent tor/dark node, the Tor window):
+  // drop the waiting verdict and every turn in flight. Nothing is counted or recorded about it.
+  function torTouched() {
+    try {
+      clearPending({ cancel: true });
+      for (const turn of [...activeTurns]) turn.cancel();
+    } catch {}
+  }
+
   return Object.freeze({
     start,
+    hold,
+    resolvePending,
+    torTouched,
     withTurn,
     stats: () => ({ ...counts }),
     flush,
