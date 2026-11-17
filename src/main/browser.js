@@ -229,7 +229,12 @@ async function attach(opts, { visible = false } = {}) {
   const spawnIt = opts.spawn || spawnBrowser;
   const b = (opts.pick ? [].concat(opts.pick) : candidates(opts.browser))[0];
   const name = path.basename(dir);
-  try { return { ctx: await connect(port), b, attached: true }; } catch { /* not running with the port */ }
+  let refused = null;
+  try { return { ctx: await connect(port), b, attached: true }; } catch (e) { refused = e; /* not running with the port */ }
+  // the port answers but won't take her: Firefox allows one control session, and one is still held
+  if (/Maximum number of active sessions/i.test(String(refused && refused.message))) {
+    throw new Error(`К ${b ? b.name : 'браузеру'} уже подключена другая сессия управления (прошлая Капри не успела отключиться или другая программа). Перезапусти браузер с профилем «${opts.profileName || name}» — это её снимет.`);
+  }
   if (busy(dir)) {
     throw new Error(`Профиль «${opts.profileName || name}» открыт без порта управления. Закрой этот браузер — Капри откроет его сама (или запускай его из трея: «Браузер Капри → Открыть профиль»).`);
   }
@@ -243,28 +248,58 @@ async function attach(opts, { visible = false } = {}) {
 }
 
 // Her one window in your browser, kept open between jobs: each job opens its tabs in it and closes only
-// them, so neither the browser nor the window starts again. Found again after she restarts (by its page);
-// opened again if you close it; the connection is kept (one WebDriver BiDi session per browser).
+// them, so neither the browser nor the window starts again; it's found again by its page each time, and
+// opened again if you close it. The control connection lives only while a job runs (shared by jobs at
+// the same time) and is ended right after: Firefox allows one such session, and one left behind by a
+// killed or crashed Capri would lock her out until the browser restarts.
 const WINDOW_MARK = 'capri-window';
 const WINDOW_URL = `data:text/html;charset=utf-8,${encodeURIComponent(`<!--${WINDOW_MARK}--><title>Окно Капри</title><body style="background:#111;color:#bbb;font:15px sans-serif;padding:2em">Окно Капри: здесь она открывает свои вкладки и закрывает их, когда прочитала. Его можно свернуть.</body>`)}`;
-const kept = new Map(); // port → { ctx, b, bc, anchor }
+const kept = new Map(); // port → { ctx, b, bc, anchor, users, ready }
 
+/** Her window, connected for one job: { ctx, b, bc, anchor, release() }. */
 async function herWindow(opts, { visible = false } = {}) {
   const port = Number(opts.port) || DEFAULT_PORT;
-  const k = kept.get(port);
-  if (k && k.ctx.connected !== false && !(k.anchor.isClosed && k.anchor.isClosed())) return k;
-  const { ctx, b } = k && k.ctx.connected !== false ? k : await attach(opts, { visible });
-  const bc = ctx.defaultBrowserContext();
-  const pages = await bc.pages().catch(() => []);
-  let anchor = pages.find((p) => decodeURIComponent(p.url()).includes(WINDOW_MARK));
-  if (!anchor) {
-    anchor = await bc.newPage({ type: 'window', background: true });
-    await anchor.goto(WINDOW_URL).catch(() => {});
+  let k = kept.get(port);
+  if (!k || k.ctx?.connected === false) {
+    k = { users: 0 };
+    kept.set(port, k);
+    k.ready = (async () => {
+      const { ctx, b } = await attach(opts, { visible });
+      Object.assign(k, { ctx, b, bc: ctx.defaultBrowserContext() });
+      if (ctx.once) ctx.once('disconnected', () => { if (kept.get(port) === k) kept.delete(port); }); // you closed the browser
+    })().catch((e) => { if (kept.get(port) === k) kept.delete(port); throw e; });
   }
-  const fresh = { ctx, b, bc, anchor };
-  kept.set(port, fresh);
-  if (ctx.once && !k) ctx.once('disconnected', () => { if (kept.get(port)?.ctx === ctx) kept.delete(port); }); // you closed the browser
-  return fresh;
+  k.users++;
+  try {
+    await k.ready;
+    if (!k.anchor || (k.anchor.isClosed && k.anchor.isClosed())) {
+      const pages = await k.bc.pages().catch(() => []);
+      k.anchor = pages.find((p) => decodeURIComponent(p.url()).includes(WINDOW_MARK));
+      if (!k.anchor) {
+        k.anchor = await k.bc.newPage({ type: 'window', background: true });
+        await k.anchor.goto(WINDOW_URL).catch(() => {});
+      }
+    }
+  } catch (e) {
+    k.users--;
+    throw e;
+  }
+  let released = false;
+  const release = async () => {
+    if (released) return;
+    released = true;
+    if (--k.users > 0) return; // another job still on it
+    if (kept.get(port) === k) kept.delete(port);
+    await Promise.resolve().then(() => k.ctx.disconnect()).catch(() => {}); // ends the session; window and browser stay
+  };
+  return { ctx: k.ctx, b: k.b, bc: k.bc, anchor: k.anchor, release };
+}
+
+/** Ends every control session she holds (on quit). */
+async function releaseAll() {
+  const all = [...kept.values()];
+  kept.clear();
+  await Promise.all(all.map((k) => Promise.resolve().then(() => k.ctx && k.ctx.disconnect()).catch(() => {})));
 }
 
 /** A new tab in her window (next to it, in the background), for one page. */
@@ -345,8 +380,9 @@ async function openSession(opts = {}) {
   };
   const close = async () => {
     for (const t of [...tabs]) await done(t); // left over by a job that broke off
-    // your profile: her window and the connection stay for the next job; her own: the browser goes
-    if (!attached) await Promise.resolve().then(() => ctx.close()).catch(() => {});
+    // your profile: her window stays for the next job, the session ends; her own: the browser goes
+    if (attached) await w.release();
+    else await Promise.resolve().then(() => ctx.close()).catch(() => {});
   };
   return { browser: b && b.name, attached: Boolean(attached), read, readMany, search, close };
 }
@@ -395,7 +431,11 @@ async function openForSignIn(url, opts = {}) {
   const target = /^https?:\/\//i.test(String(url)) ? url : 'about:blank';
   if (opts.profile) {
     const w = await herWindow(opts, { visible: true }); // started with her port if it wasn't; her window kept
-    if (target !== 'about:blank') await (await w.bc.newPage()).goto(target).catch(() => {}); // a tab of yours
+    try {
+      if (target !== 'about:blank') await (await w.bc.newPage()).goto(target).catch(() => {}); // a tab of yours
+    } finally {
+      await w.release();
+    }
     return true;
   }
   const { ctx } = await start(opts, false);
@@ -405,6 +445,6 @@ async function openForSignIn(url, opts = {}) {
 }
 
 module.exports = {
-  readRendered, readRenderedMany, openSession, attach, herWindow, forgetWindows: () => kept.clear(), WINDOW_MARK, profileBusy, duckResults, DEFAULT_PORT, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
+  readRendered, readRenderedMany, openSession, attach, herWindow, releaseAll, forgetWindows: () => kept.clear(), WINDOW_MARK, profileBusy, duckResults, DEFAULT_PORT, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
   engineOf, kindOf, CHALLENGE, KNOWN, MODES,
 };

@@ -137,11 +137,12 @@ function fakeAttached(seen = {}, { existing = [] } = {}) {
   };
 }
 
-test('your profile: her one window kept between jobs, a tab per page, only the tabs closed', async () => {
+test('your profile: her one window kept between jobs, a tab per page, only the tabs closed, session ended', async () => {
   browser.forgetWindows();
   const seen = {};
+  const fake = fakeAttached(seen); // the same browser for every connection
   let connects = 0;
-  const opts = { app, pick, ...fast, profile: 'C:/p/MAIN', port: 9401, connect: async (port) => { connects++; seen.port = port; return fakeAttached(seen); } };
+  const opts = { app, pick, ...fast, profile: 'C:/p/MAIN', port: 9401, connect: async (port) => { connects++; seen.port = port; return fake; } };
   const s = await browser.openSession(opts);
   assert.strictEqual(seen.port, 9401);
   const found = await s.search('кто где');
@@ -149,15 +150,34 @@ test('your profile: her one window kept between jobs, a tab per page, only the t
   const pages = await s.readMany(['https://a.example/', 'https://b.example/']);
   assert.match(pages[1].text, /about the outage/);
   await s.close();
-  // the window page itself + 3 tabs, all tabs in her window; tabs closed, window and browser not, still connected
-  assert.deepStrictEqual([seen.windows, seen.tabsMade, seen.closed, seen.disconnected, seen.browserClosed], [1, 3, 3, false, false]);
+  // the window page itself + 3 tabs, all tabs in her window; tabs closed, window and browser not; session ended
+  assert.deepStrictEqual([seen.windows, seen.tabsMade, seen.closed, seen.disconnected, seen.browserClosed], [1, 3, 3, true, false]);
   assert.ok(seen.tabWindows.every((w) => w === 'w1'));
   assert.ok(decodeURIComponent(seen.opened[0]).includes(browser.WINDOW_MARK));
-  // the next job: no new connection, no new window
+  // the next job: a new short session, the same window found again
   const s2 = await browser.openSession(opts);
   await s2.readMany(['https://c.example/']);
   await s2.close();
-  assert.deepStrictEqual([connects, seen.windows, seen.tabsMade], [1, 1, 4]);
+  assert.deepStrictEqual([connects, seen.windows, seen.tabsMade], [2, 1, 4]);
+});
+
+test('your profile: two jobs at once share one session; it ends when the last one is done', async () => {
+  browser.forgetWindows();
+  const seen = {};
+  const fake = fakeAttached(seen);
+  let connects = 0;
+  const opts = { app, pick, ...fast, profile: 'C:/p/MAIN', port: 9405, connect: async () => { connects++; return fake; } };
+  const [a, b] = await Promise.all([browser.openSession(opts), browser.openSession(opts)]);
+  await a.close();
+  assert.strictEqual(seen.disconnected, false);
+  await b.close();
+  assert.deepStrictEqual([connects, seen.disconnected], [1, true]);
+});
+
+test('your profile: a session left behind in the browser is named as such, not as "no port"', async () => {
+  browser.forgetWindows();
+  await assert.rejects(browser.openSession({ app, pick, profile: 'C:/p/MAIN', profileName: 'MAIN', port: 9406, profileBusy: () => true,
+    connect: async () => { throw new Error('Protocol error (session.new): session not created Maximum number of active sessions'); } }), /уже подключена другая сессия управления[\s\S]*Перезапусти браузер с профилем «MAIN»/);
 });
 
 test('your profile: her window from before a restart is found again, not opened twice', async () => {

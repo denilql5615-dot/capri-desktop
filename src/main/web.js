@@ -200,7 +200,11 @@ async function answer(question, deps) {
     { role: 'system', content: SYSTEM },
     { role: 'user', content: `Вопрос: ${question}\n\n${blocks}` },
   ], { howto });
-  return { answer: String(said || '').trim(), sources: sources.map(({ n, title, url }) => ({ n, title, url })), blocked };
+  return {
+    answer: String(said || '').trim(), sources: sources.map(({ n, title, url }) => ({ n, title, url })), blocked,
+    // for her search log: everything the search gave, and which pages she actually read
+    results: results.map(({ title, url }) => ({ title, url })), read: read.map((i) => results[i].url),
+  };
 }
 
 module.exports = { search, read, fetchPage, textOf, headOf, usable, answer, DEFAULT_URL };

@@ -27,6 +27,24 @@ test('appendChat: a file a day in Сырьё/Чаты, exchanges added in order'
   assert.equal(notes.appendChat(dir, { said: '', answer: 'x' }), null);
 });
 
+test('appendSearch: her search log in Сырьё/Поиск — how, every result marked read / check / snippet, answer or failure', () => {
+  const { root, dir } = vault();
+  const at = new Date(2026, 10, 17, 13, 40).getTime();
+  const results = [{ title: 'Wiki', url: 'https://w.example/a' }, { title: 'Wall', url: 'https://c.example/b' }, { title: 'Other', url: 'https://o.example/c' }];
+  assert.equal(notes.appendSearch(dir, { question: 'кто написал Пикник', via: 'браузер Camoufox, профиль MAIN', results, read: ['https://w.example/a'], blocked: ['https://c.example/b'], answer: 'Стругацкие [1].', at }), 'Сырьё/Поиск/2026-11-17.md');
+  notes.appendSearch(dir, { question: 'второй', via: 'x', error: 'Профиль открыт без порта', at: at + 60000 });
+  const text = fs.readFileSync(path.join(root, 'Сырьё', 'Поиск', '2026-11-17.md'), 'utf8');
+  assert.match(text, /^---\nтип: поиск/);
+  assert.equal(text.match(/^---$/gm).length, 2);
+  assert.match(text, /## 13:40 · кто написал Пикник\n\*Через:\* браузер Camoufox, профиль MAIN/);
+  assert.match(text, /1\. \[Wiki\]\(https:\/\/w\.example\/a\) — 📖 прочитана/);
+  assert.match(text, /2\. \[Wall\]\(https:\/\/c\.example\/b\) — ⛔ проверка «не робот»/);
+  assert.match(text, /3\. \[Other\]\(https:\/\/o\.example\/c\) — · только описание/);
+  assert.match(text, /\*\*Ответ:\*\* Стругацкие \[1\]\./);
+  assert.match(text, /## 13:41 · второй[\s\S]*\*\*Не вышло:\*\* Профиль открыт без порта/);
+  assert.equal(notes.appendSearch(dir, { question: ' ' }), null);
+});
+
 test('writeOutput: a note per task in Результаты, an index linking them, no overwrite', () => {
   const { root, dir } = vault();
   const at = new Date(2026, 10, 4, 9, 30).getTime();

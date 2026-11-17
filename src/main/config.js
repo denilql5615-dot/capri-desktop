@@ -73,6 +73,7 @@ const DEFAULTS = {
   router: true, // her router (router.js) sorts what you say and how hard; false: keywords only
   morningBrief: { enabled: true, time: '09:00', last: null }, // your day, said each morning (brief.js)
   vaultChats: true, // your talks with her in <vault>/Сырьё/Чаты, what Claude/Codex made in <vault>/Результаты
+  vaultSearch: true, // her web search log in <vault>/Сырьё/Поиск: question, where, results, pages read, answer
   computerWorker: 'claude', // who drives the PC when no one is named: 'claude', 'codex' or 'capri' (her own agent)
   pimAccounts: [],
   pimSecrets: {},

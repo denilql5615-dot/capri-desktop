@@ -195,6 +195,28 @@ function appendChat(dir, { said, answer, by = 'Капри', at = Date.now() }) {
   return `${RAW_DIR}/Чаты/${localDay(d)}.md`;
 }
 
+/**
+ * Her web search, written down for you to look through later: <vault>/Сырьё/Поиск/<day>.md, one entry per
+ * question — when, how (browser/profile or search server), every result she got, which pages she read,
+ * which asked "are you human?", what she answered or why she couldn't. Returns its path in the vault.
+ */
+function appendSearch(dir, { question, via, results = [], read = [], blocked = [], answer = '', error = '', at = Date.now() }) {
+  const q = String(question || '').trim();
+  if (!q) return null;
+  const d = new Date(at);
+  const folder = path.join(vaultRoot(dir), RAW_DIR, 'Поиск');
+  fs.mkdirSync(folder, { recursive: true });
+  const file = path.join(folder, `${localDay(d)}.md`);
+  const head = fs.existsSync(file) ? '' : `---\nтип: поиск\nдата: ${localDay(d)}\n---\n# Поиск Капри ${localDay(d)}\n\nЧто она искала в интернете, где и что прочитала. Пишется само; правь и удаляй как хочешь.\n`;
+  const readSet = new Set(read);
+  const blockedSet = new Set(blocked);
+  const mark = (u) => (blockedSet.has(u) ? '⛔ проверка «не робот»' : readSet.has(u) ? '📖 прочитана' : '· только описание');
+  const list = results.map((r, i) => `${i + 1}. [${String(r.title || r.url).replace(/[[\]]/g, '')}](${r.url}) — ${mark(r.url)}`).join('\n');
+  const said = error ? `**Не вышло:** ${String(error).slice(0, 500)}` : `**Ответ:** ${String(answer || '—').trim().slice(0, 6000)}`;
+  fs.appendFileSync(file, `${head}\n## ${localTime(d)} · ${q.slice(0, 300)}\n*Через:* ${via}\n\n${list || '_результатов нет_'}\n\n${said}\n`, 'utf8');
+  return `${RAW_DIR}/Поиск/${localDay(d)}.md`;
+}
+
 function writeOutIndex(folder) {
   const rows = fs.readdirSync(folder).filter((n) => n.endsWith('.md') && !n.startsWith('_')).sort().reverse()
     .map((name) => `- [[${name.slice(0, -3)}]]`);
@@ -304,6 +326,6 @@ function parseFacts(answer) {
 
 module.exports = {
   INDEX, TYPES, EXTRACT_SCHEMA, PLAN_DIR, RAW_DIR, OUT_DIR, dirOf, fileName, list, searchVault, write, writeIndex, writePlanNote,
-  appendChat, writeOutput,
+  appendChat, appendSearch, writeOutput,
   recall, prompt, vaultPrompt, extractMessages, parseFacts,
 };
