@@ -213,16 +213,16 @@ async function askIn(page, prompt, { chat = null, model = null, files = [], clip
     if (!clicked) await page.keyboard.press('Enter');
   };
   await send();
-  for (let i = 0; i < 2; i++) {
-    let went = false;
+  let went = false;
+  for (let i = 0; i < 3 && !went; i++) {
     for (let w = 0; w < 8 && !went; w++) {
       await pause(pollMs);
       const s = await state();
       went = s.asked > before.asked || s.busy || s.count > before.count;
     }
-    if (went) break;
-    await send();
+    if (!went && i < 2) await send();
   }
+  if (!went) throw new Error('вопрос не ушёл в Gemini (кнопка отправки не сработала)');
   // done: a new answer is there, Gemini no longer shows "Stop", and its text stopped changing
   const started = Date.now();
   let prev = null;
@@ -232,7 +232,10 @@ async function askIn(page, prompt, { chat = null, model = null, files = [], clip
     const s = await state();
     if (s.count > before.count && !s.busy && s.text.trim()) {
       same = s.text === prev ? same + 1 : 0;
-      if (same >= stableTicks - 1 && s.text === prev) return { answer: s.text.trim(), chat: chatId(s.path), model: s.model, signedIn: s.signedIn };
+      if (same >= stableTicks - 1 && s.text === prev) {
+        const answer = s.text.replace(/\n+\s*image_\d+\.\w+\s*$/i, '').trim(); // the pasted image's name, shown under it
+        return { answer, chat: chatId(s.path), model: s.model, signedIn: s.signedIn };
+      }
     }
     prev = s.text;
   }

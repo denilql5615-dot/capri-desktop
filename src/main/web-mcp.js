@@ -62,7 +62,7 @@ function makeServer(web) {
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     }, async ({ prompt, chat, model, files }) => {
-      try { return result(await web.askGemini({ prompt, chat, model, files })); } catch (e) { return failed(e.message); }
+      try { return result(await web.askGemini({ prompt, chat, model, files })); } catch (e) { console.warn('[capri] ask_gemini:', e.message); return failed(e.message); }
     });
   }
 
