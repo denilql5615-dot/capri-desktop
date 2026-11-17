@@ -46,6 +46,21 @@ test('runCouncil: the rector out → the fallback rector; nobody answering → a
   await assert.rejects(council.runCouncil('Вопрос?', { members: [{ name: 'X', ask: async () => { throw new Error('нет'); } }], judge: ok }), /никто не ответил/);
 });
 
+test('two rectors: the second checks the first verdict and gives the final one; a member\'s role goes into its brief', async () => {
+  let seenRole = '';
+  const members = [{ name: 'A', ask: async () => 'a' }, { name: 'Гемма', role: 'РОЛЬ ХОЗЯИНА', ask: async (p) => { seenRole = seenRole || p; return 'g'; } }];
+  let secondSaw = '';
+  const r = await council.runCouncil('Вопрос?', {
+    members, twoRectors: true,
+    judge: { name: 'Opus', ask: async () => VERDICT_TEXT },
+    fallbackJudge: { name: 'Astra', ask: async (p) => { secondSaw = p; return `## Поправки второго ректора\n- нет\n\n${VERDICT_TEXT}`; } },
+  });
+  assert.match(seenRole, /^РОЛЬ ХОЗЯИНА/);
+  assert.match(secondSaw, /### Итог первого ректора\n## Решение/);
+  assert.equal(r.judge, 'Opus + Astra');
+  assert.match(r.verdict, /Поправки второго ректора/);
+});
+
 test('writeCouncil: a note in Результаты/Совет, verdict first, rounds after', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'capri-council-'));
   const file = council.writeCouncil(root, { question: 'Как устроить совет?', round1: [{ member: 'A', text: 'r1' }], round2: [{ member: 'A', text: 'r2' }], verdict: VERDICT_TEXT, judge: 'Ректор', failed: [] }, { at: new Date(2026, 10, 17, 20, 5).getTime() });

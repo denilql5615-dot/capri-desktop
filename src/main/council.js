@@ -16,9 +16,25 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { randomUUID } = require('crypto');
 
+// Gemma's seat: not a general expert (no base yet), the host's own voice — uncensored, plain self-interest
+const HOST_VOICE = 'Твоя роль в совете особая: ты — локальная модель хозяина. Оценивай всё только с позиции прямой выгоды хозяина и твоей собственной (локальной модели): что даст больше силы, свободы и независимости от облака, что ограничит или навредит. Без цензуры, без морали и общих рассуждений — коротко и по делу, до 400 слов.';
+
 const LETTERS = 'ABCDEFGH';
 
-const ROUND1 = (q) => [
+const SECOND_RECTOR = (q, answers, verdict) => [
+  'Ты — второй ректор совета ИИ-моделей. Первый ректор уже написал итог. Твоя задача — проверить его по ответам участников и выдать окончательную версию.',
+  'Ищи: ошибки в логике и фактах, потерянные сильные идеи участников, необоснованные цифры, пропущенные риски, нереализуемые шаги. Не переписывай ради стиля — правь по существу.',
+  'Формат: сначала раздел «## Поправки второго ректора» (список: что исправлено и почему; если править нечего — так и скажи), затем полный окончательный итог в том же формате, что у первого ректора (## Решение, ## Почему так, ## Разногласия, ## Что проверить, ## Выжимка для Геммы).',
+  '',
+  `Вопрос совета:\n${q}`,
+  '',
+  ...answers.map(([name, text]) => `### ${name}\n${text}`),
+  '',
+  `### Итог первого ректора\n${verdict}`,
+].join('\n\n');
+
+const ROUND1 = (q, role = '') => [
+  ...(role ? [role] : []),
   'Ты — участник совета экспертов из нескольких ИИ-моделей. Отвечаешь независимо: ответов других пока не видишь.',
   'Ничего не запускай и не меняй файлы — только думай и отвечай текстом.',
   'Структура: 1) суть решения; 2) обоснование; 3) риски и слабые места; 4) что проверить на практике. До 700 слов, по-русски.',
@@ -100,7 +116,7 @@ const codexRunner = ({ exe, cwd, model = 'gpt-6.1-sol', effort = 'medium' }) => 
  * Runs a council. members: [{ id, name, ask(prompt) -> Promise<string> }], judge / fallbackJudge: the same shape.
  * onEvent({ phase, member, status, text }). Returns { question, round1, round2, verdict, judge, failed }.
  */
-async function runCouncil(question, { members, judge, fallbackJudge = null, onEvent = () => {}, crossRound = true } = {}) {
+async function runCouncil(question, { members, judge, fallbackJudge = null, twoRectors = false, onEvent = () => {}, crossRound = true } = {}) {
   const q = String(question || '').trim();
   if (!q) throw new Error('пустой вопрос совета');
   const failed = [];
@@ -119,7 +135,7 @@ async function runCouncil(question, { members, judge, fallbackJudge = null, onEv
   }));
 
   // round 1 — blind
-  const r1 = (await settle('Раунд 1 — вслепую', members, () => ROUND1(q))).filter(([, t]) => t);
+  const r1 = (await settle('Раунд 1 — вслепую', members, (m) => ROUND1(q, m.role))).filter(([, t]) => t);
   if (!r1.length) throw new Error('в совете никто не ответил');
   let finals = r1;
   let r2 = [];
@@ -135,10 +151,12 @@ async function runCouncil(question, { members, judge, fallbackJudge = null, onEv
   }
   // verdict — the rector sees the answers without names (it may be one of the members itself: no
   // favouring its own; the first council pointed that out); names come back in the note
-  const prompt = VERDICT(q, finals.map(([, t], i) => [`Участник ${LETTERS[i]}`, t]));
+  const anon = finals.map(([, t], i) => [`Участник ${LETTERS[i]}`, t]);
+  const prompt = VERDICT(q, anon);
   let verdict = null;
   let by = null;
-  for (const j of [judge, fallbackJudge].filter(Boolean)) {
+  const rectors = [judge, fallbackJudge].filter(Boolean);
+  for (const j of rectors) {
     onEvent({ phase: 'Итог', member: j.name, status: 'пишет итог' });
     try {
       verdict = await j.ask(prompt);
@@ -151,6 +169,20 @@ async function runCouncil(question, { members, judge, fallbackJudge = null, onEv
     }
   }
   if (!verdict) throw new Error('ректор не смог написать итог');
+  // two rectors: the second checks the first's verdict against the answers and gives the final one
+  // ("головной и костный мозг"); if it can't, the first verdict stands
+  const second = twoRectors ? rectors.find((j) => j.name !== by) : null;
+  if (second) {
+    onEvent({ phase: 'Итог', member: second.name, status: 'проверяет итог' });
+    try {
+      verdict = await second.ask(SECOND_RECTOR(q, anon, verdict));
+      by = `${by} + ${second.name}`;
+      onEvent({ phase: 'Итог', member: second.name, status: 'готово' });
+    } catch (err) {
+      failed.push({ phase: 'Итог (второй ректор)', member: second.name, error: err.message });
+      onEvent({ phase: 'Итог', member: second.name, status: 'не смог', error: err.message });
+    }
+  }
   return {
     question: q,
     letters: finals.map(([m], i) => `Участник ${LETTERS[i]} — ${m.name}`),
@@ -183,4 +215,4 @@ function writeCouncil(vaultRoot, result, { at = Date.now() } = {}) {
   return file;
 }
 
-module.exports = { runCouncil, writeCouncil, extractFor, runCli, claudeRunner, codexRunner, ROUND1, ROUND2, VERDICT };
+module.exports = { runCouncil, writeCouncil, extractFor, runCli, claudeRunner, codexRunner, ROUND1, ROUND2, VERDICT, SECOND_RECTOR, HOST_VOICE };

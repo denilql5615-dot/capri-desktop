@@ -2051,7 +2051,7 @@ function councilMembers(cfg, only) {
     { id: 'argon', name: 'Antigravity Orchestrator (Argon)', ask: async (p) => (await agyApp.ask(p, { model: 'Orchestrator (Argon)', port: cfg.agyAppPort })).answer },
     ...(claudeExe ? [{ id: 'opus', name: 'Claude Opus', ask: council.claudeRunner({ exe: claudeExe, cwd, model: 'opus' }) }] : []),
     ...(codexExe ? [{ id: 'sol', name: 'Codex GPT-6.1 Sol', ask: council.codexRunner({ exe: codexExe, cwd, model: 'gpt-6.1-sol', effort: 'medium' }) }] : []),
-    { id: 'gemma', name: 'Gemma (локально)', ask: async (p) => {
+    { id: 'gemma', name: 'Gemma (голос хозяина)', role: council.HOST_VOICE, ask: async (p) => {
       const model = brains.ready(await ollama.models().catch(() => [])) ? await brains.use('main') : cfg.chatModel;
       // a cross round carries everyone's answers: a 16k window (8k was too small in the first council)
       return ollama.chat({ model, messages: [{ role: 'user', content: p }], numPredict: 1400, numCtx: 16384 }, () => {});
@@ -2713,7 +2713,7 @@ function registerIpc() {
       const cfg = config.load();
       const { members, judge, fallbackJudge } = councilMembers(cfg, how.members);
       const result = await council.runCouncil(q, {
-        members, judge, fallbackJudge,
+        members, judge, fallbackJudge, twoRectors: how.twoRectors !== false, // Opus writes, Astra checks (Danyal: two rectors)
         onEvent: (e) => console.warn(`[capri] совет · ${e.phase} · ${e.member}: ${e.status}${e.seconds ? ` (${e.seconds} с)` : ''}${e.error ? ` — ${e.error}` : ''}`),
       });
       const dir = notesDir();
