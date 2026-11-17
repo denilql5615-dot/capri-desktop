@@ -86,6 +86,8 @@ const DEFAULTS = {
   pimAccounts: [],
   pimSecrets: {},
   pimMcpPort: 47824,
+  webMcp: true, // her web for your agents (web-mcp.js): search and read through her browser nodes
+  webMcpPort: 47825,
   pimMcpToken: null,
 };
 
