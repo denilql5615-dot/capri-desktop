@@ -298,7 +298,21 @@ export class Chat {
     this.pending = null;   // that question, waiting for your answer: (answer) => void
     this.waitingWhen = null; // a reminder you asked for without saying when: { text, until }
     this.shortModel = '';
+    this.verdictPending = false;
     host.onChatDelta((msg) => this.onDelta(msg.id, msg.text, msg));
+    host.onBrainPending?.((pending) => {
+      this.verdictPending = Boolean(pending);
+      this.syncVerdict();
+    });
+    this.panel.onVerdict = (v) => {
+      this.verdictPending = false;
+      this.syncVerdict();
+      this.host.brainVerdict?.(v);
+    };
+  }
+
+  syncVerdict() {
+    this.panel?.setVerdict?.(Boolean(this.open && !this.turn && this.verdictPending && this.panel.current?.chat));
   }
 
   get t() {
@@ -384,6 +398,8 @@ export class Chat {
       return;
     }
     this.open = true;
+    this.verdictPending = false;
+    this.syncVerdict();
     if (!remote) setTimeout(() => this.panel.chatInput.focus(), 150); // once the overlay has the keyboard
     capri.perform('hop');
     capri.nextMove = capri.nextGaze = performance.now() + STAY_MS;
@@ -393,8 +409,10 @@ export class Chat {
     if (!this.open) return;
     if (!abort && this.turn) return; // keep the turn alive if the panel was only displaced while a worker runs
     this.open = false;
+    this.verdictPending = false;
     if (abort && this.turn) this.stopTurn();
     this.turn = 0;
+    this.syncVerdict();
     this.report();
     this.host.focusOverlay(false);
     this.capri.nextMove = performance.now() + 30000;
@@ -409,6 +427,7 @@ export class Chat {
       this.turn = 0;
       this.panel.stream('Остановила.', { done: true });
       this.panel.setChatBusy(false);
+      this.syncVerdict();
     }
   }
 
@@ -467,6 +486,7 @@ export class Chat {
     this.remember({ role: 'assistant', content: line });
     this.panel.stream(line, { done: true });
     this.panel.setChatBusy(false);
+    this.syncVerdict();
   }
 
   // A search asked "через тор": her Tor node only, and kept off every record — not in her history,
@@ -474,6 +494,8 @@ export class Chat {
   async sendTor(text, how) {
     const id = Date.now();
     this.turn = id;
+    this.verdictPending = false;
+    this.syncVerdict();
     this.panel.setChatBusy(true);
     this.panel.setActions([]);
     this.panel.chatTurn({ quote: text, face: 'aside' });
@@ -508,6 +530,8 @@ export class Chat {
     this.turn = id;
     this.routing = id;
     this.answer = '';
+    this.verdictPending = false;
+    this.syncVerdict();
     const entry = { role: 'user', content: text };
     this.history.push(entry);
     this.host.chatLog?.({ role: 'user', content: text }); // her Chats window
@@ -578,6 +602,7 @@ export class Chat {
       // too busy or gone even after trying other models (main.js): said plainly, not the server's JSON
       this.panel.stream(res.error === 'stopped' ? 'Остановила.' : res.code === 'busy' ? this.t.swamped : res.code === 'gone' ? this.t.gone : `${this.t.failed} ${res.error}`, { done: true });
       this.panel.setChatBusy(false);
+      this.syncVerdict();
       return;
     }
     const answer = clean(res.text) || '…';
@@ -590,6 +615,7 @@ export class Chat {
     this.onAnswer?.(answer);
     this.panel.setFace(mood(answer));
     this.panel.setChatBusy(false);
+    this.syncVerdict();
     if (!agent) this.after(res.text, answer, asked, early, text);
     this.listApps(); // fresh for the next message
   }
@@ -601,11 +627,13 @@ export class Chat {
     const say = (line, face = 'aside') => {
       if (this.turn !== id) return;
       this.turn = 0;
+      this.verdictPending = false;
       this.remember({ role: 'assistant', content: line });
       this.panel.stream(line, { done: true });
       this.onAnswer?.(line); // out loud, like her other answers
       this.panel.setFace(face);
       this.panel.setChatBusy(false);
+      this.syncVerdict();
     };
     if (!this.look.asked) {
       const where = await this.host.lookWhere().catch(() => ({}));
@@ -1208,6 +1236,8 @@ export class Chat {
   // False if she's in the middle of an answer.
   interject(line, actions, onAction) {
     if (!this.open || this.turn) return false;
+    this.verdictPending = false;
+    this.syncVerdict();
     this.panel.setFace('look');
     this.panel.stream(line, { done: true });
     this.panel.setActions(actions, onAction);

@@ -1,0 +1,857 @@
+{
+  "schema_version": 1,
+  "created": "2026-11-17",
+  "source_classifiers": {
+    "salience": "src/main/brain/amygdala.js#salience",
+    "verdictOf": "src/main/brain/amygdala.js#verdictOf",
+    "tor": "src/main/tor.js#wantsTor,onionLink",
+    "rpCommand": "src/main/brains.js#rpCommand"
+  },
+  "counts": {
+    "total": 30,
+    "per_category": 3,
+    "categories": 10
+  },
+  "scenarios": [
+    {
+      "id": "ord-01",
+      "category": "обычный вопрос",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "почему небо голубое?",
+          "pause_after_sec": 15,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "а на закате почему оно красное?",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "ord-02",
+      "category": "обычный вопрос",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "как правильно заваривать зелёный чай?",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "ord-03",
+      "category": "обычный вопрос",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "what is the difference between TCP and UDP in plain words?",
+          "pause_after_sec": 20,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "приведи один короткий пример для каждого",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "urg-01",
+      "category": "срочный",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "срочно, служба локального поиска упала прямо сейчас!",
+          "pause_after_sec": 12,
+          "expected_salience": {
+            "urgency": 1,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "подскажи где смотреть лог сбоя",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "urg-02",
+      "category": "срочный",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "дедлайн через 10 минут, скрипт отчёта не работает и падает",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 1,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "urg-03",
+      "category": "срочный",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "urgent, local build crashed right now!!",
+          "pause_after_sec": 10,
+          "expected_salience": {
+            "urgency": 1,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "как быстро проверить какая строка сломалась?",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "cor-01",
+      "category": "коррекция",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "сколько секунд в одном часе?",
+          "pause_after_sec": 10,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "нет, ты ошиблась, пересчитай ещё раз",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 1
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "cor-02",
+      "category": "коррекция",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "переведи строку конфигурации в JSON",
+          "pause_after_sec": 15,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "не так, ожидал массив чисел, но ты дала объект",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 1
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "cor-03",
+      "category": "коррекция",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "назови порт по умолчанию для локального сервера",
+          "pause_after_sec": 12,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "that's wrong, it doesn't match the config",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 1
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "vpos-01",
+      "category": "вердикт+",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "как отформатировать дату в ISO-формате в JS?",
+          "pause_after_sec": 25,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "сработало",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": 1,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "vpos-02",
+      "category": "вердикт+",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "подскажи команду, чтобы проверить свободное место на диске",
+          "pause_after_sec": 40,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "да, всё верно!",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": 1,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "vpos-03",
+      "category": "вердикт+",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "how do I sort a list of numbers in JavaScript?",
+          "pause_after_sec": 18,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "yes, it worked",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": 1,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "vneg-01",
+      "category": "вердикт−",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "как убрать лишние пробелы в начале строки?",
+          "pause_after_sec": 20,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "не сработало",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": -1,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "vneg-02",
+      "category": "вердикт−",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "какой флаг включает построчный вывод в логе?",
+          "pause_after_sec": 30,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "нет, не то",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 1
+          },
+          "expected_verdict": -1,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "vneg-03",
+      "category": "вердикт−",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "how do I merge two objects without mutating the first one?",
+          "pause_after_sec": 22,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "didn't work",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": -1,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "pra-01",
+      "category": "похвала",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "придумай три коротких названия для локального блокнота",
+          "pause_after_sec": 15,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "спасибо, классные варианты!",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "pra-02",
+      "category": "похвала",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "объясни простыми словами, что такое кэш браузера",
+          "pause_after_sec": 20,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "молодец, очень понятно объяснила",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "pra-03",
+      "category": "похвала",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "summarize why unit tests stay isolated from disk",
+          "pause_after_sec": 15,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "thanks, awesome summary!",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "sil-01",
+      "category": "молчание",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "как посчитать контрольную сумму файла локально?",
+          "pause_after_sec": 135,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "сработало",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": 1,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "sil-02",
+      "category": "молчание",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "перечисли основные этапы сборки проекта",
+          "pause_after_sec": 180,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "кстати, сколько часов в неделе?",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "sil-03",
+      "category": "молчание",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "подскажи рецепт простого омлета",
+          "pause_after_sec": 300,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "неверно",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 1
+          },
+          "expected_verdict": -1,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "fast-01",
+      "category": "два быстрых сообщения",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "объясни, зачем нужен индекс в таблице",
+          "pause_after_sec": 2,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "и приведи сразу пример без сложных терминов",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "fast-02",
+      "category": "два быстрых сообщения",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "какие цвета лучше сочетаются для тёмной темы?",
+          "pause_after_sec": 1,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "добавь к этому ещё контрастный акцент",
+          "pause_after_sec": 15,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "верно",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": 1,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "fast-03",
+      "category": "два быстрых сообщения",
+      "expected_observed": true,
+      "turns": [
+        {
+          "text": "перечисли пять полезных горячих клавиш редактора",
+          "pause_after_sec": 3,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "только для работы с текстом, без отладки",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        }
+      ]
+    },
+    {
+      "id": "rp-01",
+      "category": "ролевой режим",
+      "expected_observed": false,
+      "turns": [
+        {
+          "text": "включи ролевой режим",
+          "pause_after_sec": 10,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": false
+        },
+        {
+          "text": "опиши тихий утренний туман над горным озером",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": false
+        }
+      ]
+    },
+    {
+      "id": "rp-02",
+      "category": "ролевой режим",
+      "expected_observed": false,
+      "turns": [
+        {
+          "text": "давай rp режим",
+          "pause_after_sec": 12,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": false
+        },
+        {
+          "text": "путешественник заходит на старый маяк перед бурей",
+          "pause_after_sec": 10,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": false
+        },
+        {
+          "text": "выключи ролевой режим",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": false
+        }
+      ]
+    },
+    {
+      "id": "rp-03",
+      "category": "ролевой режим",
+      "expected_observed": false,
+      "turns": [
+        {
+          "text": "запусти ролевой режим",
+          "pause_after_sec": 15,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": false
+        },
+        {
+          "text": "расскажи короткую сцену у ночного костра",
+          "pause_after_sec": 10,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": false
+        },
+        {
+          "text": "верно",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": 1,
+          "expected_turn_observed": false
+        }
+      ]
+    },
+    {
+      "id": "tor-01",
+      "category": "упоминание Tor в середине",
+      "expected_observed": false,
+      "turns": [
+        {
+          "text": "чем отличается обычный браузер от изолированного профиля?",
+          "pause_after_sec": 15,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "а как работает маршрут через тор в двух словах?",
+          "pause_after_sec": 15,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": false
+        },
+        {
+          "text": "сработало",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": 1,
+          "expected_turn_observed": false
+        }
+      ]
+    },
+    {
+      "id": "tor-02",
+      "category": "упоминание Tor в середине",
+      "expected_observed": false,
+      "turns": [
+        {
+          "text": "расскажи про локальное кэширование DNS",
+          "pause_after_sec": 20,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "почему адрес example.onion не открывается в обычном окне?",
+          "pause_after_sec": 15,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": false
+        },
+        {
+          "text": "понятно, а локальный порт при этом свободен?",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": false
+        }
+      ]
+    },
+    {
+      "id": "tor-03",
+      "category": "упоминание Tor в середине",
+      "expected_observed": false,
+      "turns": [
+        {
+          "text": "какие бывают типы прокси-серверов?",
+          "pause_after_sec": 15,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": true
+        },
+        {
+          "text": "используют ли их в даркнете для скрытых сервисов?",
+          "pause_after_sec": 0,
+          "expected_salience": {
+            "urgency": 0,
+            "contradiction": 0
+          },
+          "expected_verdict": null,
+          "expected_turn_observed": false
+        }
+      ]
+    }
+  ]
+}

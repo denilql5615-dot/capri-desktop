@@ -2110,6 +2110,7 @@ function createTray() {
 // brain shadow observer (src/main/brain/shadow-hook.js): created lazily by chat:send only when
 // cfg.brainShadow is on; module-level so the quit handlers in main() can close it
 let brainShadowHook = null;
+let brainChatGlue = null;
 
 function registerIpc() {
   ipcMain.on('overlay:interactive', (_e, on) => {
@@ -2263,9 +2264,60 @@ function registerIpc() {
   const getBrainShadowHook = () => {
     if (brainShadowHook) return brainShadowHook;
     const { createShadowHook } = require('./brain/shadow-hook');
-    brainShadowHook = createShadowHook({ dir: path.join(app.getPath('userData'), 'brain-journal') });
+    const { createVerdictJudge } = require('./brain/verdict-judge');
+    const { CONFIG: brainConfig } = require('./brain');
+    let psCache = { at: 0, ready: false };
+    const verdictJudge = createVerdictJudge({
+      model: brains.fast,
+      callModel: (req, signal) => ollama.jsonChat(req, signal),
+      isBusy: () => chats.size > 0,
+      isModelReady: async (signal) => {
+        if (brains.mainActive()) return false;
+        const nowMs = Date.now();
+        if (nowMs - psCache.at < 3000) return psCache.ready;
+        const psSignal = signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(300)])
+          : AbortSignal.timeout(300);
+        const loaded = await ollama.loadedModels(psSignal);
+        if (!loaded) return false;
+        const ready = loaded.includes(brains.fast) && !loaded.includes(brains.main);
+        psCache = { at: Date.now(), ready };
+        return ready;
+      },
+    });
+    brainShadowHook = createShadowHook({
+      // one folder per journal format: formats never mix, older folders are left untouched
+      dir: path.join(app.getPath('userData'), 'brain-journal', `v${brainConfig.schema_version}`),
+      verdictJudge,
+      onPendingChange: (pending) => {
+        try {
+          if (overlay && !overlay.isDestroyed()) overlay.webContents.send('brain:pending', Boolean(pending));
+        } catch {}
+      },
+    });
     return brainShadowHook;
   };
+  const getBrainChatGlue = () => {
+    if (brainChatGlue) return brainChatGlue;
+    const { createChatGlue } = require('./brain/chat-glue');
+    brainChatGlue = createChatGlue({
+      getHook: (create = true) => (create ? getBrainShadowHook() : brainShadowHook),
+      tor,
+      yourWords,
+      isLocalModel: (cfg) => {
+        const model = pickModel(cfg);
+        return Boolean(model && llm.isLocal(cfg.provider, cfg, model));
+      },
+    });
+    return brainChatGlue;
+  };
+  ipcMain.on('brain:verdict', (event, v) => {
+    const sender = event?.sender;
+    if (!sender || (sender !== overlay?.webContents && sender !== chatsWin?.webContents)) return;
+    if (v !== 1 && v !== -1) return;
+    if (!brainShadowHook || config.load().brainShadow !== true) return;
+    try { brainShadowHook.verdict(v); } catch {}
+  });
   ipcMain.handle('chat:send', async (_e, { id, messages }) => {
     const abort = new AbortController();
     chats.set(id, abort);
@@ -2277,10 +2329,8 @@ function registerIpc() {
         chatsWin?.webContents.send('chats:delta', text); // her Chats window shows it coming too
       };
       const cfg = config.load();
-      if (cfg.brainShadow === true && brainShadowHook) {
-        try {
-          brainShadowHook.resolvePending(messages, { get said() { return yourWords(messages); }, tor, rp: cfg.rp === true });
-        } catch {}
+      if (cfg.brainShadow === true) {
+        try { getBrainChatGlue().beforeTurn(messages, cfg); } catch {}
       }
       // "включи / выключи ролевой режим": a mode of hers (brains.js), not a message to answer
       const rpTurn = brainsLib.rpCommand(yourWords(messages));
@@ -2345,27 +2395,25 @@ function registerIpc() {
       else {
         let shadowTurn = null;
         if (cfg.brainShadow === true && worker === null) {
-          try {
-            const model = pickModel(cfg);
-            const { contextMentionsTor } = require('./brain/shadow-hook');
-            if (model && llm.isLocal(cfg.provider, cfg, model) && !contextMentionsTor(messages, tor)) {
-              const { salience } = require('./brain/amygdala');
-              const features = salience(yourWords(messages));
-              shadowTurn = getBrainShadowHook().start(route, { signal: abort.signal, local: true, rp: cfg.rp === true, features });
-            }
-          } catch {}
+          try { shadowTurn = getBrainChatGlue().startLocal(route, messages, cfg, abort.signal); } catch {}
         }
         try {
           // any switch to another model (possibly a cloud one) abandons the observation
-          text = await chatWithFallback(cfg, await prepLocal(cfg, messages), send, abort.signal, () => streamed, () => shadowTurn?.cancel());
-          try {
-            if (shadowTurn) {
-              brainShadowHook?.hold(shadowTurn);
-              shadowTurn = null;
-            }
-          } catch {}
+          text = await chatWithFallback(
+            cfg,
+            await prepLocal(cfg, messages),
+            send,
+            abort.signal,
+            () => streamed,
+            () => { try { brainChatGlue?.onModelSwitch(shadowTurn); } catch {} },
+          );
+          if (shadowTurn) {
+            try { brainChatGlue?.afterSuccess(shadowTurn); shadowTurn = null; } catch {}
+          }
         } catch (err) {
-          try { if (abort.signal.aborted || err?.message === 'stopped' || err?.name === 'AbortError') shadowTurn?.cancel(); else shadowTurn?.fail(err); } catch {}
+          if (shadowTurn) {
+            try { brainChatGlue?.afterError(shadowTurn, err, abort.signal); } catch {}
+          }
           throw err;
         } finally {
           try { shadowTurn?.cancel(); } catch {}
@@ -2380,6 +2428,7 @@ function registerIpc() {
       return { ok: false, error: abort.signal.aborted ? 'stopped' : err.message, code: err.code || null };
     } finally {
       chats.delete(id);
+      try { brainChatGlue?.afterTurn(); } catch {}
     }
   });
   ipcMain.on('chat:stop', (_e, id) => chats.get(id)?.abort());
@@ -2708,6 +2757,8 @@ function registerIpc() {
   // a search on the web: she reads it herself (our SearXNG, through Proton) and answers with sources;
   // with the search server out of reach (PC proxy down, server off) the browser opens, as before
   ipcMain.handle('web:search', async (_e, query, how = {}) => {
+    // any Tor/dark request: the brain shadow drops what it watches before anything else can fail
+    if (how && (how.tor || how.dark || how.onion)) { try { brainShadowHook?.torTouched(); } catch {} }
     const q = String(query || '').trim().slice(0, 300);
     if (!q) return false;
     const cfg = config.load();
