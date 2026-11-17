@@ -20,7 +20,7 @@ function stream() {
       error: { error_kind: 'execution' },
       task_completed: { outcome: 'completed', validation: 'verified', utility: 1 },
     };
-    return { type, schema_version: 1, config_version: 1, event_id: uuid(), task_id, source_id,
+    return { type, schema_version: CONFIG.schema_version, config_version: CONFIG.version, event_id: uuid(), task_id, source_id,
       source_seq: seq, task_seq: seq, occurred_at_ms: 0, received_at_ms: 0, ...fields[type], ...extra };
   };
 }
@@ -47,6 +47,8 @@ test('decay uses explicit elapsed time, stability tends to one, silence never ea
 test('hysteresis holds the middle band and decay clears at the lower threshold', () => {
   const brain = createShadow(), next = stream();
   ingest(brain, next('message', { novelty: 1, uncertainty: 1, contradiction: 1 }));
+  assert.equal(brain.snapshot().evidence_need_active, 0); // capped at 0.5 in first window
+  ingest(brain, next('message', { occurred_at_ms: 60000, received_at_ms: 60000, novelty: 1 }));
   assert.equal(brain.snapshot().evidence_need_active, 1);
   tick(brain, 900000);
   assert.ok(brain.snapshot().evidence_need > CONFIG.leave);
@@ -56,18 +58,53 @@ test('hysteresis holds the middle band and decay clears at the lower threshold',
   assert.equal(brain.snapshot().evidence_need_active, 0);
 });
 
-test('channel cooldown throttles distinct-ID error storms and permits the next interval', () => {
+test('channel window accumulates up to cap and opens a fresh window after cooldown_ms', () => {
   const brain = createShadow(), next = stream();
   ingest(brain, next());
   for (let i = 0; i < 100; i++) ingest(brain, next('error'));
-  close(brain.snapshot().stability, 0.85);
-  close(brain.snapshot().reassessment, 0.35);
+  close(brain.snapshot().stability, 0.5);
+  close(brain.snapshot().reassessment, 0.5);
   ingest(brain, next('error', { occurred_at_ms: 59999, received_at_ms: 59999 }));
-  close(brain.snapshot().stability, 1 - 0.15 * Math.exp(-59999 / CONFIG.stability_tau_ms));
+  close(brain.snapshot().stability, 1 - 0.5 * Math.exp(-59999 / CONFIG.stability_tau_ms));
   ingest(brain, next('error', { occurred_at_ms: 60000, received_at_ms: 60000 }));
-  close(brain.snapshot().stability, 1 - 0.15 * Math.exp(-60000 / CONFIG.stability_tau_ms) - 0.15);
-  close(brain.snapshot().reassessment, 0.35 * Math.exp(-0.1) + 0.35);
+  close(brain.snapshot().stability, 1 - 0.5 * Math.exp(-60000 / CONFIG.stability_tau_ms) - 0.15);
+  close(brain.snapshot().reassessment, 0.5 * Math.exp(-0.1) + 0.35);
   assert.equal(brain.snapshot().reassessment_active, 1);
+});
+
+test('3 errors within 30s accumulate reassessment to 0.5 cap, then wait for next 60s window', () => {
+  const brain = createShadow(), next = stream();
+  ingest(brain, next());
+  ingest(brain, next('error', { occurred_at_ms: 0, received_at_ms: 0 }));
+  close(brain.snapshot().reassessment, 0.35);
+
+  ingest(brain, next('error', { occurred_at_ms: 10000, received_at_ms: 10000 }));
+  const at10 = 0.35 * Math.exp(-10000 / CONFIG.reassessment_tau_ms) + 0.15;
+  close(brain.snapshot().reassessment, at10);
+
+  ingest(brain, next('error', { occurred_at_ms: 30000, received_at_ms: 30000 }));
+  const at30 = at10 * Math.exp(-20000 / CONFIG.reassessment_tau_ms);
+  close(brain.snapshot().reassessment, at30);
+
+  ingest(brain, next('error', { occurred_at_ms: 60000, received_at_ms: 60000 }));
+  close(brain.snapshot().reassessment, at30 * Math.exp(-30000 / CONFIG.reassessment_tau_ms) + 0.35);
+});
+
+test('stability window applies signed clamping in [-window_cap, +window_cap]', () => {
+  const brain = createShadow(), next = stream();
+  ingest(brain, next());
+  // 4 errors at t=0: -0.15, -0.15, -0.15, -0.05 (sum hits -0.5), 5th error adds 0
+  for (let i = 0; i < 5; i++) ingest(brain, next('error'));
+  close(brain.snapshot().stability, 0.5);
+  // verified completion (+0.1) inside the same window shifts signed sum from -0.5 to -0.4
+  ingest(brain, next('task_completed', { occurred_at_ms: 10000, received_at_ms: 10000, utility: 1 }));
+  const afterComplete = 1 + (0.5 - 1) * Math.exp(-10000 / CONFIG.stability_tau_ms) + 0.1;
+  close(brain.snapshot().stability, afterComplete);
+  // next error (-0.15) in the same window only has -0.10 room left down to -0.5
+  const t2 = stream();
+  ingest(brain, t2('message', { occurred_at_ms: 20000, received_at_ms: 20000 }));
+  ingest(brain, t2('error', { occurred_at_ms: 20000, received_at_ms: 20000 }));
+  close(brain.snapshot().stability, 1 + (afterComplete - 1) * Math.exp(-10000 / CONFIG.stability_tau_ms) - 0.1);
 });
 
 test('exact redelivery is a no-op, conflicts and regressing/gapped sequences are atomic', () => {
@@ -85,15 +122,18 @@ test('exact redelivery is a no-op, conflicts and regressing/gapped sequences are
   ingest(brain, second);
 });
 
-test('RPE uses the prior prediction once; repeated terminal IDs cannot earn again', () => {
+test('RPE uses the prior prediction once; events after task_completed fail while exact duplicate returns duplicate', () => {
   const brain = createShadow(), next = stream();
   ingest(brain, next('message', { prediction: 0.4 }));
   ingest(brain, next('tool_result')); // exit/success alone is not useful completion
   assert.equal(brain.snapshot().rpe_count, 0);
-  ingest(brain, next('task_completed', { utility: -0.2, outcome: 'failed' }));
+  const done = next('task_completed', { utility: -0.2, outcome: 'failed' });
+  ingest(brain, done);
   close(brain.snapshot().last_rpe, -0.6);
   const before = brain.snapshot();
-  ingest(brain, next('task_completed'));
+  assert.equal(ingest(brain, { ...done }).status, 'duplicate');
+  assert.throws(() => ingest(brain, next('task_completed')), /already completed/);
+  assert.throws(() => ingest(brain, { ...next('tool_result'), source_seq: 4, task_seq: 4 }), /already completed/);
   assert.equal(brain.snapshot().rpe_count, 1);
   close(brain.snapshot().stability, before.stability);
 });
@@ -103,11 +143,13 @@ test('unverified terminal, missing prediction and completion before initial mess
   const first = next(); delete first.prediction; ingest(brain, first);
   ingest(brain, next('task_completed'));
   assert.equal(brain.snapshot().rpe_count, 0);
-  const latePrediction = next('message', { prediction: 0.3 });
-  assert.throws(() => ingest(brain, latePrediction), /initial only/);
   const other = stream(); ingest(brain, other());
-  const unverified = other('task_completed', { validation: 'unverified' }); delete unverified.utility;
-  ingest(brain, unverified); ingest(brain, other('task_completed'));
+  const latePrediction = other('message', { prediction: 0.3 });
+  assert.throws(() => ingest(brain, latePrediction), /initial only/);
+  const unverified = { ...other('task_completed', { validation: 'unverified' }), source_seq: 2, task_seq: 2 };
+  delete unverified.utility;
+  ingest(brain, unverified);
+  assert.throws(() => ingest(brain, { ...other('task_completed'), source_seq: 3, task_seq: 3 }), /already completed/);
   assert.equal(brain.snapshot().rpe_count, 0);
   const premature = stream()('task_completed');
   assert.throws(() => ingest(brain, premature), /must begin/);
@@ -135,7 +177,7 @@ test('strict schema rejects content, praise, bad IDs/enums, nonfinite and unsafe
     { event_id: 'raw-identifier' }, { type: 'praise' }, { urgency: 0.5 }, { novelty: true },
     { route: 'external' }, { prediction: NaN }, { prediction: Infinity }, { prediction: -2 },
     { occurred_at_ms: -1 }, { occurred_at_ms: Number.MAX_SAFE_INTEGER + 1 },
-    { received_at_ms: CONFIG.max_time_ms + 1 }, { source_seq: 1.1 }, { config_version: 2 },
+    { received_at_ms: CONFIG.max_time_ms + 1 }, { source_seq: 1.1 }, { config_version: CONFIG.version + 1 },
   ];
   for (const bad of cases) assert.throws(() => ingest(brain, { ...first, ...bad }));
   assert.throws(() => brain.ingest({ privacy: 'ordinary', event: first, content: 'secret' }));
@@ -179,7 +221,7 @@ test('replay exactly restores decay, RPE, ordering and dedup; journal contains m
   const restored = replay(lines.join(''));
   assert.deepEqual(restored.snapshot(), brain.snapshot());
   assert.equal(ingest(restored, first).status, 'duplicate');
-  ingest(restored, next('task_completed'));
+  assert.throws(() => ingest(restored, next('task_completed')), /already completed/);
   assert.equal(restored.snapshot().rpe_count, 1);
   assert.doesNotMatch(lines.join(''), /https:|secret|"text"|"content"|"error"\s*:/);
 });
@@ -226,7 +268,7 @@ test('corrupt/torn journals, incompatible config and modified result state are r
   const valid = lines.join('');
   assert.throws(() => replay(valid.slice(0, -1)), /torn tail/);
   assert.throws(() => replay(`${valid}garbage\n`), /corrupt/);
-  assert.throws(() => replay(valid.replace('"version":1', '"version":2')), /mismatch/);
+  assert.throws(() => replay(valid.replace(`"version":${CONFIG.version}`, `"version":${CONFIG.version + 1}`)), /mismatch/);
   assert.throws(() => replay(valid.replace('"stability":1', '"stability":0')), /state mismatch/);
   assert.throws(() => replay(`${valid}${lines[1]}`), /state mismatch/);
   assert.throws(() => replay(valid.replace('"kind":"event"', '"kind":"event","text":"secret"')), /schema|noncanonical/);
@@ -243,9 +285,9 @@ test('file reopen restores guards and appends without overwriting; torn tail rem
   assert.deepEqual(restored.snapshot(), brain.snapshot());
   assert.equal(ingest(restored, first).status, 'duplicate');
   assert.equal(fs.readFileSync(file, 'utf8'), original);
-  ingest(restored, next('task_completed'));
+  assert.throws(() => ingest(restored, next('task_completed')), /already completed/);
   assert.equal(restored.snapshot().rpe_count, 1);
-  assert.ok(fs.readFileSync(file, 'utf8').startsWith(original));
+  assert.equal(fs.readFileSync(file, 'utf8'), original);
   fs.appendFileSync(file, '{"kind":');
   const torn = fs.readFileSync(file, 'utf8');
   assert.throws(() => openJournal(file), /torn tail/);

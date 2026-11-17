@@ -21,7 +21,7 @@ function makeTaskBatch(count = 2, baseMs = 0, overrides = {}) {
     let event;
     if (i === 1) {
       event = {
-        type: 'message', schema_version: 1, config_version: 1,
+        type: 'message', schema_version: CONFIG.schema_version, config_version: CONFIG.version,
         event_id: uuid(), task_id, source_id, source_seq: i, task_seq: i,
         occurred_at_ms: t, received_at_ms: t,
         origin: 'user', route: 'unknown',
@@ -30,7 +30,7 @@ function makeTaskBatch(count = 2, baseMs = 0, overrides = {}) {
       };
     } else if (i === count) {
       event = {
-        type: 'task_completed', schema_version: 1, config_version: 1,
+        type: 'task_completed', schema_version: CONFIG.schema_version, config_version: CONFIG.version,
         event_id: uuid(), task_id, source_id, source_seq: i, task_seq: i,
         occurred_at_ms: t, received_at_ms: t,
         outcome: 'completed', validation: 'verified', utility: 1,
@@ -42,7 +42,7 @@ function makeTaskBatch(count = 2, baseMs = 0, overrides = {}) {
         ? { error_kind: 'execution' }
         : { outcome: 'ok', duration_ms: 50 };
       event = {
-        type: midType, schema_version: 1, config_version: 1,
+        type: midType, schema_version: CONFIG.schema_version, config_version: CONFIG.version,
         event_id: uuid(), task_id, source_id, source_seq: i, task_seq: i,
         occurred_at_ms: t, received_at_ms: t, ...midFields,
         ...(overrides.mid || {}),
@@ -191,6 +191,53 @@ test('checkpoint carries channels, hysteresis gates, 60s cooldowns, decay, and R
   assert.ok(Math.abs(got.evidence_need - want.evidence_need) < 1e-12);
   assert.ok(Math.abs(got.stability - want.stability) < 1e-12);
   assert.equal(got.task_count, 1); // per-segment count reset
+  await j.close();
+});
+
+test('impulse window start_ms and signed sum persist across rotation, restart, and replay', async () => {
+  const dir = mkDir();
+  const ref = createShadow();
+  const t0 = Date.UTC(2026, 10, 17, 5, 0, 0);
+  const b1 = makeTaskBatch(3, t0, {
+    midType: 'error',
+    last: { outcome: 'failed', utility: -1 },
+  });
+  const b2 = makeTaskBatch(3, t0 + 20000, {
+    midType: 'error',
+    last: { outcome: 'completed', utility: 1 },
+  });
+  const b3 = makeTaskBatch(3, t0 + 40000, {
+    midType: 'error',
+    last: { outcome: 'completed', utility: 1 },
+  });
+
+  for (const b of [b1, b2, b3]) {
+    for (const env of b) ref.ingest(env);
+  }
+
+  let j = await openRotatingJournal(dir, { max_tasks: 1 });
+  await j.appendBatch(b1);
+  await j.close();
+
+  j = await openRotatingJournal(dir, { max_tasks: 1 });
+  await j.appendBatch(b2);
+  await j.close();
+
+  j = await openRotatingJournal(dir, { max_tasks: 1 });
+  await j.appendBatch(b3);
+  const got = j.snapshot();
+  const want = ref.snapshot();
+  assert.ok(Math.abs(got.reassessment - want.reassessment) < 1e-12);
+  assert.ok(Math.abs(got.stability - want.stability) < 1e-12);
+
+  const files = fs.readdirSync(dir).sort();
+  const lastSeg = fs.readFileSync(path.join(dir, files.at(-1)), 'utf8');
+  assert.deepEqual(replay(lastSeg).snapshot(), got);
+
+  // Old v1 numeric impulse checkpoint format is rejected
+  const badCp = j ? JSON.parse(lastSeg.split('\n')[0]).checkpoint : null;
+  badCp.impulses.reassessment = 0;
+  assert.throws(() => createShadow({ checkpoint: badCp }), /schema/);
   await j.close();
 });
 

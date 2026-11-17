@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createTaskBuffer } = require('../src/main/brain/task-buffer');
-const { createShadow } = require('../src/main/brain');
+const { CONFIG, createShadow } = require('../src/main/brain');
 
 let id = 9000;
 const uuid = () => `00000000-0000-4000-8000-${String(++id).padStart(12, '0')}`;
@@ -17,7 +17,7 @@ function stream() {
       error: { error_kind: 'execution' },
       task_completed: { outcome: 'completed', validation: 'verified', utility: 1 },
     };
-    const e = { type, schema_version: 1, config_version: 1, event_id: uuid(), task_id, source_id,
+    const e = { type, schema_version: CONFIG.schema_version, config_version: CONFIG.version, event_id: uuid(), task_id, source_id,
       source_seq: seq, task_seq: seq, occurred_at_ms: 0, received_at_ms: 0, ...fields[type], ...extra };
     for (const k of Object.keys(e)) if (e[k] === undefined) delete e[k];
     return e;

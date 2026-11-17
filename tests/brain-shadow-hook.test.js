@@ -365,3 +365,112 @@ test('own publish chain is bounded: overflow beyond MAX_PENDING_WRITES is discar
   assert.equal(appended, MAX_PENDING_WRITES);
   assert.deepEqual(hook.stats(), { published: MAX_PENDING_WRITES, discarded: 10, observer_errors: 0 });
 });
+
+test('hold + resolvePending publishes verified utility 1/-1, replays identically, and passes salience features', async () => {
+  const dir = mkDir();
+  const hook = createShadowHook({ dir, now: makeClock(), uuid: makeUuid(8000) });
+
+  // 1. Positive verdict + urgency=1, contradiction=0
+  const t1 = hook.start(
+    { worker: null, tier: 'routine' },
+    { features: { urgency: 1, contradiction: 0, novelty: 1, uncertainty: 0.7 } },
+  );
+  hook.hold(t1);
+  hook.resolvePending([{ role: 'user', content: 'сработало' }], { said: 'сработало', tor, rp: false });
+
+  // 2. Negative verdict + urgency=0, contradiction=1
+  const t2 = hook.start(
+    { worker: null, tier: 'routine' },
+    { features: { urgency: 'bad', contradiction: 1 } },
+  );
+  hook.hold(t2);
+  hook.resolvePending([{ role: 'user', content: 'не то' }], { said: 'не то', tor, rp: false });
+
+  await hook.close();
+  assert.deepEqual(hook.stats(), { published: 2, discarded: 0, observer_errors: 0 });
+
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.ndjson'));
+  assert.equal(files.length, 1);
+  const ndjson = fs.readFileSync(path.join(dir, files[0]), 'utf8');
+  const rows = ndjson.trim().split('\n').slice(1).map((l) => JSON.parse(l));
+  assert.equal(rows.length, 4);
+
+  assert.equal(rows[0].event.urgency, 1);
+  assert.equal(rows[0].event.contradiction, 0);
+  assert.equal(rows[0].event.novelty, 0);
+  assert.equal(rows[0].event.uncertainty, 0);
+  assert.equal(rows[1].event.validation, 'verified');
+  assert.equal(rows[1].event.utility, 1);
+
+  assert.equal(rows[2].event.urgency, 0);
+  assert.equal(rows[2].event.contradiction, 1);
+  assert.equal(rows[3].event.validation, 'verified');
+  assert.equal(rows[3].event.utility, -1);
+
+  assert.deepEqual(replay(ndjson).snapshot(), rows[3].state);
+});
+
+test('hold discards on praise, Tor without reading verdict, 120s timeout, and second hold overwrite', async () => {
+  const dir = mkDir();
+  const timers = [];
+  const cleared = [];
+  let nowMs = Date.UTC(2026, 10, 17, 10, 0, 0);
+  const hook = createShadowHook({
+    dir,
+    now: () => nowMs,
+    uuid: makeUuid(8500),
+    pendingTtlMs: 120000,
+    setTimer: (fn, ms) => {
+      const handle = { fn, ms, unrefCalled: false, unref() { this.unrefCalled = true; } };
+      timers.push(handle);
+      return handle;
+    },
+    clearTimer: (handle) => cleared.push(handle),
+  });
+
+  // 1. Praise -> discarded
+  hook.hold(hook.start({ worker: null }));
+  assert.equal(timers[0].ms, 120000);
+  assert.equal(timers[0].unrefCalled, true);
+  hook.resolvePending([{ role: 'user', content: 'спасибо' }], { said: 'спасибо', tor, rp: false });
+  assert.equal(cleared.length, 1);
+
+  // 2. Tor in context -> discarded WITHOUT accessing said getter
+  hook.hold(hook.start({ worker: null }));
+  hook.resolvePending(
+    [{ role: 'user', content: 'найди через тор' }],
+    {
+      get said() { throw new Error('must not read verdict on Tor'); },
+      tor,
+      rp: false,
+    },
+  );
+
+  // 3. 120s timeout callback fires -> discarded
+  hook.hold(hook.start({ worker: null }));
+  timers.at(-1).fn();
+
+  // 4. Second hold cancels first pending turn
+  hook.hold(hook.start({ worker: null }));
+  hook.hold(hook.start({ worker: null }));
+  // Verify close() cancels the remaining held turn cleanly
+  await hook.close();
+
+  assert.deepEqual(hook.stats(), { published: 0, discarded: 5, observer_errors: 0 });
+  assert.equal(fs.existsSync(dir), false);
+});
+
+test('any Tor activity drops the waiting verdict and turns in flight, with nothing written', async () => {
+  const dir = mkDir();
+  const hook = createShadowHook({ dir, now: makeClock(), uuid: makeUuid(9100) });
+  const held = hook.start({ worker: null });
+  hook.hold(held);
+  const inFlight = hook.start({ worker: null });
+  hook.torTouched(); // e.g. a Tor search outside chat:send between the answer and the verdict
+  hook.resolvePending([{ role: 'user', content: 'сработало' }], { said: 'сработало', tor, rp: false });
+  inFlight.complete({ verified: true, utility: 1 }); // already cancelled: no effect
+  await hook.close();
+  assert.equal(hook.stats().published, 0);
+  assert.equal(hook.stats().observer_errors, 0);
+  assert.equal(fs.existsSync(dir), false);
+});

@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { replay } = require('../src/main/brain');
+const { CONFIG, replay } = require('../src/main/brain');
 const { openAsyncJournal } = require('../src/main/brain/async-journal');
 
 let id = 5000;
@@ -21,7 +21,7 @@ function stream() {
       error: { error_kind: 'execution' },
       task_completed: { outcome: 'completed', validation: 'verified', utility: 1 },
     };
-    return { type, schema_version: 1, config_version: 1, event_id: uuid(), task_id, source_id,
+    return { type, schema_version: CONFIG.schema_version, config_version: CONFIG.version, event_id: uuid(), task_id, source_id,
       source_seq: seq, task_seq: seq, occurred_at_ms: 0, received_at_ms: 0, ...fields[type], ...extra };
   };
 }
@@ -142,11 +142,12 @@ test('duplicates append nothing; restart restores dedup, sequence and terminal g
   assert.equal((await j.ingest(ord(done))).status, 'duplicate');
   assert.equal(fs.statSync(f).size, size);
   const again = next('task_completed');
-  await j.ingest(ord(again)); // new ID after terminal: sequenced, no new RPE
+  await assert.rejects(j.ingest(ord(again)), /already completed/);
+  assert.equal(fs.statSync(f).size, size);
   assert.equal(j.snapshot().rpe_count, 1);
-  assert.equal(j.snapshot().record_count, 3);
+  assert.equal(j.snapshot().record_count, 2);
   await j.close();
-  assert.equal(replay(fs.readFileSync(f, 'utf8')).snapshot().record_count, 3);
+  assert.equal(replay(fs.readFileSync(f, 'utf8')).snapshot().record_count, 2);
 });
 
 test('stage errors reject only that operation; later operations still succeed', async () => {
