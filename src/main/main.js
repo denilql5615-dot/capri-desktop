@@ -1816,9 +1816,8 @@ async function prepLocal(cfg, messages, { main = false } = {}) {
   const rolesReady = cfg.provider === 'ollama' && brains.ready(chatModels);
   const auto = rolesReady && brains.isAuto(cfg.chatModel, chatModels);
   const torCtx = torState.isQuarantined() || messagesHaveTor(messages);
-  const analysis = !main
-    ? brainsLib.analysisMode(cfg, { rolesReady, auto, tor: torCtx, text: said })
-    : { active: false, numPredict: undefined };
+  // a long document keeps its long answer even when the turn was sent to the 26B for another reason
+  const analysis = brainsLib.analysisMode(cfg, { rolesReady, auto, tor: torCtx, text: said });
   if (auto) {
     if (!main && brainsLib.wantsFast(said)) await brains.release();
     else if (main || rp || analysis.active || brainsLib.wantsMain(said) || brainsLib.wantsLocal(said)) await brains.use('main');
@@ -2450,8 +2449,9 @@ function registerIpc() {
         }
         try {
           const prepared = await prepLocal(cfg, messages, { main: influence.main });
+          // stage 6 stop hint: one system line at the very end, never in roleplay
           const toSend = influence.hint && cfg.rp !== true
-            ? [...prepared, { role: 'system', content: influence.hint }]
+            ? { ...prepared, messages: [...prepared.messages, { role: 'system', content: influence.hint }] }
             : prepared;
           // any switch to another model (possibly a cloud one) abandons the observation
           text = await chatWithFallback(
