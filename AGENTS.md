@@ -1,8 +1,11 @@
 # AGENTS.md — GENESIS / Capri Desktop
 
 ## Role
-- This repository implements Danyal's private assistant Capri (`Capri Desktop` v0.6.0). Danyal defines behavior and tests; agents implement it.
-- Local brain, router, and vision run on `gemma4:26b-a4b-it-qat` (`think: false`, `OLLAMA_NUM_PARALLEL=2`).
+- This repository implements Danyal's private assistant Capri (`Capri Desktop` 0.6.x). Danyal defines behavior and tests; agents implement it.
+- Full current state, decisions and environment: `D:\Capri\genesis-src\CLAUDE.md` (same text as `AGENTS.md` / `GEMINI.md` there). Read it first.
+- Local brain: two Heretic Gemma models in Ollama — fast E4B always loaded, main 26B on demand (`brains.js`, `chatModel: auto`, `think: false`). The stock `gemma4:*` models are removed.
+- Web: her search (`web.js`), her browser nodes (`browser.js`: Camoufox MAIN on port 9339, Tor window on 9340 via `tor.js`), search log in the vault. Agents use the web through the `capri-web` MCP (127.0.0.1:47825), not on their own. Tor requests are never written down.
+- Tests: `node --test tests/` (no `npm test` script).
 - External tasks use a 5-step contextual worker relay: `Claude Code` → `Codex (GPT)` → `Antigravity: Gemini 4 Argon` (`gemini-4-argon-medium`) → `Antigravity: Claude Opus 5.5` (`claude-opus-5-5-medium`) → `Antigravity: Gemini 3.8 Flash High` (`gemini-3.8-flash-high`, last-resort fallback only when steps 1–4 are exhausted).
 
 ## Before work
