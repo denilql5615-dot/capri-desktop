@@ -2821,6 +2821,7 @@ function main() {
   });
 
   app.on('will-quit', () => {
+    capriBrowser.releaseAll(); // her control session in your browser ended, so the next Capri can attach
     agentSessions?.stopAll();
     globalShortcut.unregisterAll();
     speech.stopWhisper();
