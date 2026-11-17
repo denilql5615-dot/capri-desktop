@@ -204,6 +204,12 @@ export function torHow(text) {
   if (!q && !onion) return null;
   return { query: q || onion, dark: dark || Boolean(onion), onion };
 }
+// "созови совет: …", "собери совет — …", "совет моделей: …": her council (council.js) on that question
+export function councilAsked(text) {
+  const m = String(text || '').match(/^\s*(?:капри[,!:]?\s+)?(?:(?:созови|собери|позови)\s+)?совет(?:\s+(?:моделей|агентов))?\s*[:,—–-]\s*([\s\S]{8,})$/i);
+  return m ? m[1].trim() : null;
+}
+
 export function torAsked(text) {
   return torHow(text)?.query || null;
 }
@@ -669,6 +675,8 @@ export class Chat {
     if (SHOT_ASK.test(text)) return { kind: 'shot' };
     const roblox = robloxGame(text);
     if (roblox) return { kind: 'roblox', game: roblox };
+    const council = councilAsked(text);
+    if (council) return { kind: 'council', question: council };
     if (SEARCH_VERB.test(text) && WEB_WORD.test(text) && searched(text)) return { kind: 'web', query: searched(text) };
     const exts = fileTypes(text);
     if (SEARCH_VERB.test(text) && (FILE_WORD.test(text) || exts.length)) {
@@ -900,6 +908,14 @@ export class Chat {
       if (!res) return null;
       if (!res.name) return { line: fmt(t.robloxNone, { game: asked.game }), face: 'aside' };
       return { line: fmt(res.app ? t.robloxPlay : t.robloxPage, { game: res.name }), face: 'laugh' };
+    }
+    if (asked.kind === 'council') {
+      this.zap();
+      const res = await this.host.council(asked.question);
+      if (!res || res.error) return { line: `Совет не собрался: ${(res && res.error) || 'нет ответа'}`, face: 'aside' };
+      const who = res.members.join(', ');
+      const miss = res.failed.length ? `\nНе ответили: ${res.failed.map((f) => f.member).join(', ')}.` : '';
+      return { line: `Совет (${who}; итог — ${res.judge}):\n\n${res.verdict.slice(0, 2500)}${res.verdict.length > 2500 ? '…' : ''}${miss}\n\nПолностью — ${res.note}`, face: 'smug' };
     }
     if (asked.kind === 'web') {
       this.zap();

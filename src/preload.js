@@ -119,6 +119,7 @@ contextBridge.exposeInMainWorld('host', {
   openFile: (file, reveal) => ipcRenderer.invoke('files:open', { file, reveal }),
   screenshot: () => ipcRenderer.invoke('files:screenshot'),
   webSearch: (query, how) => ipcRenderer.invoke('web:search', query, how || {}), // how.tor: her Tor node
+  council: (question, how) => ipcRenderer.invoke('council:run', question, how || {}), // her council of models (council.js)
   openSite: (address) => ipcRenderer.invoke('apps:site', address),
   focusOverlay: (on) => ipcRenderer.send('overlay:focus', Boolean(on)),
 });

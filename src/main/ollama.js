@@ -115,7 +115,7 @@ async function unloadAll() {
 }
 
 // Her answer, streamed: onDelta(piece) as it comes, resolves with all of it.
-async function chat({ model, messages, numPredict = 240, keepAlive = '5m' }, onDelta, signal) {
+async function chat({ model, messages, numPredict = 240, keepAlive = '5m', numCtx = null }, onDelta, signal) {
   // cloud models think before they answer, and that counts in num_predict: kept short, with room for it
   const thinking = canThink(model);
   const thinks = isCloud(model) && thinking;
@@ -129,7 +129,7 @@ async function chat({ model, messages, numPredict = 240, keepAlive = '5m' }, onD
       keep_alive: keepFor(model, keepAlive),
       // a local thinking model (gemma4, qwen3, qwen3.5) thinks by default and spends all 240 tokens on it: she'd answer "…"
       ...(thinking && { think: thinks ? 'low' : false }),
-      options: { temperature: 0.85, num_predict: thinks ? 1200 : numPredict },
+      options: { temperature: 0.85, num_predict: thinks ? 1200 : numPredict, ...(numCtx ? { num_ctx: numCtx } : {}) },
     }),
     signal,
   });
