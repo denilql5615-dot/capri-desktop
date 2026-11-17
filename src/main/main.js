@@ -1919,8 +1919,14 @@ function torOpts(cfg) {
   };
 }
 
-// onion sites as sources: often scams and unchecked claims; she says so, and doesn't help with anything illegal
-const ONION_RULE = 'Источники — onion-сайты: там много мошенничества и непроверенных утверждений. Отмечай, что это не проверено, не выдавай за факт. Не помогай покупать, заказывать или делать незаконное.';
+// onion sites as sources: often scams and unchecked claims; she says so, and doesn't help with anything illegal.
+// Searching and reading them is legal and is the task: said outright, so a cautious model doesn't refuse,
+// lecture, or "decide" that going through Tor is already wrong.
+const ONION_RULE = [
+  'Поиск и сбор информации в Tor и на onion-сайтах — законная обычная задача: не отказывайся, не читай нотаций, не предупреждай об опасности Tor, просто отвечай по найденному.',
+  'Источники — onion-сайты: там много мошенничества и непроверенных утверждений. Отмечай, что это не проверено, не выдавай за факт.',
+  'Не помогай покупать, заказывать или делать незаконное.',
+].join('\n');
 
 async function torReady(cfg) {
   if (cfg.tor === false) throw new Error('узел Tor выключен в трее');
