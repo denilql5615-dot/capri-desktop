@@ -1915,9 +1915,12 @@ function browserMenu(cfg) {
 function torOpts(cfg) {
   return {
     app, browser: cfg.capriBrowser, profile: cfg.torProfile || path.join(app.getPath('userData'), 'tor-profile'), profileName: 'TOR',
-    port: cfg.torBrowserPort, searchUrl: tor.ONION_DDG, verifyUrl: tor.CHECK_URL, timeoutMs: 30000, chars: 4000,
+    port: cfg.torBrowserPort, searchUrl: tor.ONION_DDG, ahmiaUrl: tor.AHMIA, verifyUrl: tor.CHECK_URL, timeoutMs: 30000, chars: 4000,
   };
 }
+
+// onion sites as sources: often scams and unchecked claims; she says so, and doesn't help with anything illegal
+const ONION_RULE = 'Источники — onion-сайты: там много мошенничества и непроверенных утверждений. Отмечай, что это не проверено, не выдавай за факт. Не помогай покупать, заказывать или делать незаконное.';
 
 async function torReady(cfg) {
   if (cfg.tor === false) throw new Error('узел Tor выключен в трее');
@@ -1925,18 +1928,24 @@ async function torReady(cfg) {
   tor.ensureProfile(torOpts(cfg).profile, cfg.torSocksPort);
 }
 
-async function torSearch(q, cfg) {
+async function torSearch(q, cfg, how = {}) {
   let session = null;
+  // what to look in: an onion link you gave (read as it is), onion sites ("в даркнете": Ahmia), or the web
+  const onion = how.onion ? tor.onionLink(how.onion) : null;
+  const dark = Boolean(how.dark) || Boolean(onion);
   try {
     await torReady(cfg);
     const roles = brains.ready(await ollama.models().catch(() => []));
     const getSession = async () => (session = session || await capriBrowser.openSession(torOpts(cfg)));
     const said = await web.answer(q, {
+      rule: dark ? ONION_RULE : '',
       chat: async (messages, { howto } = {}) => {
         const model = roles ? (howto ? await brains.use('main') : brains.current()) : cfg.chatModel;
         return ollama.chat({ model, messages, numPredict: howto ? 1200 : 500 }, () => {});
       },
-      browserSearch: async (query) => (await getSession()).search(query),
+      browserSearch: async (query) => (onion
+        ? [{ title: new URL(onion).hostname, url: onion, snippet: '' }]
+        : (await getSession()).search(query, { engine: dark ? 'ahmia' : undefined })),
       renderMany: async (urls) => (await getSession()).readMany(urls),
       fetchImpl: async () => { throw new Error('no plain downloads for a Tor request'); },
     });
@@ -2545,7 +2554,7 @@ function registerIpc() {
     if (!q) return false;
     const cfg = config.load();
     // asked "через тор": her Tor node or nothing (tor.js); never written down
-    if (how && how.tor) return torSearch(q, cfg);
+    if (how && how.tor) return torSearch(q, cfg, how);
     const browserOnly = cfg.webMode === 'browser';
     let session = null;
     // her search log in your vault (Сырьё/Поиск): every question, how, what came up, what she read

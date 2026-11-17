@@ -26,7 +26,23 @@ test('chat: a search that says Tor goes to her Tor node, without the Tor words; 
   assert.equal(torAsked('что такое тор'), null); // a question about Tor, not a search through it
 });
 
+test('chat: darknet words search onion sites (Ahmia) over Tor; an onion link is read as it is', async () => {
+  const { torHow } = await import(moduleUrl(path.join(__dirname, '../src/renderer/js/chat.js')));
+  assert.deepEqual(torHow('найди в даркнете утечку базы X'), { query: 'утечку базы x', dark: true, onion: null });
+  assert.deepEqual(torHow('поищи по дарквебу форум про DPI'), { query: 'форум про dpi', dark: true, onion: null });
+  assert.equal(torHow('найди в говносетях что-нибудь про bitcoin mixer').dark, true);
+  assert.equal(torHow('посмотри в сетевой помойке обсуждение X').dark, true);
+  assert.equal(torHow('найди через тор новости').dark, false); // plain Tor: the web, anonymously
+  const link = 'juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion';
+  const r = torHow(`прочитай ${link}/about и скажи что там`);
+  assert.equal(r.onion, `${link}/about`);
+  assert.equal(r.dark, true);
+  assert.equal(torHow('что такое даркнет'), null); // a question about it, not a search in it
+});
+
 test('tor.wantsTor / withoutTor (main side) agree with the chat', () => {
+  assert.ok(tor.wantsDark('найди в даркнете'));
+  assert.equal(tor.onionLink('глянь juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion/x'), 'http://juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion/x');
   assert.ok(tor.wantsTor('через тор'));
   assert.ok(tor.wantsTor('открой abc.onion'));
   assert.ok(!tor.wantsTor('торговля и торт'));

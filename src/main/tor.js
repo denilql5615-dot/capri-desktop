@@ -13,15 +13,28 @@ const net = require('net');
 const path = require('path');
 
 const ONION_DDG = 'https://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/html/?q={q}';
+// Ahmia: a search engine over onion sites themselves, which filters out abuse material; its own onion address
+const AHMIA = 'http://juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion';
 const CHECK_URL = 'https://check.torproject.org/api/ip';
+
+// "в даркнете", "по дарквебу", "в говносетях", "сетевая помойка": onion sites, searched with Ahmia, over Tor
+const DARK_WORD = /(?<!\p{L})(?:дарк\s?веб\p{L}*|дарк\s?нет\p{L}*|darkweb|dark\s+web|darknet|говносет\p{L}*|сетев\p{L}*\s+помойк\p{L}*)(?!\p{L})/iu;
+const DARK_PHRASE = /(?<!\p{L})(?:в|во|по|на|через|in|on)?\s*(?:дарк\s?веб\p{L}*|дарк\s?нет\p{L}*|darkweb|dark\s+web|darknet|говносет\p{L}*|сетев\p{L}*\s+помойк\p{L}*)(?!\p{L})/giu;
+// a v3 onion address, with its path if given: read as it is
+const ONION_LINK = /(?:https?:\/\/)?[a-z2-7]{56}\.onion(?:\/[^\s"'<>]*)?/i;
+const wantsDark = (text) => DARK_WORD.test(String(text || ''));
+const onionLink = (text) => {
+  const m = String(text || '').match(ONION_LINK);
+  return m ? (/^https?:\/\//i.test(m[0]) ? m[0] : `http://${m[0]}`) : null;
+};
 
 // "через тор", "по тору", "в торе", "tor", "onion", "луковый": the request says Tor
 const TOR_WORD = /(?<!\p{L})(?:тор|тора|торе|тору|тором|tor)(?!\p{L})|\.onion(?!\p{L})|(?<!\p{L})(?:онион\p{L}*|луков\p{L}*|onion)(?!\p{L})/iu;
 const TOR_PHRASE = /(?<!\p{L})(?:через|по|в|во|используя|с\s+помощью|via|through|over|using)?\s*(?:тор|тора|торе|тору|тором|tor)(?!\p{L})|(?<!\p{L})(?:анонимно|anonymously)(?!\p{L})/giu;
 
-const wantsTor = (text) => TOR_WORD.test(String(text || ''));
-/** The request without its "через тор": what is actually searched. */
-const withoutTor = (text) => String(text || '').replace(TOR_PHRASE, ' ').replace(/\s+/g, ' ').trim();
+const wantsTor = (text) => TOR_WORD.test(String(text || '')) || wantsDark(text);
+/** The request without its "через тор" / "в даркнете": what is actually searched. */
+const withoutTor = (text) => String(text || '').replace(TOR_PHRASE, ' ').replace(DARK_PHRASE, ' ').replace(/\s+/g, ' ').trim();
 
 function portOpen(port, host = '127.0.0.1', timeoutMs = 800) {
   return new Promise((resolve) => {
@@ -122,4 +135,4 @@ function ensureProfile(dir, socksPort = 9050) {
   return dir;
 }
 
-module.exports = { ensure, ensureProfile, prefs, wantsTor, withoutTor, portOpen, ONION_DDG, CHECK_URL };
+module.exports = { ensure, ensureProfile, prefs, wantsTor, wantsDark, withoutTor, onionLink, portOpen, ONION_DDG, AHMIA, CHECK_URL };

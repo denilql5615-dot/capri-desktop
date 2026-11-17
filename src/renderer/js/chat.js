@@ -188,12 +188,24 @@ const searched = (text) => text.replace(/^\s*capri[,!:]?\s+/i, '').toLowerCase()
 // same words); the Tor words are taken out of what is searched
 const TOR_WORD = /(?<!\p{L})(?:тор|тора|торе|тору|тором|tor)(?!\p{L})|\.onion(?!\p{L})|(?<!\p{L})(?:онион\p{L}*|луков\p{L}*|onion)(?!\p{L})/iu;
 const TOR_PHRASE = /(?<!\p{L})(?:через|по|в|во|используя|с\s+помощью|via|through|over|using)?\s*(?:тор|тора|торе|тору|тором|tor)(?!\p{L})|(?<!\p{L})(?:анонимно|anonymously)(?!\p{L})/giu;
-const TOR_VERB = /найди|поищи|найти|ищи|узнай|выясни|проверь|посмотри|загугли|погугли|search|find|look\s*up|check/i;
-export function torAsked(text) {
+const TOR_VERB = /найди|поищи|найти|ищи|узнай|выясни|проверь|посмотри|загугли|погугли|прочитай|прочти|открой|глянь|search|find|look\s*up|check|read|open/i;
+// "в даркнете", "по дарквебу", "в говносетях", "сетевая помойка": onion sites (Ahmia), always over Tor (tor.js has the same)
+const DARK_WORD = /(?<!\p{L})(?:дарк\s?веб\p{L}*|дарк\s?нет\p{L}*|darkweb|dark\s+web|darknet|говносет\p{L}*|сетев\p{L}*\s+помойк\p{L}*)(?!\p{L})/iu;
+const DARK_PHRASE = /(?<!\p{L})(?:в|во|по|на|через|in|on)?\s*(?:дарк\s?веб\p{L}*|дарк\s?нет\p{L}*|darkweb|dark\s+web|darknet|говносет\p{L}*|сетев\p{L}*\s+помойк\p{L}*)(?!\p{L})/giu;
+const ONION_LINK = /(?:https?:\/\/)?[a-z2-7]{56}\.onion(?:\/[^\s"'<>]*)?/i;
+/** A request for her Tor node: { query, dark, onion } or null. */
+export function torHow(text) {
   const t = String(text || '');
-  if (!TOR_WORD.test(t) || !TOR_VERB.test(t)) return null;
-  const q = searched(t.replace(/^\s*(?:capri|капри)[,!:]?\s+/i, '').replace(TOR_PHRASE, ' ').replace(/(?<!\p{L})(?:в\s+интернете|в\s+сети|в\s+гугле|онлайн|online)(?!\p{L})/giu, ' '));
-  return q || null;
+  const dark = DARK_WORD.test(t);
+  const onion = (t.match(ONION_LINK) || [])[0] || null;
+  if (!(TOR_WORD.test(t) || dark || onion) || !TOR_VERB.test(t)) return null;
+  const q = searched(t.replace(ONION_LINK, ' ').replace(/^\s*(?:capri|капри)[,!:]?\s+/i, '').replace(TOR_PHRASE, ' ').replace(DARK_PHRASE, ' ')
+    .replace(/(?<!\p{L})(?:в\s+интернете|в\s+сети|в\s+гугле|онлайн|online)(?!\p{L})/giu, ' '));
+  if (!q && !onion) return null;
+  return { query: q || onion, dark: dark || Boolean(onion), onion };
+}
+export function torAsked(text) {
+  return torHow(text)?.query || null;
 }
 // a Roblox game by its name: "in my roblox play steal a brain rot", "lance grow a garden sur roblox"
 const ROBLOX_VERB = /(?:^|\s)(?:play|joue(?:r)?(?: à| a)?|lance|launch|start|ouvre|open|mets|go to|va sur|juega(?: a)?|jogue|jogar|запусти|включи)\s+/gi;
@@ -453,7 +465,7 @@ export class Chat {
 
   // A search asked "через тор": her Tor node only, and kept off every record — not in her history,
   // not in her Chats window, not in your vault, not given to the router or her model as context.
-  async sendTor(text, query) {
+  async sendTor(text, how) {
     const id = Date.now();
     this.turn = id;
     this.panel.setChatBusy(true);
@@ -463,7 +475,7 @@ export class Chat {
     this.zap?.();
     let line;
     try {
-      const res = await this.host.webSearch(query, { tor: true });
+      const res = await this.host.webSearch(how.query, { tor: true, dark: how.dark, onion: how.onion });
       if (res && res.answer) {
         const cited = res.sources.filter((s) => res.answer.includes(`[${s.n}]`));
         const list = (cited.length ? cited : res.sources.slice(0, 3)).map((s) => `[${s.n}] ${s.title} — ${s.url}`).join('\n');
@@ -483,8 +495,8 @@ export class Chat {
   async send(text) {
     if (this.turn || !this.open) return;
     if (!this.agent) {
-      const torQuery = torAsked(text);
-      if (torQuery) return this.sendTor(text, torQuery);
+      const how = torHow(text);
+      if (how) return this.sendTor(text, how);
     }
     const id = Date.now();
     this.turn = id;

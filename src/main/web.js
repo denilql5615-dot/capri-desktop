@@ -197,7 +197,7 @@ async function answer(question, deps) {
   const sources = [...read, ...rest].map((i, k) => ({ n: k + 1, title: results[i].title, url: results[i].url, text: read.includes(i) ? pages[i] : results[i].snippet }));
   const blocks = sources.map((s) => `<<<ИСТОЧНИК ${s.n}: ${s.title} (${s.url})\n${s.text}\n>>>`).join('\n\n');
   const said = await chat([
-    { role: 'system', content: SYSTEM },
+    { role: 'system', content: deps.rule ? `${SYSTEM}\n${deps.rule}` : SYSTEM },
     { role: 'user', content: `Вопрос: ${question}\n\n${blocks}` },
   ], { howto });
   return {

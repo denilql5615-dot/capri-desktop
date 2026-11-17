@@ -200,6 +200,16 @@ test('Tor node: its window proves IsTor before anything is sent; otherwise nothi
   assert.equal(seen.disconnected, true);
 });
 
+test('ahmiaResults: the onion address out of its redirect link (or <cite>), one per site, onion only', () => {
+  const r = browser.ahmiaResults([
+    { title: ' Forum  A ', href: '/search/redirect?search_term=x&redirect_url=http://aaaa.onion/t/1', snippet: 'about x', cite: 'aaaa.onion' },
+    { title: 'Same site', href: '/search/redirect?search_term=x&redirect_url=http://aaaa.onion/t/2', cite: 'aaaa.onion' },
+    { title: 'No redirect', href: '', cite: 'bbbb.onion/page' },
+    { title: 'Clearnet', href: '/search/redirect?redirect_url=https://example.com/', cite: 'example.com' },
+  ]);
+  assert.deepStrictEqual(r.map((x) => [x.title, x.url]), [['Forum A', 'http://aaaa.onion/t/1'], ['No redirect', 'http://bbbb.onion/page']]);
+});
+
 test('your profile: a session left behind in the browser is named as such, not as "no port"', async () => {
   browser.forgetWindows();
   await assert.rejects(browser.openSession({ app, pick, profile: 'C:/p/MAIN', profileName: 'MAIN', port: 9406, profileBusy: () => true,
