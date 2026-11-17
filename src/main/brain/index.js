@@ -4,11 +4,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const CONFIG = Object.freeze({ version: 1, schema_version: 1, max_events: 10000, max_tasks: 1000,
+const CONFIG = Object.freeze({ version: 2, schema_version: 2, max_events: 10000, max_tasks: 1000,
   max_journal_bytes: 32 * 1024 * 1024, max_time_ms: 8640000000000000,
   reassessment_base: 0, evidence_need_base: 0, stability_base: 1,
   reassessment_tau_ms: 600000, evidence_need_tau_ms: 1800000, stability_tau_ms: 14400000,
-  enter: 0.65, leave: 0.35, cooldown_ms: 60000,
+  enter: 0.65, leave: 0.35, cooldown_ms: 60000, window_cap: 0.5,
   utc_offset_minutes: 300, quiet_start_minute: 1380, quiet_end_minute: 420,
   urgency_impulse: 0.25, contradiction_impulse: 0.2, novelty_impulse: 0.2,
   uncertainty_impulse: 0.3, evidence_contradiction_impulse: 0.35,
@@ -79,6 +79,9 @@ function initial() {
     reassessment_active: 0, evidence_need_active: 0, stability_active: 0,
     circadian_quiet: quiet(0), rpe_count: 0, last_rpe: 0 };
 }
+function cloneImpulses(imp) {
+  return Object.fromEntries(CHANNELS.map((c) => [c, imp[c] ? { start_ms: imp[c].start_ms, sum: imp[c].sum } : null]));
+}
 function validateCheckpoint(cp) {
   keys(cp, ['state', 'transitions', 'impulses']);
   const s = cp.state;
@@ -95,13 +98,20 @@ function validateCheckpoint(cp) {
   if (s.rpe_count === 0) {
     if (s.last_rpe !== 0) fail('checkpoint rpe');
   } else number(s.last_rpe, -2, 2);
-  for (const gate of [cp.transitions, cp.impulses]) {
-    keys(gate, CHANNELS);
-    for (const c of CHANNELS) {
-      if (gate[c] !== null) number(gate[c], 0, s.time_ms, true);
+  keys(cp.transitions, CHANNELS);
+  for (const c of CHANNELS) {
+    if (cp.transitions[c] !== null) number(cp.transitions[c], 0, s.time_ms, true);
+  }
+  keys(cp.impulses, CHANNELS);
+  for (const c of CHANNELS) {
+    const w = cp.impulses[c];
+    if (w !== null) {
+      keys(w, ['start_ms', 'sum']);
+      number(w.start_ms, 0, s.time_ms, true);
+      number(w.sum, -CONFIG.window_cap, CONFIG.window_cap);
     }
   }
-  return { state: { ...s }, transitions: { ...cp.transitions }, impulses: { ...cp.impulses } };
+  return { state: { ...s }, transitions: { ...cp.transitions }, impulses: cloneImpulses(cp.impulses) };
 }
 
 function createShadow({ append, checkpoint } = {}) {
@@ -112,7 +122,7 @@ function createShadow({ append, checkpoint } = {}) {
   let openTasks = 0;
   const seen = new Map(), tasks = new Map(), sources = new Map();
   const transitions = seed ? { ...seed.transitions } : Object.fromEntries(CHANNELS.map((c) => [c, null]));
-  const impulses = seed ? { ...seed.impulses } : { ...transitions };
+  const impulses = seed ? cloneImpulses(seed.impulses) : Object.fromEntries(CHANNELS.map((c) => [c, null]));
   const snapshot = () => ({ ...state });
   const exportCheckpoint = () => ({
     state: {
@@ -125,7 +135,7 @@ function createShadow({ append, checkpoint } = {}) {
       rpe_count: state.rpe_count, last_rpe: state.last_rpe,
     },
     transitions: { ...transitions },
-    impulses: { ...impulses },
+    impulses: cloneImpulses(impulses),
   });
   const hasIncompleteTask = () => openTasks > 0;
   const header = seed
@@ -170,11 +180,16 @@ function createShadow({ append, checkpoint } = {}) {
       }
     }
     const changed = { ...transitions };
-    const applied = { ...impulses };
+    const applied = cloneImpulses(impulses);
     for (const c of CHANNELS) {
-      if (delta[c] !== 0 && (applied[c] === null || next.time_ms - applied[c] >= CONFIG.cooldown_ms)) {
-        next[c] += delta[c];
-        applied[c] = next.time_ms;
+      if (delta[c] !== 0) {
+        const w = applied[c];
+        const fresh = w === null || next.time_ms - w.start_ms >= CONFIG.cooldown_ms;
+        const start_ms = fresh ? next.time_ms : w.start_ms;
+        const prevSum = fresh ? 0 : w.sum;
+        const newSum = Math.max(-CONFIG.window_cap, Math.min(CONFIG.window_cap, prevSum + delta[c]));
+        next[c] += newSum - prevSum;
+        applied[c] = { start_ms, sum: newSum };
       }
       next[c] = Math.max(0, Math.min(1, next[c]));
       const signal = c === 'stability' ? 1 - next[c] : next[c];
@@ -209,6 +224,7 @@ function createShadow({ append, checkpoint } = {}) {
       if (e.type !== 'message' || e.task_seq !== 1 || e.route !== 'unknown') fail('task must begin before route');
       if (tasks.size >= CONFIG.max_tasks) fail('session task limit');
     } else {
+      if (task.terminal) fail('task already completed');
       if (task.source !== e.source_id || e.task_seq !== task.seq + 1) fail('task sequence/source');
       if (own(e, 'prediction')) fail('prediction is initial only');
     }

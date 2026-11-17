@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { Router } = require('../src/main/router');
-const { replay } = require('../src/main/brain');
+const { CONFIG, replay } = require('../src/main/brain');
 const { createTaskBuffer } = require('../src/main/brain/task-buffer');
 const { openAsyncJournal } = require('../src/main/brain/async-journal');
 const { freezeSnapshot } = require('../src/main/brain/snapshot');
@@ -58,7 +58,7 @@ async function runPilot({ journalFile, compare = (a, b) => canon(a) === canon(b)
   const observe = async (decision, i, at) => {
     const start = process.hrtime.bigint();
     const source_id = uuid(), task_id = uuid(); // one dedicated source per task
-    const base = (type, seq, extra) => ({ type, schema_version: 1, config_version: 1, event_id: uuid(), task_id, source_id,
+    const base = (type, seq, extra) => ({ type, schema_version: CONFIG.schema_version, config_version: CONFIG.version, event_id: uuid(), task_id, source_id,
       source_seq: seq, task_seq: seq, occurred_at_ms: at, received_at_ms: at, ...extra });
     const root = buffer.open('ordinary'); // harness-certified: synthetic local-chat only
     try {
