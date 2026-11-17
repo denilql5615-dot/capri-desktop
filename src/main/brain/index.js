@@ -79,16 +79,58 @@ function initial() {
     reassessment_active: 0, evidence_need_active: 0, stability_active: 0,
     circadian_quiet: quiet(0), rpe_count: 0, last_rpe: 0 };
 }
+function validateCheckpoint(cp) {
+  keys(cp, ['state', 'transitions', 'impulses']);
+  const s = cp.state;
+  keys(s, ['time_ms', 'reassessment', 'evidence_need', 'stability',
+    'reassessment_active', 'evidence_need_active', 'stability_active',
+    'circadian_quiet', 'rpe_count', 'last_rpe']);
+  time(s.time_ms);
+  for (const c of CHANNELS) {
+    number(s[c], 0, 1);
+    choice(s[`${c}_active`], [0, 1]);
+  }
+  if (s.circadian_quiet !== quiet(s.time_ms)) fail('checkpoint circadian');
+  number(s.rpe_count, 0, Number.MAX_SAFE_INTEGER, true);
+  if (s.rpe_count === 0) {
+    if (s.last_rpe !== 0) fail('checkpoint rpe');
+  } else number(s.last_rpe, -2, 2);
+  for (const gate of [cp.transitions, cp.impulses]) {
+    keys(gate, CHANNELS);
+    for (const c of CHANNELS) {
+      if (gate[c] !== null) number(gate[c], 0, s.time_ms, true);
+    }
+  }
+  return { state: { ...s }, transitions: { ...cp.transitions }, impulses: { ...cp.impulses } };
+}
 
-function createShadow({ append } = {}) {
+function createShadow({ append, checkpoint } = {}) {
   if (append !== undefined && typeof append !== 'function') fail('append callback');
-  let state = initial();
+  const seed = checkpoint !== undefined ? validateCheckpoint(checkpoint) : null;
+  let state = seed ? { ...seed.state, record_count: 0, event_count: 0, task_count: 0 } : initial();
   let poisoned = false;
+  let openTasks = 0;
   const seen = new Map(), tasks = new Map(), sources = new Map();
-  const transitions = Object.fromEntries(CHANNELS.map((c) => [c, null]));
-  const impulses = { ...transitions };
+  const transitions = seed ? { ...seed.transitions } : Object.fromEntries(CHANNELS.map((c) => [c, null]));
+  const impulses = seed ? { ...seed.impulses } : { ...transitions };
   const snapshot = () => ({ ...state });
-  const header = { kind: 'header', schema_version: CONFIG.schema_version, config: CONFIG };
+  const exportCheckpoint = () => ({
+    state: {
+      time_ms: state.time_ms, reassessment: state.reassessment,
+      evidence_need: state.evidence_need, stability: state.stability,
+      reassessment_active: state.reassessment_active,
+      evidence_need_active: state.evidence_need_active,
+      stability_active: state.stability_active,
+      circadian_quiet: state.circadian_quiet,
+      rpe_count: state.rpe_count, last_rpe: state.last_rpe,
+    },
+    transitions: { ...transitions },
+    impulses: { ...impulses },
+  });
+  const hasIncompleteTask = () => openTasks > 0;
+  const header = seed
+    ? { kind: 'header', schema_version: CONFIG.schema_version, config: CONFIG, checkpoint: seed }
+    : { kind: 'header', schema_version: CONFIG.schema_version, config: CONFIG };
   function write(record) {
     if (!append) return;
     try {
@@ -181,9 +223,11 @@ function createShadow({ append } = {}) {
       Object.assign(impulses, applied);
       seen.set(e.event_id, encoded);
       sources.set(e.source_id, e.source_seq);
+      const terminal = Boolean(task?.terminal || e.type === 'task_completed');
+      if (!task && !terminal) openTasks++;
+      else if (task && !task.terminal && terminal) openTasks--;
       tasks.set(e.task_id, { source: e.source_id, seq: e.task_seq,
-        prediction: task ? task.prediction : e.prediction,
-        terminal: Boolean(task?.terminal || e.type === 'task_completed') });
+        prediction: task ? task.prediction : e.prediction, terminal });
       return { status: 'accepted', state: snapshot() };
     } };
   }
@@ -209,9 +253,32 @@ function createShadow({ append } = {}) {
   const stage = (plan) => (plan.result ? plan : { line: `${canonical(plan.record)}\n`, commit: plan.commit });
   const prepareIngest = (envelope) => stage(planIngest(envelope));
   const prepareTick = (envelope) => stage(planTick(envelope));
+  function inspectBatch(events) {
+    let matchedPrefix = 0;
+    for (let i = 0; i < events.length; i++) {
+      const e = events[i], encoded = canonical(e);
+      if (seen.has(e.event_id)) {
+        if (seen.get(e.event_id) !== encoded || i !== matchedPrefix) fail('conflicting event ID');
+        matchedPrefix++;
+      }
+    }
+    if (matchedPrefix === events.length) return { status: 'duplicate', startIndex: events.length };
+    const first = events[0];
+    if (matchedPrefix > 0) {
+      const task = tasks.get(first.task_id);
+      if (!task || task.terminal || task.source !== first.source_id ||
+          task.seq !== matchedPrefix || sources.get(first.source_id) !== matchedPrefix) {
+        fail('conflicting task/source state');
+      }
+      return { status: 'retry', startIndex: matchedPrefix };
+    }
+    if (tasks.has(first.task_id) || sources.has(first.source_id)) fail('reused task/source ID');
+    return { status: 'new', startIndex: 0 };
+  }
   // Header is emitted once for a newly created stream; replay suppresses output.
   write(header);
-  return { ingest, tick, snapshot, prepareIngest, prepareTick };
+  return { ingest, tick, snapshot, prepareIngest, prepareTick,
+    exportCheckpoint, hasIncompleteTask, inspectBatch, initialCheckpoint: seed };
 }
 
 // Stateless intake check for async writers: null for non-ordinary (nothing else is read),
@@ -234,9 +301,12 @@ function replay(ndjson) {
   let rows;
   try { rows = lines.map((line) => JSON.parse(line)); } catch { fail('corrupt journal'); }
   if (rows.some((row, i) => canonical(row) !== lines[i])) fail('noncanonical/corrupt journal');
-  const expected = { kind: 'header', schema_version: CONFIG.schema_version, config: CONFIG };
-  if (canonical(rows[0]) !== canonical(expected)) fail('journal config/header mismatch');
-  const brain = createShadow();
+  const head = rows[0];
+  if (!object(head) || head.kind !== 'header' || head.schema_version !== CONFIG.schema_version ||
+      canonical(head.config) !== canonical(CONFIG)) fail('journal config/header mismatch');
+  keys(head, ['kind', 'schema_version', 'config'], ['checkpoint']);
+  const checkpoint = own(head, 'checkpoint') ? validateCheckpoint(head.checkpoint) : undefined;
+  const brain = createShadow({ checkpoint });
   for (const row of rows.slice(1)) {
     let result;
     if (row?.kind === 'event') {
@@ -284,9 +354,12 @@ function openJournal(file) {
 }
 function restoreWriter(ndjson, append) {
   // Rebuild once with a gated writer to retain dedup/terminal/transition state.
-  replay(ndjson); // Validate every stored result before any append can occur.
+  const validated = replay(ndjson); // Validate every stored result before any append can occur.
   let live = false;
-  const brain = createShadow({ append: (line) => { if (live) return append(line); } });
+  const brain = createShadow({
+    append: (line) => { if (live) return append(line); },
+    checkpoint: validated.initialCheckpoint ?? undefined,
+  });
   for (const line of ndjson.trimEnd().split('\n').slice(1)) {
     const row = JSON.parse(line);
     if (row.kind === 'event') brain.ingest({ privacy: 'ordinary', event: row.event });
