@@ -3,7 +3,10 @@
 // Offline rotating shadow journal. Not connected to Capri IPC or any live path.
 // Segments are named YYYY-MM-DD-NNNN.ndjson using explicit logical UTC+5 timestamps.
 // Closed segments are never appended to again; deduplication across archives uses
-// bounded-memory streaming line inspection (one segment at a time).
+// bounded-memory streaming line inspection (one segment at a time), limited to archives of the
+// last `dedup_days` UTC+5 days so per-task cost does not grow with total history. Startup replays
+// only the active segment and its predecessor (checkpoint link); older archives were validated
+// when they were active and are read only by the windowed dedup scan.
 // Single writer per directory is assumed; no fsync (power-loss durability not promised).
 const fsp = require('node:fs/promises');
 const path = require('node:path');
@@ -19,6 +22,8 @@ const DEFAULT_QUEUE = 64;
 const SEGMENT_RE = /^(\d{4}-\d{2}-\d{2})-(\d{4})\.ndjson$/;
 const READ_CHUNK = 64 * 1024;
 const UTC5_OFFSET_MS = CONFIG.utc_offset_minutes * 60000;
+const DAY_MS = 86400000;
+const DEFAULT_DEDUP_DAYS = 7;
 // Upper bound whose UTC+5 calendar date still fits a 4-digit year (<= 9999-12-31).
 const MAX_DAY_TIME_MS = Date.UTC(9999, 11, 31, 23, 59, 59, 999) - UTC5_OFFSET_MS;
 
@@ -87,6 +92,13 @@ async function scanSegmentLines(file, onLine) {
   } finally { await fh.close(); }
 }
 
+function checkHeaderLine(line) {
+  let head;
+  try { head = JSON.parse(line); } catch { throw fail('corrupt journal'); }
+  if (head?.kind !== 'header' || head.schema_version !== CONFIG.schema_version ||
+      canonical(head.config) !== canonical(CONFIG)) throw fail('journal config/header mismatch');
+}
+
 async function scanArchivesForBatch(archiveFiles, events, requireAbsent) {
   if (archiveFiles.length === 0) return 'new';
   const taskId = events[0].task_id;
@@ -96,7 +108,7 @@ async function scanArchivesForBatch(archiveFiles, events, requireAbsent) {
 
   for (const file of archiveFiles) {
     await scanSegmentLines(file, (line, idx) => {
-      if (idx === 0) return; // header already verified on open
+      if (idx === 0) { checkHeaderLine(line); return; } // older archives are not replayed on open
       let row;
       try { row = JSON.parse(line); } catch { throw fail('corrupt journal'); }
       if (row?.kind !== 'event') return;
@@ -189,6 +201,7 @@ async function openRotatingJournal(dir, {
   max_events = CONFIG.max_events,
   max_tasks = CONFIG.max_tasks,
   max_journal_bytes = CONFIG.max_journal_bytes,
+  dedup_days = DEFAULT_DEDUP_DAYS,
 } = {}) {
   if (typeof dir !== 'string' || !path.isAbsolute(dir)) throw fail('absolute journal dir required');
   if (!Number.isSafeInteger(max_queue) || max_queue < 1 || max_queue > 1000) throw fail('max_queue 1..1000');
@@ -197,9 +210,10 @@ async function openRotatingJournal(dir, {
   if (!Number.isSafeInteger(max_journal_bytes) || max_journal_bytes < 1024 || max_journal_bytes > CONFIG.max_journal_bytes) {
     throw fail('invalid max_journal_bytes');
   }
+  if (!Number.isSafeInteger(dedup_days) || dedup_days < 1 || dedup_days > 366) throw fail('dedup_days 1..366');
 
   const segments = await listSegments(dir);
-  const archiveFiles = [];
+  const archives = []; // { file, day } in segment order
   let core = null;
   let activeFile = null;
   let currentDay = null;
@@ -208,23 +222,26 @@ async function openRotatingJournal(dir, {
   let fh = null;
 
   if (segments.length > 0) {
+    // Bounded startup: replay only the predecessor (link + completeness) and the active segment.
+    const first = Math.max(0, segments.length - 2);
     let prevCheckpoint = null;
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];
+      if (i < first) { archives.push({ file: seg.file, day: seg.day }); continue; }
       const bytes = await readBounded(seg.file);
       const segBrain = replay(bytes.toString('utf8'));
       if (i === 0) {
         if (segBrain.initialCheckpoint !== null) throw fail('initial segment cannot have checkpoint');
       } else {
         if (segBrain.initialCheckpoint === null) throw fail('rotated segment missing checkpoint');
-        if (canonical(segBrain.initialCheckpoint) !== canonical(prevCheckpoint)) {
+        if (prevCheckpoint !== null && canonical(segBrain.initialCheckpoint) !== canonical(prevCheckpoint)) {
           throw fail('journal checkpoint mismatch');
         }
       }
       prevCheckpoint = segBrain.exportCheckpoint();
       if (i < segments.length - 1) {
         if (segBrain.hasIncompleteTask()) throw fail('incomplete task in archived segment');
-        archiveFiles.push(seg.file);
+        archives.push({ file: seg.file, day: seg.day });
       } else {
         core = segBrain;
         activeFile = seg.file;
@@ -234,6 +251,13 @@ async function openRotatingJournal(dir, {
       }
     }
     fh = await fsp.open(activeFile, 'a');
+  }
+
+  // Archives whose UTC+5 day is within dedup_days of the journal's logical time (or the batch's).
+  function dedupFiles(events) {
+    const now = Math.max(core ? core.snapshot().time_ms : 0, events[0].occurred_at_ms);
+    const from = utc5DayKey(Math.max(0, now - dedup_days * DAY_MS));
+    return archives.filter((a) => a.day >= from).map((a) => a.file);
   }
 
   const queue = [];
@@ -272,7 +296,7 @@ async function openRotatingJournal(dir, {
     if (fh) {
       await fh.close();
       fh = null;
-      archiveFiles.push(activeFile);
+      archives.push({ file: activeFile, day: currentDay });
     }
 
     const seq = day === currentDay ? currentSeq + 1 : 1;
@@ -311,14 +335,14 @@ async function openRotatingJournal(dir, {
       }
       if (check.status === 'duplicate') return { status: 'duplicate', state: core.snapshot() };
       if (check.status === 'retry') {
-        await scanArchivesForBatch(archiveFiles, events, true);
+        await scanArchivesForBatch(dedupFiles(events), events, true);
         startIndex = check.startIndex;
       } else {
-        const arc = await scanArchivesForBatch(archiveFiles, events, false);
+        const arc = await scanArchivesForBatch(dedupFiles(events), events, false);
         if (arc === 'duplicate') return { status: 'duplicate', state: core.snapshot() };
       }
     } else {
-      const arc = await scanArchivesForBatch(archiveFiles, events, false);
+      const arc = await scanArchivesForBatch(dedupFiles(events), events, false);
       if (arc === 'duplicate') return { status: 'duplicate', state: { ...emptySnapshot } };
     }
 
@@ -444,4 +468,4 @@ async function openRotatingJournal(dir, {
   });
 }
 
-module.exports = { openRotatingJournal, DEFAULT_QUEUE, utc5DayKey, MAX_DAY_TIME_MS };
+module.exports = { openRotatingJournal, DEFAULT_QUEUE, DEFAULT_DEDUP_DAYS, utc5DayKey, MAX_DAY_TIME_MS };

@@ -422,3 +422,51 @@ test('UTC+5 date range validates up to year 9999 and rejects overflow before any
     await j.close();
   }
 });
+
+test('startup replays only the active segment and its predecessor; older archives are not read', async () => {
+  const dir = mkDir();
+  const days = [1, 14, 15, 16].map((d) => Date.UTC(2026, 10, d, 5, 0, 0));
+  let j = await openRotatingJournal(dir);
+  for (const t of days) await j.appendBatch(makeTaskBatch(2, t));
+  await j.close();
+  const files = fs.readdirSync(dir).sort();
+  assert.equal(files.length, 4);
+
+  // Damage the two oldest archives: the old full-history startup would refuse the directory.
+  for (const f of files.slice(0, 2)) fs.appendFileSync(path.join(dir, f), 'garbage\n');
+  j = await openRotatingJournal(dir);
+  assert.equal(j.snapshot().task_count, 1);
+  // Nov 1 is outside the 7-day dedup window and is never scanned; Nov 14 is inside and fails closed.
+  await assert.rejects(j.appendBatch(makeTaskBatch(2, days[3] + 60000)), /corrupt journal/);
+  await j.close();
+  const files14 = path.join(dir, files[1]);
+  fs.writeFileSync(files14, fs.readFileSync(files14, 'utf8').replace(/garbage\n$/, ''));
+  j = await openRotatingJournal(dir);
+  assert.equal((await j.appendBatch(makeTaskBatch(2, days[3] + 60000))).status, 'accepted');
+  await j.close();
+
+  // The predecessor link is still verified on startup.
+  const pred = path.join(dir, files[2]);
+  const orig = fs.readFileSync(pred, 'utf8');
+  fs.appendFileSync(pred, 'garbage\n');
+  await assert.rejects(openRotatingJournal(dir), /corrupt/);
+  fs.writeFileSync(pred, orig);
+});
+
+test('dedup window: repeats within dedup_days are duplicates, older ones are not scanned', async () => {
+  const dir = mkDir();
+  const day1 = Date.UTC(2026, 10, 1, 5, 0, 0);
+  const day5 = Date.UTC(2026, 10, 5, 5, 0, 0);
+  const day20 = Date.UTC(2026, 10, 20, 5, 0, 0);
+  const old = makeTaskBatch(2, day1);
+  const j = await openRotatingJournal(dir, { dedup_days: 7 });
+  await j.appendBatch(old);
+  await j.appendBatch(makeTaskBatch(2, day5));
+  assert.equal((await j.appendBatch(old)).status, 'duplicate'); // 4 days back: inside window
+  await j.appendBatch(makeTaskBatch(2, day20));
+  // 19 days back: outside the window, accepted as new (documented trade-off; live IDs are fresh UUIDs).
+  assert.equal((await j.appendBatch(old)).status, 'accepted');
+  await j.close();
+  await assert.rejects(openRotatingJournal(mkDir(), { dedup_days: 0 }), /dedup_days/);
+  await assert.rejects(openRotatingJournal(mkDir(), { dedup_days: 367 }), /dedup_days/);
+});
