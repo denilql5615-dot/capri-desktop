@@ -328,6 +328,22 @@ async function openSession(opts = {}) {
     return tab;
   };
   const done = async (page) => { tabs.delete(page); await Promise.resolve().then(() => page.close()).catch(() => {}); };
+  // a node that must be on Tor proves it first, from inside this very browser; else nothing is sent
+  if (opts.verifyUrl) {
+    const page = await pageFor();
+    let ok = false;
+    try {
+      await page.goto(opts.verifyUrl, { waitUntil: 'domcontentloaded', timeout: Math.max(timeoutMs, 30000) }).catch(() => {});
+      const said = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
+      ok = /"IsTor"\s*:\s*true/.test(said);
+    } finally {
+      await done(page);
+    }
+    if (!ok) {
+      if (attached) await w.release();
+      throw new Error('окно Tor не подтвердило, что идёт через Tor — запрос не отправлен');
+    }
+  }
   const empty = () => ({ text: '', title: '', blocked: false });
   const read = async (url) => {
     if (!/^https?:\/\//i.test(url)) return empty();
@@ -361,13 +377,32 @@ async function openSession(opts = {}) {
     }
   };
   const readMany = async (urls) => Promise.all([].concat(urls || []).map(String).map(read)); // a tab each, side by side
-  /** Results from a search page opened in this browser: [{ title, url, snippet, engine }]. */
-  const search = async (query, { limit = 8 } = {}) => {
+  /** Results from a search page opened in this browser: [{ title, url, snippet, engine }]. engine 'ahmia': onion sites. */
+  const search = async (query, { limit = 8, engine } = {}) => {
     const q = String(query || '').trim().slice(0, 300);
     if (!q) return [];
     const page = await pageFor();
+    if (engine === 'ahmia') {
+      try {
+        // its form carries a one-time hidden field against bots: read it from the home page, as a browser does
+        const base = String(opts.ahmiaUrl || '').replace(/\/$/, '');
+        const wait = { waitUntil: 'domcontentloaded', timeout: Math.max(timeoutMs, 45000) };
+        await page.goto(`${base}/`, wait).catch(() => {});
+        const hidden = await page.evaluate(() => [...document.querySelectorAll('#searchForm input[type=hidden]')].map((i) => [i.name, i.value])).catch(() => []);
+        const extra = (hidden || []).map(([k, v]) => `&${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('');
+        await page.goto(`${base}/search/?q=${encodeURIComponent(q)}${extra}`, wait).catch(() => {});
+        const raw = await page.evaluate(() => [...document.querySelectorAll('li.result')].map((li) => {
+          const a = li.querySelector('h4 a');
+          return a ? { title: a.innerText, href: a.getAttribute('href'), snippet: (li.querySelector('p') || {}).innerText || '', cite: (li.querySelector('cite') || {}).innerText || '' } : null;
+        }).filter(Boolean)).catch(() => []);
+        return ahmiaResults(raw).slice(0, limit);
+      } finally {
+        await done(page);
+      }
+    }
     try {
-      await page.goto(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, { waitUntil: 'domcontentloaded', timeout: timeoutMs }).catch(() => {});
+      const at = (opts.searchUrl || 'https://html.duckduckgo.com/html/?q={q}').replace('{q}', encodeURIComponent(q));
+      await page.goto(at, { waitUntil: 'domcontentloaded', timeout: Math.max(timeoutMs, opts.verifyUrl ? 30000 : 0) }).catch(() => {});
       const raw = await page.evaluate(() => [...document.querySelectorAll('.result')].map((r) => {
         const a = r.querySelector('a.result__a');
         const s = r.querySelector('.result__snippet');
@@ -395,13 +430,31 @@ function duckResults(raw) {
     let url = String(r.href || '');
     try {
       const u = new URL(url, 'https://duckduckgo.com');
-      if (/duckduckgo\.com$/.test(u.hostname) && u.pathname === '/l/') url = u.searchParams.get('uddg') || '';
-      else if (/duckduckgo\.com$/.test(u.hostname)) continue; // y.js ads and its own links
+      const ddg = /duckduckgo\.com$|^duckduckgogg42\w*\.onion$/.test(u.hostname); // its site or its onion
+      if (ddg && u.pathname === '/l/') url = u.searchParams.get('uddg') || '';
+      else if (ddg) continue; // y.js ads and its own links
       const host = new URL(url).hostname.replace(/^www\./, '');
       if (!/^https?:/.test(url) || seen.has(host)) continue;
       seen.add(host);
     } catch { continue; }
     out.push({ title: String(r.title || '').trim().slice(0, 160), url, snippet: String(r.snippet || '').replace(/\s+/g, ' ').trim().slice(0, 300), engine: 'duckduckgo (браузер)' });
+  }
+  return out;
+}
+
+/** Ahmia's results: the onion address out of its /search/redirect link (or its <cite>), one per site. */
+function ahmiaResults(raw) {
+  const seen = new Set();
+  const out = [];
+  for (const r of raw || []) {
+    let url = '';
+    try { url = new URL(String(r.href || ''), 'http://ahmia.local').searchParams.get('redirect_url') || ''; } catch { /* below */ }
+    if (!url && r.cite) url = `http://${String(r.cite).trim()}`;
+    let host;
+    try { host = new URL(url).hostname; } catch { continue; }
+    if (!/\.onion$/i.test(host) || seen.has(host)) continue;
+    seen.add(host);
+    out.push({ title: String(r.title || '').replace(/\s+/g, ' ').trim().slice(0, 160), url, snippet: String(r.snippet || '').replace(/\s+/g, ' ').trim().slice(0, 300), engine: 'ahmia (onion)' });
   }
   return out;
 }
@@ -445,6 +498,6 @@ async function openForSignIn(url, opts = {}) {
 }
 
 module.exports = {
-  readRendered, readRenderedMany, openSession, attach, herWindow, releaseAll, forgetWindows: () => kept.clear(), WINDOW_MARK, profileBusy, duckResults, DEFAULT_PORT, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
+  readRendered, readRenderedMany, openSession, attach, herWindow, releaseAll, ahmiaResults, forgetWindows: () => kept.clear(), WINDOW_MARK, profileBusy, duckResults, DEFAULT_PORT, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
   engineOf, kindOf, CHALLENGE, KNOWN, MODES,
 };

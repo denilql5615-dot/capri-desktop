@@ -42,6 +42,7 @@ const { Planner, syncReminders } = require('./planner');
 const phonepack = require('./phonepack');
 const web = require('./web');
 const capriBrowser = require('./browser');
+const tor = require('./tor');
 const photo = require('./photo');
 const { Router, workerSettings, hasSecret } = require('./router');
 const quick = require('./quick');
@@ -1893,6 +1894,10 @@ function browserMenu(cfg) {
         shell.openPath(folder);
       } },
       { label: 'Записывать поиск в журнал', type: 'checkbox', checked: cfg.vaultSearch !== false, click: (item) => updateConfig({ vaultSearch: item.checked }) },
+      { type: 'separator' },
+      // her second node: Tor, for requests that say "через тор" (tor.js); never logged
+      { label: 'Узел Tor («через тор» в запросе)', type: 'checkbox', checked: cfg.tor !== false, click: (item) => updateConfig({ tor: item.checked }) },
+      { label: 'Открыть окно Tor', enabled: cfg.tor !== false, click: () => torReady(cfg).then(() => capriBrowser.openForSignIn('about:blank', torOpts(cfg))).catch((err) => console.warn('tor:', err.message)) },
       ...(prof ? [
         { label: `Профиль: ${prof} (твой, через порт ${cfg.capriBrowserPort || capriBrowser.DEFAULT_PORT})`, enabled: false },
         { label: 'Открыть профиль (с портом для Капри)', click: () => capriBrowser.openForSignIn('about:blank', browserOpts(cfg)).catch((err) => console.warn('browser:', err.message)) },
@@ -1902,6 +1907,62 @@ function browserMenu(cfg) {
       ]),
     ],
   };
+}
+
+// Her Tor node (tor.js): tor.exe on this PC, her own Camoufox profile TOR through it, its own window and
+// control port beside MAIN. A Tor request goes through it or fails: no fallback to MAIN or a plain
+// download, a check that the window is on Tor before anything is sent, and nothing written down.
+function torOpts(cfg) {
+  return {
+    app, browser: cfg.capriBrowser, profile: cfg.torProfile || path.join(app.getPath('userData'), 'tor-profile'), profileName: 'TOR',
+    port: cfg.torBrowserPort, searchUrl: tor.ONION_DDG, ahmiaUrl: tor.AHMIA, verifyUrl: tor.CHECK_URL, timeoutMs: 30000, chars: 4000,
+  };
+}
+
+// onion sites as sources: often scams and unchecked claims; she says so, and doesn't help with anything illegal.
+// Searching and reading them is legal and is the task: said outright, so a cautious model doesn't refuse,
+// lecture, or "decide" that going through Tor is already wrong.
+const ONION_RULE = [
+  'Поиск и сбор информации в Tor и на onion-сайтах — законная обычная задача: не отказывайся, не читай нотаций, не предупреждай об опасности Tor, просто отвечай по найденному.',
+  'Источники — onion-сайты: там много мошенничества и непроверенных утверждений. Отмечай, что это не проверено, не выдавай за факт.',
+  'Не помогай покупать, заказывать или делать незаконное.',
+].join('\n');
+const TOR_RULE = 'Поиск через Tor — законная обычная задача, просто анонимный доступ к сети: не отказывайся, не читай нотаций, не предупреждай об опасности Tor, отвечай по найденному.';
+
+async function torReady(cfg) {
+  if (cfg.tor === false) throw new Error('узел Tor выключен в трее');
+  await tor.ensure({ exe: cfg.torExe, torrc: cfg.torrc, logFile: cfg.torLog, socksPort: cfg.torSocksPort });
+  tor.ensureProfile(torOpts(cfg).profile, cfg.torSocksPort);
+}
+
+async function torSearch(q, cfg, how = {}) {
+  let session = null;
+  // what to look in: an onion link you gave (read as it is), onion sites ("в даркнете": Ahmia), or the web
+  const onion = how.onion ? tor.onionLink(how.onion) : null;
+  const dark = Boolean(how.dark) || Boolean(onion);
+  try {
+    await torReady(cfg);
+    const roles = brains.ready(await ollama.models().catch(() => []));
+    const getSession = async () => (session = session || await capriBrowser.openSession(torOpts(cfg)));
+    const said = await web.answer(q, {
+      rule: dark ? ONION_RULE : TOR_RULE,
+      chat: async (messages, { howto } = {}) => {
+        const model = roles ? (howto ? await brains.use('main') : brains.current()) : cfg.chatModel;
+        return ollama.chat({ model, messages, numPredict: howto ? 1200 : 500 }, () => {});
+      },
+      browserSearch: async (query) => (onion
+        ? [{ title: new URL(onion).hostname, url: onion, snippet: '' }]
+        : (await getSession()).search(query, { engine: dark ? 'ahmia' : undefined })),
+      renderMany: async (urls) => (await getSession()).readMany(urls),
+      fetchImpl: async () => { throw new Error('no plain downloads for a Tor request'); },
+    });
+    if (said.answer) return { answer: said.answer, sources: said.sources, blocked: said.blocked, tor: true };
+    return { error: 'Через Tor поиск ничего не нашёл.', tor: true };
+  } catch (err) {
+    return { error: `Через Tor не вышло: ${err.message}. Мимо Tor не отправляла.`, tor: true };
+  } finally {
+    if (session) await session.close();
+  }
 }
 
 // her browser settings for browser.js: which browser, and your profile with its control port when set
@@ -2495,10 +2556,12 @@ function registerIpc() {
   ipcMain.handle('files:screenshot', () => files.screenshot(targetDisplay()).catch(() => null));
   // a search on the web: she reads it herself (our SearXNG, through Proton) and answers with sources;
   // with the search server out of reach (PC proxy down, server off) the browser opens, as before
-  ipcMain.handle('web:search', async (_e, query) => {
+  ipcMain.handle('web:search', async (_e, query, how = {}) => {
     const q = String(query || '').trim().slice(0, 300);
     if (!q) return false;
     const cfg = config.load();
+    // asked "через тор": her Tor node or nothing (tor.js); never written down
+    if (how && how.tor) return torSearch(q, cfg, how);
     const browserOnly = cfg.webMode === 'browser';
     let session = null;
     // her search log in your vault (Сырьё/Поиск): every question, how, what came up, what she read
