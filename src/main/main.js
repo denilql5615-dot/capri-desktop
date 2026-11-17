@@ -1802,7 +1802,7 @@ async function prepLocal(cfg, messages, { main = false } = {}) {
   return rp ? brainsLib.withRp(enriched) : enriched;
 }
 
-async function chatWithFallback(cfg, messages, send, signal, streamed) {
+async function chatWithFallback(cfg, messages, send, signal, streamed, onSwitch) {
   let model = pickModel(cfg);
   const tried = new Set();
   let busy = 0;
@@ -1822,6 +1822,7 @@ async function chatWithFallback(cfg, messages, send, signal, streamed) {
       if (!next || tried.size >= 3) throw err;
       model = next;
       busy = 0;
+      try { onSwitch?.(model); } catch {} // e.g. the brain shadow stops watching: the turn left its local model
     }
   }
 }
@@ -2105,6 +2106,10 @@ function createTray() {
   rebuildTray();
 }
 
+// brain shadow observer (src/main/brain/shadow-hook.js): created lazily by chat:send only when
+// cfg.brainShadow is on; module-level so the quit handlers in main() can close it
+let brainShadowHook = null;
+
 function registerIpc() {
   ipcMain.on('overlay:interactive', (_e, on) => {
     overlay?.setIgnoreMouseEvents(!on, { forward: true });
@@ -2254,6 +2259,12 @@ function registerIpc() {
     return { ok: true, provider, model, agent: provider === 'claude', local, warmup: provider === 'ollama' && local };
   });
   // her answer, streamed to the overlay piece by piece as `chat:delta`
+  const getBrainShadowHook = () => {
+    if (brainShadowHook) return brainShadowHook;
+    const { createShadowHook } = require('./brain/shadow-hook');
+    brainShadowHook = createShadowHook({ dir: path.join(app.getPath('userData'), 'brain-journal') });
+    return brainShadowHook;
+  };
   ipcMain.handle('chat:send', async (_e, { id, messages }) => {
     const abort = new AbortController();
     chats.set(id, abort);
@@ -2320,11 +2331,33 @@ function registerIpc() {
           return note + await chatWithFallback(cfg, await prepLocal(cfg, messages, { main: true }), send, abort.signal, () => false);
         }
       };
-      const text = ['claude', 'codex', 'gemini'].includes(worker) ? await cloudOrLocal()
-        : worker === 'computer' ? await computerTask(messages, send, abort.signal)
-        : worker === 'photo' ? await photoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal)
-        : worker === 'video' ? await videoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal)
-        : await chatWithFallback(cfg, await prepLocal(cfg, messages), send, abort.signal, () => streamed);
+      let text;
+      if (['claude', 'codex', 'gemini'].includes(worker)) text = await cloudOrLocal();
+      else if (worker === 'computer') text = await computerTask(messages, send, abort.signal);
+      else if (worker === 'photo') text = await photoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal);
+      else if (worker === 'video') text = await videoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal);
+      else {
+        let shadowTurn = null;
+        if (cfg.brainShadow === true && worker === null) {
+          try {
+            const model = pickModel(cfg);
+            const { contextMentionsTor } = require('./brain/shadow-hook');
+            if (model && llm.isLocal(cfg.provider, cfg, model) && !contextMentionsTor(messages, tor)) {
+              shadowTurn = getBrainShadowHook().start(route, { signal: abort.signal, local: true, rp: cfg.rp === true });
+            }
+          } catch {}
+        }
+        try {
+          // any switch to another model (possibly a cloud one) abandons the observation
+          text = await chatWithFallback(cfg, await prepLocal(cfg, messages), send, abort.signal, () => streamed, () => shadowTurn?.cancel());
+          try { shadowTurn?.complete(); } catch {}
+        } catch (err) {
+          try { if (abort.signal.aborted || err?.message === 'stopped' || err?.name === 'AbortError') shadowTurn?.cancel(); else shadowTurn?.fail(err); } catch {}
+          throw err;
+        } finally {
+          try { shadowTurn?.cancel(); } catch {}
+        }
+      }
       if (cfg.provider === 'claude') saveMemory({ claude: llm.claudeMemory() });
       if (!worker) noteLater([...messages, { role: 'assistant', content: text }]);
       recentTurns = [{ role: 'user', content: yourWords(messages) }, { role: 'assistant', content: text }];
@@ -3014,7 +3047,23 @@ function main() {
     powerMonitor.on('unlock-screen', () => setTimeout(rearmOverlay, 1000));
   });
 
+  let brainShadowClosing = false;
+  app.on('before-quit', (e) => {
+    if (brainShadowClosing || !brainShadowHook) return;
+    brainShadowClosing = true;
+    e.preventDefault();
+    let timer;
+    Promise.race([
+      Promise.resolve(brainShadowHook.close()).catch(() => {}),
+      new Promise((r) => { timer = setTimeout(r, 2000); }),
+    ]).finally(() => {
+      clearTimeout(timer);
+      app.quit();
+    });
+  });
+
   app.on('will-quit', () => {
+    try { brainShadowHook?.close(); } catch {}
     capriBrowser.releaseAll(); // her control session in your browser ended, so the next Capri can attach
     agentSessions?.stopAll();
     globalShortcut.unregisterAll();

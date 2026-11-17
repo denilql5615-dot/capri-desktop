@@ -10,6 +10,7 @@ const { Router } = require('../src/main/router');
 const { replay } = require('../src/main/brain');
 const { createTaskBuffer } = require('../src/main/brain/task-buffer');
 const { openAsyncJournal } = require('../src/main/brain/async-journal');
+const { freezeSnapshot } = require('../src/main/brain/snapshot');
 
 // 24 fixed synthetic local-chat / quick-reply cases: [text, mocked router reply, harness outcome].
 const TEXTS = ['привет', 'как дела', 'сколько секунд в минуте', 'расскажи шутку', 'что такое радуга', 'сколько будет шесть на семь',
@@ -30,23 +31,6 @@ function mockChat(counter) { // router model callback: the case is found by its 
     return { content: CASES.find((c) => c.text === text).reply };
   };
 }
-// Input boundary: Router.decide produces JSON-like plain data. structuredClone copies it without
-// freezing the source and rejects functions/non-cloneables (caught inside the observer try/catch);
-// WeakSet guards cyclic test objects while recursively freezing arrays and plain objects.
-function deepFreeze(value, seen = new WeakSet()) {
-  if (value === null || typeof value !== 'object' || seen.has(value)) return value;
-  seen.add(value);
-  if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i++) deepFreeze(value[i], seen);
-    return Object.freeze(value);
-  }
-  const proto = Object.getPrototypeOf(value);
-  if (proto === Object.prototype || proto === null) {
-    for (const key of Object.keys(value)) deepFreeze(value[key], seen);
-  } else throw new TypeError('observer snapshot must contain only plain data');
-  return Object.freeze(value);
-}
-const freezeSnapshot = (value) => deepFreeze(structuredClone(value));
 
 async function runDecisions({ observe, tamper, onObserverError } = {}) {
   let t = 0;
