@@ -40,6 +40,7 @@ const pimIcs = require('./pim-ics');
 const telegram = require('./telegram');
 const { Planner, syncReminders } = require('./planner');
 const phonepack = require('./phonepack');
+const web = require('./web');
 const photo = require('./photo');
 const { Router, workerSettings, hasSecret } = require('./router');
 const quick = require('./quick');
@@ -2448,10 +2449,23 @@ function registerIpc() {
   ipcMain.handle('files:search', (_e, query) => files.search(query).catch(() => []));
   ipcMain.handle('files:open', (_e, { file, reveal }) => files.open(String(file), { reveal: Boolean(reveal) }).then(() => true, () => false));
   ipcMain.handle('files:screenshot', () => files.screenshot(targetDisplay()).catch(() => null));
-  ipcMain.handle('web:search', (_e, query) => {
+  // a search on the web: she reads it herself (our SearXNG, through Proton) and answers with sources;
+  // with the search server out of reach (PC proxy down, server off) the browser opens, as before
+  ipcMain.handle('web:search', async (_e, query) => {
     const q = String(query || '').trim().slice(0, 300);
     if (!q) return false;
-    return shell.openExternal(`https://www.google.com/search?q=${encodeURIComponent(q)}`).then(() => true, () => false);
+    const cfg = config.load();
+    try {
+      const model = brains.ready(await ollama.models().catch(() => [])) ? brains.current() : cfg.chatModel;
+      const said = await web.answer(q, {
+        url: cfg.searxUrl,
+        chat: (messages) => ollama.chat({ model, messages, numPredict: 500 }, () => {}),
+      });
+      if (said.answer) return { answer: said.answer, sources: said.sources };
+    } catch (err) {
+      console.warn('web search:', err.message);
+    }
+    return shell.openExternal(`https://duckduckgo.com/?q=${encodeURIComponent(q)}`).then(() => ({ opened: true }), () => false);
   });
   ipcMain.handle('apps:launch', (_e, item) => launch.launch(item).then(() => ({ ok: true }), (err) => ({ ok: false, error: err.message })));
   ipcMain.handle('apps:media', (_e, action) => launch.media(action));

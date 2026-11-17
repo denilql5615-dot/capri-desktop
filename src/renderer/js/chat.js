@@ -847,7 +847,13 @@ export class Chat {
     }
     if (asked.kind === 'web') {
       this.zap();
-      return (await this.host.webSearch(asked.query)) ? { line: fmt(t.web, { query: asked.query }), face: 'smug' } : null;
+      const res = await this.host.webSearch(asked.query);
+      if (res && res.answer) {
+        const cited = res.sources.filter((s) => res.answer.includes(`[${s.n}]`));
+        const list = (cited.length ? cited : res.sources.slice(0, 3)).map((s) => `[${s.n}] ${s.title} — ${s.url}`).join('\n');
+        return { line: `${res.answer}\n\n${list}`, face: 'smug' };
+      }
+      return res ? { line: fmt(t.web, { query: asked.query }), face: 'smug' } : null;
     }
     if (asked.kind === 'files') {
       const results = await this.host.searchFiles({ query: asked.query, exts: asked.exts });
