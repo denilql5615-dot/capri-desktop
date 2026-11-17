@@ -7,7 +7,7 @@
 //   - its tab stays open between questions (pin it once: it is found again after restarts);
 //   - one question at a time, a pause between them (a person's pace, not a flood);
 //   - a new chat per task, or the same chat continued by its id (the /app/<id> part of its address);
-//   - a model by role (Flash-Lite, Hydrogen, 3.1 Pro, Argon, Carbon), picked in its own model menu;
+//   - a model by role (Flash-Lite, Hydrogen, Argon), picked in its own model menu; Argon in "Задача" mode;
 //   - files attached through its upload field — only from your work folders, never keys or secrets;
 //   - nothing from a Tor request is ever sent here (the callers keep it that way).
 
@@ -106,7 +106,7 @@ async function inlineFiles(files, { extract, read = (f) => fs.readFileSync(f, 'u
   return parts.join('\n\n');
 }
 
-async function askIn(page, prompt, { chat = null, model = null, files = [], clipboard = null, extract = null, timeoutMs = 300000, pollMs = 1500, requireSignIn = true, stableTicks = 2 } = {}) {
+async function askIn(page, prompt, { chat = null, model = null, task = null, files = [], clipboard = null, extract = null, timeoutMs = 300000, pollMs = 1500, requireSignIn = true, stableTicks = 2 } = {}) {
   const text = String(prompt || '').trim();
   if (!text) throw new Error('пустой вопрос');
   const attach = checkFiles(files);
@@ -143,6 +143,18 @@ async function askIn(page, prompt, { chat = null, model = null, files = [], clip
   }
   // the model for this question, picked in its own menu (it stays picked for the next ones)
   const want = model ? (MODELS[model] || String(model)) : null;
+  // Argon answers in Gemini's "Задача" (Task) mode; in plain chat it drops text questions after minutes
+  // of thinking (found 2026-11-17: the same question, 4 min and dropped in chat, 20 s as a task)
+  const asTask = task ?? /argon/i.test(want || '');
+  if (asTask) {
+    const on = await page.evaluate(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => /^(Задача|Task)$/i.test((x.innerText || '').trim()));
+      if (b) b.click();
+      return Boolean(b);
+    });
+    if (!on) throw new Error('у Gemini не нашлось режима «Задача»');
+    await pause(2500);
+  }
   if (want && !before.model.toLowerCase().includes(want.toLowerCase())) {
     // the page wires its switcher a moment after it shows: open the menu until its items are there
     let opened = false;
