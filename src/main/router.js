@@ -22,6 +22,9 @@ const CACHE_MS = 60 * 1000;
 // what each tier means to them
 const CLAUDE_MODEL = { mechanical: 'haiku', routine: 'sonnet', complex: 'opus', deep: 'opus' };
 const CODEX_EFFORT = { mechanical: 'low', routine: 'low', complex: 'medium', deep: 'high' };
+// Codex on the Pro plan: Sol is the workhorse, Luna the cheap one for errands; Astra eats the limits and
+// is kept for the deepest analysis and research only (Danyal's rule)
+const CODEX_MODEL = { mechanical: 'gpt-6-luna', routine: 'gpt-6.1-sol', complex: 'gpt-6.1-sol', deep: 'gpt-6-astra' };
 
 const rank = (tier) => Math.max(0, TIERS.indexOf(tier));
 const higher = (a, b) => (rank(a) >= rank(b) ? a : b);
@@ -233,11 +236,11 @@ class Router {
   }
 }
 
-/** The worker's settings for a tier: Claude's model, Codex's effort. A computer task is never below routine. */
+/** The worker's settings for a tier: Claude's model, Codex's model and effort, the tier (Antigravity's chain). A computer task is never below routine. */
 function workerSettings(tier, { computer = false } = {}) {
   const t = TIERS.includes(tier) ? tier : 'routine';
   const floor = computer ? higher(t, 'routine') : t;
-  return { claudeModel: CLAUDE_MODEL[floor], codexEffort: CODEX_EFFORT[floor] };
+  return { claudeModel: CLAUDE_MODEL[floor], codexEffort: CODEX_EFFORT[floor], codexModel: CODEX_MODEL[floor], tier: floor };
 }
 
 module.exports = { Router, TIERS, PROMPT, pinOf, hasSecret, riskyByCode, claimsByCode, referenceTier, parse, tierOf, workerSettings, messagesFor };

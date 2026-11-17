@@ -16,14 +16,35 @@ const { PROTON_MAIL } = require('./desktop');
 // how speech-to-text spells them too; a letter just before is another word ("телеклод")
 const CLAUDE_RE = /(?<![а-яёa-z])(клод|клауд|клоуд|claude|антропик|anthropic)/i;
 const CODEX_RE = /(?<![а-яёa-z])(кодекс|кодэкс|codex)/i;
-const GEMINI_RE = /(?<![а-яёa-z])(гемини|джемини|gemini|аргон|argon)/i;
-const AGY_RESERVE_RE = /^\s*(опус|opus|флеш|флэш|flash)(?=\s*[,：:]|\s*$)/i;
+const GEMINI_RE = /(?<![а-яёa-z])(гемини|джемини|gemini|аргон|argon|хидроген|гидроген|hydrogen|антиграв|antigravity)/i;
+// a model of Antigravity named at the start ("Опус, …", "Хидроген: …"): that one, first
+const AGY_RESERVE_RE = /^\s*(опус|opus|соннет|сонет|sonnet|флеш|флэш|flash|хидроген|гидроген|hydrogen|аргон|argon|осс|oss|gpt-oss)(?=\s*[,：:]|\s*$)/i;
 
-function agyModel(text) {
+// Antigravity by how hard the task is (router tiers; the role map: vault GENESIS/Модели — роли агентов):
+//   mechanical — Flash for errands, GPT-OSS as the cheap reserve;
+//   routine    — Hydrogen (everyday code and agent work, fast), Claude Sonnet in Antigravity as a second Claude quota;
+//   complex    — Hydrogen high (its coding beats Argon's at the same cost), Opus, then Argon;
+//   deep       — Argon high (hardest reasoning and research, fewest made-up facts), Opus high, Hydrogen xhigh.
+// Flash closes every chain: the last resort when the rest are out.
+const AGY_BY_TIER = {
+  mechanical: ['gemini-3.8-flash-medium', 'gemini-4-hydrogen-low', 'gpt-oss-120b-medium'],
+  routine: ['gemini-4-hydrogen-medium', 'claude-sonnet-5-5-medium', 'gemini-3.8-flash-high'],
+  complex: ['gemini-4-hydrogen-high', 'claude-opus-5-5-medium', 'gemini-4-argon-medium', 'gemini-3.8-flash-high'],
+  deep: ['gemini-4-argon-high', 'claude-opus-5-5-high', 'gemini-4-hydrogen-xhigh', 'gemini-3.8-flash-high'],
+};
+const agyTier = (tier) => (AGY_BY_TIER[tier] ? tier : 'routine');
+
+function agyModel(text, tier = 'routine') {
+  const t = agyTier(tier);
+  const hard = t === 'complex' || t === 'deep';
   const name = AGY_RESERVE_RE.exec(String(text || ''))?.[1].toLowerCase();
-  if (name === 'опус' || name === 'opus') return 'claude-opus-5-5-medium';
-  if (name) return 'gemini-3.8-flash-high';
-  return 'gemini-4-argon-medium';
+  if (name === 'опус' || name === 'opus') return t === 'deep' ? 'claude-opus-5-5-high' : 'claude-opus-5-5-medium';
+  if (/^(соннет|сонет|sonnet)$/.test(name || '')) return hard ? 'claude-sonnet-5-5-high' : 'claude-sonnet-5-5-medium';
+  if (/^(флеш|флэш|flash)$/.test(name || '')) return 'gemini-3.8-flash-high';
+  if (/^(хидроген|гидроген|hydrogen)$/.test(name || '')) return t === 'deep' ? 'gemini-4-hydrogen-xhigh' : hard ? 'gemini-4-hydrogen-high' : 'gemini-4-hydrogen-medium';
+  if (/^(аргон|argon)$/.test(name || '')) return hard ? 'gemini-4-argon-high' : 'gemini-4-argon-medium';
+  if (/^(осс|oss|gpt-oss)$/.test(name || '')) return 'gpt-oss-120b-medium';
+  return AGY_BY_TIER[t][0];
 }
 const TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -487,15 +508,15 @@ function askGeminiCli(cfg, messages, onDelta, signal, find = findGeminiCli) {
   });
 }
 
-// Argon by default; a reserve may be addressed explicitly or reached through runWorker fallback.
-function askGemini(cfg, messages, onDelta, signal, { model: forcedModel = null } = {}) {
+// Antigravity: the model for the task's tier (AGY_BY_TIER), one named in the message, or the chain's step.
+function askGemini(cfg, messages, onDelta, signal, { model: forcedModel = null, tier = 'routine' } = {}) {
   if (forcedModel === 'gemini-cli-free') return askGeminiCli(cfg, messages, onDelta, signal);
   const exe = findAgy();
   if (!exe) return Promise.reject(new Error('Antigravity не найден: поставь agy и войди в Google AI Pro.'));
   const cwd = workDir(cfg);
   const since = Date.now();
   const brief = codexBrief(messages, cwd);
-  const model = forcedModel || agyModel(messages.findLast((message) => message.role === 'user')?.content);
+  const model = forcedModel || agyModel(messages.findLast((message) => message.role === 'user')?.content, tier);
   return new Promise((resolve, reject) => {
     const child = spawn(exe, ['--input-format', 'stream-json', '--output-format', 'stream-json',
       '--model', model, '--mode', 'accept-edits', '--dangerously-skip-permissions', '--print-timeout', '10m'], {
@@ -535,30 +556,33 @@ function askGemini(cfg, messages, onDelta, signal, { model: forcedModel = null }
   });
 }
 
-const AGY_CHAIN = ['gemini-4-argon-medium', 'claude-opus-5-5-medium', 'gemini-3.8-flash-high'];
-const WORKER_LABELS = {
+const AGY_CHAIN = AGY_BY_TIER.routine;
+const AGY_LABEL = (id) => {
+  const m = String(id).match(/^(gemini-4-argon|gemini-4-hydrogen|gemini-3\.8-flash|claude-opus-5-5|claude-sonnet-5-5|gpt-oss-120b)-(low|medium|high|xhigh)$/);
+  if (!m) return null;
+  const name = { 'gemini-4-argon': 'Gemini Argon', 'gemini-4-hydrogen': 'Gemini Hydrogen', 'gemini-3.8-flash': 'Gemini Flash', 'claude-opus-5-5': 'Claude Opus 5.5', 'claude-sonnet-5-5': 'Claude Sonnet 5.5', 'gpt-oss-120b': 'GPT-OSS 120B' }[m[1]];
+  return m[2] === 'medium' ? name : `${name} (${m[2]})`;
+};
+const WORKER_LABELS = new Proxy({
   claude: 'Claude',
   codex: 'Codex',
-  gemini: 'Gemini Argon',
-  'gemini-4-argon-medium': 'Gemini Argon',
-  'claude-opus-5-5-medium': 'Claude Opus 5.5',
-  'gemini-3.8-flash-high': 'Gemini Flash',
-  'gemini-cli-free': 'Gemini CLI (Free)',
-};
+  gemini: 'Antigravity',
+  'gemini-cli-free': 'Gemini CLI',
+}, { get: (o, k) => (k in o ? o[k] : AGY_LABEL(k) || undefined), has: (o, k) => k in o || Boolean(AGY_LABEL(k)) });
 const LIMIT_ERR_RE = /hit your .*limit|usage limit|rate.?limit|quota|кончился лимит|^Лимит |\b429\b/i;
 const COOLDOWN_MS = 15 * 60 * 1000;
 const cooldownUntil = new Map();
 
-/** Ordered fallback hierarchy starting from the chosen worker:
- * Claude -> Codex -> Antigravity Argon -> Antigravity Opus -> Antigravity Flash (last resort). */
-function workerChain(start, text = '') {
-  if (start === 'codex') return ['codex', 'claude', ...AGY_CHAIN];
+/** Ordered fallback hierarchy starting from the chosen worker, by the task's tier:
+ * Claude -> Codex -> Antigravity's chain for the tier (Flash last). Antigravity named: its model first. */
+function workerChain(start, text = '', tier = 'routine') {
+  const agy = AGY_BY_TIER[agyTier(tier)];
+  if (start === 'codex') return ['codex', 'claude', ...agy];
   if (start === 'gemini') {
-    const picked = agyModel(text);
-    const idx = Math.max(0, AGY_CHAIN.indexOf(picked));
-    return AGY_CHAIN.slice(idx);
+    const picked = agyModel(text, tier);
+    return [picked, ...agy.filter((m) => m !== picked)];
   }
-  return ['claude', 'codex', ...AGY_CHAIN];
+  return ['claude', 'codex', ...agy];
 }
 
 /** Runs the chosen worker and automatically cascades down the hierarchy if limits/errors hit. */
@@ -570,7 +594,7 @@ async function runWorker(start, cfg, messages, onDelta, signal, opts = {}, runne
   const useCooldown = runners.claude === askClaude && runners.codex === askCodex && runners.gemini === askGemini;
   const now = Date.now();
   const userText = messages.findLast((m) => m.role === 'user')?.content || '';
-  const fullChain = workerChain(start, userText);
+  const fullChain = workerChain(start, userText, opts.tier);
   const activeChain = useCooldown ? fullChain.filter((step) => (cooldownUntil.get(step) || 0) <= now) : fullChain;
   const chain = activeChain.length ? activeChain : fullChain;
   const firstIdx = Math.max(0, fullChain.indexOf(chain[0]));
@@ -581,8 +605,9 @@ async function runWorker(start, cfg, messages, onDelta, signal, opts = {}, runne
     opts.onStep?.(step, [...tried]);
     try {
       if (step === 'claude') return await runners.claude(cfg, messages, onDelta, signal, opts);
-      if (step === 'codex') return await runners.codex(cfg, messages, onDelta, signal, opts);
-      return await runners.gemini(cfg, messages, onDelta, signal, { model: step });
+      // Codex gets its own model for the tier (opts.model is Claude's: haiku/sonnet/opus)
+      if (step === 'codex') return await runners.codex(cfg, messages, onDelta, signal, { ...opts, model: opts.codexModel || null });
+      return await runners.gemini(cfg, messages, onDelta, signal, { model: step, tier: opts.tier });
     } catch (err) {
       if (signal?.aborted || err?.message === 'stopped') throw err;
       if (useCooldown && LIMIT_ERR_RE.test(err?.message || '')) {

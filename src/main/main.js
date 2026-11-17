@@ -2258,10 +2258,10 @@ function registerIpc() {
           ? `${prev.map((p) => workers.WORKER_LABELS[p] || p).join(' → ')} → ${label} думает… (Ctrl+Alt+X — остановить)`
           : `Передала ${label}, работает… (Ctrl+Alt+X — остановить)`;
         const skinWorker = step === 'claude' ? 'claude' : step === 'codex' ? 'codex' : 'agy';
-        const tag = step === 'claude' ? 'claude-code' : step === 'codex' ? 'codex' : step.replace(/-medium$|-high$/, '');
+        const tag = step === 'claude' ? 'claude-code' : step === 'codex' ? 'codex' : step.replace(/-(low|medium|high|xhigh)$/, '');
         overlay?.webContents.send('chat:delta', { id, status: chainText, tag, worker: skinWorker });
       };
-      const desktopOpts = { desktop: hands === 'yes', home: desktopCli.home, model: tierOpts.claudeModel, effort: tierOpts.codexEffort, onStep, onQuota: recordClaudeQuota };
+      const desktopOpts = { desktop: hands === 'yes', home: desktopCli.home, model: tierOpts.claudeModel, effort: tierOpts.codexEffort, codexModel: tierOpts.codexModel, tier: tierOpts.tier, onStep, onQuota: recordClaudeQuota };
       // a plain question about your schedule: answered from the calendar at once, no model (quick.js)
       const fast = !worker ? await quickAnswer(yourWords(messages)) : null;
       abort.signal.throwIfAborted();

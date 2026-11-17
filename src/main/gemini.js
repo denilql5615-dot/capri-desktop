@@ -19,14 +19,15 @@ const GEMINI_URL = 'https://gemini.google.com/app';
 const GEMINI_TAB = /^https:\/\/gemini\.google\.com\/app(?:[/?#]|$)/i; // its chat, not its hidden helper frames
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// what each model is for (Google's own labels in its menu, checked against public benchmarks — see the
-// vault note GENESIS/Модели — роли агентов): the role names agents use, and the name in Gemini's menu
+// what each model is for (public benchmarks and reviews, Nov 2026 — vault note GENESIS/Модели — роли
+// агентов): the role names agents use, and the name in Gemini's menu. Carbon isn't on this account;
+// 3.1 Pro is the previous generation.
 const MODELS = {
   fast: 'Flash-Lite', // quick facts, summaries, translations
   everyday: 'Hydrogen', // everyday tasks and quick analysis
-  research: '3.1 Pro', // Google's "research" pick (its Deep Research)
-  code: 'Argon', // code review and analysis, fact-heavy knowledge work
-  hardest: 'Carbon', // the hardest problems, a final check
+  code: 'Hydrogen', // code: its coding beats Argon's at the same cost, about twice as fast
+  research: 'Argon', // research and analysis: fewest made-up facts, top on HLE and ARC-AGI-2
+  hardest: 'Argon', // the hardest reasoning and a final check
 };
 
 let queue = Promise.resolve();
@@ -197,12 +198,17 @@ async function askIn(page, prompt, { chat = null, model = null, files = [], clip
   }
   // the prompt goes in as one paste-like insert (typing it key by key would take minutes for a long one);
   // sent, then checked: your question must show up in the chat, else it is put in and sent once more
+  // Gemini keeps a draft in its box across reloads: whatever is there that isn't this question goes first
   const send = async () => {
     await page.click('rich-textarea .ql-editor');
     await page.evaluate((t) => {
       const ed = document.querySelector('rich-textarea .ql-editor');
       ed.focus();
-      if (!ed.innerText.trim()) document.execCommand('insertText', false, t);
+      const norm = (s) => s.replace(/\s+/g, ' ').trim();
+      if (norm(ed.innerText) === norm(t)) return; // already ours (a retry)
+      document.execCommand('selectAll', false, null);
+      document.execCommand('delete', false, null);
+      document.execCommand('insertText', false, t);
     }, full);
     await pause(400);
     const clicked = await page.evaluate(() => {

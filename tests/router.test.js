@@ -89,11 +89,12 @@ test('tierOf: the guards only raise it', () => {
 });
 
 test('workerSettings: Claude model and Codex effort per tier, a computer task never below routine', () => {
-  assert.deepStrictEqual(workerSettings('mechanical'), { claudeModel: 'haiku', codexEffort: 'low' });
-  assert.deepStrictEqual(workerSettings('complex'), { claudeModel: 'opus', codexEffort: 'medium' });
-  assert.deepStrictEqual(workerSettings('deep'), { claudeModel: 'opus', codexEffort: 'high' });
-  assert.deepStrictEqual(workerSettings('mechanical', { computer: true }), { claudeModel: 'sonnet', codexEffort: 'low' });
-  assert.deepStrictEqual(workerSettings(undefined), { claudeModel: 'sonnet', codexEffort: 'low' });
+  assert.deepStrictEqual(workerSettings('mechanical'), { claudeModel: 'haiku', codexEffort: 'low', codexModel: 'gpt-6-luna', tier: 'mechanical' });
+  assert.deepStrictEqual(workerSettings('complex'), { claudeModel: 'opus', codexEffort: 'medium', codexModel: 'gpt-6.1-sol', tier: 'complex' });
+  // Astra eats the limits: only the deepest tier gets it
+  assert.deepStrictEqual(workerSettings('deep'), { claudeModel: 'opus', codexEffort: 'high', codexModel: 'gpt-6-astra', tier: 'deep' });
+  assert.deepStrictEqual(workerSettings('mechanical', { computer: true }), { claudeModel: 'sonnet', codexEffort: 'low', codexModel: 'gpt-6.1-sol', tier: 'routine' });
+  assert.deepStrictEqual(workerSettings(undefined), { claudeModel: 'sonnet', codexEffort: 'low', codexModel: 'gpt-6.1-sol', tier: 'routine' });
 });
 
 test('messagesFor: the message fenced off as data, a little context, worked examples', () => {
