@@ -30,7 +30,10 @@ test('runCouncil: blind round, anonymised cross round, rector verdict; a silent 
   assert.doesNotMatch(seen['Альфа'][0], /ответ Бета/);
   assert.match(seen['Альфа'][1], /Ответ A:\nответ Бета/);
   assert.doesNotMatch(seen['Альфа'][1], /Бета:/);
-  assert.match(judged, /### Альфа\nответ Альфа/);
+  // the rector sees no names (it may be a member itself); the note keeps who was who
+  assert.match(judged, /### Участник A\nответ Альфа/);
+  assert.doesNotMatch(judged, /### Альфа|### Бета/);
+  assert.deepEqual(r.letters, ['Участник A — Альфа', 'Участник B — Бета']);
   assert.equal(r.judge, 'Ректор');
   assert.deepEqual(r.failed.map((f) => f.member), ['Гамма']);
   assert.deepEqual(council.extractFor(r.verdict), ['Правило один.', 'Правило два.']);

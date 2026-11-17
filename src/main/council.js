@@ -133,8 +133,9 @@ async function runCouncil(question, { members, judge, fallbackJudge = null, onEv
     // a member who answered round 1 but not round 2 keeps its first answer
     finals = r1.map(([m, t]) => r2.find(([x]) => x === m) || [m, t]);
   }
-  // verdict — the rector
-  const prompt = VERDICT(q, finals.map(([m, t]) => [m.name, t]));
+  // verdict — the rector sees the answers without names (it may be one of the members itself: no
+  // favouring its own; the first council pointed that out); names come back in the note
+  const prompt = VERDICT(q, finals.map(([, t], i) => [`Участник ${LETTERS[i]}`, t]));
   let verdict = null;
   let by = null;
   for (const j of [judge, fallbackJudge].filter(Boolean)) {
@@ -152,6 +153,7 @@ async function runCouncil(question, { members, judge, fallbackJudge = null, onEv
   if (!verdict) throw new Error('ректор не смог написать итог');
   return {
     question: q,
+    letters: finals.map(([m], i) => `Участник ${LETTERS[i]} — ${m.name}`),
     round1: r1.map(([m, t]) => ({ member: m.name, text: t })),
     round2: r2.map(([m, t]) => ({ member: m.name, text: t })),
     verdict, judge: by, failed,
@@ -175,7 +177,7 @@ function writeCouncil(vaultRoot, result, { at = Date.now() } = {}) {
   const name = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}-${pad(d.getMinutes())} ${topic}`;
   const rounds = (title, list) => (list.length ? `\n## ${title}\n\n${list.map((r) => `### ${r.member}\n\n${r.text}`).join('\n\n')}\n` : '');
   const failed = result.failed.length ? `\n## Не ответили\n\n${result.failed.map((f) => `- ${f.phase}: ${f.member} — ${f.error}`).join('\n')}\n` : '';
-  const body = `---\nтип: совет\nсоздано: ${name.slice(0, 10)}\nректор: ${result.judge}\nучастники: [${result.round1.map((r) => `"${r.member}"`).join(', ')}]\n---\n# Совет: ${topic}\n\n**Вопрос:** ${result.question}\n\n${result.verdict}\n${failed}${rounds('Раунд 2 — перекрёстный', result.round2)}${rounds('Раунд 1 — вслепую', result.round1)}`;
+  const body = `---\nтип: совет\nсоздано: ${name.slice(0, 10)}\nректор: ${result.judge}\nучастники: [${result.round1.map((r) => `"${r.member}"`).join(', ')}]\n---\n# Совет: ${topic}\n\n**Вопрос:** ${result.question}\n\n${result.verdict}\n${result.letters && result.letters.length ? `\n**Кто есть кто в итоге:** ${result.letters.join('; ')}\n` : ''}${failed}${rounds('Раунд 2 — перекрёстный', result.round2)}${rounds('Раунд 1 — вслепую', result.round1)}`;
   const file = path.join(folder, `${name}.md`);
   fs.writeFileSync(file, body, 'utf8');
   return file;

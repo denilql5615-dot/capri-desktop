@@ -2053,7 +2053,8 @@ function councilMembers(cfg, only) {
     ...(codexExe ? [{ id: 'sol', name: 'Codex GPT-6.1 Sol', ask: council.codexRunner({ exe: codexExe, cwd, model: 'gpt-6.1-sol', effort: 'medium' }) }] : []),
     { id: 'gemma', name: 'Gemma (локально)', ask: async (p) => {
       const model = brains.ready(await ollama.models().catch(() => [])) ? await brains.use('main') : cfg.chatModel;
-      return ollama.chat({ model, messages: [{ role: 'user', content: p }], numPredict: 1400 }, () => {});
+      // a cross round carries everyone's answers: a 16k window (8k was too small in the first council)
+      return ollama.chat({ model, messages: [{ role: 'user', content: p }], numPredict: 1400, numCtx: 16384 }, () => {});
     } },
   ];
   const members = Array.isArray(only) && only.length ? all.filter((m) => only.includes(m.id)) : all;
