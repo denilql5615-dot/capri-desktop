@@ -847,7 +847,16 @@ export class Chat {
     }
     if (asked.kind === 'web') {
       this.zap();
-      return (await this.host.webSearch(asked.query)) ? { line: fmt(t.web, { query: asked.query }), face: 'smug' } : null;
+      const res = await this.host.webSearch(asked.query);
+      if (res && res.answer) {
+        const cited = res.sources.filter((s) => res.answer.includes(`[${s.n}]`));
+        const list = (cited.length ? cited : res.sources.slice(0, 3)).map((s) => `[${s.n}] ${s.title} — ${s.url}`).join('\n');
+        // a site that asked "are you human?": not solved by her, handed to you
+        const check = res.blocked?.length ? `\n\nСайт просит проверку «я не робот», её я не прохожу — открой сам: ${res.blocked[0]}` : '';
+        return { line: `${res.answer}\n\n${list}${check}`, face: 'smug' };
+      }
+      if (res && res.error) return { line: res.error, face: 'aside' }; // browser-only mode: why it couldn't go
+      return res ? { line: fmt(t.web, { query: asked.query }), face: 'smug' } : null;
     }
     if (asked.kind === 'files') {
       const results = await this.host.searchFiles({ query: asked.query, exts: asked.exts });
