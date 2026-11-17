@@ -17,8 +17,9 @@ const DEFAULTS = {
   assistant: 'auto', // the coding assistant she watches: 'claude' or 'codex' ('auto': whichever has her hooks)
   linked: false,     // a Claude Code event has reached her at least once
   chatModel: 'auto', // 'auto': her two brains (brains.js), the fast E4B and the main 26B; else one model by name
-  rp: false,
-  searxUrl: 'http://192.168.0.108:8888', // her web search (web.js): our SearXNG on the home server, out through Proton on the PC         // roleplay mode: an explicit-style prompt added to her own chat (brains.js), never to work or emergencies
+  rp: false,         // roleplay mode: an explicit-style prompt added to her own chat (brains.js), never to work or emergencies
+  searxUrl: 'http://192.168.0.108:8888', // her web search (web.js): our SearXNG on the home server, out through Proton on the PC
+  capriBrowser: 'auto', // her browser (browser.js): 'auto' = your Windows default, or a name (LibreWolf, Brave…), or a path to an exe
   provider: 'ollama', // who answers her chat: a key of llm.js PROVIDERS
   apiKeys: {},       // { openai: 'sk-...' }, else the provider's env variable
   customUrl: '',     // the 'custom' provider: any OpenAI-compatible base URL (http://host:port/v1)

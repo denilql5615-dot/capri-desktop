@@ -1060,6 +1060,8 @@ function rebuildTray() {
       submenu: [
         { label: t.aiSetup, click: () => sendCommand('setupChat') },
         { type: 'separator' },
+        browserMenu(cfg),
+        { type: 'separator' },
         ...Object.entries(llm.PROVIDERS).map(([provider, p]) => ({
           label: p.label, type: 'radio', checked: cfg.provider === provider, click: () => pickProvider(provider),
         })),
@@ -1068,8 +1070,6 @@ function rebuildTray() {
         ...(cfg.provider === 'ollama' && brains.ready(chatModels) ? [
           { label: 'Авто: быстрая E4B + основная 26B', type: 'radio', checked: brains.isAuto(cfg.chatModel, chatModels), click: () => updateConfig({ chatModel: 'auto' }) },
           { label: 'Ролевой режим (18+)', type: 'checkbox', checked: cfg.rp === true, click: (item) => updateConfig({ rp: item.checked }) },
-          // her own browser profile (browser.js): you sign in there, only to services you trust her with
-          { label: 'Браузер Капри — войти в сервисы…', click: () => capriBrowser.openForSignIn('about:blank', { app }).catch(() => {}) },
           { type: 'separator' },
         ] : []),
         ...(chatModels?.length
@@ -1871,6 +1871,23 @@ async function sayAboutSnap({ id, persona, prompt, history = [] }) {
   }
 }
 
+// her browser (browser.js): 'auto' follows your Windows default, or any browser found on the PC;
+// her own profile in each, you sign in there yourself, only to services you trust her with
+function browserMenu(cfg) {
+  const setting = cfg.capriBrowser || 'auto';
+  const now = capriBrowser.resolve(setting);
+  return {
+    label: `Браузер Капри: ${now ? now.name : 'нет'}`,
+    submenu: [
+      { label: `Авто — как в Windows${setting === 'auto' && now ? ` (${now.name})` : ''}`, type: 'radio', checked: setting === 'auto', click: () => updateConfig({ capriBrowser: 'auto' }) },
+      ...capriBrowser.installed().map((b) => ({ label: b.name, type: 'radio', checked: setting.toLowerCase() === b.name.toLowerCase(), click: () => updateConfig({ capriBrowser: b.name }) })),
+      ...(now && now.note ? [{ label: now.note, enabled: false }] : []),
+      { type: 'separator' },
+      { label: 'Войти в сервисы в её профиле…', enabled: !!now, click: () => capriBrowser.openForSignIn('about:blank', { app, browser: setting }).catch(() => {}) },
+    ],
+  };
+}
+
 async function pickProvider(provider) {
   updateConfig({ provider });
   await refreshModels();
@@ -2463,7 +2480,7 @@ function registerIpc() {
       const said = await web.answer(q, {
         url: cfg.searxUrl,
         chat: (messages) => ollama.chat({ model, messages, numPredict: 500 }, () => {}),
-        render: (url) => capriBrowser.readRendered(url, { app }),
+        render: (url) => capriBrowser.readRendered(url, { app, browser: cfg.capriBrowser }),
       });
       if (said.answer) return { answer: said.answer, sources: said.sources, blocked: said.blocked };
     } catch (err) {
@@ -2472,7 +2489,7 @@ function registerIpc() {
     return shell.openExternal(`https://duckduckgo.com/?q=${encodeURIComponent(q)}`).then(() => ({ opened: true }), () => false);
   });
   // her own browser profile, opened for you to sign in to the services you trust her with (browser.js)
-  ipcMain.handle('browser:signin', (_e, url) => capriBrowser.openForSignIn(url, { app }).then(() => true, () => false));
+  ipcMain.handle('browser:signin', (_e, url) => capriBrowser.openForSignIn(url, { app, browser: config.load().capriBrowser }).then(() => true, () => false));
   ipcMain.handle('apps:launch', (_e, item) => launch.launch(item).then(() => ({ ok: true }), (err) => ({ ok: false, error: err.message })));
   ipcMain.handle('apps:media', (_e, action) => launch.media(action));
   // your PC itself, from her chat: settings, what's left, sound, snip, windows, theme, power
