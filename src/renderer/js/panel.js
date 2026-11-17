@@ -43,6 +43,8 @@ export class Panel {
     this.clip = panel.querySelector('.panel__clip'); // or a clip ("скинь видео"): looped, silent
     this.stopStream(); // her chat answer, decoding in (stream)
     this.streamTo = [];
+    this.onStreamDone = null; // () => void, streaming reply finished decoding
+    this.onActionsChange = null; // () => void, action buttons updated
     this.portrait = panel.querySelector('.panel__face img');
     this.quote = panel.querySelector('.panel__quote');
     this.progress = panel.querySelector('.panel__progress');
@@ -146,6 +148,7 @@ export class Panel {
     cur?.onLeave?.();
     this.current = { ...msg, at: performance.now() };
     clearTimeout(this.hideTimer);
+    this.stopStream();
 
     this.el.dataset.kind = msg.kind;
     this.setFace(msg.face || KIND_FACE[msg.kind] || 'grin');
@@ -303,6 +306,7 @@ export class Panel {
     if (!this.current) return;
     this.current.actions = actions;
     this.renderActions(actions, onAction);
+    this.onActionsChange?.();
     this.place();
   }
 
@@ -342,6 +346,7 @@ export class Panel {
     if (!this.current?.chat) return;
     clearInterval(this.decodeTimer);
     this.stopStream();
+    this.streaming = true;
     this.setFace(face);
     this.quote.textContent = quote;
     this.quote.hidden = !quote;
@@ -357,6 +362,7 @@ export class Panel {
   // up faster the further behind it is (Claude Code's answer comes in one piece), and glitches once done.
   stream(text, { done = false } = {}) {
     if (!this.current?.chat) return;
+    this.streaming = true;
     this.streamTo = [...text];
     this.streamDone = done;
     // an answer rewritten rather than added to (a reasoning block cut out, an error): from where they part
@@ -382,6 +388,7 @@ export class Panel {
       this.line.textContent = chars.join('');
       this.line.classList.remove('is-streaming');
       this.glitchLine();
+      this.onStreamDone?.();
     } else {
       // noise where the next characters land; still waiting for more, a little static at the end
       let tail = '';
@@ -400,6 +407,7 @@ export class Panel {
     this.streamTimer = null;
     this.streamShown = 0;
     this.streamAt = [];
+    this.streaming = false;
   }
 
   // A picture she sent, under her line, in her chat (capri://gallery/...): placed again once it's loaded.

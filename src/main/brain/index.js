@@ -4,16 +4,16 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const CONFIG = Object.freeze({ version: 2, schema_version: 2, max_events: 10000, max_tasks: 1000,
+const CONFIG = Object.freeze({ version: 3, schema_version: 3, max_events: 10000, max_tasks: 1000,
   max_journal_bytes: 32 * 1024 * 1024, max_time_ms: 8640000000000000,
   reassessment_base: 0, evidence_need_base: 0, stability_base: 1,
   reassessment_tau_ms: 600000, evidence_need_tau_ms: 1800000, stability_tau_ms: 14400000,
-  enter: 0.65, leave: 0.35, cooldown_ms: 60000, window_cap: 0.5,
+  enter: 0.65, leave: 0.35, cooldown_ms: 60000, window_cap: 0.7,
   utc_offset_minutes: 300, quiet_start_minute: 1380, quiet_end_minute: 420,
   urgency_impulse: 0.25, contradiction_impulse: 0.2, novelty_impulse: 0.2,
   uncertainty_impulse: 0.3, evidence_contradiction_impulse: 0.35,
-  error_reassessment_impulse: 0.35, error_stability_impulse: -0.15,
-  verified_stability_impulse: 0.1 });
+  error_reassessment_impulse: 0.25, error_stability_impulse: -0.15,
+  verified_stability_impulse: 0.1, verified_reassessment_relief: 0.2 });
 const CHANNELS = ['reassessment', 'evidence_need', 'stability'];
 const COMMON = ['type', 'schema_version', 'config_version', 'event_id', 'task_id', 'source_id',
   'source_seq', 'task_seq', 'occurred_at_ms', 'received_at_ms'];
@@ -174,6 +174,9 @@ function createShadow({ append, checkpoint } = {}) {
     const task = e && tasks.get(e.task_id);
     if (e?.type === 'task_completed' && !task.terminal && e.validation === 'verified') {
       delta.stability = CONFIG.verified_stability_impulse * e.utility;
+      if (e.outcome === 'completed' && e.utility > 0) {
+        delta.reassessment = -CONFIG.verified_reassessment_relief * e.utility;
+      }
       if (task.prediction !== undefined) {
         next.rpe_count++;
         next.last_rpe = e.utility - task.prediction;

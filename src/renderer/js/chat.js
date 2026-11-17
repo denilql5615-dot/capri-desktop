@@ -299,6 +299,8 @@ export class Chat {
     this.waitingWhen = null; // a reminder you asked for without saying when: { text, until }
     this.shortModel = '';
     this.verdictPending = false;
+    this.afterPending = false;
+    this.afterToken = 0;
     host.onChatDelta((msg) => this.onDelta(msg.id, msg.text, msg));
     host.onBrainPending?.((pending) => {
       this.verdictPending = Boolean(pending);
@@ -309,10 +311,14 @@ export class Chat {
       this.syncVerdict();
       this.host.brainVerdict?.(v);
     };
+    this.panel.onStreamDone = () => this.syncVerdict();
+    this.panel.onActionsChange = () => this.syncVerdict();
   }
 
   syncVerdict() {
-    this.panel?.setVerdict?.(Boolean(this.open && !this.turn && this.verdictPending && this.panel.current?.chat));
+    const p = this.panel;
+    const hasActions = Boolean(p?.current?.actions?.length);
+    p?.setVerdict?.(Boolean(this.open && !this.turn && this.verdictPending && p.current?.chat && !p.streaming && !this.afterPending && !hasActions));
   }
 
   get t() {
@@ -398,6 +404,8 @@ export class Chat {
       return;
     }
     this.open = true;
+    this.afterToken++;
+    this.afterPending = false;
     this.verdictPending = false;
     this.syncVerdict();
     if (!remote) setTimeout(() => this.panel.chatInput.focus(), 150); // once the overlay has the keyboard
@@ -409,6 +417,8 @@ export class Chat {
     if (!this.open) return;
     if (!abort && this.turn) return; // keep the turn alive if the panel was only displaced while a worker runs
     this.open = false;
+    this.afterToken++;
+    this.afterPending = false;
     this.verdictPending = false;
     if (abort && this.turn) this.stopTurn();
     this.turn = 0;
@@ -494,6 +504,8 @@ export class Chat {
   async sendTor(text, how) {
     const id = Date.now();
     this.turn = id;
+    this.afterToken++;
+    this.afterPending = false;
     this.verdictPending = false;
     this.syncVerdict();
     this.panel.setChatBusy(true);
@@ -530,6 +542,8 @@ export class Chat {
     this.turn = id;
     this.routing = id;
     this.answer = '';
+    this.afterToken++;
+    this.afterPending = false;
     this.verdictPending = false;
     this.syncVerdict();
     const entry = { role: 'user', content: text };
@@ -615,8 +629,17 @@ export class Chat {
     this.onAnswer?.(answer);
     this.panel.setFace(mood(answer));
     this.panel.setChatBusy(false);
+    if (!agent) {
+      const afterToken = ++this.afterToken;
+      this.afterPending = true;
+      Promise.resolve(this.after(res.text, answer, asked, early, text))
+        .catch(() => {})
+        .finally(() => {
+          if (this.afterToken === afterToken) this.afterPending = false;
+          this.syncVerdict();
+        });
+    }
     this.syncVerdict();
-    if (!agent) this.after(res.text, answer, asked, early, text);
     this.listApps(); // fresh for the next message
   }
 

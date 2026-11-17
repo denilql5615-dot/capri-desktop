@@ -2952,6 +2952,22 @@ async function debugHandler(route, body) {
     notesUpTo = '';
     return { ok: true, value: { dir: notesDir(), kept: await takeNotes(readMemory().history || []) } };
   }
+  if (route === 'brain') {
+    // the brain shadow (src/main/brain): set its two flags ({ set: { brainShadow, brainVerdictJudge } }), read its
+    // in-memory counters and this process's memory. Numbers only — no text, no ids.
+    const set = body.set && typeof body.set === 'object' ? body.set : {};
+    const patch = {};
+    if (typeof set.brainShadow === 'boolean') patch.brainShadow = set.brainShadow;
+    if (set.brainVerdictJudge === 'off' || set.brainVerdictJudge === 'shadow') patch.brainVerdictJudge = set.brainVerdictJudge;
+    if (Object.keys(patch).length) updateConfig(patch);
+    const cfg = config.load(true);
+    const mem = process.memoryUsage();
+    return { ok: true, value: {
+      brainShadow: cfg.brainShadow === true, brainVerdictJudge: cfg.brainVerdictJudge || 'off',
+      hook: Boolean(brainShadowHook), stats: brainShadowHook ? brainShadowHook.stats() : null,
+      memory: { rss: mem.rss, heapUsed: mem.heapUsed }, journalDir: path.join(app.getPath('userData'), 'brain-journal'),
+    } };
+  }
   if (route === 'models') {
     // which model she'd chat with, and why: what Ollama lists and what her config says
     const cfg = config.load(true);
