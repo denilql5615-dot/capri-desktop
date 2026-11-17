@@ -20,3 +20,11 @@ p95 ≤ 5 мс, p99 ≤ 20 мс, добавленный RSS ≤ 16 МиБ, бе�
 
 ## Покрытие (неполное)
 Ответы роутера — заглушка, поэтому реальная работа роутера с моделью не проверена. Только локальный чат; внешние агенты и инструменты не входят. Интеграции с `main.js`, renderer, MCP нет.
+
+## Стенд замеров этапа 3
+`scripts/brain-baseline-bench.js` (`runBaselineBench()`, запуск через `node --expose-gc scripts/brain-baseline-bench.js` для учёта RSS или `node scripts/brain-baseline-bench.js`) выполняет парные офлайн-прогоны `baseline` (`brainShadow: false`) и `observed` (`brainShadow: true`) на синтетическом наборе `tests/fixtures/brain-baseline-set.json` (30 сценариев в 10 категориях, 63 реплики).
+
+- **Что подключается:** реальный `Router` с детерминированной заглушкой `mockChat` (без Ollama, Electron, браузера и сети), `rpCommand`, `tor.wantsTor`/`onionLink`, `amygdala.salience`/`verdictOf`, `createChatGlue`, `createShadowHook` и `openRotatingJournal` во временной директории `os.tmpdir()`. Паузы между репликами (`> 120` с в `sil-01..03`) моделируются детерминированными виртуальными часами и таймерами.
+- **Замеры (после прогрева 2 прогонов, `N = 30`, итого 1890 реплик):** синхронная задержка наблюдателя на горячем пути (`beforeTurn + startLocal + afterSuccess` через `process.hrtime.bigint()`, без `Router.decide` и фонового `flush`/`close`) в `timing.{p50,p95,p99}` (мс), плюс `rss_delta` до/после серии при запуске с `--expose-gc` (иначе `null` с пометкой).
+- **Пороги и проверки:** `p95 ≤ 5` мс, `p99 ≤ 20` мс, `rss_delta ≤ 16` МиБ, паритет решений и вызовов `Router` 100%, 0 `observer_errors`, отсутствие текста реплик / `rendererId` / Tor-слов в `.ndjson`, совпадение `replay(ndjson).snapshot()` с `journal.snapshot()`, точные счётчики (`verified_pos = 4`, `verified_neg = 3`, `completed_turns = 47` на прогон, 0 записей для Tor/RP).
+- **Ограничение:** полученные числа являются только справкой об офлайн-накладных расходах обвязки в Node, не измеряют живую Капри/Electron/Ollama и не включают `brainShadow`.
