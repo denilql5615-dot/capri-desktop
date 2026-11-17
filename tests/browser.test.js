@@ -102,48 +102,83 @@ test('readRenderedMany: one browser for all pages, a tab each; a page that never
   assert.match(r[2].text, /about the outage/);
 });
 
-// a fake running browser to attach to: pages opened in her window, what got closed
-function fakeAttached(seen = {}) {
-  seen.opened = []; seen.windows = 0; seen.closed = 0; seen.disconnected = false; seen.browserClosed = false;
+// a fake running browser to attach to: windows and tabs (each tab knows its window), what got closed
+function fakeAttached(seen = {}, { existing = [] } = {}) {
+  Object.assign(seen, { opened: [], windows: 0, tabsMade: 0, closed: 0, disconnected: false, browserClosed: false });
+  const pages = [];
+  const mkPage = (url = 'about:blank', windowId) => {
+    const ctxRef = { windowId };
+    const page = {
+      url: () => url,
+      mainFrame: () => ({ browsingContext: ctxRef }),
+      isClosed: () => page.closed === true,
+      goto: async (u) => { url = u; seen.opened.push(u); },
+      title: async () => 'Page',
+      evaluate: async (fn) => (String(fn).includes('.result') ? [
+        { title: 'Ad', href: 'https://duckduckgo.com/y.js?ad_domain=x', snippet: '' },
+        { title: 'Real one', href: 'https://duckduckgo.com/l/?uddg=https%3A%2F%2Freal.example%2Fa&rut=1', snippet: 'about it' },
+      ] : long),
+      close: async () => { page.closed = true; seen.closed++; pages.splice(pages.indexOf(page), 1); },
+    };
+    pages.push(page);
+    return page;
+  };
+  for (const u of existing) mkPage(u, 'w-old');
+  const bc = {
+    pages: async () => pages.slice(),
+    newPage: async (o = {}) => { if (o.type === 'window') seen.windows++; return mkPage('about:blank', `w${seen.windows}`); },
+    userContext: { createBrowsingContext: async (type, o) => { seen.tabsMade++; seen.tabWindows = [...(seen.tabWindows || []), o.referenceContext.windowId]; return mkPage('about:blank', o.referenceContext.windowId).mainFrame().browsingContext; } },
+  };
   return {
-    newPage: async (o = {}) => {
-      if (o.type === 'window') seen.windows++;
-      return {
-        goto: async (url) => { seen.opened.push(url); },
-        title: async () => 'Page',
-        evaluate: async (fn) => (String(fn).includes('.result') ? [
-          { title: 'Ad', href: 'https://duckduckgo.com/y.js?ad_domain=x', snippet: '' },
-          { title: 'Real one', href: 'https://duckduckgo.com/l/?uddg=https%3A%2F%2Freal.example%2Fa&rut=1', snippet: 'about it' },
-        ] : long),
-        close: async () => { seen.closed++; },
-      };
-    },
+    connected: true, once: () => {},
+    defaultBrowserContext: () => bc,
     disconnect: async () => { seen.disconnected = true; },
     close: async () => { seen.browserClosed = true; },
   };
 }
 
-test('your profile: attached over the port, her one window, closed after; your browser left running', async () => {
+test('your profile: her one window kept between jobs, a tab per page, only the tabs closed', async () => {
+  browser.forgetWindows();
   const seen = {};
-  const s = await browser.openSession({ app, pick, ...fast, profile: 'C:/p/MAIN', connect: async (port) => { seen.port = port; return fakeAttached(seen); } });
-  assert.strictEqual(seen.port, browser.DEFAULT_PORT);
+  let connects = 0;
+  const opts = { app, pick, ...fast, profile: 'C:/p/MAIN', port: 9401, connect: async (port) => { connects++; seen.port = port; return fakeAttached(seen); } };
+  const s = await browser.openSession(opts);
+  assert.strictEqual(seen.port, 9401);
   const found = await s.search('кто где');
   assert.deepStrictEqual(found.map((r) => r.url), ['https://real.example/a']);
   const pages = await s.readMany(['https://a.example/', 'https://b.example/']);
   assert.match(pages[1].text, /about the outage/);
   await s.close();
-  assert.deepStrictEqual([seen.windows, seen.closed, seen.disconnected, seen.browserClosed], [1, 1, true, false]);
-  assert.match(seen.opened[0], /^https:\/\/html\.duckduckgo\.com\/html\/\?q=/);
+  // the window page itself + 3 tabs, all tabs in her window; tabs closed, window and browser not, still connected
+  assert.deepStrictEqual([seen.windows, seen.tabsMade, seen.closed, seen.disconnected, seen.browserClosed], [1, 3, 3, false, false]);
+  assert.ok(seen.tabWindows.every((w) => w === 'w1'));
+  assert.ok(decodeURIComponent(seen.opened[0]).includes(browser.WINDOW_MARK));
+  // the next job: no new connection, no new window
+  const s2 = await browser.openSession(opts);
+  await s2.readMany(['https://c.example/']);
+  await s2.close();
+  assert.deepStrictEqual([connects, seen.windows, seen.tabsMade], [1, 1, 4]);
+});
+
+test('your profile: her window from before a restart is found again, not opened twice', async () => {
+  browser.forgetWindows();
+  const seen = {};
+  const mark = `data:text/html;charset=utf-8,${encodeURIComponent(`<!--${browser.WINDOW_MARK}--><title>x</title>`)}`;
+  const s = await browser.openSession({ app, pick, ...fast, profile: 'C:/p/MAIN', port: 9402, connect: async () => fakeAttached(seen, { existing: ['https://yours.example/', mark] }) });
+  await s.readMany(['https://a.example/']);
+  await s.close();
+  assert.deepStrictEqual([seen.windows, seen.tabWindows], [0, ['w-old']]);
 });
 
 test('your profile: not running → started as itself with the port (never through puppeteer); open without the port → told', async () => {
+  browser.forgetWindows();
   let spawned = null;
   let tries = 0;
   const connect = async () => { if (!spawned || ++tries < 2) throw new Error('refused'); return fakeAttached(); };
-  const s = await browser.openSession({ app, pick, ...fast, profile: 'C:/p/MAIN', profileBusy: () => false, spawn: (exe, dir, port) => { spawned = { exe, dir, port }; }, connect, startPollMs: 0 });
-  assert.deepStrictEqual(spawned, { exe: 'C:/x/librewolf.exe', dir: 'C:/p/MAIN', port: browser.DEFAULT_PORT });
+  const s = await browser.openSession({ app, pick, ...fast, profile: 'C:/p/MAIN', port: 9403, profileBusy: () => false, spawn: (exe, dir, port) => { spawned = { exe, dir, port }; }, connect, startPollMs: 0 });
+  assert.deepStrictEqual(spawned, { exe: 'C:/x/librewolf.exe', dir: 'C:/p/MAIN', port: 9403 });
   await s.close();
-  await assert.rejects(browser.openSession({ app, pick, profile: 'C:/p/MAIN', profileName: 'MAIN', profileBusy: () => true, connect: async () => { throw new Error('refused'); }, spawn: () => { throw new Error('must not start a 2nd one'); } }), /Профиль «MAIN» открыт без порта управления/);
+  await assert.rejects(browser.openSession({ app, pick, profile: 'C:/p/MAIN', profileName: 'MAIN', port: 9404, profileBusy: () => true, connect: async () => { throw new Error('refused'); }, spawn: () => { throw new Error('must not start a 2nd one'); } }), /Профиль «MAIN» открыт без порта управления/);
 });
 
 test('answer, browser-only: the search page and the pages come from her browser, nothing is downloaded around it', async () => {
