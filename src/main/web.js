@@ -163,9 +163,15 @@ async function answer(question, deps) {
   const { chat, fetchImpl = fetch, signal } = deps;
   const howto = HOWTO.test(String(question).trim());
   const chars = howto ? HOWTO_CHARS : PAGE_CHARS; // steps sit further down the page than a fact
-  const results = await search(question, { url: deps.url, fetchImpl, signal });
+  // browser-only mode: the search page and every page are opened in her browser, nothing goes around it
+  const browserOnly = typeof deps.browserSearch === 'function';
+  const results = browserOnly
+    ? (await deps.browserSearch(question)).map((r) => ({ ...r, url: usable(r.url) })).filter((r) => r.url)
+    : await search(question, { url: deps.url, fetchImpl, signal });
   if (!results.length) return { answer: '', sources: [] };
-  const got = await Promise.all(results.map((r) => fetchPage(r.url, { fetchImpl, signal, chars, extract: deps.extract })));
+  const got = browserOnly
+    ? results.map(() => ({ text: '', unreachable: false }))
+    : await Promise.all(results.map((r) => fetchPage(r.url, { fetchImpl, signal, chars, extract: deps.extract })));
   const pages = got.map((g) => g.text);
   // pages built by scripts read empty: her browser renders them, only as many as still needed
   const blocked = [];

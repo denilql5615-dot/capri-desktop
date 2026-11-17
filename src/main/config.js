@@ -20,6 +20,10 @@ const DEFAULTS = {
   rp: false,         // roleplay mode: an explicit-style prompt added to her own chat (brains.js), never to work or emergencies
   searxUrl: 'http://192.168.0.108:8888', // her web search (web.js): our SearXNG on the home server, out through Proton on the PC
   capriBrowser: 'auto', // her browser (browser.js): 'auto' = your Windows default, or a name (LibreWolf, Brave…), or a path to an exe
+  capriBrowserProfile: '', // a profile folder of yours for her (e.g. Camoufox MAIN); '' = her own profile per browser
+  capriBrowserProfileName: '', // its name, for the tray
+  capriBrowserPort: 9339, // the control port she attaches to on 127.0.0.1 when that profile's browser runs
+  webMode: 'search', // 'search' = SearXNG + plain reading, browser for the rest; 'browser' = everything through the browser
   provider: 'ollama', // who answers her chat: a key of llm.js PROVIDERS
   apiKeys: {},       // { openai: 'sk-...' }, else the provider's env variable
   customUrl: '',     // the 'custom' provider: any OpenAI-compatible base URL (http://host:port/v1)

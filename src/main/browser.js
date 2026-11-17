@@ -197,27 +197,69 @@ async function start(opts, headless) {
 
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/**
- * Text of a page after its scripts ran: { text, title, blocked, browser, url }. Read-only, headless.
- * blocked: a human check is still on the page after waiting; the text she got is kept anyway.
- */
-async function readRendered(url, opts = {}) {
-  return (await readRenderedMany([url], opts))[0];
+// ---- a profile of yours (e.g. Camoufox "MAIN", made for her, with your extensions) ----
+// Never launched through puppeteer: that rewrites the profile's prefs (safe browsing, password saving and
+// extension updates off) and only puts them back on a clean exit. Instead the browser runs as itself with
+// a control port on 127.0.0.1, started by her or by you, and she attaches: her own window, closed after;
+// the browser, its tabs and the profile stay as they were.
+const DEFAULT_PORT = 9339;
+
+/** The profile is open in a browser right now (Firefox holds parent.lock while running). */
+function profileBusy(dir, io = fs) {
+  const lock = path.join(dir, 'parent.lock');
+  if (!io.existsSync(lock)) return false;
+  try { io.closeSync(io.openSync(lock, 'r+')); return false; } catch (e) { return e.code === 'EBUSY' || e.code === 'EPERM'; }
+}
+
+const connectTo = (port) => require('puppeteer-core').connect({ browserWSEndpoint: `ws://127.0.0.1:${port}/session`, protocol: 'webDriverBiDi' });
+
+function spawnBrowser(exe, dir, port, { headless = false } = {}) {
+  const args = ['--profile', dir, '--remote-debugging-port', String(port)];
+  if (headless) args.push('--headless');
+  const child = require('child_process').spawn(exe, args, { detached: true, stdio: 'ignore', windowsHide: headless });
+  child.unref(); // your browser: it stays when she's done or restarts
+}
+
+/** Attaches to the browser on your profile, starting it (visible, as your browser) if it isn't running. */
+async function attach(opts, { visible = false } = {}) {
+  const dir = opts.profile;
+  const port = Number(opts.port) || DEFAULT_PORT;
+  const connect = opts.connect || connectTo;
+  const busy = opts.profileBusy || profileBusy;
+  const spawnIt = opts.spawn || spawnBrowser;
+  const b = (opts.pick ? [].concat(opts.pick) : candidates(opts.browser))[0];
+  const name = path.basename(dir);
+  try { return { ctx: await connect(port), b, attached: true }; } catch { /* not running with the port */ }
+  if (busy(dir)) {
+    throw new Error(`Профиль «${opts.profileName || name}» открыт без порта управления. Закрой этот браузер — Капри откроет его сама (или запускай его из трея: «Браузер Капри → Открыть профиль»).`);
+  }
+  if (!b) throw new Error('Нет браузера для этого профиля');
+  spawnIt(b.exe, dir, port, { headless: !visible && opts.headlessStart === true });
+  for (let i = 0; i < (opts.startTries || 80); i++) {
+    await pause(opts.startPollMs ?? 250);
+    try { return { ctx: await connect(port), b, attached: true }; } catch { /* still starting */ }
+  }
+  throw new Error(`${b.name} с профилем «${opts.profileName || name}» не открыл порт управления ${port}`);
 }
 
 /**
- * Several pages in ONE browser, each in its own tab, side by side: [{ text, title, blocked, browser, url }].
- * A page that doesn't finish loading in time is still read for what it has; one that fails reads empty.
+ * Her browser for one job: { browser, readMany(urls), search(query), close() }.
+ * Her own profile: headless, pages in parallel tabs, closed after. Your profile: attached, one window of
+ * her own, pages one after another in it; the window is closed and the browser left running.
  */
-async function readRenderedMany(urls, opts = {}) {
+async function openSession(opts = {}) {
   const { chars = 4000, timeoutMs = 15000, settleMs = 2500, challengeWaitMs = 10000, pollMs = 1500 } = opts;
+  const { ctx, b, attached } = opts.profile ? await attach(opts) : await start(opts, true);
+  let win = null; // attached: her one window in your browser
+  const pageFor = async () => {
+    if (!attached) return ctx.newPage();
+    if (!win) win = await ctx.newPage({ type: 'window', background: true });
+    return win;
+  };
   const empty = () => ({ text: '', title: '', blocked: false });
-  const list = [].concat(urls || []).map(String);
-  if (!list.some((u) => /^https?:\/\//i.test(u))) return list.map(empty);
-  const { ctx, b } = await start(opts, true);
-  const one = async (url) => {
-    if (!/^https?:\/\//i.test(url)) return empty(url);
-    const page = await ctx.newPage();
+  const read = async (url) => {
+    if (!/^https?:\/\//i.test(url)) return empty();
+    const page = await pageFor();
     try {
       // slow pages: whatever arrived by the deadline is read, the wait isn't a failure
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs }).catch(() => {});
@@ -241,27 +283,102 @@ async function readRenderedMany(urls, opts = {}) {
       }
       return { text: seen.clean.slice(0, chars), title: seen.title, blocked: seen.check, browser: b.name, url };
     } catch {
-      return empty(url);
+      return empty();
     } finally {
-      await Promise.resolve().then(() => page.close()).catch(() => {});
+      if (!attached) await Promise.resolve().then(() => page.close()).catch(() => {});
     }
   };
+  const readMany = async (urls) => {
+    const list = [].concat(urls || []).map(String);
+    if (!attached) return Promise.all(list.map(read));
+    const out = [];
+    for (const u of list) out.push(await read(u)); // one window: one page at a time
+    return out;
+  };
+  /** Results from a search page opened in this browser: [{ title, url, snippet, engine }]. */
+  const search = async (query, { limit = 8 } = {}) => {
+    const q = String(query || '').trim().slice(0, 300);
+    if (!q) return [];
+    const page = await pageFor();
+    try {
+      await page.goto(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, { waitUntil: 'domcontentloaded', timeout: timeoutMs }).catch(() => {});
+      const raw = await page.evaluate(() => [...document.querySelectorAll('.result')].map((r) => {
+        const a = r.querySelector('a.result__a');
+        const s = r.querySelector('.result__snippet');
+        return a ? { title: a.innerText, href: a.href, snippet: s ? s.innerText : '' } : null;
+      }).filter(Boolean)).catch(() => []);
+      return duckResults(raw).slice(0, limit);
+    } finally {
+      if (!attached) await Promise.resolve().then(() => page.close()).catch(() => {});
+    }
+  };
+  const close = async () => {
+    if (attached) {
+      if (win) await Promise.resolve().then(() => win.close()).catch(() => {});
+      await Promise.resolve().then(() => ctx.disconnect()).catch(() => {}); // your browser keeps running
+    } else {
+      await Promise.resolve().then(() => ctx.close()).catch(() => {});
+    }
+  };
+  return { browser: b && b.name, attached: Boolean(attached), read, readMany, search, close };
+}
+
+/** DuckDuckGo's HTML results: its /l/?uddg= redirect unwrapped, ads (y.js) out, one per site. */
+function duckResults(raw) {
+  const seen = new Set();
+  const out = [];
+  for (const r of raw || []) {
+    let url = String(r.href || '');
+    try {
+      const u = new URL(url, 'https://duckduckgo.com');
+      if (/duckduckgo\.com$/.test(u.hostname) && u.pathname === '/l/') url = u.searchParams.get('uddg') || '';
+      else if (/duckduckgo\.com$/.test(u.hostname)) continue; // y.js ads and its own links
+      const host = new URL(url).hostname.replace(/^www\./, '');
+      if (!/^https?:/.test(url) || seen.has(host)) continue;
+      seen.add(host);
+    } catch { continue; }
+    out.push({ title: String(r.title || '').trim().slice(0, 160), url, snippet: String(r.snippet || '').replace(/\s+/g, ' ').trim().slice(0, 300), engine: 'duckduckgo (браузер)' });
+  }
+  return out;
+}
+
+/**
+ * Text of a page after its scripts ran: { text, title, blocked, browser, url }. Read-only.
+ * blocked: a human check is still on the page after waiting; the text she got is kept anyway.
+ */
+async function readRendered(url, opts = {}) {
+  return (await readRenderedMany([url], opts))[0];
+}
+
+/** Several pages in one browser: [{ text, title, blocked, browser, url }]; a page that fails reads empty. */
+async function readRenderedMany(urls, opts = {}) {
+  const list = [].concat(urls || []).map(String);
+  if (!list.some((u) => /^https?:\/\//i.test(u))) return list.map(() => ({ text: '', title: '', blocked: false }));
+  const s = await openSession(opts);
   try {
-    return await Promise.all(list.map(one));
+    return await s.readMany(list);
   } finally {
-    await ctx.close().catch(() => {});
+    await s.close();
   }
 }
 
-/** Opens her profile in a visible window, for you to sign in to the services you trust her with. */
+/** Opens her browser in a visible window: to sign in, or (your profile) to start it with her control port. */
 async function openForSignIn(url, opts = {}) {
+  const target = /^https?:\/\//i.test(String(url)) ? url : 'about:blank';
+  if (opts.profile) {
+    const { ctx } = await attach(opts, { visible: true });
+    const page = await ctx.newPage();
+    await page.goto(target).catch(() => {});
+    await Promise.resolve().then(() => ctx.disconnect()).catch(() => {});
+    return true;
+  }
   const { ctx } = await start(opts, false);
   const page = (await ctx.pages())[0] || (await ctx.newPage());
-  await page.goto(/^https?:\/\//i.test(String(url)) ? url : 'about:blank').catch(() => {});
+  await page.goto(target).catch(() => {});
   return ctx; // closed by you, with the window
 }
 
 module.exports = {
-  readRendered, readRenderedMany, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
+  readRendered, readRenderedMany, openSession, attach, profileBusy, duckResults, DEFAULT_PORT, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
   engineOf, kindOf, CHALLENGE, KNOWN, MODES,
 };

@@ -1876,15 +1876,32 @@ async function sayAboutSnap({ id, persona, prompt, history = [] }) {
 function browserMenu(cfg) {
   const setting = cfg.capriBrowser || 'auto';
   const now = capriBrowser.resolve(setting);
+  const prof = cfg.capriBrowserProfile ? (cfg.capriBrowserProfileName || path.basename(cfg.capriBrowserProfile)) : '';
   return {
-    label: `Браузер Капри: ${now ? now.name : 'нет'}`,
+    label: `Браузер Капри: ${now ? now.name : 'нет'}${prof ? ` · ${prof}` : ''}${cfg.webMode === 'browser' ? ' · только браузер' : ''}`,
     submenu: [
       { label: `Авто — как в Windows${setting === 'auto' && now ? ` (${now.name})` : ''}`, type: 'radio', checked: setting === 'auto', click: () => updateConfig({ capriBrowser: 'auto' }) },
       ...capriBrowser.installed().map((b) => ({ label: b.name, type: 'radio', checked: setting.toLowerCase() === b.name.toLowerCase(), click: () => updateConfig({ capriBrowser: b.name }) })),
       ...(now && now.note ? [{ label: now.note, enabled: false }] : []),
       { type: 'separator' },
-      { label: 'Войти в сервисы в её профиле…', enabled: !!now, click: () => capriBrowser.openForSignIn('about:blank', { app, browser: setting }).catch(() => {}) },
+      // all of her web through the browser: no search server, no plain downloads around it
+      { label: 'Только браузер (поиск и чтение — в нём)', type: 'checkbox', checked: cfg.webMode === 'browser', click: (item) => updateConfig({ webMode: item.checked ? 'browser' : 'search' }) },
+      ...(prof ? [
+        { label: `Профиль: ${prof} (твой, через порт ${cfg.capriBrowserPort || capriBrowser.DEFAULT_PORT})`, enabled: false },
+        { label: 'Открыть профиль (с портом для Капри)', click: () => capriBrowser.openForSignIn('about:blank', browserOpts(cfg)).catch((err) => console.warn('browser:', err.message)) },
+        { label: 'Свой профиль Капри вместо него', click: () => updateConfig({ capriBrowserProfile: '' }) },
+      ] : [
+        { label: 'Войти в сервисы в её профиле…', enabled: !!now, click: () => capriBrowser.openForSignIn('about:blank', browserOpts(cfg)).catch(() => {}) },
+      ]),
     ],
+  };
+}
+
+// her browser settings for browser.js: which browser, and your profile with its control port when set
+function browserOpts(cfg) {
+  return {
+    app, browser: cfg.capriBrowser,
+    ...(cfg.capriBrowserProfile ? { profile: cfg.capriBrowserProfile, profileName: cfg.capriBrowserProfileName, port: cfg.capriBrowserPort } : {}),
   };
 }
 
@@ -2475,8 +2492,12 @@ function registerIpc() {
     const q = String(query || '').trim().slice(0, 300);
     if (!q) return false;
     const cfg = config.load();
+    const browserOnly = cfg.webMode === 'browser';
+    let session = null;
     try {
       const roles = brains.ready(await ollama.models().catch(() => []));
+      // browser-only: one session of her browser (your profile when set) for the search page and every page
+      const getSession = async () => (session = session || await capriBrowser.openSession(browserOpts(cfg)));
       const said = await web.answer(q, {
         url: cfg.searxUrl,
         // a "how to" answer is steps from several pages: the main brain writes it, with room for them
@@ -2484,16 +2505,25 @@ function registerIpc() {
           const model = roles ? (howto ? await brains.use('main') : brains.current()) : cfg.chatModel;
           return ollama.chat({ model, messages, numPredict: howto ? 1200 : 500 }, () => {});
         },
-        renderMany: (urls) => capriBrowser.readRenderedMany(urls, { app, browser: cfg.capriBrowser }),
+        ...(browserOnly ? {
+          browserSearch: async (query) => (await getSession()).search(query),
+          renderMany: async (urls) => (await getSession()).readMany(urls),
+        } : {
+          renderMany: (urls) => capriBrowser.readRenderedMany(urls, browserOpts(cfg)),
+        }),
       });
       if (said.answer) return { answer: said.answer, sources: said.sources, blocked: said.blocked };
     } catch (err) {
       console.warn('web search:', err.message);
+      if (browserOnly) return { error: `Не вышло через браузер: ${err.message}` }; // nothing goes around it
+    } finally {
+      if (session) await session.close();
     }
+    if (browserOnly) return { error: 'В браузере поиск ничего не нашёл.' };
     return shell.openExternal(`https://duckduckgo.com/?q=${encodeURIComponent(q)}`).then(() => ({ opened: true }), () => false);
   });
-  // her own browser profile, opened for you to sign in to the services you trust her with (browser.js)
-  ipcMain.handle('browser:signin', (_e, url) => capriBrowser.openForSignIn(url, { app, browser: config.load().capriBrowser }).then(() => true, () => false));
+  // her browser opened for you: to sign in to services you trust her with, or your profile started with her port
+  ipcMain.handle('browser:signin', (_e, url) => capriBrowser.openForSignIn(url, browserOpts(config.load())).then(() => true, () => false));
   ipcMain.handle('apps:launch', (_e, item) => launch.launch(item).then(() => ({ ok: true }), (err) => ({ ok: false, error: err.message })));
   ipcMain.handle('apps:media', (_e, action) => launch.media(action));
   // your PC itself, from her chat: settings, what's left, sound, snip, windows, theme, power

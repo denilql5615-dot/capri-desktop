@@ -102,6 +102,61 @@ test('readRenderedMany: one browser for all pages, a tab each; a page that never
   assert.match(r[2].text, /about the outage/);
 });
 
+// a fake running browser to attach to: pages opened in her window, what got closed
+function fakeAttached(seen = {}) {
+  seen.opened = []; seen.windows = 0; seen.closed = 0; seen.disconnected = false; seen.browserClosed = false;
+  return {
+    newPage: async (o = {}) => {
+      if (o.type === 'window') seen.windows++;
+      return {
+        goto: async (url) => { seen.opened.push(url); },
+        title: async () => 'Page',
+        evaluate: async (fn) => (String(fn).includes('.result') ? [
+          { title: 'Ad', href: 'https://duckduckgo.com/y.js?ad_domain=x', snippet: '' },
+          { title: 'Real one', href: 'https://duckduckgo.com/l/?uddg=https%3A%2F%2Freal.example%2Fa&rut=1', snippet: 'about it' },
+        ] : long),
+        close: async () => { seen.closed++; },
+      };
+    },
+    disconnect: async () => { seen.disconnected = true; },
+    close: async () => { seen.browserClosed = true; },
+  };
+}
+
+test('your profile: attached over the port, her one window, closed after; your browser left running', async () => {
+  const seen = {};
+  const s = await browser.openSession({ app, pick, ...fast, profile: 'C:/p/MAIN', connect: async (port) => { seen.port = port; return fakeAttached(seen); } });
+  assert.strictEqual(seen.port, browser.DEFAULT_PORT);
+  const found = await s.search('кто где');
+  assert.deepStrictEqual(found.map((r) => r.url), ['https://real.example/a']);
+  const pages = await s.readMany(['https://a.example/', 'https://b.example/']);
+  assert.match(pages[1].text, /about the outage/);
+  await s.close();
+  assert.deepStrictEqual([seen.windows, seen.closed, seen.disconnected, seen.browserClosed], [1, 1, true, false]);
+  assert.match(seen.opened[0], /^https:\/\/html\.duckduckgo\.com\/html\/\?q=/);
+});
+
+test('your profile: not running → started as itself with the port (never through puppeteer); open without the port → told', async () => {
+  let spawned = null;
+  let tries = 0;
+  const connect = async () => { if (!spawned || ++tries < 2) throw new Error('refused'); return fakeAttached(); };
+  const s = await browser.openSession({ app, pick, ...fast, profile: 'C:/p/MAIN', profileBusy: () => false, spawn: (exe, dir, port) => { spawned = { exe, dir, port }; }, connect, startPollMs: 0 });
+  assert.deepStrictEqual(spawned, { exe: 'C:/x/librewolf.exe', dir: 'C:/p/MAIN', port: browser.DEFAULT_PORT });
+  await s.close();
+  await assert.rejects(browser.openSession({ app, pick, profile: 'C:/p/MAIN', profileName: 'MAIN', profileBusy: () => true, connect: async () => { throw new Error('refused'); }, spawn: () => { throw new Error('must not start a 2nd one'); } }), /Профиль «MAIN» открыт без порта управления/);
+});
+
+test('answer, browser-only: the search page and the pages come from her browser, nothing is downloaded around it', async () => {
+  const fetchImpl = async () => { throw new Error('no plain downloads in browser-only mode'); };
+  const r = await web.answer('q', {
+    url: 'http://x', fetchImpl,
+    browserSearch: async () => [{ title: 'A', url: 'https://a.example/', snippet: 's' }, { title: 'FB', url: 'https://facebook.com/x', snippet: '' }],
+    renderMany: async (urls) => urls.map(() => ({ text: 'Rendered page text in her browser. '.repeat(12), blocked: false })),
+    chat: async (m) => { assert.match(m[1].content, /Rendered page text/); return 'ok [1]'; },
+  });
+  assert.deepStrictEqual(r.sources.map((s) => s.url), ['https://a.example/']);
+});
+
 // a fake disk: the files that exist; folders are what lies between
 function disk(files) {
   const norm = (p) => String(p).toLowerCase().replace(/\//g, '\\');

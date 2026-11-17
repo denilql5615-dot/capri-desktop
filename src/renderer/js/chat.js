@@ -855,6 +855,7 @@ export class Chat {
         const check = res.blocked?.length ? `\n\nСайт просит проверку «я не робот», её я не прохожу — открой сам: ${res.blocked[0]}` : '';
         return { line: `${res.answer}\n\n${list}${check}`, face: 'smug' };
       }
+      if (res && res.error) return { line: res.error, face: 'aside' }; // browser-only mode: why it couldn't go
       return res ? { line: fmt(t.web, { query: asked.query }), face: 'smug' } : null;
     }
     if (asked.kind === 'files') {
