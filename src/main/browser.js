@@ -242,20 +242,57 @@ async function attach(opts, { visible = false } = {}) {
   throw new Error(`${b.name} с профилем «${opts.profileName || name}» не открыл порт управления ${port}`);
 }
 
+// Her one window in your browser, kept open between jobs: each job opens its tabs in it and closes only
+// them, so neither the browser nor the window starts again. Found again after she restarts (by its page);
+// opened again if you close it; the connection is kept (one WebDriver BiDi session per browser).
+const WINDOW_MARK = 'capri-window';
+const WINDOW_URL = `data:text/html;charset=utf-8,${encodeURIComponent(`<!--${WINDOW_MARK}--><title>Окно Капри</title><body style="background:#111;color:#bbb;font:15px sans-serif;padding:2em">Окно Капри: здесь она открывает свои вкладки и закрывает их, когда прочитала. Его можно свернуть.</body>`)}`;
+const kept = new Map(); // port → { ctx, b, bc, anchor }
+
+async function herWindow(opts, { visible = false } = {}) {
+  const port = Number(opts.port) || DEFAULT_PORT;
+  const k = kept.get(port);
+  if (k && k.ctx.connected !== false && !(k.anchor.isClosed && k.anchor.isClosed())) return k;
+  const { ctx, b } = k && k.ctx.connected !== false ? k : await attach(opts, { visible });
+  const bc = ctx.defaultBrowserContext();
+  const pages = await bc.pages().catch(() => []);
+  let anchor = pages.find((p) => decodeURIComponent(p.url()).includes(WINDOW_MARK));
+  if (!anchor) {
+    anchor = await bc.newPage({ type: 'window', background: true });
+    await anchor.goto(WINDOW_URL).catch(() => {});
+  }
+  const fresh = { ctx, b, bc, anchor };
+  kept.set(port, fresh);
+  if (ctx.once && !k) ctx.once('disconnected', () => { if (kept.get(port)?.ctx === ctx) kept.delete(port); }); // you closed the browser
+  return fresh;
+}
+
+/** A new tab in her window (next to it, in the background), for one page. */
+async function tabIn(w) {
+  const made = await w.bc.userContext.createBrowsingContext('tab', { referenceContext: w.anchor.mainFrame().browsingContext, background: true });
+  const page = (await w.bc.pages()).find((p) => p.mainFrame().browsingContext === made);
+  if (!page) throw new Error('вкладка в окне Капри не открылась');
+  return page;
+}
+
 /**
  * Her browser for one job: { browser, readMany(urls), search(query), close() }.
- * Her own profile: headless, pages in parallel tabs, closed after. Your profile: attached, one window of
- * her own, pages one after another in it; the window is closed and the browser left running.
+ * Her own profile: headless, pages in parallel tabs, closed after. Your profile: her kept window in your
+ * browser, a tab per page side by side; the tabs are closed after, the window and the browser stay.
  */
 async function openSession(opts = {}) {
   const { chars = 4000, timeoutMs = 15000, settleMs = 2500, challengeWaitMs = 10000, pollMs = 1500 } = opts;
-  const { ctx, b, attached } = opts.profile ? await attach(opts) : await start(opts, true);
-  let win = null; // attached: her one window in your browser
+  const w = opts.profile ? await herWindow(opts) : null;
+  const { ctx, b } = w || await start(opts, true);
+  const attached = Boolean(w);
+  const tabs = new Set(); // this job's tabs in her window
   const pageFor = async () => {
     if (!attached) return ctx.newPage();
-    if (!win) win = await ctx.newPage({ type: 'window', background: true });
-    return win;
+    const tab = await tabIn(w);
+    tabs.add(tab);
+    return tab;
   };
+  const done = async (page) => { tabs.delete(page); await Promise.resolve().then(() => page.close()).catch(() => {}); };
   const empty = () => ({ text: '', title: '', blocked: false });
   const read = async (url) => {
     if (!/^https?:\/\//i.test(url)) return empty();
@@ -285,16 +322,10 @@ async function openSession(opts = {}) {
     } catch {
       return empty();
     } finally {
-      if (!attached) await Promise.resolve().then(() => page.close()).catch(() => {});
+      await done(page); // the tab goes, her window stays
     }
   };
-  const readMany = async (urls) => {
-    const list = [].concat(urls || []).map(String);
-    if (!attached) return Promise.all(list.map(read));
-    const out = [];
-    for (const u of list) out.push(await read(u)); // one window: one page at a time
-    return out;
-  };
+  const readMany = async (urls) => Promise.all([].concat(urls || []).map(String).map(read)); // a tab each, side by side
   /** Results from a search page opened in this browser: [{ title, url, snippet, engine }]. */
   const search = async (query, { limit = 8 } = {}) => {
     const q = String(query || '').trim().slice(0, 300);
@@ -309,16 +340,13 @@ async function openSession(opts = {}) {
       }).filter(Boolean)).catch(() => []);
       return duckResults(raw).slice(0, limit);
     } finally {
-      if (!attached) await Promise.resolve().then(() => page.close()).catch(() => {});
+      await done(page);
     }
   };
   const close = async () => {
-    if (attached) {
-      if (win) await Promise.resolve().then(() => win.close()).catch(() => {});
-      await Promise.resolve().then(() => ctx.disconnect()).catch(() => {}); // your browser keeps running
-    } else {
-      await Promise.resolve().then(() => ctx.close()).catch(() => {});
-    }
+    for (const t of [...tabs]) await done(t); // left over by a job that broke off
+    // your profile: her window and the connection stay for the next job; her own: the browser goes
+    if (!attached) await Promise.resolve().then(() => ctx.close()).catch(() => {});
   };
   return { browser: b && b.name, attached: Boolean(attached), read, readMany, search, close };
 }
@@ -366,10 +394,8 @@ async function readRenderedMany(urls, opts = {}) {
 async function openForSignIn(url, opts = {}) {
   const target = /^https?:\/\//i.test(String(url)) ? url : 'about:blank';
   if (opts.profile) {
-    const { ctx } = await attach(opts, { visible: true });
-    const page = await ctx.newPage();
-    await page.goto(target).catch(() => {});
-    await Promise.resolve().then(() => ctx.disconnect()).catch(() => {});
+    const w = await herWindow(opts, { visible: true }); // started with her port if it wasn't; her window kept
+    if (target !== 'about:blank') await (await w.bc.newPage()).goto(target).catch(() => {}); // a tab of yours
     return true;
   }
   const { ctx } = await start(opts, false);
@@ -379,6 +405,6 @@ async function openForSignIn(url, opts = {}) {
 }
 
 module.exports = {
-  readRendered, readRenderedMany, openSession, attach, profileBusy, duckResults, DEFAULT_PORT, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
+  readRendered, readRenderedMany, openSession, attach, herWindow, forgetWindows: () => kept.clear(), WINDOW_MARK, profileBusy, duckResults, DEFAULT_PORT, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
   engineOf, kindOf, CHALLENGE, KNOWN, MODES,
 };
