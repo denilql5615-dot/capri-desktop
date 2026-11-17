@@ -186,7 +186,7 @@ const THEN_OPEN = /(?:et|and|y|e|и)\s+(?:l['’])?(?:ouvre|open|lance|abre|от
 const searched = (text) => text.replace(/^\s*capri[,!:]?\s+/i, '').toLowerCase().split(/[^\p{L}\p{N}.]+/u).filter((w) => w && !NOT_SEARCHED.has(w)).join(' ');
 // "найди через тор …", "узнай по тору …", "tor: …", a .onion link: a search through her Tor node (tor.js has the
 // same words); the Tor words are taken out of what is searched
-const TOR_WORD = /(?<!\p{L})(?:тор|тора|торе|тору|тором|tor)(?!\p{L})|\.onion(?!\p{L})|(?<!\p{L})(?:онион\p{L}*|луков\p{L}*|onion)(?!\p{L})/iu;
+const TOR_WORD = /(?<!\p{L})(?:тор|тора|торе|тору|тором|tor)(?!\p{L})|\.onion(?!\p{L})|(?<!\p{L})(?:онион\p{L}*|onion)(?!\p{L})/iu;
 const TOR_PHRASE = /(?<!\p{L})(?:через|по|в|во|используя|с\s+помощью|via|through|over|using)?\s*(?:тор|тора|торе|тору|тором|tor)(?!\p{L})|(?<!\p{L})(?:анонимно|anonymously)(?!\p{L})/giu;
 const TOR_VERB = /найди|поищи|найти|ищи|узнай|выясни|проверь|посмотри|загугли|погугли|прочитай|прочти|открой|глянь|search|find|look\s*up|check|read|open/i;
 // "в даркнете", "по дарквебу", "в говносетях", "сетевая помойка": onion sites (Ahmia), always over Tor (tor.js has the same)

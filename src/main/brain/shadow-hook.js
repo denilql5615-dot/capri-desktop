@@ -14,6 +14,7 @@ const { verdictOf } = require('./amygdala');
 const NOOP_TURN = Object.freeze({ complete() {}, fail() {}, cancel() {} });
 const MAX_PENDING_WRITES = 64; // own publish chain is bounded too, not only the journal's queue
 const DEFAULT_PENDING_TTL_MS = 120000;
+const TOR_COOLDOWN_MS = 10 * 60 * 1000;
 const bit = (v) => (v === 1 ? 1 : 0);
 
 // Fail-closed Tor screen over the WHOLE chat context (every role, every turn), not only the last
@@ -67,6 +68,8 @@ function createShadowHook({
   openJournal = openRotatingJournal,
   bufferOptions,
   pendingTtlMs = DEFAULT_PENDING_TTL_MS,
+  torCooldownMs = TOR_COOLDOWN_MS,
+  isTorActive,
   setTimer = setTimeout,
   clearTimer = clearTimeout,
   onPendingChange,
@@ -84,6 +87,7 @@ function createShadowHook({
   const activeTurns = new Set();
   let pending = null;
   let lastNotifiedPending = false;
+  let lastTorAt = null;
   let journal = null;
   let disabled = false;
   let closed = false;
@@ -155,8 +159,19 @@ function createShadowHook({
     }).finally(() => { pendingWrites--; });
   }
 
+  function inTorQuarantine() {
+    const curNow = Number(now());
+    let active = false;
+    try { active = Boolean(isTorActive?.()); } catch { active = false; }
+    if (active) {
+      if (Number.isFinite(curNow)) lastTorAt = curNow;
+      return true;
+    }
+    return lastTorAt !== null && Number.isFinite(curNow) && curNow - lastTorAt < torCooldownMs;
+  }
+
   function isEligible(route, opts) {
-    if (disabled || closed) return false;
+    if (disabled || closed || inTorQuarantine()) return false;
     if (!route || typeof route !== 'object') return false;
     if (opts?.rp === true || opts?.quick === true || opts?.cloudFallback === true || opts?.local === false) return false;
     if (opts?.signal?.aborted) return false;
@@ -315,10 +330,23 @@ function createShadowHook({
     }
   }
 
+  function dropPending({ outcome = 'unverified' } = {}) {
+    try {
+      deferredJudge = null;
+      judgeEpoch++;
+      try { verdictJudge?.abortAll?.(); } catch {}
+      clearPending({ cancel: true, outcome });
+    } catch {}
+  }
+
   function verdict(v) {
     try {
       if (v !== 1 && v !== -1) return false;
       if (disabled || closed || !pending) return false;
+      if (inTorQuarantine()) {
+        dropPending({ outcome: 'tor' });
+        return false;
+      }
       const entry = pending;
       const curNow = Number(now());
       const expired = Number.isFinite(entry.heldAt) && Number.isFinite(curNow) && curNow - entry.heldAt >= pendingTtlMs;
@@ -364,12 +392,9 @@ function createShadowHook({
         return;
       }
       const torPreds = opts?.tor;
-      if (!torPreds || typeof torPreds.wantsTor !== 'function' || typeof torPreds.onionLink !== 'function'
-          || contextMentionsTor(messages, torPreds)) {
-        deferredJudge = null;
-        judgeEpoch++;
-        try { verdictJudge?.abortAll?.(); } catch {}
-        clearPending({ cancel: true, outcome: 'tor' });
+      if (inTorQuarantine() || !torPreds || typeof torPreds.wantsTor !== 'function'
+          || typeof torPreds.onionLink !== 'function' || contextMentionsTor(messages, torPreds)) {
+        dropPending({ outcome: 'tor' });
         return;
       }
       const said = opts?.said;
@@ -445,10 +470,9 @@ function createShadowHook({
   // drop the waiting verdict and every turn in flight. Nothing is counted or recorded about it.
   function torTouched() {
     try {
-      deferredJudge = null;
-      judgeEpoch++;
-      try { verdictJudge?.abortAll?.(); } catch {}
-      clearPending({ cancel: true, outcome: 'tor' });
+      const curNow = Number(now());
+      if (Number.isFinite(curNow)) lastTorAt = curNow;
+      dropPending({ outcome: 'tor' });
       for (const turn of [...activeTurns]) turn.cancel();
     } catch {}
   }
@@ -459,7 +483,9 @@ function createShadowHook({
     resolvePending,
     runDeferredJudge,
     verdict,
+    dropPending,
     torTouched,
+    isTorBlocked: inTorQuarantine,
     withTurn,
     stats: () => ({
       ...counts,
@@ -471,4 +497,4 @@ function createShadowHook({
   });
 }
 
-module.exports = { contextMentionsTor, MAX_PENDING_WRITES, createShadowHook, classifyError };
+module.exports = { contextMentionsTor, MAX_PENDING_WRITES, TOR_COOLDOWN_MS, createShadowHook, classifyError };
