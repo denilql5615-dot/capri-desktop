@@ -70,6 +70,7 @@ function createShadowHook({
   setTimer = setTimeout,
   clearTimer = clearTimeout,
   onPendingChange,
+  verdictJudge,
 } = {}) {
   const buffer = createTaskBuffer(bufferOptions);
   const counts = {
@@ -88,6 +89,9 @@ function createShadowHook({
   let closed = false;
   let closing = null;
   let writeChain = Promise.resolve();
+  let judgeChain = Promise.resolve();
+  let deferredJudge = null;
+  let judgeEpoch = 0;
   let pendingWrites = 0;
 
   function notifyPending(next) {
@@ -330,6 +334,22 @@ function createShadowHook({
     }
   }
 
+  function enqueueJudge(item) {
+    if (!verdictJudge || disabled || closed || !item) return;
+    const epoch = judgeEpoch;
+    judgeChain = judgeChain.then(() => {
+      if (disabled || epoch !== judgeEpoch) return null;
+      return verdictJudge.judge(item.text, { dictVerdict: item.dictVerdict });
+    }).catch(() => null);
+  }
+
+  function runDeferredJudge() {
+    if (!deferredJudge || disabled || closed) return;
+    const item = deferredJudge;
+    deferredJudge = null;
+    enqueueJudge(item);
+  }
+
   function resolvePending(messages, opts) {
     if (!pending) return;
     const entry = pending;
@@ -337,22 +357,32 @@ function createShadowHook({
       const curNow = Number(now());
       const expired = Number.isFinite(entry.heldAt) && Number.isFinite(curNow) && curNow - entry.heldAt >= pendingTtlMs;
       if (disabled || closed || expired || opts?.rp === true) {
+        deferredJudge = null;
         clearPending({ cancel: true, outcome: 'unverified' });
         return;
       }
       const torPreds = opts?.tor;
       if (!torPreds || typeof torPreds.wantsTor !== 'function' || typeof torPreds.onionLink !== 'function'
           || contextMentionsTor(messages, torPreds)) {
+        deferredJudge = null;
+        judgeEpoch++;
+        try { verdictJudge?.abortAll?.(); } catch {}
         clearPending({ cancel: true, outcome: 'tor' });
         return;
       }
-      const v = verdictOf(opts?.said);
+      const said = opts?.said;
+      const v = verdictOf(said);
       if (v === 1 || v === -1) {
         clearPending({ cancel: false, outcome: v === 1 ? 'pos' : 'neg' });
         entry.turn.complete({ verified: true, utility: v });
       } else {
         clearPending({ cancel: false, outcome: 'unverified' });
         entry.turn.cancel();
+      }
+      if (verdictJudge && opts?.judge === 'shadow') {
+        const item = { text: typeof said === 'string' ? said : '', dictVerdict: v };
+        if (opts?.deferJudge === true) deferredJudge = item;
+        else enqueueJudge(item);
       }
     } catch {
       counts.observer_errors++;
@@ -387,11 +417,14 @@ function createShadowHook({
   }
 
   async function flush() {
+    runDeferredJudge();
     try { await writeChain; } catch {}
+    try { await judgeChain; } catch {}
   }
 
   function close() {
     if (closing) return closing;
+    runDeferredJudge();
     closed = true;
     closing = (async () => {
       clearPending({ cancel: true });
@@ -410,6 +443,9 @@ function createShadowHook({
   // drop the waiting verdict and every turn in flight. Nothing is counted or recorded about it.
   function torTouched() {
     try {
+      deferredJudge = null;
+      judgeEpoch++;
+      try { verdictJudge?.abortAll?.(); } catch {}
       clearPending({ cancel: true, outcome: 'tor' });
       for (const turn of [...activeTurns]) turn.cancel();
     } catch {}
@@ -419,12 +455,14 @@ function createShadowHook({
     start,
     hold,
     resolvePending,
+    runDeferredJudge,
     verdict,
     torTouched,
     withTurn,
     stats: () => ({
       ...counts,
       completed_turns: counts.verified_pos + counts.verified_neg + counts.unverified + (pending ? 1 : 0),
+      ...(verdictJudge ? verdictJudge.stats() : {}),
     }),
     flush,
     close,

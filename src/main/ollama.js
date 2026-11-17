@@ -103,13 +103,18 @@ async function unload(model) {
   return Boolean(res?.ok);
 }
 
+// Non-cloud models currently loaded in Ollama's VRAM (/api/ps), or null if Ollama didn't answer.
+async function loadedModels(signal) {
+  const res = await fetch(`${base()}/api/ps`, signal ? { signal } : undefined).catch(() => null);
+  if (!res?.ok) return null;
+  const { models = [] } = await res.json().catch(() => ({}));
+  return models.map((m) => m.name || m.model).filter((name) => name && !isCloud(name));
+}
+
 // Every model Ollama has in memory out of it (her chat model, a roleplay one, a vision one): the GPU free
 // for something else (comfy.js). They load again by themselves on the next message.
 async function unloadAll() {
-  const res = await fetch(`${base()}/api/ps`).catch(() => null);
-  if (!res?.ok) return [];
-  const { models = [] } = await res.json().catch(() => ({}));
-  const names = models.map((m) => m.name || m.model).filter((name) => name && !isCloud(name));
+  const names = (await loadedModels()) || [];
   await Promise.all(names.map(unload));
   return names;
 }
@@ -166,14 +171,15 @@ async function chat({ model, messages, numPredict = 240, keepAlive = '5m', numCt
 
 // One step of a task (agent.js): her answer as JSON held to `schema`. Not streamed, no thinking aloud
 // (it would eat the turn); a long context, as the snapshots pile up.
-async function jsonChat({ model, messages, schema }, signal) {
+async function jsonChat({ model, messages, schema, temperature = 0.2, numPredict = 400, think }, signal) {
+  const useThink = think !== undefined ? think : (canThink(model) ? false : undefined);
   const res = await fetch(`${base()}/api/chat`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       model, messages, format: schema, stream: false, keep_alive: keepFor(model, '15m'),
-      ...(canThink(model) && { think: false }),
-      options: { temperature: 0.2, num_predict: 400 },
+      ...(useThink !== undefined && { think: useThink }),
+      options: { temperature, num_predict: numPredict },
     }),
     signal,
   });
@@ -254,4 +260,4 @@ function screenModel(list = []) {
 const retryEmptyVision = (text, attempt) => attempt === 0 && !String(text || '').trim();
 const visionPrompt = (text) => String(text || '');
 
-module.exports = { base, models, isCloud, pin, account, freeModels, warm, unload, unloadAll, chat, jsonChat, pick, canSee, findSpokenModel, screenModel, retryEmptyVision, visionPrompt };
+module.exports = { base, models, loadedModels, isCloud, pin, account, freeModels, warm, unload, unloadAll, chat, jsonChat, pick, canSee, findSpokenModel, screenModel, retryEmptyVision, visionPrompt };

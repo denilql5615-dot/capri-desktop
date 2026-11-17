@@ -38,6 +38,8 @@ function createChatGlue({
         get said() { return yourWords(messages); },
         tor,
         rp: cfg.rp === true,
+        judge: cfg.brainVerdictJudge === 'shadow' ? 'shadow' : 'off',
+        deferJudge: true,
       });
     } catch {}
   }
@@ -86,12 +88,20 @@ function createChatGlue({
     } catch {}
   }
 
+  function afterTurn(cfg) {
+    if ((cfg && cfg.brainShadow !== true) || typeof getHook !== 'function') return;
+    try {
+      getHook(false)?.runDeferredJudge?.();
+    } catch {}
+  }
+
   return Object.freeze({
     beforeTurn,
     startLocal,
     afterSuccess,
     afterError,
     onModelSwitch,
+    afterTurn,
   });
 }
 
