@@ -45,6 +45,8 @@ const web = require('./web');
 const capriBrowser = require('./browser');
 const tor = require('./tor');
 const gemini = require('./gemini');
+const agyApp = require('./agy-app');
+const council = require('./council');
 const photo = require('./photo');
 const { Router, workerSettings, codexModelFor, hasSecret } = require('./router');
 const quick = require('./quick');
@@ -2036,6 +2038,32 @@ const agentWeb = {
   },
 };
 
+// Her council's members (council.js), each only thinking: Gemini Hydrogen on the web (your subscription),
+// Antigravity's Orchestrator (Argon) in its app with "Request Review", Claude Opus in plan mode, Codex
+// GPT-6.1 Sol (medium) read-only, and Gemma (the main local brain). The rector: Claude Opus; GPT-6 Astra
+// (high) when Claude is out. `only`: a subset by id.
+function councilMembers(cfg, only) {
+  const cwd = workers.workDir(cfg);
+  const claudeExe = workers.findClaude();
+  const codexExe = workers.findCodex();
+  const all = [
+    { id: 'gemini', name: 'Gemini Hydrogen (веб)', ask: async (p) => (await gemini.ask(p, { model: 'everyday', clipboard: gemini.electronClipboard(), open: () => capriBrowser.openSession(browserOpts(cfg)) })).answer },
+    { id: 'argon', name: 'Antigravity Orchestrator (Argon)', ask: async (p) => (await agyApp.ask(p, { model: 'Orchestrator (Argon)', port: cfg.agyAppPort })).answer },
+    ...(claudeExe ? [{ id: 'opus', name: 'Claude Opus', ask: council.claudeRunner({ exe: claudeExe, cwd, model: 'opus' }) }] : []),
+    ...(codexExe ? [{ id: 'sol', name: 'Codex GPT-6.1 Sol', ask: council.codexRunner({ exe: codexExe, cwd, model: 'gpt-6.1-sol', effort: 'medium' }) }] : []),
+    { id: 'gemma', name: 'Gemma (локально)', ask: async (p) => {
+      const model = brains.ready(await ollama.models().catch(() => [])) ? await brains.use('main') : cfg.chatModel;
+      return ollama.chat({ model, messages: [{ role: 'user', content: p }], numPredict: 1400 }, () => {});
+    } },
+  ];
+  const members = Array.isArray(only) && only.length ? all.filter((m) => only.includes(m.id)) : all;
+  return {
+    members,
+    judge: claudeExe ? { id: 'rector-opus', name: 'Claude Opus (ректор)', ask: council.claudeRunner({ exe: claudeExe, cwd, model: 'opus' }) } : null,
+    fallbackJudge: codexExe ? { id: 'rector-astra', name: 'GPT-6 Astra (ректор)', ask: council.codexRunner({ exe: codexExe, cwd, model: 'gpt-6-astra', effort: 'high' }) } : null,
+  };
+}
+
 // her browser settings for browser.js: which browser, and your profile with its control port when set
 function browserOpts(cfg) {
   return {
@@ -2673,6 +2701,31 @@ function registerIpc() {
     if (browserOnly) return { error: 'В браузере поиск ничего не нашёл.' };
     logSearch({ error: 'отдано тебе: открыт DuckDuckGo в браузере' });
     return shell.openExternal(`https://duckduckgo.com/?q=${encodeURIComponent(q)}`).then(() => ({ opened: true }), () => false);
+  });
+  // her council (council.js): several models think over one question, the rector writes the verdict
+  ipcMain.handle('council:run', async (_e, question, how = {}) => {
+    const q = String(question || '').trim().slice(0, 12000);
+    if (!q) return { error: 'пустой вопрос' };
+    if (hasSecret(q)) return { error: 'в вопросе похоже ключ или пароль — совету его не отдаю' };
+    if (tor.wantsTor(q) || tor.onionLink(q)) return { error: 'Tor и даркнет совету не отдаются' };
+    try {
+      const cfg = config.load();
+      const { members, judge, fallbackJudge } = councilMembers(cfg, how.members);
+      const result = await council.runCouncil(q, {
+        members, judge, fallbackJudge,
+        onEvent: (e) => console.warn(`[capri] совет · ${e.phase} · ${e.member}: ${e.status}${e.seconds ? ` (${e.seconds} с)` : ''}${e.error ? ` — ${e.error}` : ''}`),
+      });
+      const dir = notesDir();
+      const root = path.basename(dir).toLowerCase() === 'capri' ? path.dirname(dir) : dir;
+      const file = council.writeCouncil(root, result);
+      return {
+        verdict: result.verdict, judge: result.judge, members: result.round1.map((r) => r.member), failed: result.failed,
+        extract: council.extractFor(result.verdict), file, note: path.relative(root, file).replace(/\\/g, '/'),
+      };
+    } catch (err) {
+      console.warn('[capri] council:', err.message);
+      return { error: err.message };
+    }
   });
   // her browser opened for you: to sign in to services you trust her with, or your profile started with her port
   ipcMain.handle('browser:signin', (_e, url) => capriBrowser.openForSignIn(url, browserOpts(config.load())).then(() => true, () => false));
