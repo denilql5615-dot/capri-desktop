@@ -147,15 +147,18 @@ function createShadow({ append } = {}) {
     next.circadian_quiet = quiet(next.time_ms);
     return { next, changed, applied };
   }
-  function ingest(envelope) {
+  // Two-phase seam: plan* validates and builds the record without touching state;
+  // commit() applies it (only if state is unchanged since planning). ingest/tick
+  // below write synchronously between plan and commit; async writers await instead.
+  function planIngest(envelope) {
     // No validation, ID generation, logging or counters for private/unknown activity.
-    if (envelope?.privacy !== 'ordinary') return { status: 'discarded' };
+    if (envelope?.privacy !== 'ordinary') return { result: { status: 'discarded' } };
     keys(envelope, ['privacy', 'event']);
     if (poisoned) fail('journal writer poisoned');
     const e = validateEvent(envelope.event), encoded = canonical(e);
     if (seen.has(e.event_id)) {
       if (seen.get(e.event_id) !== encoded) fail('conflicting event ID');
-      return { status: 'duplicate', state: snapshot() };
+      return { result: { status: 'duplicate', state: snapshot() } };
     }
     ready();
     if (e.source_seq !== (sources.get(e.source_id) || 0) + 1) fail('source sequence');
@@ -170,28 +173,58 @@ function createShadow({ append } = {}) {
     const { next, changed, applied } = advance(e.occurred_at_ms, e);
     next.event_count++;
     next.task_count = tasks.size + Number(!task);
-    write({ kind: 'event', event: e, state: next });
-    state = next;
-    Object.assign(transitions, changed);
-    Object.assign(impulses, applied);
-    seen.set(e.event_id, encoded);
-    sources.set(e.source_id, e.source_seq);
-    tasks.set(e.task_id, { source: e.source_id, seq: e.task_seq,
-      prediction: task ? task.prediction : e.prediction,
-      terminal: Boolean(task?.terminal || e.type === 'task_completed') });
-    return { status: 'accepted', state: snapshot() };
+    const base = state;
+    return { record: { kind: 'event', event: e, state: next }, commit() {
+      if (state !== base) fail('stale prepared record');
+      state = next;
+      Object.assign(transitions, changed);
+      Object.assign(impulses, applied);
+      seen.set(e.event_id, encoded);
+      sources.set(e.source_id, e.source_seq);
+      tasks.set(e.task_id, { source: e.source_id, seq: e.task_seq,
+        prediction: task ? task.prediction : e.prediction,
+        terminal: Boolean(task?.terminal || e.type === 'task_completed') });
+      return { status: 'accepted', state: snapshot() };
+    } };
   }
-  function tick(envelope) {
-    if (envelope?.privacy !== 'ordinary') return { status: 'discarded' };
+  function planTick(envelope) {
+    if (envelope?.privacy !== 'ordinary') return { result: { status: 'discarded' } };
     keys(envelope, ['privacy', 'at_ms']); time(envelope.at_ms); ready();
     const { next, changed, applied } = advance(envelope.at_ms);
-    write({ kind: 'tick', at_ms: envelope.at_ms, state: next });
-    state = next; Object.assign(transitions, changed); Object.assign(impulses, applied);
-    return { status: 'accepted', state: snapshot() };
+    const base = state;
+    return { record: { kind: 'tick', at_ms: envelope.at_ms, state: next }, commit() {
+      if (state !== base) fail('stale prepared record');
+      state = next; Object.assign(transitions, changed); Object.assign(impulses, applied);
+      return { status: 'accepted', state: snapshot() };
+    } };
   }
+  function run(plan) {
+    if (plan.result) return plan.result;
+    write(plan.record);
+    return plan.commit();
+  }
+  const ingest = (envelope) => run(planIngest(envelope));
+  const tick = (envelope) => run(planTick(envelope));
+  // Stage without writing or committing: { result } (discarded/duplicate) or { line, commit }.
+  const stage = (plan) => (plan.result ? plan : { line: `${canonical(plan.record)}\n`, commit: plan.commit });
+  const prepareIngest = (envelope) => stage(planIngest(envelope));
+  const prepareTick = (envelope) => stage(planTick(envelope));
   // Header is emitted once for a newly created stream; replay suppresses output.
   write(header);
-  return { ingest, tick, snapshot };
+  return { ingest, tick, snapshot, prepareIngest, prepareTick };
+}
+
+// Stateless intake check for async writers: null for non-ordinary (nothing else is read),
+// otherwise a sanitized copy; throws on schema errors. kind: 'event' | 'tick'.
+function sanitize(kind, envelope) {
+  const privacy = envelope?.privacy; // single read
+  if (privacy !== 'ordinary') return null;
+  if (kind === 'event') {
+    keys(envelope, ['privacy', 'event']);
+    return { privacy, event: validateEvent(envelope.event) };
+  }
+  keys(envelope, ['privacy', 'at_ms']); time(envelope.at_ms);
+  return { privacy, at_ms: envelope.at_ms };
 }
 
 function replay(ndjson) {
@@ -263,4 +296,4 @@ function restoreWriter(ndjson, append) {
   return brain;
 }
 
-module.exports = { CONFIG, createShadow, replay, openJournal };
+module.exports = { CONFIG, createShadow, replay, openJournal, sanitize, canonical };
