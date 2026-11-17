@@ -424,7 +424,26 @@ async function openSession(opts = {}) {
     const page = await pageFor();
     try { return await fn(page); } finally { await done(page); }
   };
-  return { browser: b && b.name, attached: Boolean(attached), read, readMany, search, withTab, close };
+  /**
+   * A tab that stays (your profile): the first open one whose address matches `match` (pin it, and it
+   * survives restarts), else a new one in her window opened at `url`. Not closed after. Her own
+   * profile has no lasting window: a passing tab instead.
+   */
+  const withKept = async (match, url, fn) => {
+    if (!attached) return withTab(fn);
+    // only in HER window: a tab of the same site in your own windows stays yours
+    const hers = w.anchor.mainFrame().browsingContext.windowId;
+    const pages = await w.bc.pages().catch(() => []);
+    let page = pages.find((p) => {
+      try { return match.test(p.url()) && p.mainFrame().browsingContext.windowId === hers; } catch { return false; }
+    });
+    if (!page) {
+      page = await tabIn(w);
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: Math.max(timeoutMs, 60000) }).catch(() => {});
+    }
+    return fn(page);
+  };
+  return { browser: b && b.name, attached: Boolean(attached), read, readMany, search, withTab, withKept, close };
 }
 
 /** DuckDuckGo's HTML results: its /l/?uddg= redirect unwrapped, ads (y.js) out, one per site. */

@@ -1,14 +1,33 @@
 'use strict';
 
 // Gemini as an adviser: a second opinion and a researcher for her and your agents, through the Gemini
-// site (gemini.google.com) in a tab of HER window in your browser (Camoufox MAIN), on your own Google
-// account and its subscription limits — a dialogue, never access to code or files.
+// site (gemini.google.com) in ONE lasting tab of her window in your browser (Camoufox MAIN), on your own
+// Google account and its subscription limits — a dialogue, never access to code or files beyond what is
+// attached on purpose.
+//   - its tab stays open between questions (pin it once: it is found again after restarts);
 //   - one question at a time, a pause between them (a person's pace, not a flood);
 //   - a new chat per task, or the same chat continued by its id (the /app/<id> part of its address);
+//   - a model by role (Flash-Lite, Hydrogen, 3.1 Pro, Argon, Carbon), picked in its own model menu;
+//   - files attached through its upload field — only from your work folders, never keys or secrets;
 //   - nothing from a Tor request is ever sent here (the callers keep it that way).
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
 const GEMINI_URL = 'https://gemini.google.com/app';
+const GEMINI_TAB = /^https:\/\/gemini\.google\.com\/app(?:[/?#]|$)/i; // its chat, not its hidden helper frames
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// what each model is for (Google's own labels in its menu, checked against public benchmarks — see the
+// vault note GENESIS/Модели — роли агентов): the role names agents use, and the name in Gemini's menu
+const MODELS = {
+  fast: 'Flash-Lite', // quick facts, summaries, translations
+  everyday: 'Hydrogen', // everyday tasks and quick analysis
+  research: '3.1 Pro', // Google's "research" pick (its Deep Research)
+  code: 'Argon', // code review and analysis, fact-heavy knowledge work
+  hardest: 'Carbon', // the hardest problems, a final check
+};
 
 let queue = Promise.resolve();
 let lastAt = 0;
@@ -19,13 +38,77 @@ function chatId(value) {
   return m ? m[1] : null;
 }
 
+// files that may go to Google: from your work folders only; never keys, tokens, configs with secrets
+const home = os.homedir();
+const ALLOWED_ROOTS = [
+  path.join(home, 'Documents'), path.join(home, 'Downloads'), path.join(home, 'Desktop'), path.join(home, 'Pictures'),
+  'D:\\Capri\\capri-desktop', 'D:\\Capri\\genesis-src', 'D:\\Capri\\capri-android-ref', 'D:\\Capri\\reports', 'D:\\Obsidian\\C.A.P.R.I',
+].map((p) => path.resolve(p).toLowerCase());
+const SECRET = /(^|[\\/])(\.ssh|\.gnupg|\.capri|\.aws|\.azure|\.kube|node_modules|\.git)([\\/]|$)|\.(pem|key|p12|pfx|kdbx|dpapi|ovpn|conf|env|cookies?|sqlite)$|(^|[\\/])(id_[a-z0-9]+|\.env[^\\/]*|credentials[^\\/]*|secrets?[^\\/]*|token[^\\/]*|config\.json|pim-mcp[^\\/]*)$|протон/i;
+const MAX_FILES = 10;
+const MAX_BYTES = 50 * 1024 * 1024;
+
+/** The files to attach, checked: absolute, existing, in a work folder, not a secret, not too big. */
+function checkFiles(list, { exists = fs.existsSync, size = (f) => fs.statSync(f).size } = {}) {
+  const files = [].concat(list || []).map((f) => String(f || '').trim()).filter(Boolean);
+  if (files.length > MAX_FILES) throw new Error(`не больше ${MAX_FILES} файлов за раз`);
+  return files.map((f) => {
+    const abs = path.resolve(f);
+    const low = abs.toLowerCase();
+    if (!ALLOWED_ROOTS.some((r) => low === r || low.startsWith(r + path.sep))) throw new Error(`файл вне рабочих папок, в Gemini не отправляю: ${abs}`);
+    if (SECRET.test(abs)) throw new Error(`похоже на ключ или секрет, в Gemini не отправляю: ${path.basename(abs)}`);
+    if (!exists(abs)) throw new Error(`нет файла: ${abs}`);
+    if (size(abs) > MAX_BYTES) throw new Error(`файл больше 50 МБ: ${path.basename(abs)}`);
+    return abs;
+  });
+}
+
 /**
- * Asks Gemini in one tab: { answer, chat, signedIn }. page: a puppeteer page (a tab of her window).
- * opts: { chat, timeoutMs, pollMs, requireSignIn }.
+ * Asks Gemini in its tab: { answer, chat, model, signedIn }. page: a puppeteer page.
+ * opts: { chat, model, files, timeoutMs, pollMs, requireSignIn }.
  */
-async function askIn(page, prompt, { chat = null, timeoutMs = 300000, pollMs = 1500, requireSignIn = true, stableTicks = 2 } = {}) {
+const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i;
+const DOC = /\.(pdf|docx|xlsx|pptx)$/i;
+const TEXT = /\.(txt|md|markdown|json|json5|ya?ml|toml|ini|csv|tsv|xml|html?|css|scss|js|mjs|cjs|jsx|ts|tsx|py|ps1|sh|bat|cmd|kt|kts|java|c|h|cpp|hpp|cs|go|rs|rb|php|lua|sql|gradle|properties|log|diff|patch|srt|vue|svelte)$/i;
+const INLINE_CHARS = 120000;
+
+/** Images (pasted) and the rest (put into the question as text); an unknown type is refused. */
+function splitFiles(files) {
+  const images = [];
+  const inline = [];
+  for (const f of files) {
+    if (IMAGE.test(f)) images.push(f);
+    else if (TEXT.test(f) || DOC.test(f)) inline.push(f);
+    else throw new Error(`такой файл в Gemini не передаю (нужна картинка, текст, код или PDF/DOCX/XLSX/PPTX): ${path.basename(f)}`);
+  }
+  return { images, inline };
+}
+
+/** Files as fenced blocks under the question: text as it is, documents through MarkItDown. */
+async function inlineFiles(files, { extract, read = (f) => fs.readFileSync(f, 'utf8') } = {}) {
+  const parts = [];
+  let left = INLINE_CHARS;
+  for (const f of files) {
+    let body;
+    if (DOC.test(f)) {
+      const run = extract || require('./hub-artifacts').extractDocumentText;
+      body = (await run(f, { maxChars: left })).text || '';
+      if (!body.trim()) throw new Error(`не удалось достать текст из документа: ${path.basename(f)}`);
+    } else {
+      body = read(f);
+    }
+    body = body.slice(0, Math.max(0, left));
+    left -= body.length;
+    parts.push(`Файл «${path.basename(f)}»:\n\`\`\`\n${body}\n\`\`\``);
+    if (left <= 0) { parts.push('(дальше обрезано: слишком много текста)'); break; }
+  }
+  return parts.join('\n\n');
+}
+
+async function askIn(page, prompt, { chat = null, model = null, files = [], clipboard = null, extract = null, timeoutMs = 300000, pollMs = 1500, requireSignIn = true, stableTicks = 2 } = {}) {
   const text = String(prompt || '').trim();
   if (!text) throw new Error('пустой вопрос');
+  const attach = checkFiles(files);
   const id = chatId(chat);
   await page.goto(id ? `${GEMINI_URL}/${id}` : GEMINI_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForSelector('rich-textarea .ql-editor', { timeout: 30000 });
@@ -33,6 +116,7 @@ async function askIn(page, prompt, { chat = null, timeoutMs = 300000, pollMs = 1
     const labels = [...document.querySelectorAll('button[aria-label]')].map((b) => b.getAttribute('aria-label') || '');
     const responses = [...document.querySelectorAll('model-response')];
     const last = responses.at(-1);
+    const sw = document.querySelector('bard-mode-switcher');
     return {
       signedIn: !labels.some((l) => /^(sign in|войти)$/i.test(l.trim())),
       busy: labels.some((l) => /stop response|остановить/i.test(l)),
@@ -40,6 +124,7 @@ async function askIn(page, prompt, { chat = null, timeoutMs = 300000, pollMs = 1
       asked: document.querySelectorAll('user-query').length,
       text: last ? (last.querySelector('message-content') || last).innerText : '',
       path: location.pathname,
+      model: sw ? sw.innerText.replace(/\s+/g, ' ').trim() : '',
     };
   });
   // a continued chat loads its history after the page: wait until it stops growing before counting
@@ -55,6 +140,61 @@ async function askIn(page, prompt, { chat = null, timeoutMs = 300000, pollMs = 1
   if (requireSignIn && !before.signedIn) {
     throw new Error('в окне Капри (Camoufox MAIN) не выполнен вход в Google на gemini.google.com — войди там один раз сам');
   }
+  // the model for this question, picked in its own menu (it stays picked for the next ones)
+  const want = model ? (MODELS[model] || String(model)) : null;
+  if (want && !before.model.toLowerCase().includes(want.toLowerCase())) {
+    // the page wires its switcher a moment after it shows: open the menu until its items are there
+    let opened = false;
+    for (let i = 0; i < 4 && !opened; i++) {
+      await pause(1500);
+      await page.evaluate(() => { const b = document.querySelector('bard-mode-switcher button'); if (b) b.click(); });
+      await pause(1200);
+      opened = await page.evaluate(() => document.querySelectorAll('[role=menuitemradio], [role=menuitem]').length > 0);
+    }
+    const picked = await page.evaluate((name) => {
+      // its menu: gem-menu[role=menu] > gem-menu-item[role=menuitemradio], one per model
+      const want = name.toLowerCase();
+      const item = [...document.querySelectorAll('[role=menuitemradio], [role=menuitem]')]
+        .find((e) => (e.innerText || e.textContent || '').replace(/\s+/g, ' ').toLowerCase().includes(want));
+      if (!item) return false;
+      item.click();
+      return true;
+    }, want);
+    if (!picked) {
+      await page.keyboard.press('Escape');
+      throw new Error(`в меню Gemini нет модели «${want}»`);
+    }
+    await pause(1000);
+  }
+  // files. Gemini ignores files set into its upload fields by automation, so: images go in as a real
+  // Ctrl+V from the Windows clipboard (what was on it is put back after); text, code and documents go
+  // into the question itself (documents as text, through MarkItDown)
+  const { images, inline } = splitFiles(attach);
+  let full = text;
+  if (inline.length) full = `${text}\n\n${await inlineFiles(inline, { extract })}`;
+  if (images.length) {
+    if (!clipboard) throw new Error('картинки передаются через буфер обмена — он здесь недоступен');
+    const kept = clipboard.save();
+    try {
+      for (const img of images) {
+        const before2 = await page.evaluate(() => document.querySelectorAll('uploader-file-preview, gem-media-attachment').length);
+        clipboard.putImage(img);
+        await page.click('rich-textarea .ql-editor');
+        await page.keyboard.down('Control');
+        await page.keyboard.press('v');
+        await page.keyboard.up('Control');
+        let taken = false;
+        for (let i = 0; i < 20 && !taken; i++) {
+          await pause(pollMs);
+          taken = await page.evaluate((n) => document.querySelectorAll('uploader-file-preview, gem-media-attachment').length > n, before2);
+        }
+        if (!taken) throw new Error(`Gemini не принял картинку: ${path.basename(img)}`);
+      }
+      await pause(1500); // its upload of the last one
+    } finally {
+      clipboard.restore(kept);
+    }
+  }
   // the prompt goes in as one paste-like insert (typing it key by key would take minutes for a long one);
   // sent, then checked: your question must show up in the chat, else it is put in and sent once more
   const send = async () => {
@@ -63,7 +203,7 @@ async function askIn(page, prompt, { chat = null, timeoutMs = 300000, pollMs = 1
       const ed = document.querySelector('rich-textarea .ql-editor');
       ed.focus();
       if (!ed.innerText.trim()) document.execCommand('insertText', false, t);
-    }, text);
+    }, full);
     await pause(400);
     const clicked = await page.evaluate(() => {
       const b = [...document.querySelectorAll('button[aria-label]')].find((x) => /send message|отправить/i.test(x.getAttribute('aria-label') || ''));
@@ -92,7 +232,7 @@ async function askIn(page, prompt, { chat = null, timeoutMs = 300000, pollMs = 1
     const s = await state();
     if (s.count > before.count && !s.busy && s.text.trim()) {
       same = s.text === prev ? same + 1 : 0;
-      if (same >= stableTicks - 1 && s.text === prev) return { answer: s.text.trim(), chat: chatId(s.path), signedIn: s.signedIn };
+      if (same >= stableTicks - 1 && s.text === prev) return { answer: s.text.trim(), chat: chatId(s.path), model: s.model, signedIn: s.signedIn };
     }
     prev = s.text;
   }
@@ -100,16 +240,17 @@ async function askIn(page, prompt, { chat = null, timeoutMs = 300000, pollMs = 1
 }
 
 /**
- * One question at a time across her (and your agents'), a pause between them. open(): a session of her
- * MAIN window (browser.openSession) with pageFor-like newTab() and close().
+ * One question at a time across her (and your agents'), a pause between them, in Gemini's lasting tab.
+ * open(): a session of her MAIN window (browser.openSession) with withKept() and close().
  */
-function ask(prompt, { open, chat, minGapMs = 4000, ...rest } = {}) {
+function ask(prompt, { open, chat, model, files, minGapMs = 4000, ...rest } = {}) {
   const run = async () => {
     const wait = lastAt + minGapMs - Date.now();
     if (wait > 0) await pause(wait);
     const s = await open();
     try {
-      return await s.withTab((page) => askIn(page, prompt, { chat, ...rest }));
+      const go = (page) => askIn(page, prompt, { chat, model, files, ...rest });
+      return await (s.withKept ? s.withKept(GEMINI_TAB, GEMINI_URL, go) : s.withTab(go));
     } finally {
       lastAt = Date.now();
       await s.close();
@@ -120,4 +261,25 @@ function ask(prompt, { open, chat, minGapMs = 4000, ...rest } = {}) {
   return p;
 }
 
-module.exports = { ask, askIn, chatId, GEMINI_URL };
+/** The Windows clipboard through Electron, for pasting images; what was on it is kept and put back. */
+function electronClipboard() {
+  const { clipboard, nativeImage } = require('electron');
+  return {
+    save: () => {
+      const image = clipboard.readImage();
+      return { text: clipboard.readText(), image: image.isEmpty() ? null : image };
+    },
+    putImage: (file) => {
+      const img = nativeImage.createFromPath(file);
+      if (img.isEmpty()) throw new Error(`не читается как картинка: ${path.basename(file)}`);
+      clipboard.writeImage(img);
+    },
+    restore: (kept) => {
+      clipboard.clear();
+      if (kept && kept.image) clipboard.writeImage(kept.image);
+      else if (kept && kept.text) clipboard.writeText(kept.text);
+    },
+  };
+}
+
+module.exports = { ask, askIn, chatId, checkFiles, splitFiles, inlineFiles, electronClipboard, MODELS, GEMINI_URL, GEMINI_TAB };
