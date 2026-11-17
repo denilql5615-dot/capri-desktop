@@ -147,11 +147,16 @@ async function askIn(page, prompt, { chat = null, model = null, task = null, fil
   // of thinking (found 2026-11-17: the same question, 4 min and dropped in chat, 20 s as a task)
   const asTask = task ?? /argon/i.test(want || '');
   if (asTask) {
-    const on = await page.evaluate(() => {
-      const b = [...document.querySelectorAll('button')].find((x) => /^(Задача|Task)$/i.test((x.innerText || '').trim()));
-      if (b) b.click();
-      return Boolean(b);
-    });
+    // its button shows up a few seconds after the page
+    let on = false;
+    for (let i = 0; i < 12 && !on; i++) {
+      await pause(1000);
+      on = await page.evaluate(() => {
+        const b = [...document.querySelectorAll('button')].find((x) => /^(Задача|Task)$/i.test((x.innerText || '').trim()));
+        if (b) b.click();
+        return Boolean(b);
+      });
+    }
     if (!on) throw new Error('у Gemini не нашлось режима «Задача»');
     await pause(2500);
   }
