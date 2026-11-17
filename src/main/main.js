@@ -2757,6 +2757,8 @@ function registerIpc() {
   // a search on the web: she reads it herself (our SearXNG, through Proton) and answers with sources;
   // with the search server out of reach (PC proxy down, server off) the browser opens, as before
   ipcMain.handle('web:search', async (_e, query, how = {}) => {
+    // any Tor/dark request: the brain shadow drops what it watches before anything else can fail
+    if (how && (how.tor || how.dark || how.onion)) { try { brainShadowHook?.torTouched(); } catch {} }
     const q = String(query || '').trim().slice(0, 300);
     if (!q) return false;
     const cfg = config.load();
