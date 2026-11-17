@@ -88,6 +88,7 @@ const DEFAULTS = {
   pimMcpPort: 47824,
   webMcp: true, // her web for your agents (web-mcp.js): search and read through her browser nodes
   webMcpPort: 47825,
+  geminiAdviser: true, // Gemini as an adviser (gemini.js): ask_gemini for her and your agents, on your account in MAIN
   pimMcpToken: null,
 };
 

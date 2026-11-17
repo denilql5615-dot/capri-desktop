@@ -419,7 +419,12 @@ async function openSession(opts = {}) {
     if (attached) await w.release();
     else await Promise.resolve().then(() => ctx.close()).catch(() => {});
   };
-  return { browser: b && b.name, attached: Boolean(attached), read, readMany, search, close };
+  /** A tab of this session for your own steps (e.g. a dialogue with Gemini); closed after. */
+  const withTab = async (fn) => {
+    const page = await pageFor();
+    try { return await fn(page); } finally { await done(page); }
+  };
+  return { browser: b && b.name, attached: Boolean(attached), read, readMany, search, withTab, close };
 }
 
 /** DuckDuckGo's HTML results: its /l/?uddg= redirect unwrapped, ads (y.js) out, one per site. */
