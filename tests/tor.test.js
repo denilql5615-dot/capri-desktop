@@ -23,6 +23,7 @@ test('chat: a search that says Tor goes to her Tor node, without the Tor words; 
   assert.ok(torAsked('узнай анонимно через tor кто такой Сатоши'));
   assert.equal(torAsked('найди в интернете погоду'), null); // no Tor: the usual search
   assert.equal(torAsked('найди торт рецепт'), null); // "торт" isn't Tor
+  assert.equal(torAsked('найди луковый суп рецепт'), null); // "луковый" isn't Tor either
   assert.equal(torAsked('что такое тор'), null); // a question about Tor, not a search through it
 });
 
@@ -45,8 +46,18 @@ test('tor.wantsTor / withoutTor (main side) agree with the chat', () => {
   assert.equal(tor.onionLink('глянь juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion/x'), 'http://juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion/x');
   assert.ok(tor.wantsTor('через тор'));
   assert.ok(tor.wantsTor('открой abc.onion'));
+  assert.ok(tor.wantsTor('поищи через онион'));
+  assert.ok(tor.wantsTor('check onion routing'));
   assert.ok(!tor.wantsTor('торговля и торт'));
+  assert.ok(!tor.wantsTor('луковый суп и луковица'));
   assert.equal(tor.withoutTor('новости через тор сегодня'), 'новости сегодня');
+  // Strict explicit command detector: blocks prepositional commands/darknet, allows bare discussion of "Tor"
+  assert.ok(tor.wantsTorCommand('найди через тор'));
+  assert.ok(tor.wantsTorCommand('search via tor'));
+  assert.ok(tor.wantsTorCommand('по тору и over tor'));
+  assert.ok(tor.wantsTorCommand('поищи в даркнете'));
+  assert.ok(!tor.wantsTorCommand('как устроен Tor и модуль tor.js'));
+  assert.ok(!tor.wantsTorCommand('луковый суп'));
 });
 
 test('TOR profile prefs: everything through Tor with remote DNS, no direct fallback, WebRTC off, nothing kept', () => {

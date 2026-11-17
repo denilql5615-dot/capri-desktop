@@ -28,11 +28,14 @@ const onionLink = (text) => {
   return m ? (/^https?:\/\//i.test(m[0]) ? m[0] : `http://${m[0]}`) : null;
 };
 
-// "через тор", "по тору", "в торе", "tor", "onion", "луковый": the request says Tor
-const TOR_WORD = /(?<!\p{L})(?:тор|тора|торе|тору|тором|tor)(?!\p{L})|\.onion(?!\p{L})|(?<!\p{L})(?:онион\p{L}*|луков\p{L}*|onion)(?!\p{L})/iu;
+// "через тор", "по тору", "в торе", "tor", "onion", "онион": the request says Tor
+const TOR_WORD = /(?<!\p{L})(?:тор|тора|торе|тору|тором|tor)(?!\p{L})|\.onion(?!\p{L})|(?<!\p{L})(?:онион\p{L}*|onion)(?!\p{L})/iu;
 const TOR_PHRASE = /(?<!\p{L})(?:через|по|в|во|используя|с\s+помощью|via|through|over|using)?\s*(?:тор|тора|торе|тору|тором|tor)(?!\p{L})|(?<!\p{L})(?:анонимно|anonymously)(?!\p{L})/giu;
+// Strict explicit Tor command (requires a preposition or colon, unlike bare "Tor" in tech discussions)
+const TOR_COMMAND = /(?<!\p{L})(?:(?:через|по|в|во|используя|с\s+помощью|via|through|over|using)\s+(?:тор|тора|торе|тору|тором|tor|онион\p{L}*|onion)(?![\p{L}]|\.(?:js|ts|mjs|cjs|md|json)\b)|(?:анонимно|anonymously)(?!\p{L})|(?:tor|тор)\s*:)/iu;
 
 const wantsTor = (text) => TOR_WORD.test(String(text || '')) || wantsDark(text);
+const wantsTorCommand = (text) => TOR_COMMAND.test(String(text || '')) || wantsDark(text);
 /** The request without its "через тор" / "в даркнете": what is actually searched. */
 const withoutTor = (text) => String(text || '').replace(TOR_PHRASE, ' ').replace(DARK_PHRASE, ' ').replace(/\s+/g, ' ').trim();
 
@@ -135,4 +138,4 @@ function ensureProfile(dir, socksPort = 9050) {
   return dir;
 }
 
-module.exports = { ensure, ensureProfile, prefs, wantsTor, wantsDark, withoutTor, onionLink, portOpen, ONION_DDG, AHMIA, CHECK_URL };
+module.exports = { ensure, ensureProfile, prefs, wantsTor, wantsTorCommand, wantsDark, withoutTor, onionLink, portOpen, ONION_DDG, AHMIA, CHECK_URL };

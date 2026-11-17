@@ -18,12 +18,18 @@ function isAbortLike(err, signal) {
   return Boolean(signal?.aborted || err?.message === 'stopped' || err?.name === 'AbortError' || err?.code === 'ABORT_ERR');
 }
 
+/** Stage 5-min barrier: only plain local chat without desktop control is ordinary; workers are unknown. */
+function routeClass(route) {
+  return route && typeof route === 'object' && route.worker === null && !route.computer ? 'ordinary' : 'unknown';
+}
+
 function createChatGlue({
   getHook,
   tor,
   salience,
   contextMentionsTor,
   isLocalModel,
+  isTorBlocked,
   yourWords = defaultYourWords,
 } = {}) {
   const getSalience = () => (typeof salience === 'function' ? salience : require('./amygdala').salience);
@@ -34,6 +40,10 @@ function createChatGlue({
     try {
       const hook = getHook(false);
       if (!hook) return;
+      if ((typeof isTorBlocked === 'function' && isTorBlocked()) || hook.isTorBlocked?.()) {
+        hook.torTouched?.();
+        return;
+      }
       hook.resolvePending(messages, {
         get said() { return yourWords(messages); },
         tor,
@@ -48,7 +58,8 @@ function createChatGlue({
     if (cfg?.brainShadow !== true || typeof getHook !== 'function') return null;
     try {
       if (cfg.rp === true || signal?.aborted) return null;
-      if (!route || typeof route !== 'object' || route.worker !== null || route.computer) return null;
+      if (routeClass(route) !== 'ordinary') return null;
+      if ((typeof isTorBlocked === 'function' && isTorBlocked()) || getHook(false)?.isTorBlocked?.()) return null;
       if (typeof isLocalModel === 'function' && !isLocalModel(cfg)) return null;
       if (!tor || typeof tor.wantsTor !== 'function' || typeof tor.onionLink !== 'function') return null;
       if (getTorScreen()(messages, tor)) return null;
@@ -95,6 +106,18 @@ function createChatGlue({
     } catch {}
   }
 
+  function dropPending(opts) {
+    if (typeof getHook !== 'function') return;
+    try {
+      getHook(false)?.dropPending?.(opts);
+    } catch {}
+  }
+
+  function onNonLocalTurn(_route, opts) {
+    dropPending(opts);
+    return null;
+  }
+
   return Object.freeze({
     beforeTurn,
     startLocal,
@@ -102,7 +125,9 @@ function createChatGlue({
     afterError,
     onModelSwitch,
     afterTurn,
+    dropPending,
+    onNonLocalTurn,
   });
 }
 
-module.exports = { createChatGlue };
+module.exports = { createChatGlue, routeClass };

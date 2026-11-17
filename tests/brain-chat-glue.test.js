@@ -5,8 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createChatGlue } = require('../src/main/brain/chat-glue');
-const { createShadowHook } = require('../src/main/brain/shadow-hook');
+const { createChatGlue, routeClass } = require('../src/main/brain/chat-glue');
+const { createShadowHook, TOR_COOLDOWN_MS } = require('../src/main/brain/shadow-hook');
 const { salience } = require('../src/main/brain/amygdala');
 const tor = require('../src/main/tor');
 
@@ -250,4 +250,108 @@ test('rp mode never starts observation and marks prior pending turn unverified',
     unverified: 1,
   });
   assert.equal(fs.existsSync(dir), false);
+});
+
+test('Stage 5-min: worker routes always classify as unknown, never start observation, and reset pending verdict', async () => {
+  const { dir, glue, getHook, pendingEvents } = makeEnv();
+  const cfg = { brainShadow: true, provider: 'ollama', rp: false };
+
+  // Ordinary turn reaches hold -> pending ✓/✗ shown
+  const local = glue.startLocal({ worker: null, tier: 'routine' }, [{ role: 'user', content: 'подскажи шаг' }], cfg, new AbortController().signal);
+  assert.equal(routeClass({ worker: null }), 'ordinary');
+  assert.ok(local);
+  glue.afterSuccess(local);
+  assert.deepEqual(pendingEvents, [true]);
+
+  // Next turn goes to a non-local worker/computer/photo/video -> drops pending and opens NO worker turn
+  for (const nonLocalRoute of [
+    { worker: 'claude', tier: 'code' },
+    { worker: 'codex', tier: 'hard' },
+    { worker: 'gemini', tier: 'routine' },
+    { worker: 'computer', computer: true },
+    { worker: 'photo' },
+    { worker: 'video' },
+  ]) {
+    assert.equal(routeClass(nonLocalRoute), 'unknown');
+    assert.equal(glue.onNonLocalTurn(nonLocalRoute), null);
+    assert.equal(glue.startLocal(nonLocalRoute, [{ role: 'user', content: 'сработало' }], cfg, new AbortController().signal), null);
+  }
+  assert.deepEqual(pendingEvents, [true, false]);
+
+  // Simulated chats:new / chats:resume clears any newly pending turn cleanly
+  const local2 = glue.startLocal({ worker: null }, [{ role: 'user', content: 'ещё вопрос' }], cfg, new AbortController().signal);
+  glue.afterSuccess(local2);
+  assert.deepEqual(pendingEvents, [true, false, true]);
+  glue.dropPending();
+  assert.deepEqual(pendingEvents, [true, false, true, false]);
+  assert.equal(getHook(false).verdict(1), false);
+
+  await getHook(false).close();
+  assert.deepEqual(getHook(false).stats(), {
+    published: 0,
+    discarded: 2,
+    observer_errors: 0,
+    completed_turns: 2,
+    verified_pos: 0,
+    verified_neg: 0,
+    unverified: 2,
+  });
+  assert.equal(fs.existsSync(dir), false);
+});
+
+test('Tor cooldown quarantine blocks startLocal and beforeTurn verdict reading for TOR_COOLDOWN_MS', async () => {
+  const dir = mkDir();
+  let clock = Date.UTC(2026, 10, 18, 0, 0, 0);
+  let externalTorOpen = false;
+  const pendingEvents = [];
+  const hook = createShadowHook({
+    dir,
+    now: () => clock,
+    uuid: makeUuid(4000),
+    isTorActive: () => externalTorOpen,
+    onPendingChange: (v) => pendingEvents.push(v),
+  });
+  const glue = createChatGlue({
+    getHook: () => hook,
+    tor,
+    salience,
+    isLocalModel: (cfg) => cfg.provider === 'ollama',
+    isTorBlocked: () => externalTorOpen,
+  });
+  const cfg = { brainShadow: true, provider: 'ollama', rp: false };
+
+  // Ordinary turn is held waiting for verdict
+  const t1 = glue.startLocal({ worker: null }, [{ role: 'user', content: 'обычный вопрос' }], cfg, new AbortController().signal);
+  glue.afterSuccess(t1);
+  assert.deepEqual(pendingEvents, [true]);
+
+  // Real Tor event happens -> drops pending, activates 10-min quarantine
+  hook.torTouched();
+  assert.deepEqual(pendingEvents, [true, false]);
+  assert.equal(hook.verdict(1), false);
+
+  // During quarantine (< 10 min): startLocal returns null, verdict word doesn't resolve anything
+  clock += TOR_COOLDOWN_MS - 1000;
+  assert.equal(glue.startLocal({ worker: null }, [{ role: 'user', content: 'чистый вопрос' }], cfg, new AbortController().signal), null);
+
+  // Hold test across isTorBlocked: beforeTurn resets pending without reading verdict
+  clock += 2000; // cooldown elapsed -> clean turn can start
+  const t2 = glue.startLocal({ worker: null }, [{ role: 'user', content: 'после карантина' }], cfg, new AbortController().signal);
+  assert.ok(t2);
+  glue.afterSuccess(t2);
+  externalTorOpen = true; // 9340 TOR browser active -> beforeTurn discards pending without touching verdict
+  glue.beforeTurn([{ role: 'user', content: 'сработало' }], cfg);
+  assert.equal(hook.verdict(1), false);
+  externalTorOpen = false;
+  clock += TOR_COOLDOWN_MS; // quarantine lifts after active TOR browser closed + 10 min
+
+  const t3 = glue.startLocal({ worker: null }, [{ role: 'user', content: 'снова чистый вопрос' }], cfg, new AbortController().signal);
+  assert.ok(t3);
+  glue.afterSuccess(t3);
+  assert.equal(hook.verdict(1), true);
+
+  await hook.close();
+  assert.equal(hook.stats().published, 1);
+  assert.equal(hook.stats().verified_pos, 1);
+  assert.equal(hook.stats().unverified, 0);
 });

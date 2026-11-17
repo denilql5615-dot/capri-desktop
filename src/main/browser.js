@@ -333,6 +333,11 @@ async function herWindow(opts, { visible = false } = {}) {
   return { ctx: k.ctx, b: k.b, bc: k.bc, anchor: k.anchor, release };
 }
 
+function hasSession(port) {
+  const k = kept.get(Number(port) || DEFAULT_PORT);
+  return Boolean(k && k.ctx?.connected !== false);
+}
+
 /** Ends every control session she holds (on quit). */
 async function releaseAll() {
   const all = [...kept.values()];
@@ -560,6 +565,6 @@ async function openForSignIn(url, opts = {}) {
 }
 
 module.exports = {
-  readRendered, readRenderedMany, openSession, attach, herWindow, releaseAll, ahmiaResults, profilePids, forgetWindows: () => kept.clear(), WINDOW_MARK, profileBusy, duckResults, DEFAULT_PORT, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
+  readRendered, readRenderedMany, openSession, attach, herWindow, hasSession, releaseAll, ahmiaResults, profilePids, forgetWindows: () => kept.clear(), WINDOW_MARK, profileBusy, duckResults, DEFAULT_PORT, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
   engineOf, kindOf, CHALLENGE, KNOWN, MODES,
 };
