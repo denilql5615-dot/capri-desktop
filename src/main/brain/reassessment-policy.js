@@ -61,6 +61,8 @@ function roundEvc(v) {
 function createReassessmentPolicy({ now = Date.now, config = {} } = {}) {
   const cfg = { ...DEFAULTS, ...(config && typeof config === 'object' ? config : {}) };
   const escalationTimestamps = [];
+  // Lead decision (4): the control days spend a budget of their own, so shadow counts stay comparable
+  const shadowTimestamps = [];
   const committedDecisions = new WeakSet();
 
   let stopHintEmitted = false;
@@ -87,9 +89,9 @@ function createReassessmentPolicy({ now = Date.now, config = {} } = {}) {
     trip_count: 0,
   };
 
-  function pruneWindow(atMs) {
-    while (escalationTimestamps.length > 0 && atMs - escalationTimestamps[0] >= cfg.budget_window_ms) {
-      escalationTimestamps.shift();
+  function pruneWindow(atMs, list = escalationTimestamps) {
+    while (list.length > 0 && atMs - list[0] >= cfg.budget_window_ms) {
+      list.shift();
     }
   }
 
@@ -105,10 +107,10 @@ function createReassessmentPolicy({ now = Date.now, config = {} } = {}) {
     return trippedUntil !== null && atMs < trippedUntil;
   }
 
-  function budgetLeftAt(atMs, quiet) {
-    pruneWindow(atMs);
+  function budgetLeftAt(atMs, quiet, list = escalationTimestamps) {
+    pruneWindow(atMs, list);
     const maxAllowed = quiet ? cfg.budget_quiet_max : cfg.budget_day_max;
-    return Math.max(0, maxAllowed - escalationTimestamps.length);
+    return Math.max(0, maxAllowed - list.length);
   }
 
   function computeEvc(channels, features, ctx) {
@@ -131,7 +133,8 @@ function createReassessmentPolicy({ now = Date.now, config = {} } = {}) {
     const atMs = safeNow(now);
     const quiet = bit(channels?.circadian_quiet);
     lastQuietFlag = quiet;
-    const budgetLeft = budgetLeftAt(atMs, quiet);
+    const mode = ctx?.mode === 'reassessment' ? 'reassessment' : 'off';
+    const budgetLeft = budgetLeftAt(atMs, quiet, mode === 'reassessment' ? escalationTimestamps : shadowTimestamps);
 
     const active = channels && Number(channels.reassessment_active) === 1 ? 1 : 0;
     if (active === 0) {
@@ -212,7 +215,6 @@ function createReassessmentPolicy({ now = Date.now, config = {} } = {}) {
       candidateReason = 'reassessment_optimum';
     }
 
-    const mode = ctx?.mode === 'reassessment' ? 'reassessment' : 'off';
     if (mode === 'reassessment') {
       counts.trigger_episodes++;
       if (candidateAction === 'stop') counts.stop_report_count++;
@@ -226,7 +228,10 @@ function createReassessmentPolicy({ now = Date.now, config = {} } = {}) {
 
     // Lead decision (4): in 'off' mode, evaluate in shadow without applying action.
     counts.shadow_trigger_episodes++;
-    if (candidateAction === 'escalate') counts.shadow_escalate++;
+    if (candidateAction === 'escalate') {
+      counts.shadow_escalate++;
+      shadowTimestamps.push(atMs);
+    }
     else if (candidateAction === 'stop') counts.shadow_stop++;
 
     return {

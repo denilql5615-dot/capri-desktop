@@ -214,3 +214,21 @@ test('shadowHook.peekChannels projects decay and impulses read-only and returns 
   await hook.close();
   assert.equal(hook.peekChannels(clock, { urgency: 0 }), null);
 });
+
+test('off mode spends a shadow budget of its own: 2 shadow escalations in 10 min, then a shadow stop', () => {
+  const { createReassessmentPolicy } = require('../src/main/brain/reassessment-policy');
+  let t = 1_000_000;
+  const policy = createReassessmentPolicy({ now: () => t });
+  const args = {
+    channels: { reassessment: 0.7, reassessment_active: 1, stability: 1, circadian_quiet: 0 },
+    features: { contradiction: 1 },
+    ctx: { mode: 'off', brainsReady: true, isAuto: true, mainActive: true },
+  };
+  for (let i = 0; i < 3; i++) { policy.decide(args); t += 1000; }
+  const s = policy.stats();
+  assert.equal(s.shadow_escalate, 2);
+  assert.equal(s.shadow_stop, 1);
+  assert.equal(s.escalation_count, 0);
+  t += 11 * 60 * 1000;
+  assert.equal(policy.decide({ ...args, ctx: { ...args.ctx, mode: 'reassessment' } }).action, 'escalate');
+});
