@@ -105,6 +105,23 @@ test('askIn with an image: pasted from the clipboard with a real Ctrl+V, then th
   assert.equal(seen.inserted, 'что на картинке?');
 });
 
+test('askIn: a question that shows up and then vanishes without an answer is "dropped" at once', async () => {
+  const { page } = fakePage();
+  let n = 0;
+  const ev = page.evaluate;
+  page.evaluate = async (fn, arg) => {
+    const src = String(fn);
+    if (src.includes('user-query') && src.includes('model-response')) { // state()
+      n++;
+      if (n === 1) return { signedIn: true, busy: false, count: 0, asked: 0, text: '', path: '/app', model: 'Gemini Argon' };
+      if (n < 4) return { signedIn: true, busy: true, count: 0, asked: 1, text: '', path: '/app', model: 'Gemini Argon' };
+      return { signedIn: true, busy: false, count: 0, asked: 0, text: '', path: '/app', model: 'Gemini Argon' };
+    }
+    return ev(fn, arg);
+  };
+  await assert.rejects(gemini.askIn(page, 'вопрос', { pollMs: 1 }), (e) => e.code === 'DROPPED');
+});
+
 test('ask: one question at a time, a pause between them, the session closed each time', async () => {
   const order = [];
   let closes = 0;

@@ -236,13 +236,22 @@ async function askIn(page, prompt, { chat = null, model = null, files = [], clip
     if (!went && i < 2) await send();
   }
   if (!went) throw new Error('вопрос не ушёл в Gemini (кнопка отправки не сработала)');
-  // done: a new answer is there, Gemini no longer shows "Stop", and its text stopped changing
+  // done: a new answer is there, Gemini no longer shows "Stop", and its text stopped changing.
+  // dropped: the question showed up, then vanished with no answer (Gemini's Argon does that to some
+  // plain-text questions after minutes of "thinking") — said at once, so the caller can ask another model
   const started = Date.now();
   let prev = null;
   let same = 0;
+  let seen = false;
   while (Date.now() - started < timeoutMs) {
     await pause(pollMs);
     const s = await state();
+    if (s.asked > before.asked || s.busy) seen = true;
+    if (seen && !s.busy && s.asked <= before.asked && s.count <= before.count) {
+      const err = new Error(`Gemini сбросил вопрос без ответа (${s.model || want || 'модель'})`);
+      err.code = 'DROPPED';
+      throw err;
+    }
     if (s.count > before.count && !s.busy && s.text.trim()) {
       same = s.text === prev ? same + 1 : 0;
       if (same >= stableTicks - 1 && s.text === prev) {
@@ -264,9 +273,19 @@ function ask(prompt, { open, chat, model, files, minGapMs = 4000, ...rest } = {}
     const wait = lastAt + minGapMs - Date.now();
     if (wait > 0) await pause(wait);
     const s = await open();
+    const inTab = (m) => {
+      const go = (page) => askIn(page, prompt, { chat, model: m, files, ...rest });
+      return s.withKept ? s.withKept(GEMINI_TAB, GEMINI_URL, go) : s.withTab(go);
+    };
     try {
-      const go = (page) => askIn(page, prompt, { chat, model, files, ...rest });
-      return await (s.withKept ? s.withKept(GEMINI_TAB, GEMINI_URL, go) : s.withTab(go));
+      try {
+        return await inTab(model);
+      } catch (err) {
+        // Argon dropped it: Hydrogen answers instead, and the answer says so
+        if (err.code !== 'DROPPED' || !model || MODELS[model] === MODELS.everyday) throw err;
+        const said = await inTab('everyday');
+        return { ...said, fellBack: `${MODELS[model] || model} сбросил вопрос — ответил ${MODELS.everyday}` };
+      }
     } finally {
       lastAt = Date.now();
       await s.close();

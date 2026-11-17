@@ -220,6 +220,38 @@ function spawnBrowser(exe, dir, port, { headless = false } = {}) {
   child.unref(); // your browser: it stays when she's done or restarts
 }
 
+// A control session left behind (a client killed mid-job) locks everyone out until the browser restarts.
+// Recovery, at most once per 10 minutes per profile: stop only the browser running THIS profile, start
+// it again with the port; Firefox brings the tabs back through its crash recovery (saved every ~15 s).
+const RESTART_GAP_MS = 10 * 60 * 1000;
+const lastRestart = new Map();
+
+/** The PIDs of the browser's main processes that run this profile (not its content processes). */
+function profilePids(exe, dir, run = (args) => require('child_process').execFileSync('powershell.exe', args, { encoding: 'utf8', windowsHide: true, timeout: 15000 })) {
+  const name = path.basename(String(exe || ''));
+  if (!name || process.platform !== 'win32') return [];
+  const want = path.resolve(dir).toLowerCase();
+  const out = run(['-NoProfile', '-NonInteractive', '-Command',
+    `Get-CimInstance Win32_Process -Filter "Name='${name.replace(/'/g, "''")}'" | ForEach-Object { "$($_.ProcessId)\`t$($_.CommandLine)" }`]);
+  return String(out).split(/\r?\n/).map((l) => l.split('\t')).filter(([pid, cmd]) => pid && cmd
+    && !/-contentproc/i.test(cmd) && cmd.toLowerCase().replace(/\//g, '\\').includes(want)).map(([pid]) => Number(pid)).filter(Boolean);
+}
+
+async function restartProfileBrowser(b, dir, port, opts) {
+  const key = path.resolve(dir).toLowerCase();
+  if (Date.now() - (lastRestart.get(key) || 0) < RESTART_GAP_MS) return false;
+  lastRestart.set(key, Date.now());
+  const pids = (opts.findPids || profilePids)(b.exe, dir);
+  if (!pids.length) return false;
+  const kill = opts.killPid || ((pid) => { try { process.kill(pid); } catch { /* gone */ } });
+  for (const pid of pids) kill(pid);
+  const busy = opts.profileBusy || profileBusy;
+  for (let i = 0; i < 40 && busy(dir); i++) await pause(opts.startPollMs ?? 500);
+  console.warn(`[capri] ${b.name}: снята брошенная сессия управления — браузер с профилем перезапущен (${pids.join(',')})`);
+  (opts.spawn || spawnBrowser)(b.exe, dir, port, { headless: false });
+  return true;
+}
+
 /** Attaches to the browser on your profile, starting it (visible, as your browser) if it isn't running. */
 async function attach(opts, { visible = false } = {}) {
   const dir = opts.profile;
@@ -233,6 +265,12 @@ async function attach(opts, { visible = false } = {}) {
   try { return { ctx: await connect(port), b, attached: true }; } catch (e) { refused = e; /* not running with the port */ }
   // the port answers but won't take her: Firefox allows one control session, and one is still held
   if (/Maximum number of active sessions/i.test(String(refused && refused.message))) {
+    if (opts.autoRestart !== false && b && await restartProfileBrowser(b, dir, port, opts)) {
+      for (let i = 0; i < (opts.startTries || 80); i++) {
+        await pause(opts.startPollMs ?? 250);
+        try { return { ctx: await connect(port), b, attached: true, restarted: true }; } catch { /* still starting */ }
+      }
+    }
     throw new Error(`К ${b ? b.name : 'браузеру'} уже подключена другая сессия управления (прошлая Капри не успела отключиться или другая программа). Перезапусти браузер с профилем «${opts.profileName || name}» — это её снимет.`);
   }
   if (busy(dir)) {
@@ -522,6 +560,6 @@ async function openForSignIn(url, opts = {}) {
 }
 
 module.exports = {
-  readRendered, readRenderedMany, openSession, attach, herWindow, releaseAll, ahmiaResults, forgetWindows: () => kept.clear(), WINDOW_MARK, profileBusy, duckResults, DEFAULT_PORT, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
+  readRendered, readRenderedMany, openSession, attach, herWindow, releaseAll, ahmiaResults, profilePids, forgetWindows: () => kept.clear(), WINDOW_MARK, profileBusy, duckResults, DEFAULT_PORT, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
   engineOf, kindOf, CHALLENGE, KNOWN, MODES,
 };

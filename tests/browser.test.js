@@ -212,8 +212,35 @@ test('ahmiaResults: the onion address out of its redirect link (or <cite>), one 
 
 test('your profile: a session left behind in the browser is named as such, not as "no port"', async () => {
   browser.forgetWindows();
-  await assert.rejects(browser.openSession({ app, pick, profile: 'C:/p/MAIN', profileName: 'MAIN', port: 9406, profileBusy: () => true,
+  await assert.rejects(browser.openSession({ app, pick, profile: 'C:/p/MAIN', profileName: 'MAIN', port: 9406, profileBusy: () => true, autoRestart: false,
     connect: async () => { throw new Error('Protocol error (session.new): session not created Maximum number of active sessions'); } }), /уже подключена другая сессия управления[\s\S]*Перезапусти браузер с профилем «MAIN»/);
+});
+
+test('your profile: a session left behind → only that profile\'s browser is stopped and started again with the port; once per 10 min', async () => {
+  browser.forgetWindows();
+  const killed = [];
+  let spawned = null;
+  let held = true;
+  const fake = fakeAttached({});
+  const connect = async () => { if (held) throw new Error('session not created Maximum number of active sessions'); return fake; };
+  let locked = true;
+  const opts = {
+    app, pick, ...fast, profile: 'C:/p/MAIN2', profileName: 'MAIN', port: 9408, startPollMs: 0,
+    findPids: (exe, dir) => { assert.equal(dir, 'C:/p/MAIN2'); return [111, 222]; },
+    killPid: (pid) => { killed.push(pid); locked = false; },
+    profileBusy: () => locked,
+    spawn: (exe, dir, port) => { spawned = { dir, port }; held = false; },
+    connect,
+  };
+  const s = await browser.openSession(opts);
+  await s.close();
+  assert.deepEqual(killed, [111, 222]);
+  assert.deepEqual(spawned, { dir: 'C:/p/MAIN2', port: 9408 });
+  // a second stale session within 10 minutes: not restarted again, told instead
+  browser.forgetWindows();
+  held = true; locked = true; killed.length = 0;
+  await assert.rejects(browser.openSession(opts), /уже подключена другая сессия управления/);
+  assert.deepEqual(killed, []);
 });
 
 test('your profile: her window from before a restart is found again, not opened twice', async () => {
