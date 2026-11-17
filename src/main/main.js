@@ -2090,6 +2090,8 @@ function createTray() {
 // cfg.brainShadow is on; module-level so the quit handlers in main() can close it
 let brainShadowHook = null;
 let brainChatGlue = null;
+let brainInfluencePolicy = null;
+let brainInfluencePlanner = null;
 
 function registerIpc() {
   ipcMain.on('overlay:interactive', (_e, on) => {
@@ -2239,6 +2241,17 @@ function registerIpc() {
     const local = llm.isLocal(provider, cfg, model);
     return { ok: true, provider, model, agent: provider === 'claude', local, warmup: provider === 'ollama' && local };
   });
+  const getBrainInfluencePolicy = () => {
+    if (brainInfluencePolicy) return brainInfluencePolicy;
+    const { createReassessmentPolicy } = require('./brain/reassessment-policy');
+    brainInfluencePolicy = createReassessmentPolicy();
+    return brainInfluencePolicy;
+  };
+  const getBrainInfluencePlan = () => {
+    if (brainInfluencePlanner) return brainInfluencePlanner;
+    brainInfluencePlanner = require('./brain/influence-glue').planInfluence;
+    return brainInfluencePlanner;
+  };
   // her answer, streamed to the overlay piece by piece as `chat:delta`
   const getBrainShadowHook = () => {
     if (brainShadowHook) return brainShadowHook;
@@ -2272,6 +2285,11 @@ function registerIpc() {
       onPendingChange: (pending) => {
         try {
           if (overlay && !overlay.isDestroyed()) overlay.webContents.send('brain:pending', Boolean(pending));
+        } catch {}
+      },
+      onVerdict: (meta, verdict) => {
+        try {
+          getBrainInfluencePolicy().recordOutcome({ escalated: Boolean(meta?.escalated), verdict });
         } catch {}
       },
     });
@@ -2390,14 +2408,49 @@ function registerIpc() {
       else if (worker === 'video') text = await videoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal);
       else {
         let shadowTurn = null;
+        let influence = { main: false, hint: null, decision: null, escalated: false };
         if (cfg.brainShadow === true && worker === null) {
-          try { shadowTurn = getBrainChatGlue().startLocal(route, messages, cfg, abort.signal); } catch {}
+          try {
+            const said = yourWords(messages);
+            const rolesReady = cfg.provider === 'ollama' && brains.ready(chatModels);
+            const isAuto = Boolean(rolesReady && brains.isAuto(cfg.chatModel, chatModels));
+            influence = getBrainInfluencePlan()({
+              cfg,
+              said,
+              messages,
+              route,
+              quick: Boolean(fast),
+              hook: getBrainShadowHook(),
+              policy: getBrainInfluencePolicy(),
+              tor,
+              env: {
+                brainsReady: rolesReady,
+                isAuto,
+                mainActive: brains.mainActive(),
+                wantsFast: brainsLib.wantsFast(said),
+                wantsMain: brainsLib.wantsMain(said),
+                wantsLocal: brainsLib.wantsLocal(said),
+                rp: cfg.rp === true,
+                tor: torState.isQuarantined(),
+                now: Date.now(),
+              },
+            });
+          } catch {}
+          try {
+            shadowTurn = getBrainChatGlue().startLocal(route, messages, cfg, abort.signal, {
+              meta: { escalated: Boolean(influence.escalated) },
+            });
+          } catch {}
         }
         try {
+          const prepared = await prepLocal(cfg, messages, { main: influence.main });
+          const toSend = influence.hint && cfg.rp !== true
+            ? [...prepared, { role: 'system', content: influence.hint }]
+            : prepared;
           // any switch to another model (possibly a cloud one) abandons the observation
           text = await chatWithFallback(
             cfg,
-            await prepLocal(cfg, messages),
+            toSend,
             send,
             abort.signal,
             () => streamed,
@@ -2407,6 +2460,10 @@ function registerIpc() {
             try { brainChatGlue?.afterSuccess(shadowTurn); shadowTurn = null; } catch {}
           }
         } catch (err) {
+          if (influence.escalated && !abort.signal.aborted && err?.message !== 'stopped'
+              && err?.name !== 'AbortError' && err?.code !== 'ABORT_ERR') {
+            try { brainInfluencePolicy?.recordOutcome({ escalated: true, error: true }); } catch {}
+          }
           if (shadowTurn) {
             try { brainChatGlue?.afterError(shadowTurn, err, abort.signal); } catch {}
           }
@@ -2955,18 +3012,28 @@ async function debugHandler(route, body) {
     return { ok: true, value: { dir: notesDir(), kept: await takeNotes(readMemory().history || []) } };
   }
   if (route === 'brain') {
-    // the brain shadow (src/main/brain): set its two flags ({ set: { brainShadow, brainVerdictJudge } }), read its
-    // in-memory counters and this process's memory. Numbers only — no text, no ids.
+    // the brain shadow (src/main/brain): set its flags ({ set: { brainShadow, brainVerdictJudge, brainInfluence } }),
+    // read its in-memory counters, Stage 6 policy stats, and this process's memory. Numbers only — no text, no ids.
     const set = body.set && typeof body.set === 'object' ? body.set : {};
     const patch = {};
     if (typeof set.brainShadow === 'boolean') patch.brainShadow = set.brainShadow;
     if (set.brainVerdictJudge === 'off' || set.brainVerdictJudge === 'shadow') patch.brainVerdictJudge = set.brainVerdictJudge;
+    if (Object.hasOwn(set, 'brainInfluence')) {
+      if (set.brainInfluence !== 'off' && set.brainInfluence !== 'reassessment') {
+        throw new Error('brainInfluence must be off or reassessment');
+      }
+      patch.brainInfluence = set.brainInfluence;
+    }
     if (Object.keys(patch).length) updateConfig(patch);
     const cfg = config.load(true);
     const mem = process.memoryUsage();
     return { ok: true, value: {
-      brainShadow: cfg.brainShadow === true, brainVerdictJudge: cfg.brainVerdictJudge || 'off',
-      hook: Boolean(brainShadowHook), stats: brainShadowHook ? brainShadowHook.stats() : null,
+      brainShadow: cfg.brainShadow === true,
+      brainVerdictJudge: cfg.brainVerdictJudge || 'off',
+      brainInfluence: cfg.brainInfluence === 'reassessment' ? 'reassessment' : 'off',
+      hook: Boolean(brainShadowHook),
+      stats: brainShadowHook ? brainShadowHook.stats() : null,
+      policy: brainInfluencePolicy ? brainInfluencePolicy.stats() : null,
       memory: { rss: mem.rss, heapUsed: mem.heapUsed }, journalDir: path.join(app.getPath('userData'), 'brain-journal'),
     } };
   }

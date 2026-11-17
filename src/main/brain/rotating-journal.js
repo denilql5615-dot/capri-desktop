@@ -456,6 +456,7 @@ async function openRotatingJournal(dir, {
     appendBatch: (batch) => enqueue('batch', batch),
     tick: (envelope) => enqueue('tick', envelope),
     snapshot: () => (core ? core.snapshot() : { ...emptySnapshot }),
+    exportCheckpoint: () => (core ? core.exportCheckpoint() : undefined),
     close() {
       if (closing) return closing;
       closed = true;
