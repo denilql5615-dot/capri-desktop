@@ -14,23 +14,26 @@ test('findSpokenModel matches spoken punctuation and Russian number words exactl
   assert.equal(findSpokenModel(models, 'qwen'), null);
 });
 
-test('findSpokenModel knows aliases for the models installed with Capri', () => {
-  const faun = 'hf.co/limloop/MN-12B-Faun-RP-RU-GGUF:Q3_K_M';
-  const models = ['qwen3.5:4b', faun];
+test('findSpokenModel still finds a model named the way you say it', () => {
+  const models = ['qwen3.5:4b'];
   assert.equal(findSpokenModel(models, 'Квин три с половиной четыре б'), 'qwen3.5:4b');
   assert.equal(findSpokenModel(models, 'Куэн три точка пять четыре б'), 'qwen3.5:4b');
-  assert.equal(findSpokenModel(models, 'фаун двенадцать б'), faun);
-  assert.equal(findSpokenModel(models, 'эм эн двенадцать б'), faun);
 });
 
-test('findSpokenModel accepts short voice-friendly names', () => {
-  const faun = 'hf.co/limloop/MN-12B-Faun-RP-RU-GGUF:Q3_K_M';
-  const models = ['qwen3:8b', 'qwen3.5:4b', 'qwen3-vl:4b', faun];
-  models.push('gemma4:26b-a4b-it-qat');
-  assert.equal(findSpokenModel(models, 'основную'), 'gemma4:26b-a4b-it-qat');
-  assert.equal(findSpokenModel(models, 'новую'), 'gemma4:26b-a4b-it-qat');
-  assert.equal(findSpokenModel(models, 'зрения'), 'gemma4:26b-a4b-it-qat');
-  assert.equal(findSpokenModel(models, 'ролевую'), faun);
+test('findSpokenModel accepts short voice-friendly names for her two Heretic brains', () => {
+  const { FAST, MAIN } = require('../src/main/brains');
+  const models = [FAST, MAIN, 'gemma4:26b-a4b-it-qat'];
+  assert.equal(findSpokenModel(models, 'основную'), MAIN);
+  assert.equal(findSpokenModel(models, 'большую'), MAIN);
+  assert.equal(findSpokenModel(models, 'быструю'), FAST);
+  assert.equal(findSpokenModel(models, 'зрения'), FAST);
+  assert.equal(findSpokenModel(models, 'ролевую'), null); // a mode now (brains.js), not a model
+});
+
+test('screenModel prefers the Heretic brains, then the old Gemma', () => {
+  const { FAST, MAIN } = require('../src/main/brains');
+  assert.equal(screenModel([MAIN, FAST]), FAST);
+  assert.equal(screenModel([MAIN]), MAIN);
 });
 
 test('screenModel selects Gemma for vision', () => {

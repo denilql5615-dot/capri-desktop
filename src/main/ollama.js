@@ -30,6 +30,12 @@ async function failure(res) {
 // What Ollama said about each model it lists: { cloud, thinking }
 const known = new Map();
 
+// Models kept in memory for good (her fast brain, brains.js): every request for them says so, or the
+// usual 5 minutes of one request would let Ollama drop it.
+const pinned = new Set();
+const pin = (model) => model && pinned.add(model);
+const keepFor = (model, usual) => (pinned.has(model) ? -1 : usual);
+
 // The models installed, by name ("llama3.2:latest", "beam:cloud"...).
 async function models() {
   const res = await fetch(`${base()}/api/tags`, { signal: AbortSignal.timeout(2500) });
@@ -41,7 +47,10 @@ async function models() {
 
 // Run on Ollama's servers rather than this PC
 const isCloud = (model) => known.get(model)?.cloud ?? /[:-]cloud$/.test(model || '');
-const canThink = (model) => known.get(model)?.thinking ?? /^(gemma4|qwen3)/i.test(model || '');
+// Gemma 4 / Qwen 3 by name too: a GGUF from Hugging Face ("hf.co/…/gemma-4-…-heretic") isn't marked
+// "thinking" by Ollama, yet thinks by default and spends the whole answer on it unless told not to.
+const THINKS_RE = /(^|\/)(gemma-?4|qwen3)/i;
+const canThink = (model) => Boolean(known.get(model)?.thinking) || THINKS_RE.test(model || '');
 
 // Your Ollama account, when you're signed in to it on this PC: { name, plan }. Signed out: { signin },
 // the page that links this PC to an account. null when Ollama can't tell (asleep, cloud turned off).
@@ -73,12 +82,13 @@ async function freeModels() {
 
 // Loads the model into memory ahead of the first message (the first answer after a fresh start
 // otherwise waits for it to load, which can take a while). Nothing to load for a cloud model.
-function warm(model) {
+// A 26B one is never loaded ahead: it comes only when asked for (brains.js).
+function warm(model, keepAlive = '5m') {
   if (!model || isCloud(model) || /26b/i.test(model)) return;
   fetch(`${base()}/api/generate`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model, keep_alive: '5m' }),
+    body: JSON.stringify({ model, keep_alive: keepFor(model, keepAlive) }),
   }).catch(() => {});
 }
 
@@ -116,7 +126,7 @@ async function chat({ model, messages, numPredict = 240, keepAlive = '5m' }, onD
       model,
       messages,
       stream: true,
-      keep_alive: keepAlive,
+      keep_alive: keepFor(model, keepAlive),
       // a local thinking model (gemma4, qwen3, qwen3.5) thinks by default and spends all 240 tokens on it: she'd answer "…"
       ...(thinking && { think: thinks ? 'low' : false }),
       options: { temperature: 0.85, num_predict: thinks ? 1200 : numPredict },
@@ -161,7 +171,7 @@ async function jsonChat({ model, messages, schema }, signal) {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      model, messages, format: schema, stream: false, keep_alive: '15m',
+      model, messages, format: schema, stream: false, keep_alive: keepFor(model, '15m'),
       ...(canThink(model) && { think: false }),
       options: { temperature: 0.2, num_predict: 400 },
     }),
@@ -180,7 +190,7 @@ async function pick({ model, messages, numPredict = 8, topLogprobs = 10 }, signa
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      model, messages, stream: false, keep_alive: '15m', logprobs: true, top_logprobs: topLogprobs,
+      model, messages, stream: false, keep_alive: keepFor(model, '15m'), logprobs: true, top_logprobs: topLogprobs,
       ...(canThink(model) && { think: false }),
       options: { temperature: 0, num_predict: numPredict },
     }),
@@ -215,21 +225,18 @@ function spokenModelKey(name) {
     .replace(/[^a-z0-9]/g, '');
 }
 
+const HERETIC_26B = 'hf.co/llmfan46/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-GGUF:Q4_0';
+const HERETIC_E4B = 'hf.co/llmfan46/gemma-4-E4B-it-uncensored-heretic-GGUF:Q4_K_M';
 const SPOKEN_MODELS = {
-  основная: 'gemma4:26b-a4b-it-qat',
-  основную: 'gemma4:26b-a4b-it-qat',
-  новая: 'gemma4:26b-a4b-it-qat',
-  новую: 'gemma4:26b-a4b-it-qat',
-  зрение: 'gemma4:26b-a4b-it-qat',
-  зрения: 'gemma4:26b-a4b-it-qat',
-  зрительную: 'gemma4:26b-a4b-it-qat',
-  ролевая: 'hf.co/limloop/MN-12B-Faun-RP-RU-GGUF:Q3_K_M',
-  ролевую: 'hf.co/limloop/MN-12B-Faun-RP-RU-GGUF:Q3_K_M',
-  qwen38b: 'qwen3:8b',
-  qwen3vl4b: 'qwen3-vl:4b',
-  qwen354b: 'qwen3.5:4b',
-  faun12b: 'hf.co/limloop/MN-12B-Faun-RP-RU-GGUF:Q3_K_M',
-  mn12b: 'hf.co/limloop/MN-12B-Faun-RP-RU-GGUF:Q3_K_M',
+  основная: HERETIC_26B,
+  основную: HERETIC_26B,
+  большая: HERETIC_26B,
+  большую: HERETIC_26B,
+  быстрая: HERETIC_E4B,
+  быструю: HERETIC_E4B,
+  зрение: HERETIC_E4B,
+  зрения: HERETIC_E4B,
+  зрительную: HERETIC_E4B,
 };
 
 function findSpokenModel(list, wanted) {
@@ -239,11 +246,12 @@ function findSpokenModel(list, wanted) {
   return key || named ? list.find((model) => model.toLowerCase() === named?.toLowerCase() || spokenModelKey(model) === key) || null : null;
 }
 
+// Her eyes when the roles (brains.js) aren't on: a model of the family that can look, or null.
 function screenModel(list = []) {
-  return list.find((model) => model.toLowerCase() === 'gemma4:26b-a4b-it-qat') || null;
+  return [HERETIC_E4B, HERETIC_26B, 'gemma4:26b-a4b-it-qat'].find((name) => list.includes(name)) || null;
 }
 
 const retryEmptyVision = (text, attempt) => attempt === 0 && !String(text || '').trim();
 const visionPrompt = (text) => String(text || '');
 
-module.exports = { base, models, isCloud, account, freeModels, warm, unload, unloadAll, chat, jsonChat, pick, canSee, findSpokenModel, screenModel, retryEmptyVision, visionPrompt };
+module.exports = { base, models, isCloud, pin, account, freeModels, warm, unload, unloadAll, chat, jsonChat, pick, canSee, findSpokenModel, screenModel, retryEmptyVision, visionPrompt };

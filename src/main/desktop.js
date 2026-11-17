@@ -41,7 +41,9 @@ function validate(raw) {
   if (a.direction !== undefined && !['up', 'down', 'left', 'right'].includes(a.direction)) return bad('direction', 'up, down, left or right');
   if (a.amount !== undefined && !(Number.isInteger(a.amount) && a.amount >= 1 && a.amount <= 20)) return bad('amount', 'a whole number 1–20');
   if (a.ms !== undefined && !(Number.isInteger(a.ms) && a.ms >= 0 && a.ms <= 10000)) return bad('ms', 'a whole number 0–10000');
-  const need = (k, why = `${a.cmd} needs "${k}"`) => (a[k] === undefined ? { ok: false, error: why } : null);
+  // the missing field with a whole example step: a small model fixes a shape faster than a sentence
+  const SAMPLE = { app: '"calc"', ref: '"@s8f3k2p9:e5"', text: '"привет"', keys: '"ctrl+s"' };
+  const need = (k, why = `${a.cmd} needs "${k}", like {"done": false, "cmd": "${a.cmd}", "${k}": ${SAMPLE[k] || '"…"'}}`) => (a[k] === undefined ? { ok: false, error: why } : null);
   const missing = (NEEDS_REF.includes(a.cmd) && need('ref'))
     || (['set_value', 'type', 'select'].includes(a.cmd) && need('text'))
     || (a.cmd === 'press' && need('keys'))

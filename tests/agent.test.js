@@ -82,6 +82,17 @@ function fake(calls) {
 const look = { done: false, cmd: 'snapshot', app: 'Notepad', ref: '' }; // empty fields, as a schema reply has them
 const click = { done: false, cmd: 'click', ref: '@s1:e1' };
 
+test('runTask: arguments nested in "args" are read flat; a missing field comes back with an example', async () => {
+  const f = fake([{ done: false, cmd: 'snapshot', ref: null, args: { app: 'calc' } }, { done: false, cmd: 'launch', text: 'calc' }]);
+  const seen = [];
+  const chat = f.chat;
+  f.chat = async (msgs, ...rest) => { seen.push(msgs.at(-1).content); return chat(msgs, ...rest); };
+  await runTask('на компьютере открой калькулятор', [], { ...f, origin: 'pc', confirm: async () => 'yes', covered: () => true, grant: () => {} }, new AbortController().signal);
+  assert.deepStrictEqual(f.ran[0].slice(0, 1), ['snapshot']);
+  assert.ok(f.ran[0].some((a) => /CalculatorApp/.test(a))); // looked at by its running name, not "calc"
+  assert.match(seen.at(-1), /launch needs "app", like \{"done": false, "cmd": "launch", "app": "calc"\}/);
+});
+
 test('runTask: looks without asking, asks before a click, the hour skips the next ask', async () => {
   const f = fake([look, click, click]);
   const asked = [];

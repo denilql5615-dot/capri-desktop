@@ -64,6 +64,11 @@ const SOUND_EXT = /\.(mp3|wav|ogg|m4a)$/i;
 
 const OLLAMA_SITE = 'https://ollama.com';
 
+// Her two local brains (brains.js): the fast one always in, the main one when asked for or needed.
+const brainsLib = require('./brains');
+const brains = new brainsLib.Brains({ ollama });
+ollama.pin(brains.fast);
+
 protocol.registerSchemesAsPrivileged([
   { scheme: 'capri', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ]);
@@ -412,8 +417,11 @@ function ensureAgentSessions() {
         }
         return { text, artifacts };
       }
-      return ollama.chat({ model, keepAlive: agent === 'faun' ? 0 : '5m', messages: [
-        { role: 'system', content: agent === 'faun' ? 'Веди ролевую сцену на русском, следуя сеттингу пользователя.' : `Ты Капри. Отвечай по-русски. ${hints}` },
+      // the main one asked for in the hub: the fast one makes room first (brains.js)
+      if (model === brains.main) await brains.use('main');
+      const rp = agent === 'faun' && !brainsLib.isEmergency(lastUser);
+      return ollama.chat({ model, messages: [
+        { role: 'system', content: rp ? `Веди ролевую сцену на русском, следуя сеттингу пользователя. ${brainsLib.RP_PROMPT}` : `Ты Капри. Отвечай по-русски. ${hints}` },
         ...messages,
       ] }, delta, signal);
     }, (id, delta) => chatsWin?.webContents.send('agents:update', { id, delta }));
@@ -613,7 +621,20 @@ function toVault(cfg, worker, said, answer, artifacts = []) {
 async function switchSpokenModel(wanted) {
   const models = await ollama.models().catch(() => null);
   if (!models) return { ok: false, error: 'Ollama сейчас недоступна.' };
-  const model = ollama.findSpokenModel(models, String(wanted || '').slice(0, 80));
+  const said = String(wanted || '').slice(0, 80);
+  // roleplay is a mode, not a model; "основная" / "быстрая" move between her two brains, the roles stay on
+  if (/ролев|\brp\b/i.test(said)) {
+    updateConfig({ rp: true });
+    return { ok: true, model: 'ролевой режим' };
+  }
+  if (brains.ready(models) && /^(основн|больш|быстр|л[её]гк|обычн|рабоч|авто)/i.test(said)) {
+    chatModels = models;
+    updateConfig({ provider: 'ollama', chatModel: 'auto', ...(/^(обычн|рабоч)/i.test(said) && { rp: false }) });
+    if (/^(основн|больш)/i.test(said)) await brains.use('main');
+    else await brains.release();
+    return { ok: true, model: brains.current() === brains.main ? 'основную (Heretic 26B)' : 'быструю (Heretic E4B)' };
+  }
+  const model = ollama.findSpokenModel(models, said);
   if (!model) return { ok: false, error: `Не нашла установленную модель «${String(wanted || '').slice(0, 80)}».` };
   chatModels = models;
   updateConfig({ provider: 'ollama', chatModel: model });
@@ -700,6 +721,7 @@ async function quickAnswer(said) {
     }
     if (quick.isQuickFreeMemory(said)) {
       const beforeRam = await system.info('ram');
+      brains.forget();
       const unloaded = await ollama.unloadAll().catch(() => []);
       if (unloaded.length) await new Promise((r) => setTimeout(r, 800));
       const [afterRam, gpu] = await Promise.all([
@@ -1040,10 +1062,18 @@ function rebuildTray() {
           label: p.label, type: 'radio', checked: cfg.provider === provider, click: () => pickProvider(provider),
         })),
         { type: 'separator' },
+        // her two brains (brains.js): the fast one always in, the main one when needed; or one model by hand
+        ...(cfg.provider === 'ollama' && brains.ready(chatModels) ? [
+          { label: 'Авто: быстрая E4B + основная 26B', type: 'radio', checked: brains.isAuto(cfg.chatModel, chatModels), click: () => updateConfig({ chatModel: 'auto' }) },
+          { label: 'Ролевой режим (18+)', type: 'checkbox', checked: cfg.rp === true, click: (item) => updateConfig({ rp: item.checked }) },
+          { type: 'separator' },
+        ] : []),
         ...(chatModels?.length
           ? chatModels.map((name) => ({
             label: cloud.free.includes(name) ? `${name} · ${t.cloudFree}` : name,
-            type: 'radio', checked: name === pickModel(cfg), click: () => updateConfig({ chatModel: name }),
+            type: 'radio',
+            checked: !(cfg.provider === 'ollama' && brains.ready(chatModels) && brains.isAuto(cfg.chatModel, chatModels)) && name === pickModel(cfg),
+            click: () => updateConfig({ chatModel: name }),
           }))
           : [{ label: (chatError || t.noOllama).slice(0, 80), enabled: false }]),
         // Ollama's free cloud models when you're signed in to it, fetched on the click (it takes a second)
@@ -1300,8 +1330,8 @@ async function applyPhone() {
         if (fast) return { text: fast, brain: 'quick' };
         const cfg = config.load();
         if (!chatModels) await refreshModels();
+        const enriched = await prepLocal(cfg, messages); // her brain picked first, then the model it means
         const model = pickModel(cfg);
-        const enriched = await withPim(withNotes(messages), said);
         const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages: enriched }, () => {}, signal);
         return { text, brain: model || cfg.provider };
       },
@@ -1434,6 +1464,8 @@ async function applyPhone() {
 // on this PC (a cloud model only once you pick it).
 function pickModel(cfg = config.load()) {
   if (!chatModels?.length) return null;
+  // both brains installed and nothing else picked by hand: the fast one, or the main one while it's in
+  if (cfg.provider === 'ollama' && brains.ready(chatModels) && brains.isAuto(cfg.chatModel, chatModels)) return brains.current();
   if (chatModels.includes(cfg.chatModel)) return cfg.chatModel;
   return chatModels.find((m) => !ollama.isCloud(m)) || chatModels[0];
 }
@@ -1510,6 +1542,8 @@ async function routeOf(text, context = [], signal) {
   const cfg = config.load();
   const media = photo.kind(text); // "скинь фото" / "скинь видео": ComfyUI, whoever is her brain
   if (media) return { worker: media };
+  if (brainsLib.rpCommand(text) !== null) return { worker: null }; // her roleplay mode on/off: hers
+
   if (cfg.provider === 'claude') return { worker: null };
   const named = workers.route(text);
   if (named === 'stop') return { worker: 'stop' };
@@ -1526,9 +1560,12 @@ async function routeOf(text, context = [], signal) {
   // Use the configured chat model for routing too; loading a second local model would waste VRAM.
   // model, loaded anyway: with the roleplay one in VRAM a second model wouldn't fit, so keywords then
   const model = cfg.provider === 'ollama' && cfg.router !== false ? pickModel(cfg) : null;
-  const tuned = cfg.routerModel || 'gemma4:26b-a4b-it-qat';
-  const d = await router.decide(text, { model: model === tuned ? model : null, context, signal });
-  const hands = () => workers.handsWorker(cfg.computerWorker) || (cfg.provider === 'ollama' ? 'computer' : null);
+  // the router's prompt suits her Gemma family: either brain (the fast one, mostly) or one you set
+  const tuned = brains.isRole(model) || model === (cfg.routerModel || 'gemma4:26b-a4b-it-qat');
+  const d = await router.decide(text, { model: tuned ? model : null, context, signal });
+  // "сделай локально", "без облака": no cloud worker unless you named one, her main brain does it here
+  const localOnly = cfg.provider === 'ollama' && brains.ready(chatModels) && brainsLib.wantsLocal(text);
+  const hands = () => (localOnly ? 'computer' : workers.handsWorker(cfg.computerWorker) || (cfg.provider === 'ollama' ? 'computer' : null));
   let worker = null;
   let computer = false;
   if (named) { // Claude or Codex named: theirs, the computer included
@@ -1537,11 +1574,11 @@ async function routeOf(text, context = [], signal) {
   } else if (keyComputer || (canHands && d.target === 'computer')) {
     worker = hands();
     computer = true;
-  } else if (d.target === 'worker') {
+  } else if (d.target === 'worker' && !localOnly) {
     worker = workers.handsWorker(cfg.computerWorker) || (cfg.computerWorker !== 'capri' && workers.findAgy() ? 'gemini' : null); // 'capri' chosen, or none on this PC: hers
   }
-  console.log(`[capri] route: ${worker || 'capri'}${computer ? ' +pc' : ''} ${d.tier} (${d.by}${d.why ? `; ${d.why}` : ''})`);
-  return { worker, tier: d.tier, computer };
+  console.log(`[capri] route: ${worker || 'capri'}${computer ? ' +pc' : ''}${localOnly ? ' local' : ''} ${d.tier} (${d.by}${d.why ? `; ${d.why}` : ''})`);
+  return { worker, tier: d.tier, computer, localOnly };
 }
 
 // ---------------------------------------------------------------- her hands on the PC (agent.js, policy.js)
@@ -1591,12 +1628,17 @@ async function handsFor(worker, computer, signal) {
 async function computerTask(messages, send, signal) {
   const cfg = config.load();
   if (!chatModels) await refreshModels();
+  // a task on the PC with her own hands is real work: her main brain, not the fast one
+  if (cfg.provider === 'ollama' && brains.ready(chatModels) && brains.isAuto(cfg.chatModel, chatModels)) await brains.use('main');
   const model = pickModel(cfg);
   const history = messages.filter((m) => m.role !== 'system').slice(0, -1);
   return agent.runTask(yourWords(messages), history, {
     driver: desktopCli,
     origin: 'pc',
-    chat: (msgs, schema, sig) => ollama.jsonChat({ model, messages: msgs, schema }, sig),
+    // plain JSON mode, not the step schema: held to it, the Heretic models put the program in the wrong
+    // field every time ("text": "calc"); free, they follow the examples in agent.PROMPT. desktop.validate
+    // checks each step anyway.
+    chat: (msgs, _schema, sig) => ollama.jsonChat({ model, messages: msgs, schema: 'json' }, sig),
     confirm: (question) => askUser(question, signal),
     covered: (cls, ask) => grant.covers(cls, ask),
     grant: () => {
@@ -1622,6 +1664,7 @@ const comfy = new Comfy({
   appData: app.getPath('appData'),
   // the GPU for ComfyUI: every chat model out of it, whichever is loaded (they come back on the next message)
   beforeJob: async () => {
+    brains.forget(); // the main one goes with the rest; the fast one comes back on the next message
     const out = await ollama.unloadAll().catch(() => []);
     if (out.length) console.log(`[capri] unloaded for a picture: ${out.join(', ')}`);
   },
@@ -1720,6 +1763,22 @@ function galleryList() {
 // closed to new keys), or signed out of Ollama. A model on this PC first. The model that answered is
 // kept for next time.
 
+// Her own answer on this PC gets ready (brains.js): the main brain when you ask for it ("основная
+// модель", "локально"), for roleplay, or standing in for the cloud (main); the fast one otherwise. Your
+// notes and mail added as always; the roleplay prompt only when it's on and nothing sounds like an
+// emergency. Resolves with the messages to send.
+async function prepLocal(cfg, messages, { main = false } = {}) {
+  const said = yourWords(messages);
+  const rp = cfg.rp === true && !brainsLib.isEmergency(said);
+  if (cfg.provider === 'ollama' && brains.ready(chatModels) && brains.isAuto(cfg.chatModel, chatModels)) {
+    if (!main && brainsLib.wantsFast(said)) await brains.release();
+    else if (main || rp || brainsLib.wantsMain(said) || brainsLib.wantsLocal(said)) await brains.use('main');
+    else await brains.use('fast');
+  }
+  const enriched = await withPim(withNotes(messages), said);
+  return rp ? brainsLib.withRp(enriched) : enriched;
+}
+
 async function chatWithFallback(cfg, messages, send, signal, streamed) {
   let model = pickModel(cfg);
   const tried = new Set();
@@ -1769,7 +1828,8 @@ async function sayAboutSnap({ id, persona, prompt, history = [] }) {
   const chatModel = pickModel(cfg);
   if (!chatModel) return { ok: false, code: 'noai' };
   if (cfg.provider === 'claude') return { ok: false, code: 'novision', model: 'Claude Code' };
-  const model = cfg.provider === 'ollama' ? ollama.screenModel(chatModels) : chatModel;
+  // both brains can see: whichever is in looks, no swap
+  const model = cfg.provider !== 'ollama' ? chatModel : brains.isRole(chatModel) ? chatModel : ollama.screenModel(chatModels);
   if (!model || (cfg.provider === 'ollama' && !(await ollama.canSee(model)))) return { ok: false, code: 'novision', model: chatModel };
   const switched = cfg.provider === 'ollama' && model !== chatModel;
   if (switched && !(await ollama.unload(chatModel))) return { ok: false, error: `Не удалось освободить ${chatModel}.`, model };
@@ -1994,6 +2054,15 @@ function registerIpc() {
         chatsWin?.webContents.send('chats:delta', text); // her Chats window shows it coming too
       };
       const cfg = config.load();
+      // "включи / выключи ролевой режим": a mode of hers (brains.js), not a message to answer
+      const rpTurn = brainsLib.rpCommand(yourWords(messages));
+      if (rpTurn !== null) {
+        updateConfig({ rp: rpTurn });
+        rebuildTray();
+        const said = rpTurn ? 'Ролевой режим включён. Задай сцену.' : 'Ролевой режим выключен.';
+        send(said);
+        return { ok: true, text: said };
+      }
       // who takes it (routeOf: Claude or Codex named, real work, a task on the PC, or hers) and how hard
       const route = await routeOf(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-3, -1), abort.signal);
       abort.signal.throwIfAborted();
@@ -2025,11 +2094,26 @@ function registerIpc() {
         toVault(cfg, null, yourWords(messages), fast);
         return { ok: true, text: fast };
       }
-      const text = ['claude', 'codex', 'gemini'].includes(worker) ? await workers.runWorker(worker, cfg, messages, send, abort.signal, desktopOpts)
+      // the cloud chain (Claude → Codex → Antigravity) gave nothing: no internet, limits, all down. Her
+      // main brain answers here instead, and says so.
+      const cloudOrLocal = async () => {
+        try {
+          return await workers.runWorker(worker, cfg, messages, send, abort.signal, desktopOpts);
+        } catch (err) {
+          if (abort.signal.aborted || err?.message === 'stopped' || cfg.provider !== 'ollama' || !brains.ready(chatModels)) throw err;
+          console.warn(`[capri] cloud chain gave nothing (${err.message}): her main brain answers`);
+          actualWorker = null;
+          overlay?.webContents.send('chat:delta', { id, status: 'Облачные агенты не ответили — делаю сама, на основной модели…', tag: 'local' });
+          const note = '(облако не ответило — отвечаю сама, локально)\n\n';
+          send(note);
+          return note + await chatWithFallback(cfg, await prepLocal(cfg, messages, { main: true }), send, abort.signal, () => false);
+        }
+      };
+      const text = ['claude', 'codex', 'gemini'].includes(worker) ? await cloudOrLocal()
         : worker === 'computer' ? await computerTask(messages, send, abort.signal)
         : worker === 'photo' ? await photoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal)
         : worker === 'video' ? await videoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal)
-        : await chatWithFallback(cfg, await withPim(withNotes(messages), yourWords(messages)), send, abort.signal, () => streamed);
+        : await chatWithFallback(cfg, await prepLocal(cfg, messages), send, abort.signal, () => streamed);
       if (cfg.provider === 'claude') saveMemory({ claude: llm.claudeMemory() });
       if (!worker) noteLater([...messages, { role: 'assistant', content: text }]);
       recentTurns = [{ role: 'user', content: yourWords(messages) }, { role: 'assistant', content: text }];
@@ -2111,7 +2195,8 @@ function registerIpc() {
   // where her AI runs, for what she tells you before she looks: { local, provider, model }
   ipcMain.handle('look:where', () => {
     const cfg = config.load();
-    const model = cfg.provider === 'ollama' ? ollama.screenModel(chatModels) || pickModel(cfg) : pickModel(cfg);
+    const picked = pickModel(cfg);
+    const model = cfg.provider === 'ollama' && !brains.isRole(picked) ? ollama.screenModel(chatModels) || picked : picked;
     const provider = cfg.provider === 'ollama' && ollama.isCloud(model) ? 'Ollama' : llm.PROVIDERS[cfg.provider]?.label || cfg.provider;
     return { local: llm.isLocal(cfg.provider, cfg, model), provider, model };
   });

@@ -4,13 +4,15 @@ const fs = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const path = require('node:path');
 const { fingerprint } = require('./agent-import');
+const { FAST, MAIN } = require('./brains');
 
 const MODELS = {
   claude: [['', 'По умолчанию'], ['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku']],
   codex: [['', 'По умолчанию'], ['gpt-6.1-sol', 'GPT‑6.1 Sol'], ['gpt-6-astra', 'GPT‑6 Astra'], ['gpt-6-sol', 'GPT‑6 Sol'], ['gpt-5.6-sol', 'GPT‑5.6 Sol'], ['gpt-5.6-terra', 'GPT‑5.6 Terra']],
   gemini: [['gemini-4-argon-medium', 'Argon'], ['claude-opus-5-5-medium', 'Opus'], ['claude-sonnet-5-5-medium', 'Sonnet'], ['gemini-3.8-flash-high', 'Flash High'], ['gemini-cli-free', 'Gemini CLI (Free)']],
-  gemma: [['gemma4:26b-a4b-it-qat', 'Gemma 4 26B'], ['qwen3:8b', 'Qwen 3 8B (Fast VRAM)'], ['qwen3.5:4b', 'Qwen 3.5 4B (Lite)']],
-  faun: [['hf.co/limloop/MN-12B-Faun-RP-RU-GGUF:Q3_K_M', 'Faun RP RU']],
+  gemma: [[MAIN, 'Heretic 26B (основная)'], [FAST, 'Heretic E4B (быстрая)']],
+  // roleplay is a prompt, not a model (brains.js): the key stays 'faun' so older sessions still open
+  faun: [[MAIN, 'RP · Heretic 26B']],
 };
 
 const isLocal = (agent) => agent === 'gemma' || agent === 'faun';
