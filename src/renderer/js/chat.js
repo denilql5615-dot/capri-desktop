@@ -384,7 +384,7 @@ export class Chat {
       line: tiny ? fmt(t.tiny, { model: shortModel }) : hello,
       actions: tiny ? [{ id: 'better', label: t.better, primary: true }] : [],
       onAction: () => {
-        this.panel.hide(); // her chat holds off her guide's panels: it goes first
+        this.panel.hide({ force: true }); // her chat holds off her guide's panels: it goes first
         this.onBetterModel?.();
       },
       chat: {
@@ -427,6 +427,7 @@ export class Chat {
     this.host.focusOverlay(false);
     this.capri.nextMove = performance.now() + 30000;
     this.capri.nextGaze = performance.now() + 60000;
+    if (abort) this.panel?.hide?.({ force: true });
   }
 
   // Ctrl+Alt+X: the answer under way stops (Claude or Codex at work: killed, with what it started)

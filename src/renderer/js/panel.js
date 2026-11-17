@@ -91,12 +91,12 @@ export class Panel {
     this.chatInput.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         this.current?.onClose?.();
-        this.hide();
+        this.hide({ force: true });
       }
     });
     this.chatClose.addEventListener('click', () => {
       this.current?.onClose?.();
-      this.hide();
+      this.hide({ force: true });
     });
 
     this.el.addEventListener('click', () => {
@@ -506,7 +506,8 @@ export class Panel {
     this.log.hidden = entries.length === 0;
   }
 
-  hide() {
+  hide({ force = false } = {}) {
+    if (!force && this.current?.chat && !this.current.guide) return;
     clearTimeout(this.hideTimer);
     clearInterval(this.decodeTimer);
     this.stopStream();
