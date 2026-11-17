@@ -184,6 +184,17 @@ const NOT_A_NAME = new Set(('and et y e и it ça ca lo la o open ouvre ouvrir o
 const THEN_FOLDER = /(?:ouvre|ouvrir|open|show|montre|abre|abrir|открой|покажи)\s+(?:moi\s+)?(?:le |la |the |its |son |el |a |o )?(?:dossier|folder|carpeta|pasta|папку)/i;
 const THEN_OPEN = /(?:et|and|y|e|и)\s+(?:l['’])?(?:ouvre|open|lance|abre|открой)(?:[- ](?:le|la|les)|\s+(?:it|them|lo|la|o|его|её))?\s*[.!?]*$/i;
 const searched = (text) => text.replace(/^\s*capri[,!:]?\s+/i, '').toLowerCase().split(/[^\p{L}\p{N}.]+/u).filter((w) => w && !NOT_SEARCHED.has(w)).join(' ');
+// "найди через тор …", "узнай по тору …", "tor: …", a .onion link: a search through her Tor node (tor.js has the
+// same words); the Tor words are taken out of what is searched
+const TOR_WORD = /(?<!\p{L})(?:тор|тора|торе|тору|тором|tor)(?!\p{L})|\.onion(?!\p{L})|(?<!\p{L})(?:онион\p{L}*|луков\p{L}*|onion)(?!\p{L})/iu;
+const TOR_PHRASE = /(?<!\p{L})(?:через|по|в|во|используя|с\s+помощью|via|through|over|using)?\s*(?:тор|тора|торе|тору|тором|tor)(?!\p{L})|(?<!\p{L})(?:анонимно|anonymously)(?!\p{L})/giu;
+const TOR_VERB = /найди|поищи|найти|ищи|узнай|выясни|проверь|посмотри|загугли|погугли|search|find|look\s*up|check/i;
+export function torAsked(text) {
+  const t = String(text || '');
+  if (!TOR_WORD.test(t) || !TOR_VERB.test(t)) return null;
+  const q = searched(t.replace(/^\s*(?:capri|капри)[,!:]?\s+/i, '').replace(TOR_PHRASE, ' ').replace(/(?<!\p{L})(?:в\s+интернете|в\s+сети|в\s+гугле|онлайн|online)(?!\p{L})/giu, ' '));
+  return q || null;
+}
 // a Roblox game by its name: "in my roblox play steal a brain rot", "lance grow a garden sur roblox"
 const ROBLOX_VERB = /(?:^|\s)(?:play|joue(?:r)?(?: à| a)?|lance|launch|start|ouvre|open|mets|go to|va sur|juega(?: a)?|jogue|jogar|запусти|включи)\s+/gi;
 function robloxGame(text) {
@@ -440,8 +451,41 @@ export class Chat {
     this.panel.setChatBusy(false);
   }
 
+  // A search asked "через тор": her Tor node only, and kept off every record — not in her history,
+  // not in her Chats window, not in your vault, not given to the router or her model as context.
+  async sendTor(text, query) {
+    const id = Date.now();
+    this.turn = id;
+    this.panel.setChatBusy(true);
+    this.panel.setActions([]);
+    this.panel.chatTurn({ quote: text, face: 'aside' });
+    this.capri.pulse();
+    this.zap?.();
+    let line;
+    try {
+      const res = await this.host.webSearch(query, { tor: true });
+      if (res && res.answer) {
+        const cited = res.sources.filter((s) => res.answer.includes(`[${s.n}]`));
+        const list = (cited.length ? cited : res.sources.slice(0, 3)).map((s) => `[${s.n}] ${s.title} — ${s.url}`).join('\n');
+        line = `🧅 ${res.answer}\n\n${list}`;
+      } else {
+        line = `🧅 ${(res && res.error) || 'Через Tor не вышло.'}`;
+      }
+    } catch (err) {
+      line = `🧅 Через Tor не вышло: ${err.message}`;
+    }
+    if (this.turn !== id) return;
+    this.turn = 0;
+    this.panel.stream(line, { done: true }); // shown to you, kept nowhere
+    this.panel.setChatBusy(false);
+  }
+
   async send(text) {
     if (this.turn || !this.open) return;
+    if (!this.agent) {
+      const torQuery = torAsked(text);
+      if (torQuery) return this.sendTor(text, torQuery);
+    }
     const id = Date.now();
     this.turn = id;
     this.routing = id;

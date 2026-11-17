@@ -42,6 +42,7 @@ const { Planner, syncReminders } = require('./planner');
 const phonepack = require('./phonepack');
 const web = require('./web');
 const capriBrowser = require('./browser');
+const tor = require('./tor');
 const photo = require('./photo');
 const { Router, workerSettings, hasSecret } = require('./router');
 const quick = require('./quick');
@@ -1893,6 +1894,10 @@ function browserMenu(cfg) {
         shell.openPath(folder);
       } },
       { label: 'Записывать поиск в журнал', type: 'checkbox', checked: cfg.vaultSearch !== false, click: (item) => updateConfig({ vaultSearch: item.checked }) },
+      { type: 'separator' },
+      // her second node: Tor, for requests that say "через тор" (tor.js); never logged
+      { label: 'Узел Tor («через тор» в запросе)', type: 'checkbox', checked: cfg.tor !== false, click: (item) => updateConfig({ tor: item.checked }) },
+      { label: 'Открыть окно Tor', enabled: cfg.tor !== false, click: () => torReady(cfg).then(() => capriBrowser.openForSignIn('about:blank', torOpts(cfg))).catch((err) => console.warn('tor:', err.message)) },
       ...(prof ? [
         { label: `Профиль: ${prof} (твой, через порт ${cfg.capriBrowserPort || capriBrowser.DEFAULT_PORT})`, enabled: false },
         { label: 'Открыть профиль (с портом для Капри)', click: () => capriBrowser.openForSignIn('about:blank', browserOpts(cfg)).catch((err) => console.warn('browser:', err.message)) },
@@ -1902,6 +1907,46 @@ function browserMenu(cfg) {
       ]),
     ],
   };
+}
+
+// Her Tor node (tor.js): tor.exe on this PC, her own Camoufox profile TOR through it, its own window and
+// control port beside MAIN. A Tor request goes through it or fails: no fallback to MAIN or a plain
+// download, a check that the window is on Tor before anything is sent, and nothing written down.
+function torOpts(cfg) {
+  return {
+    app, browser: cfg.capriBrowser, profile: cfg.torProfile || path.join(app.getPath('userData'), 'tor-profile'), profileName: 'TOR',
+    port: cfg.torBrowserPort, searchUrl: tor.ONION_DDG, verifyUrl: tor.CHECK_URL, timeoutMs: 30000, chars: 4000,
+  };
+}
+
+async function torReady(cfg) {
+  if (cfg.tor === false) throw new Error('узел Tor выключен в трее');
+  await tor.ensure({ exe: cfg.torExe, torrc: cfg.torrc, logFile: cfg.torLog, socksPort: cfg.torSocksPort });
+  tor.ensureProfile(torOpts(cfg).profile, cfg.torSocksPort);
+}
+
+async function torSearch(q, cfg) {
+  let session = null;
+  try {
+    await torReady(cfg);
+    const roles = brains.ready(await ollama.models().catch(() => []));
+    const getSession = async () => (session = session || await capriBrowser.openSession(torOpts(cfg)));
+    const said = await web.answer(q, {
+      chat: async (messages, { howto } = {}) => {
+        const model = roles ? (howto ? await brains.use('main') : brains.current()) : cfg.chatModel;
+        return ollama.chat({ model, messages, numPredict: howto ? 1200 : 500 }, () => {});
+      },
+      browserSearch: async (query) => (await getSession()).search(query),
+      renderMany: async (urls) => (await getSession()).readMany(urls),
+      fetchImpl: async () => { throw new Error('no plain downloads for a Tor request'); },
+    });
+    if (said.answer) return { answer: said.answer, sources: said.sources, blocked: said.blocked, tor: true };
+    return { error: 'Через Tor поиск ничего не нашёл.', tor: true };
+  } catch (err) {
+    return { error: `Через Tor не вышло: ${err.message}. Мимо Tor не отправляла.`, tor: true };
+  } finally {
+    if (session) await session.close();
+  }
 }
 
 // her browser settings for browser.js: which browser, and your profile with its control port when set
@@ -2495,10 +2540,12 @@ function registerIpc() {
   ipcMain.handle('files:screenshot', () => files.screenshot(targetDisplay()).catch(() => null));
   // a search on the web: she reads it herself (our SearXNG, through Proton) and answers with sources;
   // with the search server out of reach (PC proxy down, server off) the browser opens, as before
-  ipcMain.handle('web:search', async (_e, query) => {
+  ipcMain.handle('web:search', async (_e, query, how = {}) => {
     const q = String(query || '').trim().slice(0, 300);
     if (!q) return false;
     const cfg = config.load();
+    // asked "через тор": her Tor node or nothing (tor.js); never written down
+    if (how && how.tor) return torSearch(q, cfg);
     const browserOnly = cfg.webMode === 'browser';
     let session = null;
     // her search log in your vault (Сырьё/Поиск): every question, how, what came up, what she read

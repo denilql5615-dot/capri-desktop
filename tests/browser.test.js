@@ -174,6 +174,32 @@ test('your profile: two jobs at once share one session; it ends when the last on
   assert.deepStrictEqual([connects, seen.disconnected], [1, true]);
 });
 
+test('Tor node: its window proves IsTor before anything is sent; otherwise nothing goes out', async () => {
+  browser.forgetWindows();
+  const seen = {};
+  const fake = fakeAttached(seen);
+  const bc = fake.defaultBrowserContext();
+  const make = bc.userContext.createBrowsingContext;
+  let isTor = true;
+  bc.userContext.createBrowsingContext = async (...a) => { // tabs answer the check page with IsTor
+    const c = await make(...a);
+    const page = (await bc.pages()).find((p) => p.mainFrame().browsingContext === c);
+    const ev = page.evaluate;
+    page.evaluate = async (fn) => (seen.opened.at(-1)?.includes('api/ip') ? `{"IsTor":${isTor},"IP":"x"}` : ev(fn));
+    return c;
+  };
+  const opts = { app, pick, ...fast, profile: 'C:/p/TOR', port: 9407, connect: async () => fake, verifyUrl: 'https://check.torproject.org/api/ip', searchUrl: 'https://duckduckgogg42abc.onion/html/?q={q}' };
+  const s = await browser.openSession(opts);
+  await s.search('x');
+  assert.ok(seen.opened.some((u) => u.startsWith('https://duckduckgogg42abc.onion/html/?q=x')));
+  await s.close();
+  isTor = false;
+  seen.opened.length = 0;
+  await assert.rejects(browser.openSession(opts), /не подтвердило, что идёт через Tor/);
+  assert.ok(!seen.opened.some((u) => u.includes('onion/html')));
+  assert.equal(seen.disconnected, true);
+});
+
 test('your profile: a session left behind in the browser is named as such, not as "no port"', async () => {
   browser.forgetWindows();
   await assert.rejects(browser.openSession({ app, pick, profile: 'C:/p/MAIN', profileName: 'MAIN', port: 9406, profileBusy: () => true,

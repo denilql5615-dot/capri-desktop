@@ -118,7 +118,7 @@ contextBridge.exposeInMainWorld('host', {
   searchFiles: (query) => ipcRenderer.invoke('files:search', query),
   openFile: (file, reveal) => ipcRenderer.invoke('files:open', { file, reveal }),
   screenshot: () => ipcRenderer.invoke('files:screenshot'),
-  webSearch: (query) => ipcRenderer.invoke('web:search', query),
+  webSearch: (query, how) => ipcRenderer.invoke('web:search', query, how || {}), // how.tor: her Tor node
   openSite: (address) => ipcRenderer.invoke('apps:site', address),
   focusOverlay: (on) => ipcRenderer.send('overlay:focus', Boolean(on)),
 });

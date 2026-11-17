@@ -328,6 +328,22 @@ async function openSession(opts = {}) {
     return tab;
   };
   const done = async (page) => { tabs.delete(page); await Promise.resolve().then(() => page.close()).catch(() => {}); };
+  // a node that must be on Tor proves it first, from inside this very browser; else nothing is sent
+  if (opts.verifyUrl) {
+    const page = await pageFor();
+    let ok = false;
+    try {
+      await page.goto(opts.verifyUrl, { waitUntil: 'domcontentloaded', timeout: Math.max(timeoutMs, 30000) }).catch(() => {});
+      const said = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
+      ok = /"IsTor"\s*:\s*true/.test(said);
+    } finally {
+      await done(page);
+    }
+    if (!ok) {
+      if (attached) await w.release();
+      throw new Error('окно Tor не подтвердило, что идёт через Tor — запрос не отправлен');
+    }
+  }
   const empty = () => ({ text: '', title: '', blocked: false });
   const read = async (url) => {
     if (!/^https?:\/\//i.test(url)) return empty();
@@ -367,7 +383,8 @@ async function openSession(opts = {}) {
     if (!q) return [];
     const page = await pageFor();
     try {
-      await page.goto(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, { waitUntil: 'domcontentloaded', timeout: timeoutMs }).catch(() => {});
+      const at = (opts.searchUrl || 'https://html.duckduckgo.com/html/?q={q}').replace('{q}', encodeURIComponent(q));
+      await page.goto(at, { waitUntil: 'domcontentloaded', timeout: Math.max(timeoutMs, opts.verifyUrl ? 30000 : 0) }).catch(() => {});
       const raw = await page.evaluate(() => [...document.querySelectorAll('.result')].map((r) => {
         const a = r.querySelector('a.result__a');
         const s = r.querySelector('.result__snippet');
@@ -395,8 +412,9 @@ function duckResults(raw) {
     let url = String(r.href || '');
     try {
       const u = new URL(url, 'https://duckduckgo.com');
-      if (/duckduckgo\.com$/.test(u.hostname) && u.pathname === '/l/') url = u.searchParams.get('uddg') || '';
-      else if (/duckduckgo\.com$/.test(u.hostname)) continue; // y.js ads and its own links
+      const ddg = /duckduckgo\.com$|^duckduckgogg42\w*\.onion$/.test(u.hostname); // its site or its onion
+      if (ddg && u.pathname === '/l/') url = u.searchParams.get('uddg') || '';
+      else if (ddg) continue; // y.js ads and its own links
       const host = new URL(url).hostname.replace(/^www\./, '');
       if (!/^https?:/.test(url) || seen.has(host)) continue;
       seen.add(host);

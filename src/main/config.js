@@ -23,6 +23,14 @@ const DEFAULTS = {
   capriBrowserProfile: '', // a profile folder of yours for her (e.g. Camoufox MAIN); '' = her own profile per browser
   capriBrowserProfileName: '', // its name, for the tray
   capriBrowserPort: 9339, // the control port she attaches to on 127.0.0.1 when that profile's browser runs
+  // her Tor node (tor.js): asked "через тор" — tor.exe here, her own Camoufox profile TOR, its own window
+  tor: true,
+  torExe: 'D:\\Capri\\tools\\tor\\tor\\tor.exe',
+  torrc: 'D:\\Capri\\tools\\tor\\torrc',
+  torLog: 'D:\\Capri\\tools\\tor\\state\\notice.log',
+  torSocksPort: 9050,
+  torBrowserPort: 9340,
+  torProfile: '', // '' = <her data folder>/tor-profile
   webMode: 'search', // 'search' = SearXNG + plain reading, browser for the rest; 'browser' = everything through the browser
   provider: 'ollama', // who answers her chat: a key of llm.js PROVIDERS
   apiKeys: {},       // { openai: 'sk-...' }, else the provider's env variable
