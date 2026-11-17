@@ -165,7 +165,14 @@ async function askIn(page, prompt, { chat = null, model = null, files = [], clip
       await page.keyboard.press('Escape');
       throw new Error(`в меню Gemini нет модели «${want}»`);
     }
-    await pause(1000);
+    // the switch settles a few seconds after the click: a question sent before it hangs and is dropped
+    for (let i = 0; i < 10; i++) {
+      await pause(1000);
+      const now = await page.evaluate(() => ((document.querySelector('bard-mode-switcher') || {}).innerText || '').replace(/\s+/g, ' '));
+      if (now.toLowerCase().includes(want.toLowerCase()) && i >= 2) break;
+    }
+    await page.keyboard.press('Escape').catch(() => {});
+    await pause(1500);
   }
   // files. Gemini ignores files set into its upload fields by automation, so: images go in as a real
   // Ctrl+V from the Windows clipboard (what was on it is put back after); text, code and documents go
@@ -239,7 +246,7 @@ async function askIn(page, prompt, { chat = null, model = null, files = [], clip
     if (s.count > before.count && !s.busy && s.text.trim()) {
       same = s.text === prev ? same + 1 : 0;
       if (same >= stableTicks - 1 && s.text === prev) {
-        const answer = s.text.replace(/\n+\s*image_\d+\.\w+\s*$/i, '').trim(); // the pasted image's name, shown under it
+        const answer = s.text.replace(/(?:\s*\n\s*image_[0-9a-f]+\.\w+)+\s*$/i, '').trim(); // pasted images' names, shown under it
         return { answer, chat: chatId(s.path), model: s.model, signedIn: s.signedIn };
       }
     }
