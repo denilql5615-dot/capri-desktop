@@ -5,12 +5,13 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { FAST } = require('../src/main/brains');
+const { Brains, FAST, MAIN } = require('../src/main/brains');
 const {
   SYSTEM_PROMPT,
   VERDICT_SCHEMA,
   parseJudgeReply,
   messagesForJudge,
+  createLoadedModelCheck,
   createVerdictJudge,
 } = require('../src/main/brain/verdict-judge');
 const { createShadowHook } = require('../src/main/brain/shadow-hook');
@@ -329,4 +330,114 @@ test('offline 70-phrase eval passes with deterministic stub and flags broken mod
   assert.equal(badReport.passed, false);
   assert.equal(badReport.gates.false_minus_on_clarify_le_5pct, false);
   assert.equal(badReport.gates.false_minus_on_none_le_5pct, false);
+});
+
+test('dynamic brains.current() judges with E4B or 26B without swap, caches loaded list 3s, and tracks judged_fast/main', async () => {
+  let nowMs = Date.UTC(2026, 10, 18, 4, 0, 0);
+  let loadedList = [FAST];
+  let psCalls = 0;
+  const seenModels = [];
+
+  const brains = new Brains({
+    ollama: { unload() {}, warm() {} },
+    fast: FAST,
+    main: MAIN,
+    idleMs: 300000,
+    now: () => nowMs,
+    setTimer: () => ({ unref() {} }),
+    clearTimer: () => {},
+  });
+
+  const judge = createVerdictJudge({
+    model: () => brains.current(),
+    now: () => nowMs,
+    maxPerMinute: 100,
+    isModelReady: createLoadedModelCheck({
+      brains,
+      now: () => nowMs,
+      cacheMs: 3000,
+      loadedModels: async () => {
+        psCalls++;
+        return loadedList;
+      },
+    }),
+    callModel: async (req) => {
+      seenModels.push(req.model);
+      return '{"v":"PLUS"}';
+    },
+  });
+
+  // 1. E4B active and alone in /api/ps -> judges with FAST
+  const rFast = await judge.judge('да, сработало', { dictVerdict: 1 });
+  assert.deepEqual(rFast, { status: 'ok', verdict: 'PLUS', model: FAST });
+  assert.equal(psCalls, 1);
+
+  // 2. Brains swaps to 26B within 3s psCache -> cached list still has [FAST], so skips cleanly without extra /api/ps call
+  await brains.use('main');
+  assert.equal(brains.current(), MAIN);
+  const rMismatch = await judge.judge('ну норм');
+  assert.deepEqual(rMismatch, { status: 'skipped_not_loaded', verdict: null, model: null });
+  assert.equal(psCalls, 1);
+
+  // 3. After 3s cache expiry with BOTH loaded in VRAM -> skipped_not_loaded
+  nowMs += 3000;
+  loadedList = [FAST, MAIN];
+  const rBoth = await judge.judge('ну норм');
+  assert.deepEqual(rBoth, { status: 'skipped_not_loaded', verdict: null, model: null });
+  assert.equal(psCalls, 2);
+
+  // 4. After 3s with only 26B loaded -> judges with MAIN
+  nowMs += 3000;
+  loadedList = [MAIN];
+  const rMain = await judge.judge('отлично, подошло', { dictVerdict: 1 });
+  assert.deepEqual(rMain, { status: 'ok', verdict: 'PLUS', model: MAIN });
+  assert.equal(psCalls, 3);
+
+  // 5. After 3s with nothing loaded -> skipped_not_loaded
+  nowMs += 3000;
+  loadedList = [];
+  assert.deepEqual(await judge.judge('помогло'), { status: 'skipped_not_loaded', verdict: null, model: null });
+
+  assert.deepEqual(seenModels, [FAST, MAIN]);
+  const st = judge.stats();
+  assert.equal(st.judged_fast, 1);
+  assert.equal(st.judged_main, 1);
+  assert.equal(st.e4b_plus, 2);
+  assert.equal(st.skipped_not_loaded, 3);
+});
+
+test('string model parameter remains backwards-compatible and sets result.model + judged_fast/main', async () => {
+  const rFastJudge = createVerdictJudge({
+    model: FAST,
+    callModel: async () => '{"v":"CLARIFY"}',
+  });
+  const resFast = await rFastJudge.judge('а если так?');
+  assert.deepEqual(resFast, { status: 'ok', verdict: 'CLARIFY', model: FAST });
+  assert.equal(rFastJudge.stats().judged_fast, 1);
+  assert.equal(rFastJudge.stats().judged_main, 0);
+  assert.equal(rFastJudge.stats().e4b_clarify, 1);
+
+  const customJudge = createVerdictJudge({
+    resolveModel: () => MAIN,
+    callModel: async () => '{"v":"MINUS"}',
+  });
+  const resMain = await customJudge.judge('не сработало', { dictVerdict: -1 });
+  assert.deepEqual(resMain, { status: 'ok', verdict: 'MINUS', model: MAIN });
+  assert.equal(customJudge.stats().judged_fast, 0);
+  assert.equal(customJudge.stats().judged_main, 1);
+  assert.equal(customJudge.stats().e4b_minus, 1);
+});
+
+test('judging with the 26B gets the longer timeout (it sits partly in RAM), the E4B keeps the short one', async () => {
+  const seen = [];
+  const make = (model) => createVerdictJudge({
+    model,
+    callModel: async () => '{"v":"PLUS"}',
+    isModelReady: async () => true,
+    setTimer: (fn, ms) => { seen.push(ms); return { unref() {} }; },
+    clearTimer: () => {},
+  });
+  await make(MAIN).judge('верно');
+  await make(FAST).judge('верно');
+  assert.deepEqual(seen, [6000, 1500]);
 });

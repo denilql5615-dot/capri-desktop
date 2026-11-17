@@ -2243,26 +2243,16 @@ function registerIpc() {
   const getBrainShadowHook = () => {
     if (brainShadowHook) return brainShadowHook;
     const { createShadowHook } = require('./brain/shadow-hook');
-    const { createVerdictJudge } = require('./brain/verdict-judge');
+    const { createVerdictJudge, createLoadedModelCheck } = require('./brain/verdict-judge');
     const { CONFIG: brainConfig } = require('./brain');
-    let psCache = { at: 0, ready: false };
     const verdictJudge = createVerdictJudge({
-      model: brains.fast,
+      model: () => brains.current(),
       callModel: (req, signal) => ollama.jsonChat(req, signal),
       isBusy: () => chats.size > 0,
-      isModelReady: async (signal) => {
-        if (brains.mainActive()) return false;
-        const nowMs = Date.now();
-        if (nowMs - psCache.at < 3000) return psCache.ready;
-        const psSignal = signal
-          ? AbortSignal.any([signal, AbortSignal.timeout(300)])
-          : AbortSignal.timeout(300);
-        const loaded = await ollama.loadedModels(psSignal);
-        if (!loaded) return false;
-        const ready = loaded.includes(brains.fast) && !loaded.includes(brains.main);
-        psCache = { at: Date.now(), ready };
-        return ready;
-      },
+      isModelReady: createLoadedModelCheck({
+        brains,
+        loadedModels: (psSignal) => ollama.loadedModels(psSignal),
+      }),
     });
     brainShadowHook = createShadowHook({
       // one folder per journal format: formats never mix, older folders are left untouched

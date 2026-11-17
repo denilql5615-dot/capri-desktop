@@ -1,8 +1,8 @@
 'use strict';
 
-// Semantic E4B verdict classifier (shadow-first). Never runs Ollama cold loads or writes to the journal;
-// model invocation is injected from the caller so unit/eval harnesses run completely offline.
-const { FAST } = require('../brains');
+// Semantic verdict classifier (shadow-first). Judges with whichever local brain is already in memory
+// (never triggers a swap in 8 GB VRAM) and never writes to the journal; model invocation is injected.
+const { FAST, MAIN } = require('../brains');
 
 const CLASSES = Object.freeze(['PLUS', 'MINUS', 'CLARIFY', 'NONE']);
 const MIN_REPLY_LEN = 2;
@@ -11,6 +11,8 @@ const MAX_PROMPT_CHARS = 160;
 const RATE_WINDOW_MS = 60 * 1000;
 const MINUS_WINDOW_MS = 10 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = 1500;
+// the 26B sits partly in RAM (8 GB VRAM): ~10 tokens/s, its prompt read alone can pass 1.5 s
+const DEFAULT_MAIN_TIMEOUT_MS = 6000;
 const DEFAULT_MAX_PER_MINUTE = 6;
 const DEFAULT_MAX_MINUS_PER_10_MIN = 3;
 const DEFAULT_MAX_CONSECUTIVE_ERRORS = 5;
@@ -69,13 +71,54 @@ function parseJudgeReply(raw, userText = '') {
   return obj.v;
 }
 
+/**
+ * Caches Ollama `/api/ps` loaded model names for `cacheMs` (default 3 s) and checks whether the
+ * currently requested judge model (`targetModel` / `brains.current()`) is loaded on its own in VRAM.
+ * Returns false (no swap) if nothing is loaded or both `brains.fast` and `brains.main` sit loaded.
+ */
+function createLoadedModelCheck({
+  brains,
+  loadedModels,
+  now = Date.now,
+  cacheMs = 3000,
+  timeoutMs = 300,
+} = {}) {
+  let psCache = { at: 0, models: null };
+
+  return async (signal, targetModel) => {
+    if (!brains || typeof loadedModels !== 'function') return false;
+    const nowMs = Number(now());
+    let loaded = psCache.models && (nowMs - psCache.at < cacheMs) ? psCache.models : null;
+    if (!loaded) {
+      const timeoutSig = AbortSignal.timeout(timeoutMs);
+      const psSignal = signal ? AbortSignal.any([signal, timeoutSig]) : timeoutSig;
+      const fetched = await loadedModels(psSignal);
+      if (!Array.isArray(fetched)) return false;
+      loaded = [...fetched];
+      psCache = { at: Number(now()), models: loaded };
+    }
+    const current = typeof targetModel === 'string' && targetModel ? targetModel : brains.current?.();
+    if (!current) return false;
+    const hasFast = loaded.includes(brains.fast);
+    const hasMain = loaded.includes(brains.main);
+    if (hasFast && hasMain) return false;
+    if (current === brains.main) return hasMain;
+    if (current === brains.fast) return hasFast;
+    return loaded.includes(current);
+  };
+}
+
 function createVerdictJudge({
   callModel,
   isModelReady,
   isBusy,
   model = FAST,
+  resolveModel,
+  fastModel = FAST,
+  mainModel = MAIN,
   now = Date.now,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  mainTimeoutMs = DEFAULT_MAIN_TIMEOUT_MS,
   maxPerMinute = DEFAULT_MAX_PER_MINUTE,
   maxMinusPer10Min = DEFAULT_MAX_MINUS_PER_10_MIN,
   maxConsecutiveErrors = DEFAULT_MAX_CONSECUTIVE_ERRORS,
@@ -83,10 +126,13 @@ function createVerdictJudge({
   clearTimer = clearTimeout,
 } = {}) {
   const counts = {
+    // Overall verdict outcome counters across whichever model judged (legacy e4b_* names kept for reports).
     e4b_plus: 0,
     e4b_minus: 0,
     e4b_clarify: 0,
     e4b_none: 0,
+    judged_fast: 0,
+    judged_main: 0,
     agree: 0,
     disagree: 0,
     minus_capped: 0,
@@ -105,7 +151,23 @@ function createVerdictJudge({
     while (arr.length && curNow - arr[0] >= windowMs) arr.shift();
   }
 
-  function recordOutcome(verdict, dictVerdict) {
+  function pickModel() {
+    try {
+      const raw = typeof resolveModel === 'function'
+        ? resolveModel()
+        : typeof model === 'function'
+          ? model()
+          : model;
+      return typeof raw === 'string' && raw.trim() ? raw.trim() : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function recordOutcome(verdict, dictVerdict, judgedModel) {
+    if (judgedModel === mainModel) counts.judged_main++;
+    else if (judgedModel === fastModel) counts.judged_fast++;
+
     if (verdict === 'PLUS') counts.e4b_plus++;
     else if (verdict === 'MINUS') counts.e4b_minus++;
     else if (verdict === 'CLARIFY') counts.e4b_clarify++;
@@ -134,23 +196,29 @@ function createVerdictJudge({
 
   async function judge(text, { dictVerdict = null } = {}) {
     if (disabled || !isJudgeableText(text) || typeof callModel !== 'function') {
-      return { status: 'skipped', verdict: null };
+      return { status: 'skipped', verdict: null, model: null };
     }
     try {
       if (isBusy?.()) {
         counts.skipped_busy++;
-        return { status: 'skipped_busy', verdict: null };
+        return { status: 'skipped_busy', verdict: null, model: null };
       }
     } catch {
       counts.skipped_busy++;
-      return { status: 'skipped_busy', verdict: null };
+      return { status: 'skipped_busy', verdict: null, model: null };
     }
 
     const startNow = Number(now());
     pruneWindow(callTimestamps, startNow, RATE_WINDOW_MS);
     if (callTimestamps.length >= maxPerMinute) {
       counts.skipped_rate++;
-      return { status: 'skipped_rate', verdict: null };
+      return { status: 'skipped_rate', verdict: null, model: null };
+    }
+
+    const activeModel = pickModel();
+    if (!activeModel) {
+      counts.skipped_not_loaded++;
+      return { status: 'skipped_not_loaded', verdict: null, model: null };
     }
 
     const entry = {
@@ -164,17 +232,17 @@ function createVerdictJudge({
       if (entry.cancelled) return;
       entry.timedOut = true;
       try { entry.controller.abort(new Error('verdict judge timeout')); } catch {}
-    }, timeoutMs);
+    }, activeModel === mainModel ? mainTimeoutMs : timeoutMs);
     entry.timer?.unref?.();
 
     try {
       if (typeof isModelReady === 'function') {
-        const ready = await isModelReady(entry.controller.signal);
-        if (entry.cancelled) return { status: 'aborted', verdict: null };
+        const ready = await isModelReady(entry.controller.signal, activeModel);
+        if (entry.cancelled) return { status: 'aborted', verdict: null, model: null };
         if (entry.timedOut) throw new Error('verdict judge readiness timeout');
         if (!ready) {
           counts.skipped_not_loaded++;
-          return { status: 'skipped_not_loaded', verdict: null };
+          return { status: 'skipped_not_loaded', verdict: null, model: null };
         }
       }
 
@@ -182,12 +250,12 @@ function createVerdictJudge({
       pruneWindow(callTimestamps, callAt, RATE_WINDOW_MS);
       if (callTimestamps.length >= maxPerMinute) {
         counts.skipped_rate++;
-        return { status: 'skipped_rate', verdict: null };
+        return { status: 'skipped_rate', verdict: null, model: null };
       }
       callTimestamps.push(callAt);
 
       const raw = await callModel({
-        model,
+        model: activeModel,
         messages: messagesForJudge(text),
         schema: VERDICT_SCHEMA,
         temperature: 0,
@@ -195,7 +263,7 @@ function createVerdictJudge({
         think: false,
       }, entry.controller.signal);
 
-      if (entry.cancelled) return { status: 'aborted', verdict: null };
+      if (entry.cancelled) return { status: 'aborted', verdict: null, model: null };
       if (entry.timedOut || entry.controller.signal.aborted) {
         throw new Error('verdict judge timeout');
       }
@@ -212,14 +280,14 @@ function createVerdictJudge({
           minusTimestamps.push(doneAt);
         }
       }
-      recordOutcome(verdict, dictVerdict);
-      return { status: 'ok', verdict };
+      recordOutcome(verdict, dictVerdict, activeModel);
+      return { status: 'ok', verdict, model: activeModel };
     } catch {
-      if (entry.cancelled) return { status: 'aborted', verdict: null };
+      if (entry.cancelled) return { status: 'aborted', verdict: null, model: null };
       counts.errors++;
       consecutiveErrors++;
       if (consecutiveErrors >= maxConsecutiveErrors) disabled = true;
-      return { status: 'error', verdict: null };
+      return { status: 'error', verdict: null, model: null };
     } finally {
       if (entry.timer != null) {
         try { clearTimer(entry.timer); } catch {}
@@ -249,8 +317,10 @@ module.exports = {
   DEFAULT_MAX_PER_MINUTE,
   DEFAULT_MAX_MINUS_PER_10_MIN,
   DEFAULT_MAX_CONSECUTIVE_ERRORS,
+  DEFAULT_MAIN_TIMEOUT_MS,
   isJudgeableText,
   messagesForJudge,
   parseJudgeReply,
+  createLoadedModelCheck,
   createVerdictJudge,
 };
