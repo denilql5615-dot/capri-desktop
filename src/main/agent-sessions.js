@@ -8,8 +8,9 @@ const { FAST, MAIN } = require('./brains');
 
 const MODELS = {
   claude: [['', 'По умолчанию'], ['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku']],
-  codex: [['', 'По умолчанию'], ['gpt-6.1-sol', 'GPT‑6.1 Sol'], ['gpt-6-astra', 'GPT‑6 Astra'], ['gpt-6-sol', 'GPT‑6 Sol'], ['gpt-5.6-sol', 'GPT‑5.6 Sol'], ['gpt-5.6-terra', 'GPT‑5.6 Terra']],
-  gemini: [['gemini-4-argon-medium', 'Argon'], ['claude-opus-5-5-medium', 'Opus'], ['claude-sonnet-5-5-medium', 'Sonnet'], ['gemini-3.8-flash-high', 'Flash High'], ['gemini-cli-free', 'Gemini CLI (Free)']],
+  // Astra last but one: it eats the limits, for the deepest analysis only
+  codex: [['gpt-6.1-sol', 'GPT‑6.1 Sol (основная)'], ['gpt-6-luna', 'GPT‑6 Luna (лёгкое)'], ['gpt-6.1-terra', 'GPT‑6.1 Terra'], ['gpt-6-sol', 'GPT‑6 Sol'], ['gpt-6-astra', 'GPT‑6 Astra (только самое сложное)'], ['', 'По умолчанию Codex']],
+  gemini: [['gemini-4-hydrogen-medium', 'Hydrogen'], ['gemini-4-hydrogen-xhigh', 'Hydrogen xHigh (тяжёлый код)'], ['gemini-4-argon-high', 'Argon High (сложный анализ)'], ['gemini-4-argon-medium', 'Argon'], ['claude-opus-5-5-medium', 'Opus'], ['claude-sonnet-5-5-medium', 'Sonnet'], ['gemini-3.8-flash-high', 'Flash High'], ['gpt-oss-120b-medium', 'GPT-OSS 120B'], ['gemini-cli-free', 'Gemini CLI (ключ API)']],
   gemma: [[MAIN, 'Heretic 26B (основная)'], [FAST, 'Heretic E4B (быстрая)']],
   // roleplay is a prompt, not a model (brains.js): the key stays 'faun' so older sessions still open
   faun: [[MAIN, 'RP · Heretic 26B']],

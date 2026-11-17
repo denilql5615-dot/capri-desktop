@@ -4,21 +4,25 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { route, handsWorker, workerChain, runWorker, codexBrief, parseAgyEvent, agyModel } = require('../src/main/workers');
 
-test('workerChain and runWorker cascade Claude -> Codex -> Argon -> Opus -> Flash on limits', async () => {
+test('workerChain and runWorker cascade Claude -> Codex -> Antigravity by tier (Flash last) on limits', async () => {
   assert.deepStrictEqual(workerChain('claude', 'сделай таблицу'), [
-    'claude', 'codex', 'gemini-4-argon-medium', 'claude-opus-5-5-medium', 'gemini-3.8-flash-high',
+    'claude', 'codex', 'gemini-4-hydrogen-medium', 'claude-sonnet-5-5-medium', 'gemini-3.8-flash-high',
+  ]);
+  assert.deepStrictEqual(workerChain('claude', 'глубокий разбор', 'deep'), [
+    'claude', 'codex', 'gemini-4-argon-high', 'claude-opus-5-5-high', 'gemini-4-hydrogen-xhigh', 'gemini-3.8-flash-high',
   ]);
   assert.deepStrictEqual(workerChain('gemini', 'Опус, сделай таблицу'), [
-    'claude-opus-5-5-medium', 'gemini-3.8-flash-high',
+    'claude-opus-5-5-medium', 'gemini-4-hydrogen-medium', 'claude-sonnet-5-5-medium', 'gemini-3.8-flash-high',
   ]);
 
   const tried = [];
   const steps = [];
+  let codexModel;
   const answer = await runWorker('claude', {}, [{ role: 'user', content: 'сделай таблицу' }], () => {}, null, {
-    onStep: (step, prev) => steps.push([step, prev]),
+    onStep: (step, prev) => steps.push([step, prev]), model: 'sonnet', codexModel: 'gpt-6.1-sol', tier: 'routine',
   }, {
     claude: async () => { tried.push('claude'); throw new Error('rate limit'); },
-    codex: async () => { tried.push('codex'); throw new Error('5h limit'); },
+    codex: async (_c, _m, _s, _g, o) => { tried.push('codex'); codexModel = o.model; throw new Error('5h limit'); },
     gemini: async (_cfg, _msgs, _send, _sig, { model }) => {
       tried.push(model);
       if (model !== 'gemini-3.8-flash-high') throw new Error(`Лимит ${model}`);
@@ -26,21 +30,29 @@ test('workerChain and runWorker cascade Claude -> Codex -> Argon -> Opus -> Flas
     },
   });
   assert.strictEqual(answer, 'готово от стажёра Flash');
+  assert.strictEqual(codexModel, 'gpt-6.1-sol'); // Codex's own model, not Claude's "sonnet"
   assert.deepStrictEqual(tried, [
-    'claude', 'codex', 'gemini-4-argon-medium', 'claude-opus-5-5-medium', 'gemini-3.8-flash-high',
+    'claude', 'codex', 'gemini-4-hydrogen-medium', 'claude-sonnet-5-5-medium', 'gemini-3.8-flash-high',
   ]);
   assert.deepStrictEqual(steps.at(-1), [
     'gemini-3.8-flash-high',
-    ['claude', 'codex', 'gemini-4-argon-medium', 'claude-opus-5-5-medium'],
+    ['claude', 'codex', 'gemini-4-hydrogen-medium', 'claude-sonnet-5-5-medium'],
   ]);
 });
 
-test('Antigravity worker defaults to Argon Medium and requires an explicit reserve address', () => {
+test('Antigravity: the tier picks the model; a model named at the start goes first', () => {
+  assert.strictEqual(agyModel('сделай', 'routine'), 'gemini-4-hydrogen-medium');
+  assert.strictEqual(agyModel('сделай', 'deep'), 'gemini-4-argon-high');
+  assert.strictEqual(agyModel('сделай', 'mechanical'), 'gemini-3.8-flash-medium');
   assert.strictEqual(agyModel('Аргон, ответь'), 'gemini-4-argon-medium');
+  assert.strictEqual(agyModel('Аргон, разбери', 'deep'), 'gemini-4-argon-high');
+  assert.strictEqual(agyModel('Хидроген, перепиши модуль', 'deep'), 'gemini-4-hydrogen-xhigh');
+  assert.strictEqual(route('Хидроген, перепиши модуль'), 'gemini');
   assert.strictEqual(route('Опус, ответь'), 'gemini');
   assert.strictEqual(agyModel('Опус, ответь'), 'claude-opus-5-5-medium');
   assert.strictEqual(route('Флеш, ответь'), 'gemini');
   assert.strictEqual(agyModel('Флеш, ответь'), 'gemini-3.8-flash-high');
+  assert.strictEqual(agyModel('ОСС, накидай черновик'), 'gpt-oss-120b-medium');
   assert.strictEqual(route('Расскажи про Flash'), null);
 });
 
@@ -126,5 +138,7 @@ test('skillHints and cheatsheet include domain references, anti-slop rules, and 
   assert.match(skillHints('Экспортируй отчёт в PDF и схему в SVG'), /NAME\.pdf\.md/);
   assert.match(cheatsheet(), /NAME\.pdf\.md/);
   assert.match(cheatsheet(), /NAME\.png\.svg/);
-  assert.strictEqual(WORKER_LABELS['gemini-cli-free'], 'Gemini CLI (Free)');
+  assert.strictEqual(WORKER_LABELS['gemini-cli-free'], 'Gemini CLI');
+  assert.strictEqual(WORKER_LABELS['gemini-4-hydrogen-xhigh'], 'Gemini Hydrogen (xhigh)');
+  assert.strictEqual(WORKER_LABELS['claude-opus-5-5-medium'], 'Claude Opus 5.5');
 });
