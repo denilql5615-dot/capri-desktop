@@ -700,6 +700,7 @@ html[data-motion='reduced'] .panel__bar {
 
 /* the picture for the clipboard: on its own dark plate, no buttons */
 .panel.is-capturing .panel__actions,
+.panel.is-capturing .panel__verdict,
 .panel.is-capturing .panel__tail {
   display: none !important;
 }
@@ -769,6 +770,41 @@ html[data-motion='reduced'] .panel__bar {
   margin-left: 1px;
   color: var(--accent);
   animation: blink 600ms steps(2, jump-none) infinite;
+}
+
+.panel__verdict {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin: 4px 0 -4px;
+}
+
+.panel__verdict-btn {
+  appearance: none;
+  border: 0;
+  padding: 1px 6px;
+  background: transparent;
+  color: var(--paper-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-data);
+  line-height: 1.2;
+  opacity: 0.72;
+  cursor: pointer;
+  transition: color 120ms var(--ease-out), opacity 120ms var(--ease-out);
+}
+
+.panel__verdict-btn:hover {
+  opacity: 1;
+  color: var(--cyan);
+}
+
+.panel__verdict-btn[data-verdict='-1']:hover {
+  color: var(--red);
+}
+
+.panel__verdict-btn:focus-visible {
+  outline: 1px solid var(--paper);
+  outline-offset: 1px;
 }
 
 .panel__chat {

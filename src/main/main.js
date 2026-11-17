@@ -2110,6 +2110,7 @@ function createTray() {
 // brain shadow observer (src/main/brain/shadow-hook.js): created lazily by chat:send only when
 // cfg.brainShadow is on; module-level so the quit handlers in main() can close it
 let brainShadowHook = null;
+let brainChatGlue = null;
 
 function registerIpc() {
   ipcMain.on('overlay:interactive', (_e, on) => {
@@ -2263,9 +2264,39 @@ function registerIpc() {
   const getBrainShadowHook = () => {
     if (brainShadowHook) return brainShadowHook;
     const { createShadowHook } = require('./brain/shadow-hook');
-    brainShadowHook = createShadowHook({ dir: path.join(app.getPath('userData'), 'brain-journal') });
+    const { CONFIG: brainConfig } = require('./brain');
+    brainShadowHook = createShadowHook({
+      // one folder per journal format: formats never mix, older folders are left untouched
+      dir: path.join(app.getPath('userData'), 'brain-journal', `v${brainConfig.schema_version}`),
+      onPendingChange: (pending) => {
+        try {
+          if (overlay && !overlay.isDestroyed()) overlay.webContents.send('brain:pending', Boolean(pending));
+        } catch {}
+      },
+    });
     return brainShadowHook;
   };
+  const getBrainChatGlue = () => {
+    if (brainChatGlue) return brainChatGlue;
+    const { createChatGlue } = require('./brain/chat-glue');
+    brainChatGlue = createChatGlue({
+      getHook: (create = true) => (create ? getBrainShadowHook() : brainShadowHook),
+      tor,
+      yourWords,
+      isLocalModel: (cfg) => {
+        const model = pickModel(cfg);
+        return Boolean(model && llm.isLocal(cfg.provider, cfg, model));
+      },
+    });
+    return brainChatGlue;
+  };
+  ipcMain.on('brain:verdict', (event, v) => {
+    const sender = event?.sender;
+    if (!sender || (sender !== overlay?.webContents && sender !== chatsWin?.webContents)) return;
+    if (v !== 1 && v !== -1) return;
+    if (!brainShadowHook || config.load().brainShadow !== true) return;
+    try { brainShadowHook.verdict(v); } catch {}
+  });
   ipcMain.handle('chat:send', async (_e, { id, messages }) => {
     const abort = new AbortController();
     chats.set(id, abort);
@@ -2277,10 +2308,8 @@ function registerIpc() {
         chatsWin?.webContents.send('chats:delta', text); // her Chats window shows it coming too
       };
       const cfg = config.load();
-      if (cfg.brainShadow === true && brainShadowHook) {
-        try {
-          brainShadowHook.resolvePending(messages, { get said() { return yourWords(messages); }, tor, rp: cfg.rp === true });
-        } catch {}
+      if (cfg.brainShadow === true) {
+        try { getBrainChatGlue().beforeTurn(messages, cfg); } catch {}
       }
       // "включи / выключи ролевой режим": a mode of hers (brains.js), not a message to answer
       const rpTurn = brainsLib.rpCommand(yourWords(messages));
@@ -2345,27 +2374,25 @@ function registerIpc() {
       else {
         let shadowTurn = null;
         if (cfg.brainShadow === true && worker === null) {
-          try {
-            const model = pickModel(cfg);
-            const { contextMentionsTor } = require('./brain/shadow-hook');
-            if (model && llm.isLocal(cfg.provider, cfg, model) && !contextMentionsTor(messages, tor)) {
-              const { salience } = require('./brain/amygdala');
-              const features = salience(yourWords(messages));
-              shadowTurn = getBrainShadowHook().start(route, { signal: abort.signal, local: true, rp: cfg.rp === true, features });
-            }
-          } catch {}
+          try { shadowTurn = getBrainChatGlue().startLocal(route, messages, cfg, abort.signal); } catch {}
         }
         try {
           // any switch to another model (possibly a cloud one) abandons the observation
-          text = await chatWithFallback(cfg, await prepLocal(cfg, messages), send, abort.signal, () => streamed, () => shadowTurn?.cancel());
-          try {
-            if (shadowTurn) {
-              brainShadowHook?.hold(shadowTurn);
-              shadowTurn = null;
-            }
-          } catch {}
+          text = await chatWithFallback(
+            cfg,
+            await prepLocal(cfg, messages),
+            send,
+            abort.signal,
+            () => streamed,
+            () => { try { brainChatGlue?.onModelSwitch(shadowTurn); } catch {} },
+          );
+          if (shadowTurn) {
+            try { brainChatGlue?.afterSuccess(shadowTurn); shadowTurn = null; } catch {}
+          }
         } catch (err) {
-          try { if (abort.signal.aborted || err?.message === 'stopped' || err?.name === 'AbortError') shadowTurn?.cancel(); else shadowTurn?.fail(err); } catch {}
+          if (shadowTurn) {
+            try { brainChatGlue?.afterError(shadowTurn, err, abort.signal); } catch {}
+          }
           throw err;
         } finally {
           try { shadowTurn?.cancel(); } catch {}

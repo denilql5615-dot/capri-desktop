@@ -28,6 +28,17 @@ export class Panel {
     this.tickerEl = ticker;
     this.labels = labels;
     this.line = panel.querySelector('.panel__line');
+    this.verdict = panel.querySelector('.panel__verdict');
+    this.onVerdict = null; // (1 | -1) => void, shadow brain verdict icon clicked
+    this.verdict?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const btn = e.target.closest?.('[data-verdict]');
+      if (!btn) return;
+      const v = Number(btn.dataset.verdict);
+      if (v !== 1 && v !== -1) return;
+      this.setVerdict(false);
+      this.onVerdict?.(v);
+    });
     this.photo = panel.querySelector('img.panel__photo'); // a picture she sent ("скинь фото")
     this.clip = panel.querySelector('.panel__clip'); // or a clip ("скинь видео"): looped, silent
     this.stopStream(); // her chat answer, decoding in (stream)
@@ -142,6 +153,7 @@ export class Panel {
     this.state.textContent = msg.badge || this.labels.state[msg.kind] || '';
     this.quote.textContent = msg.quote || '';
     this.quote.hidden = !msg.quote;
+    if (this.verdict) this.verdict.hidden = true;
     this.photo.hidden = true; // a picture she sent belongs to that chat answer, not to her next line
     this.hideClip();
     this.setProgress(msg.progress);
@@ -315,6 +327,15 @@ export class Panel {
     requestAnimationFrame(() => this.chatInput.focus());
   }
 
+  // Show or hide quiet ✓ / ✗ verdict icons under the last chat reply.
+  setVerdict(on) {
+    if (!this.verdict) return;
+    const hidden = !on;
+    if (this.verdict.hidden === hidden) return;
+    this.verdict.hidden = hidden;
+    this.place();
+  }
+
   // A chat turn: what you said goes up top, her answer starts coming in under it (stream), without
   // announcing the panel all over again.
   chatTurn({ quote, face }) {
@@ -324,6 +345,7 @@ export class Panel {
     this.setFace(face);
     this.quote.textContent = quote;
     this.quote.hidden = !quote;
+    if (this.verdict) this.verdict.hidden = true;
     this.photo.hidden = true;
     this.hideClip();
     this.line.textContent = '';

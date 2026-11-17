@@ -86,6 +86,8 @@ contextBridge.exposeInMainWorld('host', {
   onChatsState: on('chats:state'),
   chatState: (state) => ipcRenderer.send('chat:state', state),
   onChatDelta: on('chat:delta'),
+  brainVerdict: (value) => ipcRenderer.send('brain:verdict', value),
+  onBrainPending: on('brain:pending'),
   transcribe: (wav, opts) => ipcRenderer.invoke('voice:transcribe', wav, opts),
   wakeTrace: (stage) => ipcRenderer.send('voice:wake-trace', stage),
   speak: (text) => ipcRenderer.invoke('voice:speak', text),

@@ -25,6 +25,8 @@ function makeUuid(prefix = 1000) {
   return () => `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}`;
 }
 
+const ZERO_DENOM = { completed_turns: 0, verified_pos: 0, verified_neg: 0, unverified: 0 };
+
 test('non-local routes never open a root, touch disk, or change counters', async () => {
   const dir = mkDir();
   const hook = createShadowHook({ dir, now: makeClock(), uuid: makeUuid() });
@@ -59,7 +61,7 @@ test('non-local routes never open a root, touch disk, or change counters', async
   abortedTurn.fail(new Error('ignored'));
 
   await hook.close();
-  assert.deepEqual(hook.stats(), { published: 0, discarded: 0, observer_errors: 0 });
+  assert.deepEqual(hook.stats(), { published: 0, discarded: 0, observer_errors: 0, ...ZERO_DENOM });
   assert.equal(fs.existsSync(dir), false);
 });
 
@@ -85,7 +87,7 @@ test('local success with unverified completion is discarded by buffer and writes
 
   await hook.close();
   assert.equal(openCalled, 0);
-  assert.deepEqual(hook.stats(), { published: 0, discarded: 2, observer_errors: 0 });
+  assert.deepEqual(hook.stats(), { published: 0, discarded: 2, observer_errors: 0, ...ZERO_DENOM });
   assert.equal(fs.existsSync(dir), false);
 });
 
@@ -113,7 +115,7 @@ test('local model failure is unverified and discarded without writing journal; c
   await hook.flush();
   await hook.close();
   assert.equal(openCalled, 0);
-  assert.deepEqual(hook.stats(), { published: 0, discarded: 3, observer_errors: 0 });
+  assert.deepEqual(hook.stats(), { published: 0, discarded: 3, observer_errors: 0, ...ZERO_DENOM });
   assert.equal(fs.existsSync(dir), false);
 });
 
@@ -144,7 +146,7 @@ test('explicit verified completion publishes asynchronously and replays cleanly 
   await hook.flush();
   await hook.close();
 
-  assert.deepEqual(hook.stats(), { published: 2, discarded: 0, observer_errors: 0 });
+  assert.deepEqual(hook.stats(), { published: 2, discarded: 0, observer_errors: 0, ...ZERO_DENOM });
   const files = fs.readdirSync(dir).filter((f) => f.endsWith('.ndjson'));
   assert.equal(files.length, 1);
 
@@ -279,7 +281,7 @@ test('withTurn cancels when aborted before normal return, and close cancels live
     return 'partial-ok';
   });
   assert.equal(out, 'partial-ok');
-  assert.deepEqual(hook.stats(), { published: 0, discarded: 1, observer_errors: 0 });
+  assert.deepEqual(hook.stats(), { published: 0, discarded: 1, observer_errors: 0, ...ZERO_DENOM });
 
   // Open two live turns and call close() while they are still active
   const live1 = hook.start({ worker: null });
@@ -289,7 +291,7 @@ test('withTurn cancels when aborted before normal return, and close cancels live
   live1.complete({ verified: true, utility: 1 });
   live2.fail(new Error('late'));
   hook.start({ worker: null }).complete();
-  assert.deepEqual(hook.stats(), { published: 0, discarded: 3, observer_errors: 0 });
+  assert.deepEqual(hook.stats(), { published: 0, discarded: 3, observer_errors: 0, ...ZERO_DENOM });
 });
 
 test('journal never contains message text, error messages, file paths, or renderer IDs', async () => {
@@ -363,7 +365,7 @@ test('own publish chain is bounded: overflow beyond MAX_PENDING_WRITES is discar
   releaseAppend();
   await hook.close();
   assert.equal(appended, MAX_PENDING_WRITES);
-  assert.deepEqual(hook.stats(), { published: MAX_PENDING_WRITES, discarded: 10, observer_errors: 0 });
+  assert.deepEqual(hook.stats(), { published: MAX_PENDING_WRITES, discarded: 10, observer_errors: 0, ...ZERO_DENOM });
 });
 
 test('hold + resolvePending publishes verified utility 1/-1, replays identically, and passes salience features', async () => {
@@ -376,6 +378,7 @@ test('hold + resolvePending publishes verified utility 1/-1, replays identically
     { features: { urgency: 1, contradiction: 0, novelty: 1, uncertainty: 0.7 } },
   );
   hook.hold(t1);
+  assert.equal(hook.stats().completed_turns, 1);
   hook.resolvePending([{ role: 'user', content: 'сработало' }], { said: 'сработало', tor, rp: false });
 
   // 2. Negative verdict + urgency=0, contradiction=1
@@ -387,7 +390,15 @@ test('hold + resolvePending publishes verified utility 1/-1, replays identically
   hook.resolvePending([{ role: 'user', content: 'не то' }], { said: 'не то', tor, rp: false });
 
   await hook.close();
-  assert.deepEqual(hook.stats(), { published: 2, discarded: 0, observer_errors: 0 });
+  assert.deepEqual(hook.stats(), {
+    published: 2,
+    discarded: 0,
+    observer_errors: 0,
+    completed_turns: 2,
+    verified_pos: 1,
+    verified_neg: 1,
+    unverified: 0,
+  });
 
   const files = fs.readdirSync(dir).filter((f) => f.endsWith('.ndjson'));
   assert.equal(files.length, 1);
@@ -456,21 +467,104 @@ test('hold discards on praise, Tor without reading verdict, 120s timeout, and se
   // Verify close() cancels the remaining held turn cleanly
   await hook.close();
 
-  assert.deepEqual(hook.stats(), { published: 0, discarded: 5, observer_errors: 0 });
+  assert.deepEqual(hook.stats(), {
+    published: 0,
+    discarded: 5,
+    observer_errors: 0,
+    completed_turns: 4,
+    verified_pos: 0,
+    verified_neg: 0,
+    unverified: 4,
+  });
   assert.equal(fs.existsSync(dir), false);
 });
 
 test('any Tor activity drops the waiting verdict and turns in flight, with nothing written', async () => {
   const dir = mkDir();
-  const hook = createShadowHook({ dir, now: makeClock(), uuid: makeUuid(9100) });
+  const pendingEvents = [];
+  const hook = createShadowHook({
+    dir,
+    now: makeClock(),
+    uuid: makeUuid(9100),
+    onPendingChange: (on) => pendingEvents.push(on),
+  });
   const held = hook.start({ worker: null });
   hook.hold(held);
+  assert.equal(hook.stats().completed_turns, 1);
   const inFlight = hook.start({ worker: null });
   hook.torTouched(); // e.g. a Tor search outside chat:send between the answer and the verdict
+  assert.deepEqual(pendingEvents, [true, false]);
   hook.resolvePending([{ role: 'user', content: 'сработало' }], { said: 'сработало', tor, rp: false });
   inFlight.complete({ verified: true, utility: 1 }); // already cancelled: no effect
   await hook.close();
   assert.equal(hook.stats().published, 0);
+  assert.equal(hook.stats().completed_turns, 0);
+  assert.equal(hook.stats().unverified, 0);
   assert.equal(hook.stats().observer_errors, 0);
   assert.equal(fs.existsSync(dir), false);
+});
+
+test('verdict(1/-1) closes pending via same verified path, ignores invalid values, tracks denominator and pending notifications', async () => {
+  const dir = mkDir();
+  let nowMs = Date.UTC(2026, 10, 17, 11, 0, 0);
+  const pendingEvents = [];
+  const hook = createShadowHook({
+    dir,
+    now: () => {
+      nowMs += 1000;
+      return nowMs;
+    },
+    uuid: makeUuid(9500),
+    pendingTtlMs: 120000,
+    onPendingChange: (on) => pendingEvents.push(on),
+  });
+
+  // Invalid verdicts or verdict without pending are ignored cleanly
+  assert.equal(hook.verdict(1), false);
+  assert.equal(hook.verdict(-1), false);
+
+  const t1 = hook.start({ worker: null, tier: 'routine' }, { features: { urgency: 1, contradiction: 0 } });
+  hook.hold(t1);
+  assert.equal(hook.verdict(0), false);
+  assert.equal(hook.verdict('1'), false);
+  assert.equal(hook.verdict(null), false);
+  assert.equal(hook.verdict(1), true);
+  assert.equal(hook.verdict(1), false); // pending already closed
+
+  const t2 = hook.start({ worker: null, tier: 'routine' }, { features: { urgency: 0, contradiction: 1 } });
+  hook.hold(t2);
+  assert.equal(hook.verdict(-1), true);
+
+  // Praise + timeout both count toward unverified + completed_turns (no journal writes)
+  const t3 = hook.start({ worker: null, tier: 'routine' });
+  hook.hold(t3);
+  hook.resolvePending([{ role: 'user', content: 'молодец' }], { said: 'молодец', tor, rp: false });
+
+  const t4 = hook.start({ worker: null, tier: 'routine' });
+  hook.hold(t4);
+  nowMs += 120000;
+  assert.equal(hook.verdict(1), false); // expired pending cancelled as unverified
+
+  await hook.close();
+  assert.deepEqual(pendingEvents, [true, false, true, false, true, false, true, false]);
+  assert.deepEqual(hook.stats(), {
+    published: 2,
+    discarded: 2,
+    observer_errors: 0,
+    completed_turns: 4,
+    verified_pos: 1,
+    verified_neg: 1,
+    unverified: 2,
+  });
+
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.ndjson'));
+  assert.equal(files.length, 1);
+  const ndjson = fs.readFileSync(path.join(dir, files[0]), 'utf8');
+  const rows = ndjson.trim().split('\n').slice(1).map((l) => JSON.parse(l));
+  assert.equal(rows.length, 4);
+  assert.equal(rows[1].event.validation, 'verified');
+  assert.equal(rows[1].event.utility, 1);
+  assert.equal(rows[3].event.validation, 'verified');
+  assert.equal(rows[3].event.utility, -1);
+  assert.deepEqual(replay(ndjson).snapshot(), rows[3].state);
 });

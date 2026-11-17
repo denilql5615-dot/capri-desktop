@@ -69,11 +69,20 @@ function createShadowHook({
   pendingTtlMs = DEFAULT_PENDING_TTL_MS,
   setTimer = setTimeout,
   clearTimer = clearTimeout,
+  onPendingChange,
 } = {}) {
   const buffer = createTaskBuffer(bufferOptions);
-  const counts = { published: 0, discarded: 0, observer_errors: 0 };
+  const counts = {
+    published: 0,
+    discarded: 0,
+    observer_errors: 0,
+    verified_pos: 0,
+    verified_neg: 0,
+    unverified: 0,
+  };
   const activeTurns = new Set();
   let pending = null;
+  let lastNotifiedPending = false;
   let journal = null;
   let disabled = false;
   let closed = false;
@@ -81,10 +90,23 @@ function createShadowHook({
   let writeChain = Promise.resolve();
   let pendingWrites = 0;
 
-  function clearPending({ cancel = true } = {}) {
+  function notifyPending(next) {
+    const val = Boolean(next);
+    if (val === lastNotifiedPending) return;
+    lastNotifiedPending = val;
+    if (typeof onPendingChange === 'function') {
+      try { onPendingChange(val); } catch {}
+    }
+  }
+
+  function clearPending({ cancel = true, outcome = 'unverified' } = {}) {
     if (!pending) return;
     const entry = pending;
     pending = null;
+    if (outcome === 'pos') counts.verified_pos++;
+    else if (outcome === 'neg') counts.verified_neg++;
+    else if (outcome === 'unverified') counts.unverified++;
+    notifyPending(false);
     if (entry.timer != null) {
       try { clearTimer(entry.timer); } catch {}
     }
@@ -271,19 +293,40 @@ function createShadowHook({
     try {
       if (!turn || !activeTurns.has(turn)) return;
       if (disabled || closed) { turn.cancel(); return; }
-      clearPending({ cancel: true });
+      clearPending({ cancel: true, outcome: 'unverified' });
       const heldAt = Number(now());
       const entry = { turn, timer: null, heldAt };
       pending = entry;
       entry.timer = setTimer(() => {
         if (pending !== entry) return;
-        pending = null;
-        try { turn.cancel(); } catch { counts.observer_errors++; }
+        clearPending({ cancel: true, outcome: 'unverified' });
       }, pendingTtlMs);
       entry.timer?.unref?.();
+      notifyPending(true);
     } catch {
       counts.observer_errors++;
       try { turn?.cancel?.(); } catch {}
+    }
+  }
+
+  function verdict(v) {
+    try {
+      if (v !== 1 && v !== -1) return false;
+      if (disabled || closed || !pending) return false;
+      const entry = pending;
+      const curNow = Number(now());
+      const expired = Number.isFinite(entry.heldAt) && Number.isFinite(curNow) && curNow - entry.heldAt >= pendingTtlMs;
+      if (expired) {
+        clearPending({ cancel: true, outcome: 'unverified' });
+        return false;
+      }
+      clearPending({ cancel: false, outcome: v === 1 ? 'pos' : 'neg' });
+      entry.turn.complete({ verified: true, utility: v });
+      return true;
+    } catch {
+      counts.observer_errors++;
+      clearPending({ cancel: true, outcome: 'unverified' });
+      return false;
     }
   }
 
@@ -294,22 +337,26 @@ function createShadowHook({
       const curNow = Number(now());
       const expired = Number.isFinite(entry.heldAt) && Number.isFinite(curNow) && curNow - entry.heldAt >= pendingTtlMs;
       if (disabled || closed || expired || opts?.rp === true) {
-        clearPending({ cancel: true });
+        clearPending({ cancel: true, outcome: 'unverified' });
         return;
       }
       const torPreds = opts?.tor;
       if (!torPreds || typeof torPreds.wantsTor !== 'function' || typeof torPreds.onionLink !== 'function'
           || contextMentionsTor(messages, torPreds)) {
-        clearPending({ cancel: true });
+        clearPending({ cancel: true, outcome: 'tor' });
         return;
       }
       const v = verdictOf(opts?.said);
-      clearPending({ cancel: false });
-      if (v === 1 || v === -1) entry.turn.complete({ verified: true, utility: v });
-      else entry.turn.cancel();
+      if (v === 1 || v === -1) {
+        clearPending({ cancel: false, outcome: v === 1 ? 'pos' : 'neg' });
+        entry.turn.complete({ verified: true, utility: v });
+      } else {
+        clearPending({ cancel: false, outcome: 'unverified' });
+        entry.turn.cancel();
+      }
     } catch {
       counts.observer_errors++;
-      clearPending({ cancel: true });
+      clearPending({ cancel: true, outcome: 'unverified' });
     }
   }
 
@@ -363,7 +410,7 @@ function createShadowHook({
   // drop the waiting verdict and every turn in flight. Nothing is counted or recorded about it.
   function torTouched() {
     try {
-      clearPending({ cancel: true });
+      clearPending({ cancel: true, outcome: 'tor' });
       for (const turn of [...activeTurns]) turn.cancel();
     } catch {}
   }
@@ -372,9 +419,13 @@ function createShadowHook({
     start,
     hold,
     resolvePending,
+    verdict,
     torTouched,
     withTurn,
-    stats: () => ({ ...counts }),
+    stats: () => ({
+      ...counts,
+      completed_turns: counts.verified_pos + counts.verified_neg + counts.unverified + (pending ? 1 : 0),
+    }),
     flush,
     close,
   });
