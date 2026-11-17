@@ -55,7 +55,9 @@ function createTaskBuffer(options = {}) {
     if (!p) throw new TypeError('parent handle is not authentic');
     const asked = requested === undefined ? p.cls : cls(requested);
     const c = RANK[asked] > RANK[p.cls] ? asked : p.cls;
-    if (c !== 'ordinary') taint(p.task);
+    // Non-ordinary child, or a step spawned from an already closed step of a live task
+    // (inconsistent lifecycle: its events would be silently missing), discards the whole task.
+    if (c !== 'ordinary' || (p.closed && !p.task.sealed)) taint(p.task);
     if (p.closed || p.task.sealed || p.task.tainted) return mint({ task: p.task, cls: c, closed: true, root: false });
     p.task.open++;
     return mint({ task: p.task, cls: c, closed: false, root: false });

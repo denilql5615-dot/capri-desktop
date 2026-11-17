@@ -102,11 +102,18 @@ test('cannot finish while a descendant is open; closed descendants allow publica
   const n = stream(); const root2 = b.open('ordinary'); const kid2 = b.child(root2);
   b.add(kid2, n()); b.close(kid2); b.close(kid2);
   assert.equal(b.add(kid2, trap('event')).status, 'discarded'); // closed handle is dead, event unread
-  const closedKid = b.child(kid2); // closed parent returns dead closed handle without throw or opening a slot
-  assert.equal(b.add(closedKid, trap('closed child event')).status, 'discarded');
-  b.close(closedKid);
   b.add(root2, n('task_completed'));
   assert.equal(b.finish(root2).status, 'published');
+
+  // A step spawned from an already closed step: dead handle, no throw, whole task discarded
+  // (its events would otherwise be silently missing from a published batch).
+  const m = stream(); const root3 = b.open('ordinary'); const kid3 = b.child(root3);
+  b.add(kid3, m()); b.close(kid3);
+  const late = b.child(kid3);
+  assert.equal(b.add(late, trap('closed child event')).status, 'discarded');
+  b.close(late);
+  assert.equal(b.add(root3, m('task_completed')).status, 'discarded');
+  assert.equal(b.finish(root3).status, 'discarded');
 });
 
 test('forged, cloned, string and foreign-buffer handles have no authority', () => {
