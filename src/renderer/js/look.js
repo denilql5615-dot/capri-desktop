@@ -154,8 +154,11 @@ export class Look {
           await this.capri.unstow();
         }
         this.capri.wake();
+      } else if (!this.free()) {
+        return;
       }
       const snap = await this.host.lookSnap();
+      if (!manual && !this.free()) return;
       if (!snap.ok) {
         if (manual) this.panel.say({ kind: 'info', face: 'aside', line: fmt(t.failed, { error: snap.error }), hold: 6000 });
         return;
@@ -164,6 +167,7 @@ export class Look {
       this.lastAt = Date.now();
       this.effect();
       const res = await this.host.lookSay({ id: snap.id, persona: this.chat.lookPersona(), prompt: `${PROMPT}\n${this.chat.languageNote()}` });
+      if (!manual && !this.free()) return;
       if (!res.ok) {
         if (res.code === 'novision') {
           // her model can't see: said once, and she stops trying on her own
@@ -178,9 +182,10 @@ export class Look {
       if (!text) return;
       this.chat.seen = { text, at: Date.now() };
       const hold = Math.min(13000, Math.max(5000, 2500 + text.length * 55));
-      this.panel.say({ kind: 'info', badge: 'SCAN', face: mood(text), line: text, hold });
-      this.chat.onAnswer?.(text); // out loud, like her answers in chat
-      if (!manual && Math.random() < PRANK_CHANCE) setTimeout(() => this.prank(), hold + 600);
+      if (this.panel.say({ kind: 'info', badge: 'SCAN', face: mood(text), line: text, hold }) !== false) {
+        this.chat.onAnswer?.(text); // out loud, like her answers in chat
+        if (!manual && Math.random() < PRANK_CHANCE) setTimeout(() => this.prank(), hold + 600);
+      }
     } finally {
       this.looking = false;
     }

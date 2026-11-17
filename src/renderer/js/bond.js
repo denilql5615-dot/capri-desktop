@@ -290,6 +290,7 @@ export class Jealousy {
 
   // A while on it: she goes and sits on its window, glares at you, and takes it over.
   async act(f) {
+    if (this.chat.open || this.guide.running) return;
     const win = this.capri.windows.wins.find((w) => w.id === f.id);
     if (!win) return;
     this.acted.at = Date.now();
@@ -299,7 +300,9 @@ export class Jealousy {
     this.bond.lose(2);
     this.panel.hide();
     const say = fmt(pick(this.t.say), { rival: RIVALS[f.key] });
-    if (await this.capri.jealous(win, { say })) {
+    const did = await this.capri.jealous(win, { say });
+    if (this.chat.open || this.guide.running) return;
+    if (did) {
       this.sulk = { key: f.key, until: Date.now() + SULK_MS, clicks: 0 };
       this.bond.feel('sulk', { rival: RIVALS[f.key] });
     }
@@ -309,6 +312,7 @@ export class Jealousy {
   // closes) unless you stop her, with a click on her or on "Let me". Stopped, she leaves that AI's
   // pages alone for a while, and sulks.
   async close(f) {
+    if (this.chat.open || this.guide.running) return;
     const win = this.capri.windows.wins.find((w) => w.id === f.id);
     if (!win) return;
     this.wait[f.key] = Date.now() + AGAIN_MS; // a moment, if she can't go just now
@@ -322,14 +326,18 @@ export class Jealousy {
 
   // Her go at it: how it ended ('closed', 'spared', 'busy', 'left', or why it didn't close).
   async chase(f, win) {
+    if (this.chat.open || this.guide.running) return 'busy';
     const { key, page } = f;
     const rival = RIVALS[key];
     const t = this.t;
     if (!(await this.capri.jealous(win, { takeOver: false }))) return 'busy';
+    if (this.chat.open || this.guide.running) return 'busy';
     if (!this.still(f)) return 'left'; // she starts over once you're back on it
     this.noticed[key] = Date.now();
     const download = page === 'download';
-    if (await this.warn(fmt(pick(download ? t.download : t.close), { rival }), download ? WARN_DOWNLOAD_MS : WARN_MS)) {
+    const stopped = await this.warn(fmt(pick(download ? t.download : t.close), { rival }), download ? WARN_DOWNLOAD_MS : WARN_MS);
+    if (this.chat.open || this.guide.running) return stopped ? 'spared' : 'busy';
+    if (stopped) {
       this.wait[key] = Date.now() + SPARE_MS;
       this.sulk = { key, until: Date.now() + SULK_MS, clicks: 0 };
       this.bond.feel('sulk', { rival });
@@ -344,10 +352,14 @@ export class Jealousy {
     this.wait[key] = Date.now() + RETRY_MS;
     const at = this.capri.windows.wins.find((w) => w.id === f.id) || win;
     const why = await this.capri.zapShut(at, async () => {
+      if (this.chat.open || this.guide.running) return 'busy';
       const why = await this.shut(f.id, key);
-      if (why === '') this.panel.say({ kind: 'info', face: 'smug', line: fmt(pick(t.closed), { rival }), hold: 3500 });
+      if (why === '' && !this.chat.open && !this.guide.running) {
+        this.panel.say({ kind: 'info', face: 'smug', line: fmt(pick(t.closed), { rival }), hold: 3500 });
+      }
       return why;
     });
+    if (this.chat.open || this.guide.running) return why || 'busy';
     if (why !== '') this.panel.hide(); // not closed: a key held down, say
     return why || 'closed';
   }
