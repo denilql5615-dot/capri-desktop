@@ -47,9 +47,7 @@ test('decay uses explicit elapsed time, stability tends to one, silence never ea
 test('hysteresis holds the middle band and decay clears at the lower threshold', () => {
   const brain = createShadow(), next = stream();
   ingest(brain, next('message', { novelty: 1, uncertainty: 1, contradiction: 1 }));
-  assert.equal(brain.snapshot().evidence_need_active, 0); // capped at 0.5 in first window
-  ingest(brain, next('message', { occurred_at_ms: 60000, received_at_ms: 60000, novelty: 1 }));
-  assert.equal(brain.snapshot().evidence_need_active, 1);
+  assert.equal(brain.snapshot().evidence_need_active, 1); // 0.85 clamped to window_cap 0.7 >= enter 0.65
   tick(brain, 900000);
   assert.ok(brain.snapshot().evidence_need > CONFIG.leave);
   assert.ok(brain.snapshot().evidence_need < CONFIG.enter);
@@ -62,45 +60,47 @@ test('channel window accumulates up to cap and opens a fresh window after cooldo
   const brain = createShadow(), next = stream();
   ingest(brain, next());
   for (let i = 0; i < 100; i++) ingest(brain, next('error'));
-  close(brain.snapshot().stability, 0.5);
-  close(brain.snapshot().reassessment, 0.5);
+  close(brain.snapshot().stability, 0.3);
+  close(brain.snapshot().reassessment, 0.7);
   ingest(brain, next('error', { occurred_at_ms: 59999, received_at_ms: 59999 }));
-  close(brain.snapshot().stability, 1 - 0.5 * Math.exp(-59999 / CONFIG.stability_tau_ms));
+  close(brain.snapshot().stability, 1 - 0.7 * Math.exp(-59999 / CONFIG.stability_tau_ms));
   ingest(brain, next('error', { occurred_at_ms: 60000, received_at_ms: 60000 }));
-  close(brain.snapshot().stability, 1 - 0.5 * Math.exp(-60000 / CONFIG.stability_tau_ms) - 0.15);
-  close(brain.snapshot().reassessment, 0.5 * Math.exp(-0.1) + 0.35);
+  close(brain.snapshot().stability, 1 - 0.7 * Math.exp(-60000 / CONFIG.stability_tau_ms) - 0.15);
+  close(brain.snapshot().reassessment, 0.7 * Math.exp(-0.1) + 0.25);
   assert.equal(brain.snapshot().reassessment_active, 1);
 });
 
-test('3 errors within 30s accumulate reassessment to 0.5 cap, then wait for next 60s window', () => {
+test('3 errors within 30s accumulate reassessment to 0.7 cap and activate within first window', () => {
   const brain = createShadow(), next = stream();
   ingest(brain, next());
   ingest(brain, next('error', { occurred_at_ms: 0, received_at_ms: 0 }));
-  close(brain.snapshot().reassessment, 0.35);
+  close(brain.snapshot().reassessment, 0.25);
 
   ingest(brain, next('error', { occurred_at_ms: 10000, received_at_ms: 10000 }));
-  const at10 = 0.35 * Math.exp(-10000 / CONFIG.reassessment_tau_ms) + 0.15;
+  const at10 = 0.25 * Math.exp(-10000 / CONFIG.reassessment_tau_ms) + 0.25;
   close(brain.snapshot().reassessment, at10);
+  assert.equal(brain.snapshot().reassessment_active, 0);
 
   ingest(brain, next('error', { occurred_at_ms: 30000, received_at_ms: 30000 }));
-  const at30 = at10 * Math.exp(-20000 / CONFIG.reassessment_tau_ms);
+  const at30 = at10 * Math.exp(-20000 / CONFIG.reassessment_tau_ms) + 0.2;
   close(brain.snapshot().reassessment, at30);
+  assert.equal(brain.snapshot().reassessment_active, 1);
 
   ingest(brain, next('error', { occurred_at_ms: 60000, received_at_ms: 60000 }));
-  close(brain.snapshot().reassessment, at30 * Math.exp(-30000 / CONFIG.reassessment_tau_ms) + 0.35);
+  close(brain.snapshot().reassessment, at30 * Math.exp(-30000 / CONFIG.reassessment_tau_ms) + 0.25);
 });
 
 test('stability window applies signed clamping in [-window_cap, +window_cap]', () => {
   const brain = createShadow(), next = stream();
   ingest(brain, next());
-  // 4 errors at t=0: -0.15, -0.15, -0.15, -0.05 (sum hits -0.5), 5th error adds 0
-  for (let i = 0; i < 5; i++) ingest(brain, next('error'));
-  close(brain.snapshot().stability, 0.5);
-  // verified completion (+0.1) inside the same window shifts signed sum from -0.5 to -0.4
+  // 5 errors at t=0: -0.15*4 - 0.10 (sum hits -0.7), 6th error adds 0
+  for (let i = 0; i < 6; i++) ingest(brain, next('error'));
+  close(brain.snapshot().stability, 0.3);
+  // verified completion (+0.1) inside the same window shifts signed sum from -0.7 to -0.6
   ingest(brain, next('task_completed', { occurred_at_ms: 10000, received_at_ms: 10000, utility: 1 }));
-  const afterComplete = 1 + (0.5 - 1) * Math.exp(-10000 / CONFIG.stability_tau_ms) + 0.1;
+  const afterComplete = 1 + (0.3 - 1) * Math.exp(-10000 / CONFIG.stability_tau_ms) + 0.1;
   close(brain.snapshot().stability, afterComplete);
-  // next error (-0.15) in the same window only has -0.10 room left down to -0.5
+  // next error (-0.15) in the same window only has -0.10 room left down to -0.7
   const t2 = stream();
   ingest(brain, t2('message', { occurred_at_ms: 20000, received_at_ms: 20000 }));
   ingest(brain, t2('error', { occurred_at_ms: 20000, received_at_ms: 20000 }));

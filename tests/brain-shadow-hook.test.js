@@ -417,6 +417,7 @@ test('hold + resolvePending publishes verified utility 1/-1, replays identically
   assert.equal(rows[2].event.contradiction, 1);
   assert.equal(rows[3].event.validation, 'verified');
   assert.equal(rows[3].event.utility, -1);
+  assert.equal(rows[3].event.outcome, 'failed'); // a negative verdict is a measured failure
 
   assert.deepEqual(replay(ndjson).snapshot(), rows[3].state);
 });

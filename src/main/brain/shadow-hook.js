@@ -227,11 +227,13 @@ function createShadowHook({
         settled = true;
         try {
           const isVerified = verifiedOpts?.verified === true;
+          const utility = isVerified && Object.hasOwn(verifiedOpts, 'utility') ? verifiedOpts.utility : 1;
           const terminal = isVerified
             ? {
-                outcome: 'completed',
+                // a verified negative verdict ("не то") is a measured failure, not a completed task
+                outcome: utility < 0 ? 'failed' : 'completed',
                 validation: 'verified',
-                utility: Object.hasOwn(verifiedOpts, 'utility') ? verifiedOpts.utility : 1,
+                utility,
               }
             : { outcome: 'completed', validation: 'unverified' };
           buffer.add(root, nextEvent('task_completed', terminal));
