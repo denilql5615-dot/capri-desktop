@@ -36,6 +36,21 @@ const pinned = new Set();
 const pin = (model) => model && pinned.add(model);
 const keepFor = (model, usual) => (pinned.has(model) ? -1 : usual);
 
+// Per-model context window rule (e.g. 26B = 16384): applied uniformly across chat, jsonChat, pick, and
+// warm so Ollama never reloads the model in VRAM due to mismatched num_ctx between callers.
+const contexts = new Map();
+function setContextFor(model, numCtx) {
+  if (!model) return;
+  const n = Number(numCtx);
+  if (Number.isFinite(n) && n > 0) contexts.set(model, Math.trunc(n));
+  else contexts.delete(model);
+}
+function ctxFor(model, explicitCtx = null) {
+  if (model && contexts.has(model)) return contexts.get(model);
+  const n = Number(explicitCtx);
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+}
+
 // The models installed, by name ("llama3.2:latest", "beam:cloud"...).
 async function models() {
   const res = await fetch(`${base()}/api/tags`, { signal: AbortSignal.timeout(2500) });
@@ -85,10 +100,15 @@ async function freeModels() {
 // A 26B one is never loaded ahead: it comes only when asked for (brains.js).
 function warm(model, keepAlive = '5m') {
   if (!model || isCloud(model) || /26b/i.test(model)) return;
+  const numCtx = ctxFor(model);
   fetch(`${base()}/api/generate`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model, keep_alive: keepFor(model, keepAlive) }),
+    body: JSON.stringify({
+      model,
+      keep_alive: keepFor(model, keepAlive),
+      ...(numCtx && { options: { num_ctx: numCtx } }),
+    }),
   }).catch(() => {});
 }
 
@@ -124,6 +144,7 @@ async function chat({ model, messages, numPredict = 240, keepAlive = '5m', numCt
   // cloud models think before they answer, and that counts in num_predict: kept short, with room for it
   const thinking = canThink(model);
   const thinks = isCloud(model) && thinking;
+  const effectiveCtx = ctxFor(model, numCtx);
   const res = await fetch(`${base()}/api/chat`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -134,7 +155,7 @@ async function chat({ model, messages, numPredict = 240, keepAlive = '5m', numCt
       keep_alive: keepFor(model, keepAlive),
       // a local thinking model (gemma4, qwen3, qwen3.5) thinks by default and spends all 240 tokens on it: she'd answer "…"
       ...(thinking && { think: thinks ? 'low' : false }),
-      options: { temperature: 0.85, num_predict: thinks ? 1200 : numPredict, ...(numCtx ? { num_ctx: numCtx } : {}) },
+      options: { temperature: 0.85, num_predict: thinks ? 1200 : numPredict, ...(effectiveCtx && { num_ctx: effectiveCtx }) },
     }),
     signal,
   });
@@ -171,15 +192,16 @@ async function chat({ model, messages, numPredict = 240, keepAlive = '5m', numCt
 
 // One step of a task (agent.js): her answer as JSON held to `schema`. Not streamed, no thinking aloud
 // (it would eat the turn); a long context, as the snapshots pile up.
-async function jsonChat({ model, messages, schema, temperature = 0.2, numPredict = 400, think }, signal) {
+async function jsonChat({ model, messages, schema, temperature = 0.2, numPredict = 400, think, numCtx = null }, signal) {
   const useThink = think !== undefined ? think : (canThink(model) ? false : undefined);
+  const effectiveCtx = ctxFor(model, numCtx);
   const res = await fetch(`${base()}/api/chat`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       model, messages, format: schema, stream: false, keep_alive: keepFor(model, '15m'),
       ...(useThink !== undefined && { think: useThink }),
-      options: { temperature, num_predict: numPredict },
+      options: { temperature, num_predict: numPredict, ...(effectiveCtx && { num_ctx: effectiveCtx }) },
     }),
     signal,
   });
@@ -191,14 +213,15 @@ async function jsonChat({ model, messages, schema, temperature = 0.2, numPredict
 
 // A few tokens with how sure the model was of each (her router, router.js): { content, logprobs }.
 // No thinking; her usual context, so she isn't loaded again between chat turns.
-async function pick({ model, messages, numPredict = 8, topLogprobs = 10 }, signal) {
+async function pick({ model, messages, numPredict = 8, topLogprobs = 10, numCtx = null }, signal) {
+  const effectiveCtx = ctxFor(model, numCtx);
   const res = await fetch(`${base()}/api/chat`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       model, messages, stream: false, keep_alive: keepFor(model, '15m'), logprobs: true, top_logprobs: topLogprobs,
       ...(canThink(model) && { think: false }),
-      options: { temperature: 0, num_predict: numPredict },
+      options: { temperature: 0, num_predict: numPredict, ...(effectiveCtx && { num_ctx: effectiveCtx }) },
     }),
     signal,
   });
@@ -260,4 +283,4 @@ function screenModel(list = []) {
 const retryEmptyVision = (text, attempt) => attempt === 0 && !String(text || '').trim();
 const visionPrompt = (text) => String(text || '');
 
-module.exports = { base, models, loadedModels, isCloud, pin, account, freeModels, warm, unload, unloadAll, chat, jsonChat, pick, canSee, findSpokenModel, screenModel, retryEmptyVision, visionPrompt };
+module.exports = { base, models, loadedModels, isCloud, pin, setContextFor, ctxFor, account, freeModels, warm, unload, unloadAll, chat, jsonChat, pick, canSee, findSpokenModel, screenModel, retryEmptyVision, visionPrompt };

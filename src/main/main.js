@@ -77,6 +77,7 @@ const OLLAMA_SITE = 'https://ollama.com';
 const brainsLib = require('./brains');
 const brains = new brainsLib.Brains({ ollama });
 ollama.pin(brains.fast);
+ollama.setContextFor(brains.main, 16384);
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'capri', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
@@ -1365,9 +1366,9 @@ async function applyPhone() {
         if (fast) return { text: fast, brain: 'quick' };
         const cfg = config.load();
         if (!chatModels) await refreshModels();
-        const enriched = await prepLocal(cfg, messages); // her brain picked first, then the model it means
+        const { messages: enriched, numPredict } = await prepLocal(cfg, messages); // her brain picked first, then the model it means
         const model = pickModel(cfg);
-        const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages: enriched }, () => {}, signal);
+        const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages: enriched, numPredict }, () => {}, signal);
         return { text, brain: model || cfg.provider };
       },
       speak: (text) => (config.load().voice.tts ? speech.speak(text, config.load().voice) : Promise.resolve(null)),
@@ -1802,25 +1803,40 @@ function galleryList() {
 // модель", "локально"), for roleplay, or standing in for the cloud (main); the fast one otherwise. Your
 // notes and mail added as always; the roleplay prompt only when it's on and nothing sounds like an
 // emergency. Resolves with the messages to send.
+function messagesHaveTor(messages) {
+  return Array.isArray(messages) && messages.some((m) => {
+    const c = typeof m?.content === 'string' ? m.content : '';
+    return c && (tor.wantsTor(c) || tor.wantsDark(c) || Boolean(tor.onionLink(c)));
+  });
+}
+
 async function prepLocal(cfg, messages, { main = false } = {}) {
   const said = yourWords(messages);
   const rp = cfg.rp === true && !brainsLib.isEmergency(said);
-  if (cfg.provider === 'ollama' && brains.ready(chatModels) && brains.isAuto(cfg.chatModel, chatModels)) {
+  const rolesReady = cfg.provider === 'ollama' && brains.ready(chatModels);
+  const auto = rolesReady && brains.isAuto(cfg.chatModel, chatModels);
+  const torCtx = torState.isQuarantined() || messagesHaveTor(messages);
+  const analysis = !main
+    ? brainsLib.analysisMode(cfg, { rolesReady, auto, tor: torCtx, text: said })
+    : { active: false, numPredict: undefined };
+  if (auto) {
     if (!main && brainsLib.wantsFast(said)) await brains.release();
-    else if (main || rp || brainsLib.wantsMain(said) || brainsLib.wantsLocal(said)) await brains.use('main');
+    else if (main || rp || analysis.active || brainsLib.wantsMain(said) || brainsLib.wantsLocal(said)) await brains.use('main');
     else await brains.use('fast');
   }
   const enriched = await withPim(withNotes(messages), said);
-  return rp ? brainsLib.withRp(enriched) : enriched;
+  return { messages: rp ? brainsLib.withRp(enriched) : enriched, numPredict: analysis.numPredict };
 }
 
-async function chatWithFallback(cfg, messages, send, signal, streamed, onSwitch) {
+async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch) {
+  const messages = Array.isArray(prepared) ? prepared : prepared.messages;
+  const numPredict = Array.isArray(prepared) ? undefined : prepared.numPredict;
   let model = pickModel(cfg);
   const tried = new Set();
   let busy = 0;
   for (;;) {
     try {
-      const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages }, send, signal);
+      const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict }, send, signal);
       if (model !== pickModel(cfg)) updateConfig({ chatModel: model });
       return text;
     } catch (err) {

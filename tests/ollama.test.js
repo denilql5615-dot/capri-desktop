@@ -2,7 +2,10 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { findSpokenModel, screenModel, unload, retryEmptyVision, visionPrompt, chat } = require('../src/main/ollama');
+const {
+  findSpokenModel, screenModel, unload, retryEmptyVision, visionPrompt, chat, jsonChat, pick, warm, setContextFor, ctxFor,
+} = require('../src/main/ollama');
+const llm = require('../src/main/llm');
 
 test('findSpokenModel matches spoken punctuation and Russian number words exactly', () => {
   const models = ['qwen3:8b', 'qwen3-vl:4b', 'gemma3:4b'];
@@ -75,4 +78,70 @@ test('chat accepts a larger prediction budget for the vision model', async (t) =
   assert.equal(await chat({ model: 'gemma4:26b-a4b-it-qat', messages: [], numPredict: 900 }, () => {}), 'вижу');
   assert.equal(body.think, false);
   assert.equal(body.options.num_predict, 900);
+});
+
+test('setContextFor/ctxFor enforces 16384 across chat, jsonChat, pick, warm for ruled models and leaves E4B unset', async (t) => {
+  const { FAST, MAIN } = require('../src/main/brains');
+  const before = global.fetch;
+  const seen = [];
+  global.fetch = async (url, init) => {
+    seen.push({ url, body: JSON.parse(init.body) });
+    if (String(init.body).includes('"stream":true')) {
+      const bytes = new TextEncoder().encode('{"message":{"content":"ок"},"done":true}\n');
+      return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(bytes); c.close(); } }) };
+    }
+    return { ok: true, json: async () => ({ message: { content: '{"v":"PLUS"}' }, logprobs: [] }) };
+  };
+  const customRuled = 'test-ruled:latest';
+  setContextFor(MAIN, 16384);
+  setContextFor(customRuled, 16384);
+  t.after(() => {
+    global.fetch = before;
+    setContextFor(MAIN, null);
+    setContextFor(customRuled, null);
+  });
+
+  // Rule check helper: explicit overrides lose unless no rule exists
+  assert.equal(ctxFor(MAIN), 16384);
+  assert.equal(ctxFor(MAIN, 16384), 16384);
+  assert.equal(ctxFor(MAIN, 32768), 16384);
+  assert.equal(ctxFor(FAST), null);
+  assert.equal(ctxFor(FAST, 8192), 8192);
+
+  // 26B receives num_ctx: 16384 in chat, jsonChat, and pick even if different numCtx passed
+  await chat({ model: MAIN, messages: [{ role: 'user', content: 'hi' }], numPredict: 2048 }, () => {});
+  await chat({ model: MAIN, messages: [{ role: 'user', content: 'hi' }], numCtx: 32768 }, () => {});
+  await jsonChat({ model: MAIN, messages: [{ role: 'user', content: 'hi' }], schema: { type: 'object' }, numPredict: 16, think: false });
+  await pick({ model: MAIN, messages: [{ role: 'user', content: 'hi' }] });
+  // warm skips /26b/i by design, so verify warm rule on a non-26b ruled model
+  warm(MAIN);
+  warm(customRuled);
+  await Promise.resolve();
+
+  // chat x2, jsonChat, pick, warm(customRuled) = 5 fetch calls (warm(MAIN) skipped)
+  assert.equal(seen.length, 5);
+  for (const call of seen) {
+    assert.equal(call.body.options.num_ctx, 16384);
+  }
+  assert.equal(seen[0].body.options.num_predict, 2048);
+  assert.equal(seen[0].body.think, false);
+
+  // E4B has no rule: num_ctx stays absent across chat, jsonChat, pick, warm
+  seen.length = 0;
+  await chat({ model: FAST, messages: [{ role: 'user', content: 'hi' }] }, () => {});
+  await jsonChat({ model: FAST, messages: [{ role: 'user', content: 'hi' }], schema: { type: 'object' }, numPredict: 16, think: false });
+  await pick({ model: FAST, messages: [{ role: 'user', content: 'hi' }] });
+  warm(FAST);
+  await Promise.resolve();
+
+  assert.equal(seen.length, 4);
+  for (const call of seen) {
+    assert.equal(call.body.options?.num_ctx, undefined);
+  }
+
+  // llm.chat forwards numPredict (and optional numCtx) into ollama.chat
+  seen.length = 0;
+  await llm.chat('ollama', {}, { model: MAIN, messages: [{ role: 'user', content: 'doc' }], numPredict: 2048 }, () => {});
+  assert.equal(seen[0].body.options.num_predict, 2048);
+  assert.equal(seen[0].body.options.num_ctx, 16384);
 });

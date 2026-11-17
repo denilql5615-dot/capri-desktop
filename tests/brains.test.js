@@ -2,7 +2,10 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { Brains, FAST, MAIN, RP_PROMPT, wantsMain, wantsLocal, wantsFast, isEmergency, rpCommand, withRp } = require('../src/main/brains');
+const {
+  Brains, FAST, MAIN, RP_PROMPT, ANALYSIS_PREDICT, ANALYSIS_CHARS,
+  wantsMain, wantsLocal, wantsFast, wantsAnalysis, analysisMode, isEmergency, rpCommand, withRp,
+} = require('../src/main/brains');
 
 function fake() {
   const calls = [];
@@ -85,4 +88,48 @@ test('the roleplay prompt goes into the system message, and never on an emergenc
   assert.equal(isEmergency('у друга сильное кровотечение из ноги'), true);
   assert.equal(isEmergency('он без сознания и не дышит'), true);
   assert.equal(isEmergency('продолжи сцену в баре'), false);
+});
+
+test('wantsAnalysis matches explicit long-task phrases without over-triggering on bare "разбери"', () => {
+  for (const hit of [
+    'включи режим аналитика',
+    'в режиме аналитика проверь смету',
+    'разбери документ ниже',
+    'разбери этот документ внимательно',
+    'это длинная задача, не торопись',
+    'сделай подробный разбор логики',
+    'напиши подробный отчёт по кварталу',
+    'подробный отчет пожалуйста',
+  ]) {
+    assert.equal(wantsAnalysis(hit), true, `expected wantsAnalysis=true for: ${hit}`);
+  }
+
+  for (const miss of [
+    'разбери код выше',
+    'разбери почему тест упал',
+    'привет, где документ?',
+    'сделай краткий отчёт',
+    'разбор ситуации',
+    'анализ логов',
+  ]) {
+    assert.equal(wantsAnalysis(miss), false, `expected wantsAnalysis=false for: ${miss}`);
+  }
+});
+
+test('analysisMode triggers at >4000 chars or phrase, uses 2048 budget, and obeys rp/fast/tor/provider guards', () => {
+  const baseCfg = { provider: 'ollama', rp: false };
+  const opts = { rolesReady: true, auto: true, tor: false };
+
+  // Threshold: 4000 chars stays ordinary; 4001 enables analyst mode
+  assert.deepEqual(analysisMode(baseCfg, { ...opts, text: 'а'.repeat(ANALYSIS_CHARS) }), { active: false, numPredict: undefined });
+  assert.deepEqual(analysisMode(baseCfg, { ...opts, text: 'а'.repeat(ANALYSIS_CHARS + 1) }), { active: true, numPredict: ANALYSIS_PREDICT });
+  assert.deepEqual(analysisMode(baseCfg, { ...opts, text: 'разбери документ' }), { active: true, numPredict: ANALYSIS_PREDICT });
+
+  // Guards disable analyst mode cleanly
+  assert.deepEqual(analysisMode({ provider: 'ollama', rp: true }, { ...opts, text: 'разбери документ' }), { active: false, numPredict: undefined });
+  assert.deepEqual(analysisMode(baseCfg, { ...opts, tor: true, text: 'разбери документ' }), { active: false, numPredict: undefined });
+  assert.deepEqual(analysisMode(baseCfg, { ...opts, text: 'быстрая модель, ' + 'а'.repeat(ANALYSIS_CHARS + 50) }), { active: false, numPredict: undefined });
+  assert.deepEqual(analysisMode({ provider: 'openai', rp: false }, { ...opts, text: 'разбери документ' }), { active: false, numPredict: undefined });
+  assert.deepEqual(analysisMode(baseCfg, { rolesReady: false, auto: true, tor: false, text: 'разбери документ' }), { active: false, numPredict: undefined });
+  assert.deepEqual(analysisMode(baseCfg, { rolesReady: true, auto: false, tor: false, text: 'разбери документ' }), { active: false, numPredict: undefined });
 });
