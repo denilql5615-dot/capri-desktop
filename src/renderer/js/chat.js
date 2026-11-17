@@ -851,7 +851,9 @@ export class Chat {
       if (res && res.answer) {
         const cited = res.sources.filter((s) => res.answer.includes(`[${s.n}]`));
         const list = (cited.length ? cited : res.sources.slice(0, 3)).map((s) => `[${s.n}] ${s.title} — ${s.url}`).join('\n');
-        return { line: `${res.answer}\n\n${list}`, face: 'smug' };
+        // a site that asked "are you human?": not solved by her, handed to you
+        const check = res.blocked?.length ? `\n\nСайт просит проверку «я не робот», её я не прохожу — открой сам: ${res.blocked[0]}` : '';
+        return { line: `${res.answer}\n\n${list}${check}`, face: 'smug' };
       }
       return res ? { line: fmt(t.web, { query: asked.query }), face: 'smug' } : null;
     }

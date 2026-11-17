@@ -41,6 +41,7 @@ const telegram = require('./telegram');
 const { Planner, syncReminders } = require('./planner');
 const phonepack = require('./phonepack');
 const web = require('./web');
+const capriBrowser = require('./browser');
 const photo = require('./photo');
 const { Router, workerSettings, hasSecret } = require('./router');
 const quick = require('./quick');
@@ -1067,6 +1068,8 @@ function rebuildTray() {
         ...(cfg.provider === 'ollama' && brains.ready(chatModels) ? [
           { label: 'Авто: быстрая E4B + основная 26B', type: 'radio', checked: brains.isAuto(cfg.chatModel, chatModels), click: () => updateConfig({ chatModel: 'auto' }) },
           { label: 'Ролевой режим (18+)', type: 'checkbox', checked: cfg.rp === true, click: (item) => updateConfig({ rp: item.checked }) },
+          // her own browser profile (browser.js): you sign in there, only to services you trust her with
+          { label: 'Браузер Капри — войти в сервисы…', click: () => capriBrowser.openForSignIn('about:blank', { app }).catch(() => {}) },
           { type: 'separator' },
         ] : []),
         ...(chatModels?.length
@@ -2460,13 +2463,16 @@ function registerIpc() {
       const said = await web.answer(q, {
         url: cfg.searxUrl,
         chat: (messages) => ollama.chat({ model, messages, numPredict: 500 }, () => {}),
+        render: (url) => capriBrowser.readRendered(url, { app }),
       });
-      if (said.answer) return { answer: said.answer, sources: said.sources };
+      if (said.answer) return { answer: said.answer, sources: said.sources, blocked: said.blocked };
     } catch (err) {
       console.warn('web search:', err.message);
     }
     return shell.openExternal(`https://duckduckgo.com/?q=${encodeURIComponent(q)}`).then(() => ({ opened: true }), () => false);
   });
+  // her own browser profile, opened for you to sign in to the services you trust her with (browser.js)
+  ipcMain.handle('browser:signin', (_e, url) => capriBrowser.openForSignIn(url, { app }).then(() => true, () => false));
   ipcMain.handle('apps:launch', (_e, item) => launch.launch(item).then(() => ({ ok: true }), (err) => ({ ok: false, error: err.message })));
   ipcMain.handle('apps:media', (_e, action) => launch.media(action));
   // your PC itself, from her chat: settings, what's left, sound, snip, windows, theme, power

@@ -84,13 +84,23 @@ async function answer(question, deps) {
   const results = await search(question, { url: deps.url, fetchImpl, signal });
   if (!results.length) return { answer: '', sources: [] };
   const pages = await Promise.all(results.slice(0, PAGES).map((r) => read(r.url, { fetchImpl, signal })));
+  // a page built by scripts reads empty: her browser (browser.js) renders it, one at a time
+  const blocked = [];
+  if (deps.render) {
+    for (let i = 0; i < pages.length; i++) {
+      if (pages[i] && pages[i].length > 300) continue;
+      const r = await deps.render(results[i].url).catch(() => null);
+      if (r && r.blocked) blocked.push(results[i].url);
+      else if (r && r.text) pages[i] = r.text.slice(0, PAGE_CHARS);
+    }
+  }
   const sources = results.slice(0, Math.max(PAGES, 5)).map((r, i) => ({ n: i + 1, title: r.title, url: r.url, text: pages[i] || r.snippet }));
   const blocks = sources.map((s) => `<<<ИСТОЧНИК ${s.n}: ${s.title} (${s.url})\n${s.text}\n>>>`).join('\n\n');
   const said = await chat([
     { role: 'system', content: SYSTEM },
     { role: 'user', content: `Вопрос: ${question}\n\n${blocks}` },
   ]);
-  return { answer: String(said || '').trim(), sources: sources.map(({ n, title, url }) => ({ n, title, url })) };
+  return { answer: String(said || '').trim(), sources: sources.map(({ n, title, url }) => ({ n, title, url })), blocked };
 }
 
 module.exports = { search, read, textOf, answer, DEFAULT_URL };
