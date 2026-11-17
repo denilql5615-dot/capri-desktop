@@ -2476,11 +2476,15 @@ function registerIpc() {
     if (!q) return false;
     const cfg = config.load();
     try {
-      const model = brains.ready(await ollama.models().catch(() => [])) ? brains.current() : cfg.chatModel;
+      const roles = brains.ready(await ollama.models().catch(() => []));
       const said = await web.answer(q, {
         url: cfg.searxUrl,
-        chat: (messages) => ollama.chat({ model, messages, numPredict: 500 }, () => {}),
-        render: (url) => capriBrowser.readRendered(url, { app, browser: cfg.capriBrowser }),
+        // a "how to" answer is steps from several pages: the main brain writes it, with room for them
+        chat: async (messages, { howto } = {}) => {
+          const model = roles ? (howto ? await brains.use('main') : brains.current()) : cfg.chatModel;
+          return ollama.chat({ model, messages, numPredict: howto ? 1200 : 500 }, () => {});
+        },
+        renderMany: (urls) => capriBrowser.readRenderedMany(urls, { app, browser: cfg.capriBrowser }),
       });
       if (said.answer) return { answer: said.answer, sources: said.sources, blocked: said.blocked };
     } catch (err) {

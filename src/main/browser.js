@@ -202,29 +202,52 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
  * blocked: a human check is still on the page after waiting; the text she got is kept anyway.
  */
 async function readRendered(url, opts = {}) {
-  const { chars = 4000, timeoutMs = 25000, settleMs = 1500, challengeWaitMs = 12000, pollMs = 1500 } = opts;
-  if (!/^https?:\/\//i.test(String(url))) return { text: '', title: '', blocked: false };
+  return (await readRenderedMany([url], opts))[0];
+}
+
+/**
+ * Several pages in ONE browser, each in its own tab, side by side: [{ text, title, blocked, browser, url }].
+ * A page that doesn't finish loading in time is still read for what it has; one that fails reads empty.
+ */
+async function readRenderedMany(urls, opts = {}) {
+  const { chars = 4000, timeoutMs = 15000, settleMs = 2500, challengeWaitMs = 10000, pollMs = 1500 } = opts;
+  const empty = () => ({ text: '', title: '', blocked: false });
+  const list = [].concat(urls || []).map(String);
+  if (!list.some((u) => /^https?:\/\//i.test(u))) return list.map(empty);
   const { ctx, b } = await start(opts, true);
-  try {
-    const page = (await ctx.pages())[0] || (await ctx.newPage());
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
-    await pause(settleMs);
-    const look = async () => {
-      const title = await page.title();
-      const text = await page.evaluate(() => {
-        const root = document.querySelector('article, main, [role=main]') || document.body;
-        return root ? root.innerText : '';
-      });
-      const clean = String(text || '').split('\n').map((l) => l.trim()).filter((l) => l.length > 30).join('\n');
-      return { title, clean, check: CHALLENGE.test(title) || (clean.length < 400 && CHALLENGE.test(clean)) };
-    };
-    let seen = await look();
-    // many checks pass by themselves in a real browser: wait, don't solve, don't cut off
-    for (let waited = 0; seen.check && waited < challengeWaitMs; waited += pollMs) {
-      await pause(pollMs);
-      seen = await look();
+  const one = async (url) => {
+    if (!/^https?:\/\//i.test(url)) return empty(url);
+    const page = await ctx.newPage();
+    try {
+      // slow pages: whatever arrived by the deadline is read, the wait isn't a failure
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs }).catch(() => {});
+      await pause(settleMs);
+      const look = async () => {
+        const title = await page.title().catch(() => '');
+        const text = await page.evaluate(() => {
+          const main = document.querySelector('article, main, [role=main]');
+          const body = document.body ? document.body.innerText : '';
+          const inMain = main ? main.innerText : '';
+          return inMain && inMain.length > 300 ? inMain : body; // an empty <main> shell: the whole page
+        }).catch(() => '');
+        const clean = String(text || '').split('\n').map((l) => l.trim()).filter((l) => l.length > 30).join('\n');
+        return { title, clean, check: CHALLENGE.test(title) || (clean.length < 400 && CHALLENGE.test(clean)) };
+      };
+      let seen = await look();
+      // many checks pass by themselves in a real browser: wait, don't solve, don't cut off
+      for (let waited = 0; seen.check && waited < challengeWaitMs; waited += pollMs) {
+        await pause(pollMs);
+        seen = await look();
+      }
+      return { text: seen.clean.slice(0, chars), title: seen.title, blocked: seen.check, browser: b.name, url };
+    } catch {
+      return empty(url);
+    } finally {
+      await Promise.resolve().then(() => page.close()).catch(() => {});
     }
-    return { text: seen.clean.slice(0, chars), title: seen.title, blocked: seen.check, browser: b.name, url };
+  };
+  try {
+    return await Promise.all(list.map(one));
   } finally {
     await ctx.close().catch(() => {});
   }
@@ -239,6 +262,6 @@ async function openForSignIn(url, opts = {}) {
 }
 
 module.exports = {
-  readRendered, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
+  readRendered, readRenderedMany, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
   engineOf, kindOf, CHALLENGE, KNOWN, MODES,
 };

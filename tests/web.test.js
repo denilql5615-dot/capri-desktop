@@ -35,12 +35,70 @@ test('textOf: article text without scripts, menus or comments', () => {
   assert.doesNotMatch(t, /evil|track|footer|Home About/);
 });
 
-test('read: only http(s) HTML pages; failures are empty', async () => {
+test('read: only http(s) HTML or PDF pages; failures are empty', async () => {
   assert.strictEqual(await web.read('file:///c:/x'), '');
-  assert.strictEqual(await web.read('https://a.b/x', { fetchImpl: async () => ({ ok: true, headers: { get: () => 'application/pdf' } }) }), '');
+  assert.strictEqual(await web.read('https://a.b/x', { fetchImpl: async () => ({ ok: true, headers: { get: () => 'image/png' } }) }), '');
   assert.strictEqual(await web.read('https://a.b/x', { fetchImpl: async () => { throw new Error('timeout'); } }), '');
   const t = await web.read('https://a.b/x', { fetchImpl: async () => html('<p>A long enough paragraph of real text about the outage today.</p>') });
   assert.match(t, /real text about the outage/);
+});
+
+test('fetchPage: a site that never answers is unreachable (no browser for it), a refusal is not', async () => {
+  assert.deepStrictEqual(await web.fetchPage('https://a.b/x', { fetchImpl: async () => { throw new Error('connect timeout'); } }), { text: '', unreachable: true });
+  assert.strictEqual((await web.fetchPage('https://a.b/x', { fetchImpl: async () => ({ ok: false, headers: { get: () => '' } }) })).unreachable, false);
+});
+
+test('fetchPage: PDF through the extractor, a huge one skipped', async () => {
+  const pdf = (size) => ({ ok: true, headers: { get: (h) => (h === 'content-type' ? 'application/pdf' : String(size)) }, arrayBuffer: async () => new ArrayBuffer(8) });
+  let asked = '';
+  const extract = async (file) => { asked = file; return { text: 'Dropbear in initramfs: apt install dropbear-initramfs, then update-initramfs -u.' }; };
+  const r = await web.fetchPage('https://a.b/doc.pdf', { fetchImpl: async () => pdf(8), extract });
+  assert.match(r.text, /dropbear-initramfs/);
+  assert.match(asked, /\.pdf$/);
+  const big = await web.fetchPage('https://a.b/doc.pdf', { fetchImpl: async () => pdf(60 * 1024 * 1024), extract: async () => { throw new Error('should not run'); } });
+  assert.strictEqual(big.text, '');
+});
+
+test('headOf / textOf: title and description of a script-built page; comment text inside forms kept', () => {
+  const page = '<html><head><title>GTA VI &mdash; Rockstar</title><meta property="og:description" content="Coming November 19, 2026"></head><body><div id="app"></div></body></html>';
+  assert.strictEqual(web.headOf(page), 'GTA VI — Rockstar — Coming November 19, 2026');
+  const reddit = '<div class="comment"><form class="usertext"><div class="md"><p>I think Spain wins the 2030 World Cup, they have the best young squad.</p></div></form></div>';
+  assert.match(web.textOf(reddit), /Spain wins the 2030/);
+});
+
+test('usable: host-less and login-wall links out, reddit read as old.reddit', () => {
+  assert.strictEqual(web.usable('http:///go/v1/AQGOF'), null);
+  assert.strictEqual(web.usable('https://www.facebook.com/x/posts/1'), null);
+  assert.strictEqual(web.usable('https://x.com/a/status/1'), null);
+  assert.strictEqual(web.usable('https://www.reddit.com/r/a/comments/1/'), 'https://old.reddit.com/r/a/comments/1/');
+  assert.strictEqual(web.usable('https://box.com/a'), 'https://box.com/a');
+});
+
+test('answer: empty pages go to the browser in one call, unreachable ones do not; read pages first', async () => {
+  const long = (w) => html(`<p>${w} is a long enough paragraph of real page text to count as read. `.repeat(8) + '</p>');
+  const fetchImpl = async (url) => {
+    if (url.includes('/search?')) {
+      return json({ results: ['a', 'b', 'c', 'd', 'e'].map((h) => ({ title: h.toUpperCase(), url: `https://${h}.com/p`, content: `snip ${h}` })) });
+    }
+    if (url.startsWith('https://a.com')) throw new Error('connect timeout'); // blocked on the route
+    if (url.startsWith('https://b.com')) return html('<div id="app"></div>'); // built by scripts
+    if (url.startsWith('https://c.com')) return html('<div id="app"></div>'); // a human check
+    return long(url.slice(8, 9));
+  };
+  let calls = 0;
+  let asked = [];
+  const renderMany = async (urls) => {
+    calls++;
+    asked = urls;
+    return urls.map((u) => (u.includes('c.com') ? { text: 'Just a moment', blocked: true } : { text: 'Rendered text of b. '.repeat(30), blocked: false }));
+  };
+  let howto = null;
+  const r = await web.answer('как настроить b', { url: 'http://x', fetchImpl, renderMany, chat: async (m, o) => { howto = o.howto; return 'ok'; } });
+  assert.strictEqual(calls, 1);
+  assert.deepStrictEqual(asked, ['https://b.com/p', 'https://c.com/p']);
+  assert.deepStrictEqual(r.blocked, ['https://c.com/p']);
+  assert.deepStrictEqual(r.sources.map((s) => s.title), ['B', 'D', 'E', 'A', 'C']);
+  assert.strictEqual(howto, true);
 });
 
 test('answer: pages fenced as data with the no-instructions rule, sources numbered', async () => {

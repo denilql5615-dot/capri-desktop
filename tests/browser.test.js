@@ -69,11 +69,37 @@ test('answer: an empty page goes to her browser; a checked one is handed back wi
   const rendered = [];
   const r = await web.answer('q', {
     url: 'http://x', fetchImpl,
-    render: async (url) => { rendered.push(url); return url.includes('wall') ? { blocked: true, text: '' } : { blocked: false, text: 'Rendered text of the app page with the actual answer in it.' }; },
+    renderMany: async (urls) => { rendered.push(...urls); return urls.map((u) => (u.includes('wall') ? { blocked: true, text: '' } : { blocked: false, text: 'Rendered text of the app page with the actual answer in it. '.repeat(8) })); },
     chat: async (m) => { assert.match(m[1].content, /Rendered text of the app page/); return 'ok [1]'; },
   });
   assert.deepStrictEqual(rendered, ['https://spa.example/a', 'https://wall.example/b']);
   assert.deepStrictEqual(r.blocked, ['https://wall.example/b']);
+});
+
+test('readRenderedMany: one browser for all pages, a tab each; a page that never loads is still read', async () => {
+  let launches = 0;
+  let tabs = 0;
+  const launch = async () => {
+    launches++;
+    return {
+      pages: () => [],
+      newPage: async () => {
+        tabs++;
+        const n = tabs;
+        return {
+          goto: async () => { if (n === 2) throw new Error('Navigation timeout of 15000 ms exceeded'); },
+          title: async () => `Page ${n}`,
+          evaluate: async () => (n === 2 ? 'Half-loaded page text that is still long enough to keep in.' : long),
+          close: async () => {},
+        };
+      },
+      close: async () => {},
+    };
+  };
+  const r = await browser.readRenderedMany(['https://a.example/', 'https://b.example/', 'https://c.example/'], { app, pick, ...fast, launch });
+  assert.deepStrictEqual([launches, tabs, r.length], [1, 3, 3]);
+  assert.match(r[1].text, /Half-loaded/);
+  assert.match(r[2].text, /about the outage/);
 });
 
 // a fake disk: the files that exist; folders are what lies between
