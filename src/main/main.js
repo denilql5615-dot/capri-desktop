@@ -1886,6 +1886,13 @@ function browserMenu(cfg) {
       { type: 'separator' },
       // all of her web through the browser: no search server, no plain downloads around it
       { label: 'Только браузер (поиск и чтение — в нём)', type: 'checkbox', checked: cfg.webMode === 'browser', click: (item) => updateConfig({ webMode: item.checked ? 'browser' : 'search' }) },
+      // her search log (notes.appendSearch): a file a day in your vault, for you to read, edit, delete
+      { label: 'Журнал поиска (Сырьё/Поиск)…', click: () => {
+        const folder = path.join(path.basename(notesDir()).toLowerCase() === 'capri' ? path.dirname(notesDir()) : notesDir(), notes.RAW_DIR, 'Поиск');
+        fs.mkdirSync(folder, { recursive: true });
+        shell.openPath(folder);
+      } },
+      { label: 'Записывать поиск в журнал', type: 'checkbox', checked: cfg.vaultSearch !== false, click: (item) => updateConfig({ vaultSearch: item.checked }) },
       ...(prof ? [
         { label: `Профиль: ${prof} (твой, через порт ${cfg.capriBrowserPort || capriBrowser.DEFAULT_PORT})`, enabled: false },
         { label: 'Открыть профиль (с портом для Капри)', click: () => capriBrowser.openForSignIn('about:blank', browserOpts(cfg)).catch((err) => console.warn('browser:', err.message)) },
@@ -2494,6 +2501,14 @@ function registerIpc() {
     const cfg = config.load();
     const browserOnly = cfg.webMode === 'browser';
     let session = null;
+    // her search log in your vault (Сырьё/Поиск): every question, how, what came up, what she read
+    const via = browserOnly
+      ? `браузер ${capriBrowser.resolve(cfg.capriBrowser)?.name || ''}${cfg.capriBrowserProfile ? `, профиль ${cfg.capriBrowserProfileName || path.basename(cfg.capriBrowserProfile)}` : ''} (только браузер)`
+      : `поисковик SearXNG (${cfg.searxUrl}) + чтение страниц`;
+    const logSearch = (entry) => {
+      if (cfg.vaultSearch === false || hasSecret(q)) return;
+      try { notes.appendSearch(notesDir(), { question: q, via, ...entry }); } catch (err) { console.warn('[capri] search log:', err.message); }
+    };
     try {
       const roles = brains.ready(await ollama.models().catch(() => []));
       // browser-only: one session of her browser (your profile when set) for the search page and every page
@@ -2512,14 +2527,17 @@ function registerIpc() {
           renderMany: (urls) => capriBrowser.readRenderedMany(urls, browserOpts(cfg)),
         }),
       });
+      logSearch({ results: said.results, read: said.read, blocked: said.blocked, answer: said.answer, error: said.answer ? '' : 'поиск ничего не дал' });
       if (said.answer) return { answer: said.answer, sources: said.sources, blocked: said.blocked };
     } catch (err) {
       console.warn('web search:', err.message);
+      logSearch({ error: err.message });
       if (browserOnly) return { error: `Не вышло через браузер: ${err.message}` }; // nothing goes around it
     } finally {
       if (session) await session.close();
     }
     if (browserOnly) return { error: 'В браузере поиск ничего не нашёл.' };
+    logSearch({ error: 'отдано тебе: открыт DuckDuckGo в браузере' });
     return shell.openExternal(`https://duckduckgo.com/?q=${encodeURIComponent(q)}`).then(() => ({ opened: true }), () => false);
   });
   // her browser opened for you: to sign in to services you trust her with, or your profile started with her port
