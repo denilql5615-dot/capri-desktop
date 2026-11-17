@@ -90,8 +90,8 @@ async function answer(question, deps) {
     for (let i = 0; i < pages.length; i++) {
       if (pages[i] && pages[i].length > 300) continue;
       const r = await deps.render(results[i].url).catch(() => null);
-      if (r && r.blocked) blocked.push(results[i].url);
-      else if (r && r.text) pages[i] = r.text.slice(0, PAGE_CHARS);
+      if (r && r.blocked) blocked.push(results[i].url); // a human check stayed: you get the link
+      if (r && r.text && r.text.length > (pages[i] || '').length) pages[i] = r.text.slice(0, PAGE_CHARS);
     }
   }
   const sources = results.slice(0, Math.max(PAGES, 5)).map((r, i) => ({ n: i + 1, title: r.title, url: r.url, text: pages[i] || r.snippet }));

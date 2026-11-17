@@ -1,72 +1,119 @@
 'use strict';
 
-// Her own browser, for pages a plain download can't read (built by scripts). It is any browser on the
-// PC you pick: 'auto' follows your Windows default, or a name from the list below, or a path to an exe.
-// Firefox and its forks (LibreWolf, Waterfox, Floorp, Zen, Mullvad) are driven over WebDriver BiDi,
-// Chromium ones (Brave, Chrome, Edge, Vivaldi, Yandex…) over CDP, both by puppeteer-core.
-// Each browser gets its own profile for her ("Капри"), never yours: you sign in there yourself, only to
-// services you trust her with; banks, Proton and mail never go in it. For now it only reads: open, let
-// the scripts run, take the text. A page that asks "are you human?" is not solved: she reports it and
-// you open it yourself. Safari (Apple only), IronFox and Fennec (Android only) have no Windows build
-// that can be driven: with one of them as the default she takes the next browser she can drive.
+// Her own browser, for pages a plain download can't read (built by scripts). Any browser on the PC:
+// 'auto' follows your Windows default, or a name, or a path to an exe. She takes the FIRST technically
+// compatible one, in this order: your choice → your default → the rest found on the PC.
+// Two ways to drive it, both through puppeteer-core:
+//   1. the engine's own protocol — Chromium over CDP, Gecko (Firefox and forks) over WebDriver BiDi;
+//   2. WebDriver BiDi for everything else that speaks it (a Chromium build with CDP shut, a new engine).
+// The engine is told by the files next to the exe, not by its name, so a new browser on Chromium or
+// Gecko works without a code change. What stays the same whichever browser she sits in:
+//   - profile: her own one per browser ("Капри"), never yours; you sign in there yourself, only to
+//     services you trust her with; banks, Proton and mail never go in it;
+//   - network: no proxy or route of her own, the PC's (all of it through the VPN);
+//   - task limits: read only — open, let the scripts run, take the text.
+// A human check is not solved and not cut off either: many pass by themselves in a real browser, so she
+// waits a little; if it is still there she says so and gives you the link, keeping whatever text she got.
 
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-const CHALLENGE = /(just a moment|attention required|verify you are human|are you a robot|captcha|access denied|checking your browser|подтвердите, что вы не робот|проверка браузера)/i;
+const CHALLENGE = /(just a moment|attention required|verify you are human|are you a robot|captcha|access denied|checking your browser|one moment|please wait|один момент|подождите|подтвердите, что вы не робот|проверка браузера|проверяем|выполняется проверка)/i;
 
 const PF = [process.env.ProgramFiles || 'C:\\Program Files', process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', process.env.LOCALAPPDATA].filter(Boolean);
 
-// name → kind and where it usually lives (Windows folders under Program Files / LocalAppData, then Linux)
+// where the usual ones live (Windows folders under Program Files / LocalAppData, then Linux)
 const KNOWN = [
-  { name: 'Firefox', kind: 'firefox', rel: ['Mozilla Firefox\\firefox.exe'], unix: ['/usr/bin/firefox'] },
-  { name: 'LibreWolf', kind: 'firefox', rel: ['LibreWolf\\librewolf.exe'], unix: ['/usr/bin/librewolf'] },
-  { name: 'Waterfox', kind: 'firefox', rel: ['Waterfox\\waterfox.exe'], unix: ['/usr/bin/waterfox'] },
-  { name: 'Floorp', kind: 'firefox', rel: ['Ablaze Floorp\\floorp.exe', 'Floorp\\floorp.exe'], unix: ['/usr/bin/floorp'] },
-  { name: 'Zen', kind: 'firefox', rel: ['Zen Browser\\zen.exe'], unix: ['/usr/bin/zen-browser'] },
-  { name: 'Mullvad Browser', kind: 'firefox', rel: ['Mullvad Browser\\Browser\\mullvadbrowser.exe'], unix: [] },
-  { name: 'Brave', kind: 'chrome', rel: ['BraveSoftware\\Brave-Browser\\Application\\brave.exe'], unix: ['/usr/bin/brave-browser', '/usr/bin/brave'] },
-  { name: 'Chromium', kind: 'chrome', rel: ['Chromium\\Application\\chrome.exe'], unix: ['/usr/bin/chromium', '/usr/bin/chromium-browser'] },
-  { name: 'Chrome', kind: 'chrome', rel: ['Google\\Chrome\\Application\\chrome.exe'], unix: ['/usr/bin/google-chrome'] },
-  { name: 'Edge', kind: 'chrome', rel: ['Microsoft\\Edge\\Application\\msedge.exe'], unix: ['/usr/bin/microsoft-edge'] },
-  { name: 'Vivaldi', kind: 'chrome', rel: ['Vivaldi\\Application\\vivaldi.exe'], unix: ['/usr/bin/vivaldi'] },
-  { name: 'Yandex', kind: 'chrome', rel: ['Yandex\\YandexBrowser\\Application\\browser.exe'], unix: ['/usr/bin/yandex-browser'] },
-  { name: 'Thorium', kind: 'chrome', rel: ['Thorium\\Application\\thorium.exe'], unix: ['/usr/bin/thorium-browser'] },
+  { name: 'Firefox', rel: ['Mozilla Firefox\\firefox.exe'], unix: ['/usr/bin/firefox'] },
+  { name: 'LibreWolf', rel: ['LibreWolf\\librewolf.exe'], unix: ['/usr/bin/librewolf'] },
+  { name: 'Waterfox', rel: ['Waterfox\\waterfox.exe'], unix: ['/usr/bin/waterfox'] },
+  { name: 'Floorp', rel: ['Ablaze Floorp\\floorp.exe', 'Floorp\\floorp.exe'], unix: ['/usr/bin/floorp'] },
+  { name: 'Zen', rel: ['Zen Browser\\zen.exe'], unix: ['/usr/bin/zen-browser'] },
+  { name: 'Mullvad Browser', rel: ['Mullvad Browser\\Browser\\mullvadbrowser.exe'], unix: [] },
+  { name: 'Brave', rel: ['BraveSoftware\\Brave-Browser\\Application\\brave.exe'], unix: ['/usr/bin/brave-browser', '/usr/bin/brave'] },
+  { name: 'Chromium', rel: ['Chromium\\Application\\chrome.exe'], unix: ['/usr/bin/chromium', '/usr/bin/chromium-browser'] },
+  { name: 'Chrome', rel: ['Google\\Chrome\\Application\\chrome.exe'], unix: ['/usr/bin/google-chrome'] },
+  { name: 'Edge', rel: ['Microsoft\\Edge\\Application\\msedge.exe'], unix: ['/usr/bin/microsoft-edge'] },
+  { name: 'Vivaldi', rel: ['Vivaldi\\Application\\vivaldi.exe'], unix: ['/usr/bin/vivaldi'] },
+  { name: 'Yandex', rel: ['Yandex\\YandexBrowser\\Application\\browser.exe'], unix: ['/usr/bin/yandex-browser'] },
+  { name: 'Thorium', rel: ['Thorium\\Application\\thorium.exe'], unix: ['/usr/bin/thorium-browser'] },
 ];
-// no Windows build she can drive (Safari: Apple only; IronFox, Fennec: Android only)
+// no build for this OS she can drive (Safari: Apple only; IronFox, Fennec: Android only)
 const UNDRIVABLE = /safari|ironfox|fennec/i;
 
-/** 'firefox' | 'chrome' | null, by the exe name. */
-function kindOf(exe) {
-  const b = path.basename(String(exe || '')).toLowerCase();
-  if (UNDRIVABLE.test(b)) return null;
-  if (/firefox|librewolf|waterfox|floorp|zen|mullvadbrowser/.test(b)) return 'firefox';
-  if (/chrome|chromium|brave|msedge|vivaldi|thorium|opera|yandex|^browser\.exe$/.test(b)) return 'chrome';
-  return null;
-}
+const fsio = {
+  exists: (p) => fs.existsSync(p),
+  dirs: (d) => { try { return fs.readdirSync(d, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => path.join(d, e.name)); } catch { return []; } },
+};
 
-/** Browsers on this PC she can drive: [{ name, kind, exe }]. */
-function installed(exists = fs.existsSync) {
+/** 'chrome' | 'firefox' | 'unknown' | null (can't be driven). By the files next to the exe, then by its name. */
+function engineOf(exe, io = fsio) {
+  const file = String(exe || '');
+  if (!file || UNDRIVABLE.test(path.basename(file))) return null;
+  const dir = path.dirname(file);
+  if (['xul.dll', 'omni.ja', 'libxul.so'].some((f) => io.exists(path.join(dir, f)))) return 'firefox';
+  const chromium = (d) => ['chrome_elf.dll', 'resources.pak', 'chrome_100_percent.pak'].some((f) => io.exists(path.join(d, f)));
+  if (chromium(dir) || io.dirs(dir).some(chromium)) return 'chrome'; // Chromium keeps them in a version folder
+  const b = path.basename(file).toLowerCase();
+  if (/firefox|librewolf|waterfox|floorp|zen|mullvadbrowser/.test(b)) return 'firefox';
+  if (/chrome|chromium|brave|msedge|vivaldi|thorium|opera|yandex/.test(b)) return 'chrome';
+  return 'unknown';
+}
+const kindOf = (exe) => { const e = engineOf(exe, { exists: () => false, dirs: () => [] }); return e === 'unknown' ? null : e; };
+
+const reg = (args) => execFileSync('reg', args, { encoding: 'utf8', windowsHide: true, timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
+const exeIn = (text) => (String(text).match(/"([^"]+\.exe)"/i) || String(text).match(/REG_SZ\s+(\S+\.exe)/i) || [])[1] || null;
+
+/** Browsers registered with Windows (Start menu "Internet" clients): [{ name, exe }]. */
+function registered(run = reg) {
+  if (process.platform !== 'win32') return [];
   const out = [];
-  for (const k of KNOWN) {
-    const tries = process.platform === 'win32' ? PF.flatMap((root) => k.rel.map((r) => path.join(root, r))) : k.unix;
-    const exe = tries.find((p) => exists(p));
-    if (exe) out.push({ name: k.name, kind: k.kind, exe });
+  for (const root of ['HKLM\\SOFTWARE\\Clients\\StartMenuInternet', 'HKCU\\SOFTWARE\\Clients\\StartMenuInternet', 'HKLM\\SOFTWARE\\WOW6432Node\\Clients\\StartMenuInternet']) {
+    let keys = [];
+    // reg prints full hive names (HKEY_LOCAL_MACHINE\…): keep each subkey, query it by our short name
+    const tail = root.slice(root.indexOf('\\')).toUpperCase() + '\\';
+    try {
+      keys = run(['query', root]).split(/\r?\n/).map((l) => l.trim())
+        .filter((l) => l.toUpperCase().includes(tail))
+        .map((l) => root + l.slice(l.toUpperCase().indexOf(tail) + tail.length - 1));
+    } catch { continue; }
+    for (const key of keys) {
+      try { const exe = exeIn(run(['query', `${key}\\shell\\open\\command`, '/ve'])); if (exe) out.push({ name: key.split('\\').pop().replace(/\.exe$/i, ''), exe }); } catch { /* next */ }
+    }
   }
   return out;
 }
 
+/** Browsers on this PC she can drive: [{ name, engine, exe }], one per exe. */
+function installed({ io = fsio, extra = registered } = {}) {
+  const out = [];
+  const seen = new Set();
+  const add = (name, exe) => {
+    const key = exe.toLowerCase();
+    if (seen.has(key) || !io.exists(exe)) return;
+    const engine = engineOf(exe, io);
+    if (!engine || engine === 'unknown') return; // only what is surely compatible goes in the list
+    seen.add(key);
+    out.push({ name, engine, exe });
+  };
+  for (const k of KNOWN) {
+    const tries = process.platform === 'win32' ? PF.flatMap((root) => k.rel.map((r) => path.join(root, r))) : k.unix;
+    const exe = tries.find((p) => io.exists(p));
+    if (exe) add(k.name, exe);
+  }
+  for (const r of (typeof extra === 'function' ? extra() : extra) || []) add(r.name, r.exe);
+  return out;
+}
+
 /** The exe of your Windows default browser, or null. */
-function systemDefault(run = (args) => execFileSync('reg', args, { encoding: 'utf8', windowsHide: true, timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] })) {
+function systemDefault(run = reg) {
   if (process.platform !== 'win32') return null;
   const base = 'HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\https';
   for (const key of [`${base}\\UserChoiceLatest`, `${base}\\UserChoice`]) {
     try {
       const prog = (run(['query', key, '/v', 'ProgId']).match(/ProgId\s+REG_SZ\s+(\S+)/) || [])[1];
-      if (!prog) continue;
-      const cmd = run(['query', `HKCR\\${prog}\\shell\\open\\command`, '/ve']);
-      const exe = (cmd.match(/"([^"]+\.exe)"/i) || cmd.match(/REG_SZ\s+(\S+\.exe)/i) || [])[1];
+      const exe = prog && exeIn(run(['query', `HKCR\\${prog}\\shell\\open\\command`, '/ve']));
       if (exe) return exe;
     } catch { /* next key */ }
   }
@@ -74,66 +121,110 @@ function systemDefault(run = (args) => execFileSync('reg', args, { encoding: 'ut
 }
 
 /**
- * Which browser she uses: { name, kind, exe, note } or null when there is none she can drive.
- * setting: 'auto' (your default; if it can't be driven, the first one found), a name, or a path.
+ * Browsers to try, first one first: your choice (a name or a path) or your default, then the rest found.
+ * Each: { name, engine, exe, note? } — note says why it isn't the one asked for.
  */
-function resolve(setting = 'auto', { exists = fs.existsSync, defaultExe = systemDefault } = {}) {
-  const found = installed(exists);
+function candidates(setting = 'auto', { io = fsio, defaultExe = systemDefault, extra = registered } = {}) {
+  const found = installed({ io, extra });
   const s = String(setting || 'auto').trim();
-  const byExe = (exe) => found.find((b) => b.exe.toLowerCase() === exe.toLowerCase())
-    || (kindOf(exe) && exists(exe) ? { name: path.basename(exe, path.extname(exe)), kind: kindOf(exe), exe } : null);
-  if (s && s.toLowerCase() !== 'auto') {
-    const named = found.find((b) => b.name.toLowerCase() === s.toLowerCase());
-    if (named) return named;
-    if (/[\\/]/.test(s)) { const b = byExe(s); if (b) return b; }
-    const first = found[0];
-    return first ? { ...first, note: `«${s}» не найден или им нельзя управлять — беру ${first.name}` } : null;
+  const fromExe = (exe) => {
+    if (!exe) return null;
+    const known = found.find((b) => b.exe.toLowerCase() === String(exe).toLowerCase());
+    if (known) return known;
+    const engine = io.exists(exe) ? engineOf(exe, io) : null;
+    return engine ? { name: path.basename(exe, path.extname(exe)), engine, exe } : null;
+  };
+  let first = null;
+  let want = '';
+  if (s.toLowerCase() !== 'auto') {
+    want = s;
+    first = found.find((b) => b.name.toLowerCase() === s.toLowerCase()) || (/[\\/]/.test(s) ? fromExe(s) : null);
+  } else {
+    const def = typeof defaultExe === 'function' ? defaultExe() : defaultExe;
+    want = def ? `${path.basename(def)} (по умолчанию)` : '';
+    first = fromExe(def);
   }
-  const def = typeof defaultExe === 'function' ? defaultExe() : defaultExe;
-  const mine = def && byExe(def);
-  if (mine) return mine;
-  const first = found[0];
-  if (!first) return null;
-  return def ? { ...first, note: `${path.basename(def)} по умолчанию, но им управлять нельзя — беру ${first.name}` } : first;
+  const list = first ? [first, ...found.filter((b) => b.exe.toLowerCase() !== first.exe.toLowerCase())] : found.slice();
+  if (!first && want && list.length) list[0] = { ...list[0], note: `${want}: нет или им нельзя управлять — беру ${list[0].name}` };
+  return list;
 }
+
+/** The browser she would use now (for the tray), or null. */
+const resolve = (setting, opts) => candidates(setting, opts)[0] || null;
 
 // her profile, one per browser (a Firefox profile can't be opened by Chromium and back)
 const profileDir = (app, b) => path.join(app.getPath('userData'), 'capri-browser', b ? b.name.toLowerCase().replace(/\W+/g, '-') : '');
 
-function defaultLaunch(dir, { headless, browser: b }) {
+// ways to drive an engine, own protocol first, then BiDi
+const MODES = {
+  chrome: [{ browser: 'chrome', protocol: 'cdp' }, { browser: 'chrome', protocol: 'webDriverBiDi' }],
+  firefox: [{ browser: 'firefox', protocol: 'webDriverBiDi' }],
+  unknown: [{ browser: 'firefox', protocol: 'webDriverBiDi' }, { browser: 'chrome', protocol: 'webDriverBiDi' }, { browser: 'chrome', protocol: 'cdp' }],
+};
+
+// no proxy, no extra flags: the PC's own network and route
+function defaultLaunch(dir, { headless, browser: b, mode }) {
   fs.mkdirSync(dir, { recursive: true });
   return require('puppeteer-core').launch({
-    browser: b.kind, executablePath: b.exe, userDataDir: dir, headless,
+    browser: mode.browser, protocol: mode.protocol, executablePath: b.exe, userDataDir: dir, headless,
     defaultViewport: headless ? { width: 1280, height: 900 } : null,
   });
 }
 
-function pick(opts) {
-  const b = opts.pick || resolve(opts.browser);
-  if (!b) throw new Error('Нет браузера, которым Капри может управлять (Firefox, LibreWolf, Brave, Chrome, Edge…)');
-  return b;
+const working = new Map(); // setting → { b, mode } that started last time: tried first
+
+/** Starts the first compatible browser: { ctx, b, mode }. */
+async function start(opts, headless) {
+  const { app, launch = defaultLaunch } = opts;
+  const list = opts.pick ? [].concat(opts.pick) : candidates(opts.browser);
+  const key = String(opts.browser || 'auto');
+  const tries = [];
+  const last = !opts.pick && working.get(key);
+  if (last) tries.push(last);
+  for (const b of list) for (const mode of MODES[b.engine] || []) tries.push({ b, mode });
+  const errors = [];
+  for (const t of tries) {
+    try {
+      const ctx = await launch(profileDir(app, t.b), { headless, browser: t.b, mode: t.mode });
+      if (!opts.pick) working.set(key, t);
+      return { ctx, ...t };
+    } catch (e) {
+      errors.push(`${t.b.name}/${t.mode.protocol}: ${String(e && e.message || e).split('\n')[0]}`);
+    }
+  }
+  throw new Error(errors.length ? `Ни один браузер не запустился — ${errors.join('; ')}` : 'Нет браузера, которым Капри может управлять (Firefox, LibreWolf, Brave, Chrome, Edge…)');
 }
 
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Text of a page after its scripts ran: { text, title, blocked, browser }. Read-only, headless. */
+/**
+ * Text of a page after its scripts ran: { text, title, blocked, browser, url }. Read-only, headless.
+ * blocked: a human check is still on the page after waiting; the text she got is kept anyway.
+ */
 async function readRendered(url, opts = {}) {
-  const { app, chars = 4000, timeoutMs = 25000, launch = defaultLaunch } = opts;
+  const { chars = 4000, timeoutMs = 25000, settleMs = 1500, challengeWaitMs = 12000, pollMs = 1500 } = opts;
   if (!/^https?:\/\//i.test(String(url))) return { text: '', title: '', blocked: false };
-  const b = pick(opts);
-  const ctx = await launch(profileDir(app, b), { headless: true, browser: b });
+  const { ctx, b } = await start(opts, true);
   try {
     const page = (await ctx.pages())[0] || (await ctx.newPage());
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
-    await pause(1500);
-    const title = await page.title();
-    const text = await page.evaluate(() => {
-      const root = document.querySelector('article, main, [role=main]') || document.body;
-      return root ? root.innerText : '';
-    });
-    const clean = String(text || '').split('\n').map((l) => l.trim()).filter((l) => l.length > 30).join('\n');
-    const blocked = CHALLENGE.test(title) || (clean.length < 400 && CHALLENGE.test(clean));
-    return { text: blocked ? '' : clean.slice(0, chars), title, blocked, browser: b.name };
+    await pause(settleMs);
+    const look = async () => {
+      const title = await page.title();
+      const text = await page.evaluate(() => {
+        const root = document.querySelector('article, main, [role=main]') || document.body;
+        return root ? root.innerText : '';
+      });
+      const clean = String(text || '').split('\n').map((l) => l.trim()).filter((l) => l.length > 30).join('\n');
+      return { title, clean, check: CHALLENGE.test(title) || (clean.length < 400 && CHALLENGE.test(clean)) };
+    };
+    let seen = await look();
+    // many checks pass by themselves in a real browser: wait, don't solve, don't cut off
+    for (let waited = 0; seen.check && waited < challengeWaitMs; waited += pollMs) {
+      await pause(pollMs);
+      seen = await look();
+    }
+    return { text: seen.clean.slice(0, chars), title: seen.title, blocked: seen.check, browser: b.name, url };
   } finally {
     await ctx.close().catch(() => {});
   }
@@ -141,12 +232,13 @@ async function readRendered(url, opts = {}) {
 
 /** Opens her profile in a visible window, for you to sign in to the services you trust her with. */
 async function openForSignIn(url, opts = {}) {
-  const { app, launch = defaultLaunch } = opts;
-  const b = pick(opts);
-  const ctx = await launch(profileDir(app, b), { headless: false, browser: b });
+  const { ctx } = await start(opts, false);
   const page = (await ctx.pages())[0] || (await ctx.newPage());
   await page.goto(/^https?:\/\//i.test(String(url)) ? url : 'about:blank').catch(() => {});
   return ctx; // closed by you, with the window
 }
 
-module.exports = { readRendered, openForSignIn, profileDir, resolve, installed, systemDefault, kindOf, CHALLENGE, KNOWN };
+module.exports = {
+  readRendered, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
+  engineOf, kindOf, CHALLENGE, KNOWN, MODES,
+};
