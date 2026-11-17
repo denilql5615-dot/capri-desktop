@@ -88,6 +88,7 @@ const DEFAULTS = {
   pimMcpPort: 47824,
   webMcp: true, // her web for your agents (web-mcp.js): search and read through her browser nodes
   webMcpPort: 47825,
+  kiwixUrl: 'http://192.168.0.108:8090', // NOMAD's offline libraries on the home server (kiwix.js): the root of her knowledge
   agyAppPort: 8793, // the Antigravity app's DevTools port (agy-app.js): its Orchestrator for her council
   geminiAdviser: true, // Gemini as an adviser (gemini.js): ask_gemini for her and your agents, on your account in MAIN
   pimMcpToken: null,

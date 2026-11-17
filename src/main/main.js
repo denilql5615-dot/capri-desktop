@@ -46,6 +46,7 @@ const capriBrowser = require('./browser');
 const tor = require('./tor');
 const gemini = require('./gemini');
 const agyApp = require('./agy-app');
+const kiwix = require('./kiwix');
 const council = require('./council');
 const photo = require('./photo');
 const { Router, workerSettings, codexModelFor, hasSecret } = require('./router');
@@ -2014,6 +2015,10 @@ const agentWeb = {
       await s.close();
     }
   },
+  // the root of her knowledge forest: NOMAD's offline libraries on the home server (kiwix.js)
+  nomadSearch: ({ query, lang, books, limit }) => kiwix.search(query, { lang, books, limit, url: config.load().kiwixUrl || kiwix.DEFAULT_URL }),
+  nomadRead: ({ link, chars }) => kiwix.read(link, { chars, url: config.load().kiwixUrl || kiwix.DEFAULT_URL }),
+  nomadCatalog: async () => (await kiwix.catalog({ url: config.load().kiwixUrl || kiwix.DEFAULT_URL })).map(({ name, title, lang }) => ({ name, title, lang })),
   // Gemini as an adviser (gemini.js): a dialogue in a tab of her MAIN window, on your account. Never over Tor.
   async askGemini({ prompt, chat, model, files }) {
     const cfg = config.load();
