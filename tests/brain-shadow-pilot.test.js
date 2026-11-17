@@ -1,10 +1,19 @@
 'use strict';
+
+// Freeze cannot protect internal slots of Map/Set/Date: refuse them at the boundary.
+require('node:test')('snapshot rejects mutable non-plain cloned values', () => {
+  const { freezeSnapshot } = require('../scripts/brain-shadow-pilot');
+  const assert = require('node:assert/strict');
+  for (const nested of [new Map([['x', {}]]), new Set([{}]), new Date(0)]) {
+    assert.throws(() => freezeSnapshot({ nested }), /plain data/);
+  }
+});
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { runPilot, CASES } = require('../scripts/brain-shadow-pilot');
+const { runPilot, CASES, freezeSnapshot } = require('../scripts/brain-shadow-pilot');
 
 const file = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'brain-pilot-test-')), 'journal.ndjson');
 
@@ -45,16 +54,64 @@ test('reports are reproducible across runs (decisions, counts) and never claim m
   assert.match(a.coverage, /incomplete/);
 });
 
-test('observer cannot influence decisions even when it mutates its copy; a leaking observer is detected', async () => {
+test('frozen observer copy rejects mutation with counted observer errors and keeps parity; leaking observer is detected', async () => {
   const mutated = await runPilot({ journalFile: file(), probe: (d) => { d.tier = 'deep'; d.target = 'worker'; } });
   assert.equal(mutated.decision_parity.equal, 24);
-  assert.equal(mutated.passed, true);
+  assert.equal(mutated.router_callback_calls.equal, true);
+  assert.equal(mutated.sidecar.errors, 24);
+  assert.equal(mutated.sidecar.published, 0);
+  assert.equal(mutated.checks.no_observer_errors, false);
+  assert.equal(mutated.passed, false);
   const leaked = await runPilot({ journalFile: file(), tamper: (d, i) => (i === 5 ? { ...d, tier: 'deep' } : d) });
   assert.equal(leaked.decision_parity.equal, 23);
   assert.equal(leaked.passed, false);
   const never = await runPilot({ journalFile: file(), compare: () => false });
   assert.equal(never.decision_parity.equal, 0);
   assert.equal(never.passed, false);
+});
+
+test('freezeSnapshot deeply clones and freezes nested data without freezing original; clone failure becomes observer error', async () => {
+  const original = { target: 'capri', tier: 'routine', probs: { mechanical: 0.1, routine: 0.9 }, tags: ['local', { score: 1 }] };
+  const snap = freezeSnapshot(original);
+  assert.notEqual(snap, original);
+  assert.notEqual(snap.probs, original.probs);
+  assert.notEqual(snap.tags, original.tags);
+  assert.notEqual(snap.tags[1], original.tags[1]);
+  assert.ok(Object.isFrozen(snap) && Object.isFrozen(snap.probs) && Object.isFrozen(snap.tags) && Object.isFrozen(snap.tags[1]));
+  assert.ok(!Object.isFrozen(original) && !Object.isFrozen(original.probs) && !Object.isFrozen(original.tags));
+
+  original.tier = 'deep';
+  original.probs.routine = 0.2;
+  original.tags[1].score = 9;
+  assert.equal(snap.tier, 'routine');
+  assert.equal(snap.probs.routine, 0.9);
+  assert.equal(snap.tags[1].score, 1);
+
+  assert.throws(() => { snap.probs.routine = 0; }, TypeError);
+  assert.throws(() => { snap.tags.push('x'); }, TypeError);
+  assert.throws(() => { snap.tags[1].score = 0; }, TypeError);
+
+  const cyc = { a: 1 }; cyc.self = cyc;
+  const frozenCyc = freezeSnapshot(cyc);
+  assert.notEqual(frozenCyc, cyc);
+  assert.ok(Object.isFrozen(frozenCyc) && frozenCyc.self === frozenCyc);
+
+  const withFn = { fn: () => {} };
+  assert.throws(() => freezeSnapshot(withFn));
+  assert.equal(Object.isFrozen(withFn), false);
+
+  const realClone = globalThis.structuredClone;
+  globalThis.structuredClone = () => { throw new Error('clone failed'); };
+  let failed;
+  try {
+    failed = await runPilot({ journalFile: file() });
+  } finally { globalThis.structuredClone = realClone; }
+  assert.equal(failed.decision_parity.equal, 24);
+  assert.equal(failed.router_callback_calls.equal, true);
+  assert.equal(failed.sidecar.errors, 24);
+  assert.equal(failed.sidecar.published, 0);
+  assert.equal(failed.checks.no_observer_errors, false);
+  assert.equal(failed.passed, false);
 });
 
 test('an existing journal is never overwritten: a rerun only redelivers identical IDs as duplicates', async () => {

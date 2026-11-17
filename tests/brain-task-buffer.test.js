@@ -38,7 +38,10 @@ test('ordinary verified completion publishes one immutable copied batch, then th
   assert.equal(r.batch[0].urgency, 0);
   assert.ok(Object.isFrozen(r.batch) && Object.isFrozen(r.batch[0]));
   assert.equal(b.add(root, next()).status, 'discarded');
-  assert.throws(() => b.child(root), /sealed/);
+  const afterSeal = b.child(root);
+  assert.deepEqual(Reflect.ownKeys(afterSeal), []);
+  assert.ok(Object.isFrozen(afterSeal));
+  assert.equal(b.add(afterSeal, trap('sealed child')).status, 'discarded');
   assert.equal(b.finish(root).status, 'discarded');
 });
 
@@ -79,7 +82,11 @@ test('any private or unknown branch, even one asked as ordinary, discards the wh
   }
   const b = createTaskBuffer(); const next = stream();
   const unknownRoot = b.open('unknown');
-  assert.throws(() => b.child(unknownRoot, 'ordinary'), /sealed/); // an unknown parent mints no children
+  const unknownKid = b.child(unknownRoot, 'ordinary'); // no throw: returns dead closed opaque handle, never softened
+  assert.deepEqual(Reflect.ownKeys(unknownKid), []);
+  assert.ok(Object.isFrozen(unknownKid));
+  assert.equal(b.add(unknownKid, trap('unknown child event')).status, 'discarded');
+  assert.equal(b.add(b.child(unknownKid, 'ordinary'), trap('grandchild')).status, 'discarded');
   assert.equal(b.add(unknownRoot, trap('event')).status, 'discarded');
   assert.equal(b.finish(unknownRoot).status, 'discarded');
 });
@@ -95,7 +102,9 @@ test('cannot finish while a descendant is open; closed descendants allow publica
   const n = stream(); const root2 = b.open('ordinary'); const kid2 = b.child(root2);
   b.add(kid2, n()); b.close(kid2); b.close(kid2);
   assert.equal(b.add(kid2, trap('event')).status, 'discarded'); // closed handle is dead, event unread
-  assert.throws(() => b.child(kid2), /closed/); // a closed parent mints nothing
+  const closedKid = b.child(kid2); // closed parent returns dead closed handle without throw or opening a slot
+  assert.equal(b.add(closedKid, trap('closed child event')).status, 'discarded');
+  b.close(closedKid);
   b.add(root2, n('task_completed'));
   assert.equal(b.finish(root2).status, 'published');
 });
@@ -139,25 +148,37 @@ test('strict schema, bounds and overflow: bad events throw, overflow discards th
   assert.equal(c.add(rr, y()).status, 'discarded'); // mixed task IDs
 });
 
-test('active task slots are bounded, freed on finish/cancel/discard, and options are validated', () => {
+test('active task slots are bounded, capacity full degrades to dead unknown without throwing, and options are validated', () => {
   const b = createTaskBuffer({ max_tasks: 2 }); const next = stream();
   const r1 = b.open('ordinary'), r2 = b.open('ordinary');
-  assert.throws(() => b.open('ordinary'), /too many active tasks/);
+  const overflow1 = b.open('ordinary');
+  assert.deepEqual(Reflect.ownKeys(overflow1), []);
+  assert.ok(Object.isFrozen(overflow1));
+  assert.equal(b.add(overflow1, trap('overflow event')).status, 'discarded');
+  assert.equal(b.finish(overflow1).status, 'discarded');
+  assert.equal(b.add(b.child(overflow1, 'ordinary'), trap('overflow child')).status, 'discarded');
   b.cancel(r1); b.cancel(r1);
   const r3 = b.open('ordinary');
   b.add(r2, next()); b.child(r2, 'tor'); // discard frees the slot
   const r4 = b.open('ordinary');
   assert.ok(r3 && r4);
-  assert.throws(() => b.open('ordinary'), /too many active tasks/);
+  const overflow2 = b.open('ordinary');
+  assert.equal(b.add(overflow2, trap('overflow2')).status, 'discarded');
+  assert.equal(b.finish(overflow2).status, 'discarded');
+  b.cancel(overflow2);
+  b.cancel(r3);
+  const r5 = b.open('ordinary');
+  assert.equal(b.add(r5, stream()()).status, 'buffered');
   for (const bad of [0, -1, 1.5, '3', 1e9, NaN]) assert.throws(() => createTaskBuffer({ max_tasks: bad }), TypeError);
   assert.throws(() => b.open('Ordinary'), TypeError);
+  assert.throws(() => b.child(r4, 'Ordinary'), TypeError);
   assert.throws(() => createTaskBuffer({ max_events: 0 }), TypeError);
 });
 
 test('API is frozen and discards expose no counters or private summaries', () => {
   const b = createTaskBuffer();
   assert.ok(Object.isFrozen(b));
-  assert.deepEqual(Object.keys(b).sort(), ['add', 'cancel', 'child', 'close', 'finish', 'open']);
+  assert.deepEqual(Object.keys(b).sort(), ['add', 'cancel', 'child', 'close', 'finish', 'open', 'withTask']);
   const root = b.open('tor');
   assert.deepEqual(b.finish(root), { status: 'discarded' });
   assert.deepEqual(Reflect.ownKeys(root), []);
@@ -173,15 +194,34 @@ test('a malformed add taints the task: a later valid terminal never publishes a 
   assert.equal(b.finish(root).status, 'discarded');
 });
 
-test('children cannot be minted from closed, sealed, tainted or unknown parents', () => {
+test('closed, sealed, tainted and unknown parents mint dead closed handles without throwing or softening', () => {
   const b = createTaskBuffer(); const next = stream();
   const root = b.open('ordinary'); const kid = b.child(root); b.close(kid);
-  assert.throws(() => b.child(kid), /closed/);
-  b.child(root, 'tor'); // taints and seals
-  assert.throws(() => b.child(root), /sealed/);
+  const fromClosed = b.child(kid);
+  assert.equal(b.add(fromClosed, trap('closed parent child')).status, 'discarded');
+  assert.equal(b.add(b.child(fromClosed, 'ordinary'), trap('closed grandchild')).status, 'discarded');
+  b.close(fromClosed);
+
+  const torKid = b.child(root, 'tor'); // taints and seals the task
+  assert.equal(b.add(torKid, trap('tor child')).status, 'discarded');
+  const fromSealed = b.child(root, 'ordinary');
+  assert.equal(b.add(fromSealed, trap('sealed parent child')).status, 'discarded');
+  assert.equal(b.add(b.child(torKid, 'ordinary'), trap('softened tor child')).status, 'discarded');
+  assert.equal(b.finish(root).status, 'discarded');
+
   const r2 = b.open('ordinary'); b.add(r2, next()); b.cancel(r2);
-  assert.throws(() => b.child(r2), /sealed/);
-  assert.throws(() => b.child(b.open('unknown')), /sealed/);
+  const fromCancelled = b.child(r2, 'ordinary');
+  assert.equal(b.add(fromCancelled, trap('cancelled child')).status, 'discarded');
+
+  const r3 = b.open('ordinary');
+  assert.throws(() => b.add(r3, { ...next(), text: 'secret' }), /schema/);
+  const fromTainted = b.child(r3, 'ordinary');
+  assert.equal(b.add(fromTainted, trap('tainted child')).status, 'discarded');
+
+  const fromUnknown = b.child(b.open('unknown'), 'ordinary');
+  assert.equal(b.add(fromUnknown, trap('unknown child')).status, 'discarded');
+  assert.deepEqual(Reflect.ownKeys(fromUnknown), []);
+  assert.ok(Object.isFrozen(fromUnknown));
 });
 
 test('batch consistency: bad ordering discards the whole task, even if the rest looks valid', () => {
@@ -215,4 +255,95 @@ test('a published batch replays in the core shadow in order', () => {
   for (const event of batch) assert.equal(shadow.ingest({ privacy: 'ordinary', event }).status, 'accepted');
   assert.equal(shadow.snapshot().event_count, 4);
   assert.equal(shadow.snapshot().rpe_count, 1);
+});
+
+test('withTask validates arguments, defaults to unknown, and seals the root on exit', async () => {
+  const b = createTaskBuffer({ max_tasks: 1 }); const next = stream();
+  await assert.rejects(b.withTask('ordinary'), TypeError);
+  await assert.rejects(b.withTask('ordinary', 'nope'), TypeError);
+  await assert.rejects(b.withTask(() => {}, 'extra'), TypeError);
+  await assert.rejects(b.withTask('Ordinary', () => {}), TypeError);
+
+  let seenUnknown;
+  const val = await b.withTask(async (root) => {
+    seenUnknown = root;
+    assert.equal(b.add(root, trap('default unknown')).status, 'discarded');
+    return 'ok';
+  });
+  assert.equal(val, 'ok');
+  assert.equal(b.finish(seenUnknown).status, 'discarded');
+
+  let leakedRoot;
+  await b.withTask('ordinary', async (root) => {
+    leakedRoot = root;
+    assert.equal(b.add(root, next()).status, 'buffered');
+    return 'early';
+  });
+  assert.equal(b.add(leakedRoot, trap('after withTask')).status, 'discarded');
+  assert.equal(b.finish(leakedRoot).status, 'discarded');
+});
+
+test('16 failures, aborts and cancellations free every slot so the 17th ordinary task publishes without private counters', async () => {
+  const b = createTaskBuffer();
+  const discards = [];
+
+  for (let i = 0; i < 16; i++) {
+    const mode = i % 4;
+    if (mode === 0) {
+      await assert.rejects(b.withTask('ordinary', async (root) => {
+        assert.equal(b.add(root, stream()()).status, 'buffered');
+        b.child(root);
+        throw new Error(`boom-${i}`);
+      }), new RegExp(`boom-${i}`));
+    } else if (mode === 1) {
+      const ac = new AbortController();
+      await assert.rejects(b.withTask('ordinary', async (root) => {
+        assert.equal(b.add(root, stream()()).status, 'buffered');
+        ac.abort(new Error('aborted'));
+        throw ac.signal.reason;
+      }), /aborted/);
+    } else if (mode === 2) {
+      await b.withTask('ordinary', async (root) => {
+        assert.equal(b.add(root, stream()()).status, 'buffered');
+        return 'abandoned-without-finish';
+      });
+    } else {
+      const r = await b.withTask('ordinary', async (root) => {
+        assert.equal(b.add(root, stream()()).status, 'buffered');
+        const kid = b.child(root, i % 8 === 3 ? 'tor' : 'dark');
+        assert.equal(b.add(kid, trap('private event')).status, 'discarded');
+        return b.finish(root);
+      });
+      discards.push(r);
+    }
+  }
+
+  for (const d of discards) assert.deepEqual(d, { status: 'discarded' });
+  assert.deepEqual(Object.keys(b).sort(), ['add', 'cancel', 'child', 'close', 'finish', 'open', 'withTask']);
+
+  // Concurrent overflow while 16 are active degrades without throwing; once all 16 fail/abort, 17th ordinary publishes.
+  let releaseAll;
+  const gate = new Promise((res) => { releaseAll = res; });
+  const active16 = Array.from({ length: 16 }, (_, i) => b.withTask('ordinary', async (root) => {
+    assert.equal(b.add(root, stream()()).status, 'buffered');
+    await gate;
+    throw new Error(`concurrent-abort-${i}`);
+  }));
+  const overflow = await b.withTask('ordinary', async (root) => {
+    assert.equal(b.add(root, trap('overflow under load')).status, 'discarded');
+    return b.finish(root);
+  });
+  assert.deepEqual(overflow, { status: 'discarded' });
+  releaseAll();
+  const settled = await Promise.allSettled(active16);
+  assert.ok(settled.every((s) => s.status === 'rejected'));
+
+  const seventeenth = await b.withTask('ordinary', async (root) => {
+    const n = stream();
+    assert.equal(b.add(root, n()).status, 'buffered');
+    assert.equal(b.add(root, n('task_completed')).status, 'buffered');
+    return b.finish(root);
+  });
+  assert.equal(seventeenth.status, 'published');
+  assert.equal(seventeenth.batch.length, 2);
 });

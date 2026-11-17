@@ -41,12 +41,11 @@ function createTaskBuffer(options = {}) {
 
   // Root classification is supplied only by the trusted caller; default unknown (never published).
   function open(classification = 'unknown') {
-    const c = cls(classification);
+    let c = cls(classification);
+    if (c === 'ordinary' && active >= max_tasks) c = 'unknown';
     const task = { tainted: c !== 'ordinary', sealed: false, slot: false, events: [], bytes: 0, open: 0, task_id: null, source_id: null, seq: 0, seen: new Set(), done: false };
-    if (c === 'ordinary') {
-      if (active >= max_tasks) throw new Error('brain: too many active tasks');
-      active++; task.slot = true;
-    } else release(task); // non-ordinary: nothing is ever retained
+    if (c === 'ordinary') { active++; task.slot = true; }
+    else release(task); // non-ordinary or capacity-full: nothing is ever retained
     return mint({ task, cls: c, closed: false, root: true });
   }
 
@@ -54,12 +53,10 @@ function createTaskBuffer(options = {}) {
   function child(parent, requested) {
     const p = node(parent);
     if (!p) throw new TypeError('parent handle is not authentic');
-    if (p.closed) throw new Error('brain: parent is closed');
-    if (p.task.sealed) throw new Error('brain: task is sealed');
     const asked = requested === undefined ? p.cls : cls(requested);
     const c = RANK[asked] > RANK[p.cls] ? asked : p.cls;
     if (c !== 'ordinary') taint(p.task);
-    if (p.task.tainted) return mint({ task: p.task, cls: c, closed: true, root: false });
+    if (p.closed || p.task.sealed || p.task.tainted) return mint({ task: p.task, cls: c, closed: true, root: false });
     p.task.open++;
     return mint({ task: p.task, cls: c, closed: false, root: false });
   }
@@ -115,7 +112,16 @@ function createTaskBuffer(options = {}) {
     return DISCARDED;
   }
 
-  return Object.freeze({ open, child, close, add, finish, cancel });
+  // Scoped async lifecycle: always cancels the root in finally so abandoned tasks cannot leak slots.
+  async function withTask(classification, fn) {
+    const run = typeof classification === 'function' && fn === undefined ? classification : fn;
+    const level = typeof classification === 'function' && fn === undefined ? 'unknown' : classification;
+    if (typeof run !== 'function') throw new TypeError('task callback must be a function');
+    const root = open(level);
+    try { return await run(root); } finally { cancel(root); }
+  }
+
+  return Object.freeze({ open, child, close, add, finish, cancel, withTask });
 }
 
 module.exports = { createTaskBuffer, DEFAULTS };
