@@ -938,3 +938,183 @@ test('P1-1: shouldSkipChatPersistence blocks vault/notes on quarantined state or
     tor,
   }), true);
 });
+
+test('Sol final: llm.chat strips brainHint on Ollama cloud model, keeps it on local Ollama', async () => {
+  const ollama = require('../src/main/ollama');
+  const llm = require('../src/main/llm');
+  const origFetch = globalThis.fetch;
+  const seenBodies = [];
+  const rawMsgs = [
+    { role: 'system', content: 'персона' },
+    { role: 'user', content: 'вопрос' },
+    { role: 'system', content: STOP_HINT_TEXT, brainHint: true },
+  ];
+  try {
+    globalThis.fetch = async (url, init) => {
+      if (String(url).includes('/api/chat')) {
+        seenBodies.push(JSON.parse(init.body));
+        const ndjson = new ReadableStream({
+          start(ctrl) {
+            ctrl.enqueue(new TextEncoder().encode(JSON.stringify({ message: { content: 'ок' }, done: true }) + '\n'));
+            ctrl.close();
+          },
+        });
+        return new Response(ndjson, { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    };
+
+    assert.equal(ollama.isCloud('beam:cloud'), true);
+    await llm.chat('ollama', {}, { model: 'beam:cloud', messages: rawMsgs }, () => {}, new AbortController().signal);
+    assert.equal(seenBodies[0].messages.some((m) => m.brainHint), false);
+    assert.equal(seenBodies[0].messages.length, 2);
+
+    await llm.chat('ollama', {}, { model: 'gemma4:e4b-local', messages: rawMsgs }, () => {}, new AbortController().signal);
+    assert.equal(seenBodies[1].messages.some((m) => m.brainHint), true);
+    assert.equal(seenBodies[1].messages.length, 3);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('Sol final: judge blocks during Tor quarantine, rechecks isBusy after /api/ps, and hook.close does not hang when callModel ignores abort', async () => {
+  const dir = mkDir();
+  let clock = Date.UTC(2026, 10, 18, 19, 0, 0);
+  let quarantined = false;
+  let judgeCalls = 0;
+
+  // 1. In-flight callModel ignores AbortSignal -> close() must still resolve within ~timeout+1s via judgeChain Promise.race
+  const hangingJudge = createVerdictJudge({
+    timeoutMs: 25,
+    mainTimeoutMs: 25,
+    maxPerMinute: 100,
+    callModel: () => {
+      judgeCalls++;
+      return new Promise(() => {}); // ignores abort signal completely
+    },
+  });
+  const hook = createShadowHook({
+    dir,
+    now: () => clock,
+    uuid: makeUuid(19000),
+    isTorActive: () => quarantined,
+    verdictJudge: hangingJudge,
+  });
+  const glue = createChatGlue({ getHook: () => hook, tor, isLocalModel: () => true });
+  const cfg = { brainShadow: true, brainVerdictJudge: 'shadow', provider: 'ollama', rp: false };
+
+  const t1 = glue.startLocal({ worker: null }, [{ role: 'user', content: 'вопрос 1' }], cfg, new AbortController().signal);
+  glue.afterSuccess(t1);
+  glue.beforeTurn([{ role: 'user', content: 'ну норм' }], cfg);
+  glue.afterTurn(cfg); // starts judge in judgeChain
+  await new Promise((r) => setTimeout(r, 15));
+  assert.equal(judgeCalls, 1);
+
+  const t0 = Date.now();
+  await hook.close();
+  assert.ok(Date.now() - t0 < 2500);
+
+  // 2. Tor quarantine prevents runDeferredJudge from calling judge at all
+  let torJudgeCalls = 0;
+  const hookTor = createShadowHook({
+    dir: mkDir(),
+    now: () => clock,
+    uuid: makeUuid(20000),
+    isTorActive: () => quarantined,
+    verdictJudge: createVerdictJudge({
+      maxPerMinute: 100,
+      callModel: async () => { torJudgeCalls++; return '{"v":"PLUS"}'; },
+    }),
+  });
+  const glueTor = createChatGlue({ getHook: () => hookTor, tor, isLocalModel: () => true });
+  glueTor.afterSuccess(glueTor.startLocal({ worker: null }, [{ role: 'user', content: 'раз' }], cfg, new AbortController().signal));
+  glueTor.beforeTurn([{ role: 'user', content: 'ну вроде норм' }], cfg);
+  quarantined = true;
+  glueTor.afterTurn(cfg);
+  await hookTor.close();
+  assert.equal(torJudgeCalls, 0);
+
+  // 3. Busy turning true DURING await /api/ps prevents judge callModel cleanly
+  let busyNow = false;
+  let releasePs;
+  let busyCallCount = 0;
+  const busyJudge = createVerdictJudge({
+    isBusy: () => busyNow,
+    resolveModel: async () => new Promise((r) => { releasePs = r; }),
+    callModel: async () => { busyCallCount++; return '{"v":"PLUS"}'; },
+  });
+  const pendingJudge = busyJudge.judge('ну вот норм');
+  await new Promise((r) => setTimeout(r, 5));
+  busyNow = true;
+  releasePs('gemma4:e4b');
+  const res = await pendingJudge;
+  assert.deepEqual(res, { status: 'skipped_busy', verdict: null, model: null });
+  assert.equal(busyCallCount, 0);
+});
+
+test('Sol final: peekChannels during an in-flight write that rejects never exposes unconfirmed packet and flips to null on reject', async () => {
+  const baseTime = Date.UTC(2026, 10, 18, 20, 0, 0);
+  let diskCore = createShadow();
+  let enteredResolve;
+  const entered = new Promise((r) => { enteredResolve = r; });
+  let releaseAppend;
+  let mode = 'accept';
+
+  const hook = createShadowHook({
+    dir: mkDir(),
+    preload: true,
+    openJournal: async () => ({
+      snapshot: () => diskCore.snapshot(),
+      exportCheckpoint: () => diskCore.exportCheckpoint(),
+      appendBatch: async (envs) => {
+        if (mode === 'reject_paused') {
+          enteredResolve();
+          await new Promise((r) => { releaseAppend = r; });
+          return { status: 'rejected' };
+        }
+        for (const env of envs) diskCore.ingest(env);
+        return { status: 'accepted', state: diskCore.snapshot() };
+      },
+      close: async () => {},
+    }),
+    now: () => baseTime,
+    uuid: makeUuid(21000),
+  });
+
+  try {
+    await hook.flush();
+    // Seed 1 confirmed negative turn (~0.45 reassessment)
+    hook.start({ worker: null }, { features: { urgency: 1, contradiction: 1 } }).complete({ verified: true, utility: -1 });
+    await hook.flush();
+    const initial = hook.peekChannels(baseTime, { urgency: 0, contradiction: 0 });
+    assert.ok(initial);
+    assert.ok(initial.reassessment >= 0.44 && initial.reassessment < 0.65);
+
+    // Start 2nd negative turn whose write is paused in flight and will reject (would have crossed 0.65 if exposed)
+    mode = 'reject_paused';
+    hook.start({ worker: null }, { features: { urgency: 1, contradiction: 1 } }).complete({ verified: true, utility: -1 });
+    await entered;
+
+    // While write is in flight BEFORE rejection: projection uses last confirmed checkpoint ONLY (never sees rejected packet!)
+    const duringWrite = hook.peekChannels(baseTime + 1000, { urgency: 0, contradiction: 0 });
+    assert.ok(duringWrite);
+    assert.ok(duringWrite.reassessment < 0.65);
+
+    releaseAppend();
+    await hook.flush();
+    // After rejection: memReady is false -> null
+    assert.equal(hook.peekChannels(baseTime + 1000, { urgency: 0, contradiction: 0 }), null);
+
+    // Next valid confirmed write restores confirmed checkpoint cleanly (initial + turn 3 -> >= 0.65)
+    mode = 'accept';
+    hook.start({ worker: null }, { features: { urgency: 1, contradiction: 1 } }).complete({ verified: true, utility: -1 });
+    await hook.flush();
+    const afterConfirm = hook.peekChannels(baseTime + 2000, { urgency: 0, contradiction: 0 });
+    assert.ok(afterConfirm);
+    assert.ok(afterConfirm.reassessment >= 0.65);
+    assert.equal(diskCore.snapshot().record_count, 4);
+  } finally {
+    releaseAppend?.();
+    await hook.close();
+  }
+});

@@ -179,15 +179,16 @@ test('shadowHook.peekChannels projects decay and impulses read-only and returns 
   let clock = Date.UTC(2026, 10, 18, 9, 0, 0);
   const hook = createShadowHook({ dir, now: () => clock, uuid: makeUuid() });
 
-  // Turn 1 with urgent contradiction -> verified -1 puts reassessment at 0.45 in memCore without blocking on disk
+  // Turn 1 with urgent contradiction -> verified -1 puts reassessment at 0.45 after confirmed disk flush
   const t1 = hook.start({ worker: null }, { features: { urgency: 1, contradiction: 1 } });
   t1.complete({ verified: true, utility: -1 });
+  await hook.flush();
 
   // Without urgency/contradiction -> peek stays around ~0.45 (< enter 0.65); with urgency=1 -> window_cap 0.70 triggers active=1
   const plainPeek = hook.peekChannels(clock, { urgency: 0, contradiction: 0 });
   assert.ok(plainPeek);
   assert.equal(plainPeek.reassessment_active, 0);
-  assert.equal(plainPeek.record_count, 2);
+  assert.ok(plainPeek.reassessment >= 0.44 && plainPeek.reassessment <= 0.46);
 
   const pushPeek = hook.peekChannels(clock + 1000, { urgency: 1, contradiction: 0 });
   assert.ok(pushPeek);
@@ -197,7 +198,7 @@ test('shadowHook.peekChannels projects decay and impulses read-only and returns 
   // Calling peekChannels must NOT mutate memCore or write another task
   const secondPlainPeek = hook.peekChannels(clock + 2000, { urgency: 0, contradiction: 0 });
   assert.equal(secondPlainPeek.reassessment_active, 0);
-  assert.equal(secondPlainPeek.record_count, 2);
+  assert.equal(secondPlainPeek.record_count, plainPeek.record_count);
 
   // 30-min decay keeps channels well below 0.35
   const decayed = hook.peekChannels(clock + 30 * 60 * 1000, { urgency: 0, contradiction: 0 });

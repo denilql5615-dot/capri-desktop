@@ -1825,6 +1825,18 @@ function messagesHaveTor(messages) {
   return require('./brain/shadow-hook').contextMentionsTor(messages, tor);
 }
 
+// Actual 26B presence in Ollama VRAM (300 ms fresh /api/ps); called only when brainShadow is enabled.
+async function isMainBrainLoaded(signal, timeoutMs = 300) {
+  try {
+    const tSig = AbortSignal.timeout(timeoutMs);
+    const sig = signal ? AbortSignal.any([signal, tSig]) : tSig;
+    const loaded = await ollama.loadedModels(sig);
+    return Array.isArray(loaded) && loaded.includes(brains.main);
+  } catch {
+    return false;
+  }
+}
+
 async function prepLocal(cfg, messages, { main = false } = {}) {
   const said = yourWords(messages);
   const rp = cfg.rp === true && !brainsLib.isEmergency(said);
@@ -1842,31 +1854,37 @@ async function prepLocal(cfg, messages, { main = false } = {}) {
   return { messages: rp ? brainsLib.withRp(enriched) : enriched, numPredict: analysis.numPredict };
 }
 
-async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch) {
-  let messages = Array.isArray(prepared) ? prepared : prepared.messages;
+async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch, opts) {
+  const baseMessages = Array.isArray(prepared) ? prepared : prepared.messages;
   const numPredict = Array.isArray(prepared) ? undefined : prepared.numPredict;
   let model = pickModel(cfg);
   const tried = new Set();
   let busy = 0;
   for (;;) {
+    const attemptLocal = Boolean(model && llm.isLocal(cfg.provider, cfg, model));
+    const messages = attemptLocal || !Array.isArray(baseMessages) || !baseMessages.some((m) => m?.brainHint)
+      ? baseMessages
+      : require('./brain/influence-glue').stripBrainHints(baseMessages);
     try {
       const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict }, send, signal);
       if (model !== pickModel(cfg)) updateConfig({ chatModel: model });
+      try { opts?.onSuccess?.({ model, local: attemptLocal, text }); } catch {}
       return text;
     } catch (err) {
-      if (signal.aborted || streamed() || !['busy', 'gone', 'signin'].includes(err.code)) throw err;
+      if (signal.aborted || streamed() || !['busy', 'gone', 'signin'].includes(err.code)) {
+        try { opts?.onAttemptError?.({ model, local: attemptLocal, err }); } catch {}
+        throw err;
+      }
       if (err.code === 'busy' && busy++ === 0) {
         await new Promise((r) => setTimeout(r, 1500)); // usually gone a moment later
         continue;
       }
+      try { opts?.onAttemptError?.({ model, local: attemptLocal, err }); } catch {}
       tried.add(model);
       const next = chatModels?.find((m) => !tried.has(m) && !ollama.isCloud(m)) || chatModels?.find((m) => !tried.has(m));
       if (!next || tried.size >= 3) throw err;
       model = next;
       busy = 0;
-      if (!llm.isLocal(cfg.provider, cfg, model) && Array.isArray(messages) && messages.some((m) => m?.brainHint)) {
-        messages = require('./brain/influence-glue').stripBrainHints(messages);
-      }
       try { onSwitch?.(model); } catch {} // e.g. the brain shadow stops watching: the turn left its local model
     }
   }
@@ -2462,14 +2480,18 @@ function registerIpc() {
         let influence = { main: false, hint: null, decision: null, escalated: false };
         let turnEscalated = false;
         let hintDelivered = false;
+        let brainWantedMainOnly = false;
         if (cfg.brainShadow === true && worker === null) {
+          const said = yourWords(messages);
+          const rolesReady = cfg.provider === 'ollama' && brains.ready(chatModels);
+          const isAuto = Boolean(rolesReady && brains.isAuto(cfg.chatModel, chatModels));
+          const localTurn = cfg.provider === 'ollama' && Boolean(pickedModel && llm.isLocal(cfg.provider, cfg, pickedModel));
+          const mainLoaded = localTurn ? await isMainBrainLoaded(abort.signal) : false;
+          abort.signal.throwIfAborted();
           try {
-            const said = yourWords(messages);
-            const rolesReady = cfg.provider === 'ollama' && brains.ready(chatModels);
-            const isAuto = Boolean(rolesReady && brains.isAuto(cfg.chatModel, chatModels));
-            const localTurn = cfg.provider === 'ollama' && Boolean(pickedModel && llm.isLocal(cfg.provider, cfg, pickedModel));
-            const torCtx = torState.isQuarantined() || contextHasTor;
+            const torCtx = torState.isQuarantined() || contextHasTor || messagesHaveTor(messages);
             const analysis = brainsLib.analysisMode(cfg, { rolesReady, auto: isAuto, tor: torCtx, text: said });
+            const explicitMain = brainsLib.wantsMain(said) || brainsLib.wantsLocal(said);
             influence = getBrainInfluencePlan()({
               cfg,
               said,
@@ -2483,19 +2505,20 @@ function registerIpc() {
                 local: localTurn,
                 brainsReady: rolesReady,
                 isAuto,
-                mainActive: brains.mainActive(),
+                mainActive: mainLoaded,
                 gpuBusy: false,
                 voice: Boolean(voice),
                 wantsFast: brainsLib.wantsFast(said),
                 wantsMain: brainsLib.wantsMain(said) || analysis.active,
                 wantsLocal: brainsLib.wantsLocal(said),
                 rp: cfg.rp === true,
-                tor: torState.isQuarantined(),
+                tor: torCtx,
                 now: Date.now(),
               },
             });
             turnEscalated = Boolean(influence.escalated);
             hintDelivered = Boolean(influence.hint && cfg.rp !== true);
+            brainWantedMainOnly = Boolean(influence.main && !analysis.active && !explicitMain && cfg.rp !== true);
           } catch {}
           try {
             shadowTurn = getBrainChatGlue().startLocal(route, messages, cfg, abort.signal, {
@@ -2503,8 +2526,23 @@ function registerIpc() {
             });
           } catch {}
         }
+        let answeredModel = null;
+        let answeredLocal = false;
+        let recordedMainError = false;
         try {
-          const prepared = await prepLocal(cfg, messages, { main: influence.main });
+          const prepared = await prepLocal(cfg, messages, { main: !torState.isQuarantined() && influence.main });
+          const torAfterPrep = torState.isQuarantined() || messagesHaveTor(messages) || messagesHaveTor(prepared?.messages);
+          if (torAfterPrep) {
+            if (brainWantedMainOnly) {
+              try { await brains.release(); } catch {}
+            }
+            turnEscalated = false;
+            hintDelivered = false;
+            influence = { main: false, hint: null, decision: null, escalated: false };
+            if (shadowTurn) {
+              try { shadowTurn.cancel(); shadowTurn = null; } catch {}
+            }
+          }
           // stage 6 stop hint: one system line at the very end, never in roleplay
           const toSend = hintDelivered
             ? { ...prepared, messages: [...prepared.messages, { role: 'system', content: influence.hint, brainHint: true }] }
@@ -2521,12 +2559,29 @@ function registerIpc() {
               if (!llm.isLocal(cfg.provider, cfg, nextModel)) hintDelivered = false;
               try { brainChatGlue?.onModelSwitch(shadowTurn); } catch {}
             },
+            {
+              onSuccess: ({ model, local }) => {
+                answeredModel = model;
+                answeredLocal = Boolean(local);
+              },
+              onAttemptError: ({ model, err }) => {
+                const torTouchedTurn = torState.isQuarantined() || Boolean(shadowTurn?.wasTorCancelled?.());
+                const aborted = abort.signal.aborted || err?.message === 'stopped'
+                  || err?.name === 'AbortError' || err?.code === 'ABORT_ERR';
+                if (turnEscalated && !recordedMainError && model === brains.main && !torTouchedTurn && !aborted) {
+                  recordedMainError = true;
+                  try { getBrainInfluencePolicy().recordOutcome({ escalated: true, error: true }); } catch {}
+                }
+              },
+            },
           );
-          if (cfg.brainShadow === true && (turnEscalated || hintDelivered) && !torState.isQuarantined()) {
+          const canCommitMain = turnEscalated && answeredModel === brains.main && !torAfterPrep && !torState.isQuarantined();
+          const canCommitHint = hintDelivered && answeredLocal && !torAfterPrep && !torState.isQuarantined();
+          if (cfg.brainShadow === true && (canCommitMain || canCommitHint)) {
             try {
               require('./brain/influence-glue').commitInfluence(getBrainInfluencePolicy(), influence, {
-                escalated: turnEscalated,
-                hintDelivered,
+                escalated: canCommitMain,
+                hintDelivered: canCommitHint,
                 aborted: abort.signal.aborted,
               });
             } catch {}
@@ -2535,19 +2590,6 @@ function registerIpc() {
             try { brainChatGlue?.afterSuccess(shadowTurn); shadowTurn = null; } catch {}
           }
         } catch (err) {
-          const torTouchedTurn = torState.isQuarantined() || Boolean(shadowTurn?.wasTorCancelled?.());
-          const aborted = abort.signal.aborted || err?.message === 'stopped'
-            || err?.name === 'AbortError' || err?.code === 'ABORT_ERR';
-          if (turnEscalated && !torTouchedTurn && !aborted) {
-            try {
-              require('./brain/influence-glue').commitInfluence(getBrainInfluencePolicy(), influence, {
-                escalated: true,
-                hintDelivered: false,
-                error: true,
-              });
-            } catch {}
-            try { brainInfluencePolicy?.recordOutcome({ escalated: true, error: true }); } catch {}
-          }
           if (shadowTurn) {
             try { brainChatGlue?.afterError(shadowTurn, err, abort.signal); } catch {}
           }

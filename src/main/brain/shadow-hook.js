@@ -81,6 +81,7 @@ function createShadowHook({
   onPendingChange,
   onVerdict,
   verdictJudge,
+  judgeChainTimeoutMs,
   preload = false,
 } = {}) {
   const buffer = createTaskBuffer(bufferOptions);
@@ -221,7 +222,6 @@ function createShadowHook({
   function enqueuePublish(batch) {
     if (disabled || closed || pendingWrites >= MAX_PENDING_WRITES) { counts.discarded++; return; }
     const envelopes = batch.map((event) => ({ privacy: 'ordinary', event }));
-    advanceMemCore(envelopes);
     pendingWrites++;
     writeChain = writeChain.then(async () => {
       if (disabled) { counts.discarded++; memReady = false; writeInvalidated = true; return; }
@@ -252,7 +252,7 @@ function createShadowHook({
                 memReady = false;
               }
             }
-          } else if (writeInvalidated && res?.state) {
+          } else if (res?.state) {
             try {
               memCore = createShadow({ checkpoint: checkpointFromSnapshot(res.state) });
               writeInvalidated = false;
@@ -260,6 +260,8 @@ function createShadowHook({
               writeInvalidated = true;
               memReady = false;
             }
+          } else if (!writeInvalidated) {
+            advanceMemCore(envelopes);
           }
           memReady = preloadDone && !hasOtherQueued && !writeInvalidated;
         } else {
@@ -491,11 +493,31 @@ function createShadowHook({
   }
 
   function enqueueJudge(item) {
-    if (!verdictJudge || disabled || closed || !item) return;
+    if (!verdictJudge || disabled || closed || !item || inTorQuarantine()) return;
     const epoch = judgeEpoch;
-    judgeChain = judgeChain.then(() => {
-      if (disabled || epoch !== judgeEpoch) return null;
-      return verdictJudge.judge(item.text, { dictVerdict: item.dictVerdict });
+    const baseCapMs = Number.isFinite(judgeChainTimeoutMs) && judgeChainTimeoutMs > 0
+      ? judgeChainTimeoutMs
+      : (Number.isFinite(verdictJudge.maxTimeoutMs) && verdictJudge.maxTimeoutMs > 0 ? verdictJudge.maxTimeoutMs : 6000) + 1000;
+    judgeChain = judgeChain.then(async () => {
+      if (disabled || closed || epoch !== judgeEpoch || inTorQuarantine()) return null;
+      let timer = null;
+      try {
+        const pendingJudge = Promise.resolve().then(() => verdictJudge.judge(item.text, { dictVerdict: item.dictVerdict }));
+        return await Promise.race([
+          pendingJudge,
+          new Promise((resolve) => {
+            timer = setTimer(() => {
+              try { verdictJudge.abortAll?.(); } catch {}
+              resolve(null);
+            }, baseCapMs);
+            timer?.unref?.();
+          }),
+        ]);
+      } finally {
+        if (timer != null) {
+          try { clearTimer(timer); } catch {}
+        }
+      }
     }).catch(() => null);
   }
 
@@ -503,6 +525,7 @@ function createShadowHook({
     if (!deferredJudge || disabled || closed) return;
     const item = deferredJudge;
     deferredJudge = null;
+    if (inTorQuarantine()) return;
     enqueueJudge(item);
   }
 

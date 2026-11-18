@@ -191,17 +191,24 @@ function createVerdictJudge({
     active.clear();
   }
 
+  function checkBusy() {
+    try {
+      if (isBusy?.()) {
+        counts.skipped_busy++;
+        return true;
+      }
+      return false;
+    } catch {
+      counts.skipped_busy++;
+      return true;
+    }
+  }
+
   async function judge(text, { dictVerdict = null } = {}) {
     if (disabled || !isJudgeableText(text) || typeof callModel !== 'function') {
       return { status: 'skipped', verdict: null, model: null };
     }
-    try {
-      if (isBusy?.()) {
-        counts.skipped_busy++;
-        return { status: 'skipped_busy', verdict: null, model: null };
-      }
-    } catch {
-      counts.skipped_busy++;
+    if (checkBusy()) {
       return { status: 'skipped_busy', verdict: null, model: null };
     }
 
@@ -227,8 +234,7 @@ function createVerdictJudge({
         counts.skipped_not_loaded++;
         return { status: 'skipped_not_loaded', verdict: null, model: null };
       }
-      if (isBusy?.()) {
-        counts.skipped_busy++;
+      if (checkBusy()) {
         return { status: 'skipped_busy', verdict: null, model: null };
       }
 
@@ -246,6 +252,9 @@ function createVerdictJudge({
         if (!ready) {
           counts.skipped_not_loaded++;
           return { status: 'skipped_not_loaded', verdict: null, model: null };
+        }
+        if (checkBusy()) {
+          return { status: 'skipped_busy', verdict: null, model: null };
         }
       }
 
@@ -303,6 +312,7 @@ function createVerdictJudge({
   return Object.freeze({
     judge,
     abortAll,
+    maxTimeoutMs: Math.max(timeoutMs, mainTimeoutMs),
     stats: () => ({ ...counts, disabled }),
   });
 }
