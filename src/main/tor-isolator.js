@@ -551,6 +551,10 @@ function createTorIsolator(deps = {}) {
       blocked: [],
       tor: true,
       isolator: true,
+      node: isolated.node,
+      fetched_at: isolated.fetched_at,
+      results: isolated.results,
+      pages: isolated.pages,
     };
   }
 
