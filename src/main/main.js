@@ -44,7 +44,7 @@ const phonepack = require('./phonepack');
 const web = require('./web');
 const capriBrowser = require('./browser');
 const tor = require('./tor');
-const { classifyWebSearch, selectWorkerMessages, createTorState, createAgentWeb } = require('./tor-guard');
+const { classifyWebSearch, selectWorkerMessages, shouldSkipChatPersistence, createTorState, createAgentWeb } = require('./tor-guard');
 const gemini = require('./gemini');
 const agyApp = require('./agy-app');
 const kiwix = require('./kiwix');
@@ -635,6 +635,11 @@ async function calendarData(service, said) {
 // A message with a key or password in it isn't written down. Off: config vaultChats false.
 function toVault(cfg, worker, said, answer, artifacts = []) {
   if (cfg.vaultChats === false || hasSecret(said) || worker === 'stop') return;
+  if (shouldSkipChatPersistence({
+    torState,
+    messages: [{ role: 'user', content: said }, { role: 'assistant', content: answer }],
+    tor,
+  })) return;
   try {
     const dir = notesDir();
     const by = {
@@ -836,10 +841,12 @@ let notesTimer = null;
 let notesUpTo = ''; // the last message of yours she went through
 function noteLater(conversation) {
   clearTimeout(notesTimer);
+  if (shouldSkipChatPersistence({ torState, messages: conversation, tor })) return;
   notesTimer = setTimeout(() => takeNotes(conversation).catch((err) => console.warn('[capri] notes:', err.message)), NOTES_AFTER_MS);
 }
 
 async function takeNotes(conversation) {
+  if (shouldSkipChatPersistence({ torState, messages: conversation, tor })) return [];
   const cfg = config.load();
   const model = pickModel(cfg);
   if (cfg.provider !== 'ollama' || !model || ollama.isCloud(model)) return [];
@@ -1361,11 +1368,17 @@ async function applyPhone() {
       token: phoneToken,
       persona: phonePersona,
       chat: async (messages, signal) => {
+        const hasTor = messagesHaveTor(messages);
+        if (hasTor) touchTor({ inChat: true });
         const said = messages.findLast((m) => m.role === 'user')?.content || '';
         const fast = await quickAnswer(said);
         if (fast) return { text: fast, brain: 'quick' };
         const cfg = config.load();
         if (!chatModels) await refreshModels();
+        const pickedModel = pickModel(cfg);
+        if (hasTor && (cfg.provider !== 'ollama' || !pickedModel || !llm.isLocal(cfg.provider, cfg, pickedModel))) {
+          return { text: 'Запрос с Tor/onion/даркнет-контекстом не отправляется в облачные модели.', brain: 'local-only' };
+        }
         const { messages: enriched, numPredict } = await prepLocal(cfg, messages); // her brain picked first, then the model it means
         const model = pickModel(cfg);
         const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages: enriched, numPredict }, () => {}, signal);
@@ -1423,6 +1436,11 @@ async function applyPhone() {
       switchModel: (wanted) => switchSpokenModel(wanted),
       // a phone exchange: her hub's Chats (a phone chat of its own) and your vault, like one here
       log: ({ said, answer }) => {
+        if (shouldSkipChatPersistence({
+          torState,
+          messages: [{ role: 'user', content: said }, { role: 'assistant', content: answer }],
+          tor,
+        })) return;
         let store = chatLog.read(chatsFile());
         store = chatLog.add(store, { role: 'user', content: said, via: 'phone' });
         store = chatLog.add(store, { role: 'assistant', content: answer, via: 'phone' });
@@ -1804,10 +1822,7 @@ function galleryList() {
 // notes and mail added as always; the roleplay prompt only when it's on and nothing sounds like an
 // emergency. Resolves with the messages to send.
 function messagesHaveTor(messages) {
-  return Array.isArray(messages) && messages.some((m) => {
-    const c = typeof m?.content === 'string' ? m.content : '';
-    return c && (tor.wantsTor(c) || tor.wantsDark(c) || Boolean(tor.onionLink(c)));
-  });
+  return require('./brain/shadow-hook').contextMentionsTor(messages, tor);
 }
 
 async function prepLocal(cfg, messages, { main = false } = {}) {
@@ -1849,7 +1864,7 @@ async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch)
       if (!next || tried.size >= 3) throw err;
       model = next;
       busy = 0;
-      if (Array.isArray(messages) && messages.some((m) => m?.brainHint)) {
+      if (!llm.isLocal(cfg.provider, cfg, model) && Array.isArray(messages) && messages.some((m) => m?.brainHint)) {
         messages = require('./brain/influence-glue').stripBrainHints(messages);
       }
       try { onSwitch?.(model); } catch {} // e.g. the brain shadow stops watching: the turn left its local model
@@ -2293,7 +2308,8 @@ function registerIpc() {
       dir: path.join(app.getPath('userData'), 'brain-journal', `v${brainConfig.schema_version}`),
       preload: true,
       verdictJudge,
-      isTorActive: () => torState.isQuarantined(),
+      isTorActive: () => torState.inCooldown(),
+      isChatTainted: () => torState.isChatTainted(),
       onPendingChange: (pending) => {
         try {
           if (overlay && !overlay.isDestroyed()) overlay.webContents.send('brain:pending', Boolean(pending));
@@ -2314,7 +2330,8 @@ function registerIpc() {
       getHook: (create = true) => (create ? getBrainShadowHook() : brainShadowHook),
       tor,
       yourWords,
-      isTorBlocked: () => torState.isQuarantined(),
+      isTorBlocked: () => torState.inCooldown(),
+      isChatTainted: () => torState.isChatTainted(),
       isLocalModel: (cfg) => {
         const model = pickModel(cfg);
         return Boolean(model && llm.isLocal(cfg.provider, cfg, model));
@@ -2343,6 +2360,10 @@ function registerIpc() {
         chatsWin?.webContents.send('chats:delta', text); // her Chats window shows it coming too
       };
       const cfg = config.load();
+      const lastUserMsg = Array.isArray(messages) ? messages.findLast((m) => m?.role === 'user') : null;
+      const lastUserHasTor = lastUserMsg ? messagesHaveTor([lastUserMsg]) : false;
+      const contextHasTor = messagesHaveTor(messages);
+      if (lastUserHasTor) touchTor({ inChat: true });
       // "включи / выключи ролевой режим": a mode of hers (brains.js), not a message to answer
       const rpTurn = brainsLib.rpCommand(yourWords(messages));
       if (rpTurn !== null) {
@@ -2359,8 +2380,12 @@ function registerIpc() {
         try { getBrainChatGlue().beforeTurn(messages, cfg); } catch {}
       }
       // who takes it (routeOf: Claude or Codex named, real work, a task on the PC, or hers) and how hard
-      const route = await routeOf(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-3, -1), abort.signal);
+      let route = await routeOf(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-3, -1), abort.signal);
       abort.signal.throwIfAborted();
+      // Tor-sensitive turns must never be sent to cloud workers even if an agent was named.
+      if (contextHasTor && ['claude', 'codex', 'gemini', 'computer'].includes(route.worker)) {
+        route = { ...route, worker: null, computer: false };
+      }
       const { worker } = route;
       const hands = await handsFor(worker, route.computer, abort.signal);
       abort.signal.throwIfAborted();
@@ -2393,8 +2418,10 @@ function registerIpc() {
           try { getBrainChatGlue().onNonLocalTurn(route, { quick: true }); } catch {}
         }
         send(fast);
-        recentTurns = [{ role: 'user', content: yourWords(messages) }, { role: 'assistant', content: fast }];
-        toVault(cfg, null, yourWords(messages), fast);
+        if (!shouldSkipChatPersistence({ torState, messages, tor })) {
+          recentTurns = [{ role: 'user', content: yourWords(messages) }, { role: 'assistant', content: fast }];
+          toVault(cfg, null, yourWords(messages), fast);
+        }
         return { ok: true, text: fast };
       }
       if (worker !== null && (cfg.brainShadow === true || brainShadowHook)) {
@@ -2422,17 +2449,26 @@ function registerIpc() {
       else if (worker === 'photo') text = await photoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal);
       else if (worker === 'video') text = await videoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal);
       else {
+        const pickedModel = pickModel(cfg);
+        const cloudBlockedForTor = contextHasTor && (
+          cfg.provider !== 'ollama'
+          || (pickedModel ? !llm.isLocal(cfg.provider, cfg, pickedModel) : false)
+        );
+        if (cloudBlockedForTor) {
+          text = 'Запрос с Tor/onion/даркнет-контекстом не отправляется в облачные модели. Выберите локальную модель Ollama.';
+          send(text);
+        } else {
         let shadowTurn = null;
         let influence = { main: false, hint: null, decision: null, escalated: false };
         let turnEscalated = false;
+        let hintDelivered = false;
         if (cfg.brainShadow === true && worker === null) {
           try {
             const said = yourWords(messages);
             const rolesReady = cfg.provider === 'ollama' && brains.ready(chatModels);
             const isAuto = Boolean(rolesReady && brains.isAuto(cfg.chatModel, chatModels));
-            const pickedModel = pickModel(cfg);
             const localTurn = cfg.provider === 'ollama' && Boolean(pickedModel && llm.isLocal(cfg.provider, cfg, pickedModel));
-            const torCtx = torState.isQuarantined() || messagesHaveTor(messages);
+            const torCtx = torState.isQuarantined() || contextHasTor;
             const analysis = brainsLib.analysisMode(cfg, { rolesReady, auto: isAuto, tor: torCtx, text: said });
             influence = getBrainInfluencePlan()({
               cfg,
@@ -2459,6 +2495,7 @@ function registerIpc() {
               },
             });
             turnEscalated = Boolean(influence.escalated);
+            hintDelivered = Boolean(influence.hint && cfg.rp !== true);
           } catch {}
           try {
             shadowTurn = getBrainChatGlue().startLocal(route, messages, cfg, abort.signal, {
@@ -2469,7 +2506,7 @@ function registerIpc() {
         try {
           const prepared = await prepLocal(cfg, messages, { main: influence.main });
           // stage 6 stop hint: one system line at the very end, never in roleplay
-          const toSend = influence.hint && cfg.rp !== true
+          const toSend = hintDelivered
             ? { ...prepared, messages: [...prepared.messages, { role: 'system', content: influence.hint, brainHint: true }] }
             : prepared;
           // any switch to another model (possibly a cloud one) abandons the observation
@@ -2479,18 +2516,36 @@ function registerIpc() {
             send,
             abort.signal,
             () => streamed,
-            () => {
+            (nextModel) => {
               turnEscalated = false;
+              if (!llm.isLocal(cfg.provider, cfg, nextModel)) hintDelivered = false;
               try { brainChatGlue?.onModelSwitch(shadowTurn); } catch {}
             },
           );
+          if (cfg.brainShadow === true && (turnEscalated || hintDelivered) && !torState.isQuarantined()) {
+            try {
+              require('./brain/influence-glue').commitInfluence(getBrainInfluencePolicy(), influence, {
+                escalated: turnEscalated,
+                hintDelivered,
+                aborted: abort.signal.aborted,
+              });
+            } catch {}
+          }
           if (shadowTurn) {
             try { brainChatGlue?.afterSuccess(shadowTurn); shadowTurn = null; } catch {}
           }
         } catch (err) {
           const torTouchedTurn = torState.isQuarantined() || Boolean(shadowTurn?.wasTorCancelled?.());
-          if (turnEscalated && !torTouchedTurn && !abort.signal.aborted && err?.message !== 'stopped'
-              && err?.name !== 'AbortError' && err?.code !== 'ABORT_ERR') {
+          const aborted = abort.signal.aborted || err?.message === 'stopped'
+            || err?.name === 'AbortError' || err?.code === 'ABORT_ERR';
+          if (turnEscalated && !torTouchedTurn && !aborted) {
+            try {
+              require('./brain/influence-glue').commitInfluence(getBrainInfluencePolicy(), influence, {
+                escalated: true,
+                hintDelivered: false,
+                error: true,
+              });
+            } catch {}
             try { brainInfluencePolicy?.recordOutcome({ escalated: true, error: true }); } catch {}
           }
           if (shadowTurn) {
@@ -2500,11 +2555,14 @@ function registerIpc() {
         } finally {
           try { shadowTurn?.cancel(); } catch {}
         }
+        }
       }
-      if (cfg.provider === 'claude') saveMemory({ claude: llm.claudeMemory() });
-      if (!worker) noteLater([...messages, { role: 'assistant', content: text }]);
-      recentTurns = [{ role: 'user', content: yourWords(messages) }, { role: 'assistant', content: text }];
-      toVault(cfg, actualWorker, yourWords(messages), text);
+      if (cfg.provider === 'claude' && !contextHasTor) saveMemory({ claude: llm.claudeMemory() });
+      if (!shouldSkipChatPersistence({ torState, messages, tor })) {
+        if (!worker) noteLater([...messages, { role: 'assistant', content: text }]);
+        recentTurns = [{ role: 'user', content: yourWords(messages) }, { role: 'assistant', content: text }];
+        toVault(cfg, actualWorker, yourWords(messages), text);
+      }
       return { ok: true, text };
     } catch (err) {
       return { ok: false, error: abort.signal.aborted ? 'stopped' : err.message, code: err.code || null };

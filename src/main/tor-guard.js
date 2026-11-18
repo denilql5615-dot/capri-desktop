@@ -5,6 +5,13 @@
 // and clearnet/logging refusals can be tested directly without Electron or network access.
 
 const TOR_COOLDOWN_MS = 10 * 60 * 1000;
+const { contextMentionsTor } = require('./brain/shadow-hook');
+
+function shouldSkipChatPersistence({ torState, messages, tor } = {}) {
+  if (torState?.isQuarantined?.()) return true;
+  if (messages === undefined) return false;
+  return Boolean(contextMentionsTor(messages, tor));
+}
 
 function hasTorSignal(text, tor) {
   const s = String(text || '');
@@ -278,6 +285,7 @@ module.exports = {
   hasExplicitTorCommand,
   classifyWebSearch,
   selectWorkerMessages,
+  shouldSkipChatPersistence,
   createTorState,
   createAgentWeb,
 };

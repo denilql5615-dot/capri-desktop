@@ -81,13 +81,10 @@ function planInfluence({
       return createNeutral();
     }
     if (decision.action === 'escalate') {
-      const committed = typeof policy.commit === 'function' ? Boolean(policy.commit(decision)) : false;
-      return committed
-        ? { main: true, hint: null, decision, escalated: true }
-        : { main: false, hint: null, decision, escalated: false };
+      return { main: true, hint: null, decision, escalated: true };
     }
     if (decision.action === 'stop') {
-      const hint = typeof policy.stopHint === 'function' ? (policy.stopHint() || null) : null;
+      const hint = typeof policy.stopHint === 'function' ? (policy.stopHint({ consume: false }) || null) : null;
       return { main: false, hint, decision, escalated: false };
     }
     return { main: false, hint: null, decision, escalated: false };
@@ -96,4 +93,20 @@ function planInfluence({
   }
 }
 
-module.exports = { planInfluence, stripBrainHints, SHORT_TRIVIAL_LEN };
+/**
+ * Commits an escalation budget slot or series stop-hint only after the local turn actually executed.
+ */
+function commitInfluence(policy, plan, { escalated = plan?.escalated, hintDelivered = Boolean(plan?.hint), aborted = false, tor = false, error = false } = {}) {
+  if (!policy || !plan || aborted || tor) return false;
+  try {
+    if (escalated && plan.decision?.action === 'escalate' && typeof policy.commit === 'function') {
+      return Boolean(policy.commit(plan.decision));
+    }
+    if (!error && hintDelivered && plan.hint && typeof policy.stopHint === 'function') {
+      return Boolean(policy.stopHint({ consume: true }));
+    }
+  } catch {}
+  return false;
+}
+
+module.exports = { planInfluence, commitInfluence, stripBrainHints, SHORT_TRIVIAL_LEN };

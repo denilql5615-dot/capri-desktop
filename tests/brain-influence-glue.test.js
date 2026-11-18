@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { planInfluence, stripBrainHints } = require('../src/main/brain/influence-glue');
+const { planInfluence, commitInfluence, stripBrainHints } = require('../src/main/brain/influence-glue');
 const { createReassessmentPolicy, STOP_HINT_TEXT } = require('../src/main/brain/reassessment-policy');
 const { createShadowHook, TOR_COOLDOWN_MS } = require('../src/main/brain/shadow-hook');
 const { createChatGlue } = require('../src/main/brain/chat-glue');
@@ -13,7 +13,7 @@ const { openRotatingJournal } = require('../src/main/brain/rotating-journal');
 const { createVerdictJudge } = require('../src/main/brain/verdict-judge');
 const { createShadow, CONFIG } = require('../src/main/brain/index');
 const { salience } = require('../src/main/brain/amygdala');
-const { createTorState } = require('../src/main/tor-guard');
+const { createTorState, shouldSkipChatPersistence } = require('../src/main/tor-guard');
 const brainsLib = require('../src/main/brains');
 const tor = require('../src/main/tor');
 
@@ -73,7 +73,7 @@ test('planInfluence: off mode returns neutral main/hint while tracking shadow_* 
   assert.equal(st.escalation_count, 0);
 });
 
-test('planInfluence: reassessment + channel 0.7 + contradiction escalates to main=true and consumes budget', () => {
+test('planInfluence: reassessment + channel 0.7 + contradiction returns escalate decision without charging until commitInfluence', () => {
   const clock = Date.UTC(2026, 10, 18, 12, 0, 0);
   const policy = createReassessmentPolicy({ now: () => clock });
   const fakeHook = {
@@ -94,11 +94,22 @@ test('planInfluence: reassessment + channel 0.7 + contradiction escalates to mai
   assert.equal(res.hint, null);
   assert.equal(res.escalated, true);
   assert.equal(res.decision?.action, 'escalate');
+  // P2-3: planInfluence must NOT spend budget before the 26B turn actually completes/fails
+  assert.equal(policy.stats().escalation_count, 0);
+  assert.equal(policy.stats().budgetLeft, 2);
+
+  // Abort or model switch skips commitInfluence -> budget remains untouched
+  assert.equal(commitInfluence(policy, res, { aborted: true }), false);
+  assert.equal(commitInfluence(policy, res, { escalated: false }), false);
+  assert.equal(policy.stats().escalation_count, 0);
+
+  // Real 26B execution commits the slot
+  assert.equal(commitInfluence(policy, res), true);
   assert.equal(policy.stats().escalation_count, 1);
   assert.equal(policy.stats().budgetLeft, 1);
 });
 
-test('planInfluence: overload yields STOP_HINT_TEXT once per active series, then null', () => {
+test('planInfluence: overload peeks STOP_HINT_TEXT without consuming until commitInfluence', () => {
   const clock = Date.UTC(2026, 10, 18, 12, 0, 0);
   const policy = createReassessmentPolicy({ now: () => clock });
   const fakeHook = {
@@ -118,12 +129,20 @@ test('planInfluence: overload yields STOP_HINT_TEXT once per active series, then
   assert.equal(first.main, false);
   assert.equal(first.escalated, false);
   assert.equal(first.hint, STOP_HINT_TEXT);
+  assert.equal(policy.stats().stop_hint_count, 0);
 
-  const second = call();
-  assert.equal(second.main, false);
-  assert.equal(second.escalated, false);
-  assert.equal(second.hint, null);
-  assert.equal(policy.stats().stop_report_count, 2);
+  // Aborted turn before send -> stopHint stays available for the next attempt in the series
+  assert.equal(commitInfluence(policy, first, { aborted: true }), false);
+  const retry = call();
+  assert.equal(retry.hint, STOP_HINT_TEXT);
+
+  // Delivered turn consumes stopHint once per series
+  assert.equal(commitInfluence(policy, retry), true);
+  const after = call();
+  assert.equal(after.main, false);
+  assert.equal(after.escalated, false);
+  assert.equal(after.hint, null);
+  assert.equal(policy.stats().stop_report_count, 3);
   assert.equal(policy.stats().stop_hint_count, 1);
 });
 
@@ -714,5 +733,208 @@ test('planInfluence forwards env.voice into policy.decide ctx and blocks cold vo
   });
   assert.equal(hotVoice.main, true);
   assert.equal(hotVoice.escalated, true);
+  assert.equal(policy.stats().escalation_count, 0);
+  assert.equal(commitInfluence(policy, hotVoice), true);
   assert.equal(policy.stats().escalation_count, 1);
+});
+
+test('P2-1: chatTainted blocks tainted chat without extending cooldown across chats:new', async () => {
+  const dir = mkDir();
+  let clock = Date.UTC(2026, 10, 18, 17, 0, 0);
+  const torState = createTorState({ now: () => clock });
+  const hook = createShadowHook({
+    dir,
+    now: () => clock,
+    uuid: makeUuid(15000),
+    isTorActive: () => torState.inCooldown(),
+    isChatTainted: () => torState.isChatTainted(),
+  });
+  const glue = createChatGlue({
+    getHook: () => hook,
+    tor,
+    isTorBlocked: () => torState.inCooldown(),
+    isChatTainted: () => torState.isChatTainted(),
+    isLocalModel: () => true,
+  });
+  const cfg = { brainShadow: true, provider: 'ollama', rp: false };
+
+  try {
+    // 1. Tor touch at t=0 -> both cooldown and chatTainted active
+    torState.touch({ inChat: true });
+    hook.torTouched();
+
+    // 2. Advance 15 min (> 10m cooldown) while still in same tainted chat
+    clock += TOR_COOLDOWN_MS + 5 * 60 * 1000;
+    assert.equal(torState.inCooldown(), false);
+    assert.equal(torState.isChatTainted(), true);
+
+    // Clearnet turn in tainted chat sees null peekChannels and does not start, WITHOUT extending lastTorAt
+    assert.equal(hook.peekChannels(clock, { urgency: 1 }), null);
+    glue.beforeTurn([{ role: 'user', content: 'обычный вопрос' }], cfg);
+    assert.equal(glue.startLocal({ worker: null }, [{ role: 'user', content: 'ещё вопрос' }], cfg, new AbortController().signal), null);
+    await hook.flush();
+    assert.equal(hook.stats().published, 0);
+
+    // 3. Reset chat (chats:new) 5s later -> clean chat is IMMEDIATELY observable without waiting another 10m!
+    clock += 5000;
+    torState.resetChat();
+    assert.equal(torState.isQuarantined(), false);
+    assert.equal(hook.isTorBlocked(), false);
+    assert.ok(hook.peekChannels(clock, { urgency: 0 }));
+
+    const cleanTurn = glue.startLocal({ worker: null }, [{ role: 'user', content: 'привет в новом чате' }], cfg, new AbortController().signal);
+    cleanTurn.complete({ verified: true, utility: 1 });
+    await hook.flush();
+    assert.equal(hook.stats().published, 1);
+  } finally {
+    await hook.close();
+  }
+});
+
+test('P2-2: preload racing with queued write & concurrent batch failure resync memCore accurately from exportCheckpoint', async () => {
+  const baseTime = Date.UTC(2026, 10, 18, 18, 0, 0);
+
+  // Scenario A: write queued before delayed cold preload finishes -> preload must not clobber batch1
+  const dirA = mkDir();
+  let clkA = baseTime;
+  const seed = createShadowHook({ dir: dirA, now: () => (clkA += 1000), uuid: makeUuid(16000) });
+  seed.start({ worker: null }, { features: { urgency: 1, contradiction: 0 } }).complete({ verified: true, utility: -1 });
+  await seed.close();
+
+  const seedCheck = await openRotatingJournal(dirA);
+  try {
+    assert.equal(seedCheck.snapshot().task_count, 1);
+  } finally {
+    await seedCheck.close();
+  }
+  let openEnteredResolve;
+  const openEntered = new Promise((r) => { openEnteredResolve = r; });
+  let releaseOpen;
+  const hookA = createShadowHook({
+    dir: dirA,
+    preload: true,
+    openJournal: async () => {
+      openEnteredResolve();
+      await new Promise((r) => { releaseOpen = r; });
+      return openRotatingJournal(dirA);
+    },
+    now: () => (clkA += 1000),
+    uuid: makeUuid(17000),
+  });
+  try {
+    await openEntered;
+    // Queue batch1 while preload open is still pending
+    const t1 = hookA.start({ worker: null }, { features: { urgency: 1, contradiction: 1 } });
+    t1.complete({ verified: true, utility: -1 });
+    assert.equal(hookA.peekChannels(clkA + 1000, { urgency: 0 }), null);
+
+    releaseOpen();
+    await hookA.flush();
+    const peekA = hookA.peekChannels(clkA + 1000, { urgency: 0 });
+    assert.ok(peekA);
+    // Must include BOTH preexisting negative turn AND queued batch1 (> 0.45 -> ~0.70, not just single ~0.45)
+    assert.ok(peekA.reassessment >= 0.65);
+  } finally {
+    releaseOpen?.();
+    await hookA.close();
+  }
+  const diskAfterA = await openRotatingJournal(dirA);
+  try {
+    assert.equal(diskAfterA.snapshot().task_count, 2);
+  } finally {
+    await diskAfterA.close();
+  }
+
+  // Scenario B: concurrent batch1 (fails) + batch2 (succeeds) while queued together -> stays null until batch2 rebuilds from exportCheckpoint
+  let attempt = 0;
+  let diskCoreB = createShadow();
+  let write1EnteredResolve;
+  const write1Entered = new Promise((r) => { write1EnteredResolve = r; });
+  let write2EnteredResolve;
+  const write2Entered = new Promise((r) => { write2EnteredResolve = r; });
+  let releaseWrite1;
+  let releaseWrite2;
+  const jB = {
+    snapshot: () => diskCoreB.snapshot(),
+    exportCheckpoint: () => diskCoreB.exportCheckpoint(),
+    appendBatch: async (envs) => {
+      attempt++;
+      if (attempt === 1) {
+        write1EnteredResolve();
+        await new Promise((r) => { releaseWrite1 = r; });
+        throw new Error('batch1 EIO');
+      }
+      if (attempt === 2) {
+        write2EnteredResolve();
+        await new Promise((r) => { releaseWrite2 = r; });
+      }
+      for (const env of envs) diskCoreB.ingest(env);
+      return { status: 'accepted', state: diskCoreB.snapshot() };
+    },
+    close: async () => {},
+  };
+  let clkB = baseTime;
+  const hookB = createShadowHook({
+    dir: mkDir(),
+    preload: true,
+    openJournal: async () => jB,
+    now: () => (clkB += 1000),
+    uuid: makeUuid(18000),
+  });
+  try {
+    await hookB.flush();
+    assert.ok(hookB.peekChannels(clkB + 1000, { urgency: 0 }));
+
+    hookB.start({ worker: null }, { features: { urgency: 1, contradiction: 1 } }).complete({ verified: true, utility: -1 });
+    hookB.start({ worker: null }, { features: { urgency: 0, contradiction: 0 } }).complete({ verified: true, utility: 1 });
+    await write1Entered;
+    releaseWrite1();
+    await write2Entered;
+    // Right after batch1 failed and before batch2 commits: memReady must be false -> peekChannels === null!
+    assert.equal(hookB.peekChannels(clkB + 1000, { urgency: 0 }), null);
+    releaseWrite2();
+    await hookB.flush();
+
+    const peekB = hookB.peekChannels(clkB + 1000, { urgency: 0 });
+    assert.ok(peekB);
+    // Only batch2 (utility: +1) reached disk; failed batch1 (-1, urgency: 1) must NOT linger in memCore
+    assert.equal(peekB.reassessment, 0);
+  } finally {
+    releaseWrite1?.();
+    releaseWrite2?.();
+    await hookB.close();
+  }
+});
+
+test('P1-1: shouldSkipChatPersistence blocks vault/notes on quarantined state or string/array Tor messages', () => {
+  let clock = 1_000_000;
+  const torState = createTorState({ now: () => clock });
+  const onionMsg = 'http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/';
+
+  assert.equal(shouldSkipChatPersistence({
+    torState,
+    messages: [{ role: 'user', content: 'привет' }, { role: 'assistant', content: 'привет' }],
+    tor,
+  }), false);
+
+  // Bare .onion without search verb & multimodal array content -> skip
+  assert.equal(shouldSkipChatPersistence({
+    torState,
+    messages: [{ role: 'user', content: `почему не открывается ${onionMsg}` }],
+    tor,
+  }), true);
+  assert.equal(shouldSkipChatPersistence({
+    torState,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'вот цитата из даркнета' }] }],
+    tor,
+  }), true);
+
+  // Quarantined chat -> skips even ordinary clearnet messages
+  torState.touch({ inChat: true });
+  clock += TOR_COOLDOWN_MS + 60_000;
+  assert.equal(shouldSkipChatPersistence({
+    torState,
+    messages: [{ role: 'user', content: 'обычный вопрос' }],
+    tor,
+  }), true);
 });

@@ -30,6 +30,7 @@ function createChatGlue({
   contextMentionsTor,
   isLocalModel,
   isTorBlocked,
+  isChatTainted,
   yourWords = defaultYourWords,
 } = {}) {
   const getSalience = () => (typeof salience === 'function' ? salience : require('./amygdala').salience);
@@ -40,8 +41,12 @@ function createChatGlue({
     try {
       const hook = getHook(false);
       if (!hook) return;
-      if ((typeof isTorBlocked === 'function' && isTorBlocked()) || hook.isTorBlocked?.()) {
+      if (typeof isTorBlocked === 'function' && isTorBlocked()) {
         hook.torTouched?.();
+        return;
+      }
+      if ((typeof isChatTainted === 'function' && isChatTainted()) || hook.isTorBlocked?.()) {
+        hook.dropPending?.({ outcome: 'tor' });
         return;
       }
       hook.resolvePending(messages, {
@@ -59,7 +64,9 @@ function createChatGlue({
     try {
       if (cfg.rp === true || signal?.aborted) return null;
       if (routeClass(route) !== 'ordinary') return null;
-      if ((typeof isTorBlocked === 'function' && isTorBlocked()) || getHook(false)?.isTorBlocked?.()) return null;
+      if ((typeof isTorBlocked === 'function' && isTorBlocked())
+          || (typeof isChatTainted === 'function' && isChatTainted())
+          || getHook(false)?.isTorBlocked?.()) return null;
       if (typeof isLocalModel === 'function' && !isLocalModel(cfg)) return null;
       if (!tor || typeof tor.wantsTor !== 'function' || typeof tor.onionLink !== 'function') return null;
       if (getTorScreen()(messages, tor)) return null;

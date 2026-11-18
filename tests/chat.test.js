@@ -634,3 +634,141 @@ test('Chat.send forwards voice flag to host.chatSend (false by default, true whe
   }
 });
 
+test('P1-1: Chat.send skips chatLog/history/chatRemember on bare .onion or darknet text even without TOR_VERB or in agent mode', async () => {
+  globalThis.matchMedia = () => ({ matches: false, addEventListener() {} });
+  try {
+    const { Chat, mentionsTor } = await import(moduleUrl(path.join(__dirname, '../src/renderer/js/chat.js')));
+    assert.equal(mentionsTor('почему не открывается http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/?'), true);
+    assert.equal(mentionsTor('вот цитата из даркнета: проверь'), true);
+    assert.equal(mentionsTor('обычный запрос'), false);
+
+    const logged = [];
+    const remembered = [];
+    const sent = [];
+    const chat = Object.assign(Object.create(Chat.prototype), {
+      open: true,
+      turn: 0,
+      routing: 0,
+      agent: true, // even in agent/worker mode where sendTor isn't taken!
+      cold: false,
+      warm: true,
+      opening: null,
+      answer: '',
+      verdictPending: false,
+      afterPending: false,
+      afterToken: 0,
+      history: [{ role: 'user', content: 'старое сообщение' }],
+      apps: [],
+      appsReady: Promise.resolve(),
+      shortModel: '',
+      brain: { t: { chat: { working: '', loading: '', failed: '' } } },
+      bond: null,
+      capri: { pulse() {} },
+      host: {
+        chatLog: (m) => logged.push(m),
+        chatRemember: (h) => remembered.push(structuredClone(h)),
+        chatRoute: async () => null,
+        chatSend: async (req) => {
+          sent.push(req);
+          return { ok: true, text: 'ответ на onion' };
+        },
+      },
+      panel: {
+        current: { chat: {}, actions: [] },
+        streaming: false,
+        setVerdict() {},
+        setChatBusy() {},
+        setActions() {},
+        chatTurn() {},
+        stream() {},
+        setFace() {},
+      },
+      asked: () => null,
+      persona: () => 'persona',
+      languageNote: () => '',
+      listApps() {},
+      after: async () => {},
+    });
+
+    await chat.send('что на http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/');
+    assert.equal(logged.length, 0);
+    assert.equal(remembered.length, 0);
+    assert.equal(chat.history.length, 1); // stays only старое сообщение
+    assert.ok(sent[0].messages.some((m) => m.content.includes('.onion')));
+
+    // Following ordinary turn must never leak prior .onion turn via chatRemember(this.history)
+    await chat.send('обычный вопрос');
+    assert.equal(logged.length, 2); // ordinary user + assistant only
+    assert.equal(remembered.length, 1);
+    assert.equal(JSON.stringify(remembered[0]).includes('.onion'), false);
+  } finally {
+    delete globalThis.matchMedia;
+  }
+});
+
+test('P2-4: Guide.scene() closes idle open chat via chat.close / panel.hide({ force: true }) and leaves busy chat alone', async () => {
+  globalThis.matchMedia = () => ({ matches: false, addEventListener() {} });
+  try {
+    const { Guide } = await import(moduleUrl(path.join(__dirname, '../src/renderer/js/guide.js')));
+    const { Chat } = await import(moduleUrl(path.join(__dirname, '../src/renderer/js/chat.js')));
+
+    let hiddenForces = [];
+    let focusCalls = [];
+    const panel = {
+      current: null,
+      chatBusy: false,
+      say(msg) {
+        if (this.current?.chat && !this.current.guide && (this.chatBusy || 1 < 4)) return false;
+        this.current = msg;
+        return true;
+      },
+      hide({ force = false } = {}) {
+        hiddenForces.push(force);
+        if (force) this.current = null;
+      },
+    };
+    const chat = Object.assign(Object.create(Chat.prototype), {
+      open: true,
+      turn: 0,
+      afterToken: 0,
+      afterPending: false,
+      verdictPending: false,
+      panel,
+      capri: { nextMove: 0, nextGaze: 0 },
+      host: { focusOverlay: (v) => focusCalls.push(v), chatState() {}, chatStop() {} },
+      syncVerdict() {},
+      report() {},
+    });
+    panel.current = { kind: 'chat', chat: {}, onClose: () => chat.close(), onLeave: () => chat.close(false) };
+
+    const guide = new Guide({
+      capri: { stopPointing() {}, stowed: false, wake() {}, nextMove: 0, nextGaze: 0 },
+      panel,
+      voice: {},
+      host: { setConfig() {} },
+      brain: { t: { guide: {} } },
+    });
+
+    let played = false;
+    await guide.scene(async () => {
+      played = panel.say({ kind: 'info', line: 'гайд', guide: true });
+    });
+
+    assert.equal(played, true);
+    assert.equal(chat.open, false);
+    assert.ok(hiddenForces.includes(true));
+    assert.ok(focusCalls.includes(false));
+
+    // Busy chat must NOT be closed or interrupted
+    panel.chatBusy = true;
+    panel.current = { kind: 'chat', chat: {}, onClose: () => chat.close() };
+    chat.open = true;
+    let busyPlayed = false;
+    await guide.scene(async () => { busyPlayed = true; });
+    assert.equal(busyPlayed, false);
+    assert.equal(chat.open, true);
+  } finally {
+    delete globalThis.matchMedia;
+  }
+});
+

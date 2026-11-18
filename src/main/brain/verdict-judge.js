@@ -227,6 +227,10 @@ function createVerdictJudge({
         counts.skipped_not_loaded++;
         return { status: 'skipped_not_loaded', verdict: null, model: null };
       }
+      if (isBusy?.()) {
+        counts.skipped_busy++;
+        return { status: 'skipped_busy', verdict: null, model: null };
+      }
 
       entry.timer = setTimer(() => {
         if (entry.cancelled) return;

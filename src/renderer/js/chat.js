@@ -193,12 +193,17 @@ const TOR_VERB = /найди|поищи|найти|ищи|узнай|выясн�
 const DARK_WORD = /(?<!\p{L})(?:дарк\s?веб\p{L}*|дарк\s?нет\p{L}*|darkweb|dark\s+web|darknet|говносет\p{L}*|сетев\p{L}*\s+помойк\p{L}*)(?!\p{L})/iu;
 const DARK_PHRASE = /(?<!\p{L})(?:в|во|по|на|через|in|on)?\s*(?:дарк\s?веб\p{L}*|дарк\s?нет\p{L}*|darkweb|dark\s+web|darknet|говносет\p{L}*|сетев\p{L}*\s+помойк\p{L}*)(?!\p{L})/giu;
 const ONION_LINK = /(?:https?:\/\/)?[a-z2-7]{56}\.onion(?:\/[^\s"'<>]*)?/i;
+/** Any Tor/darknet/.onion mention in user text (even without a search verb). */
+export function mentionsTor(text) {
+  const t = String(text || '');
+  return TOR_WORD.test(t) || DARK_WORD.test(t) || ONION_LINK.test(t);
+}
 /** A request for her Tor node: { query, dark, onion } or null. */
 export function torHow(text) {
   const t = String(text || '');
   const dark = DARK_WORD.test(t);
   const onion = (t.match(ONION_LINK) || [])[0] || null;
-  if (!(TOR_WORD.test(t) || dark || onion) || !TOR_VERB.test(t)) return null;
+  if (!mentionsTor(t) || !TOR_VERB.test(t)) return null;
   const q = searched(t.replace(ONION_LINK, ' ').replace(/^\s*(?:capri|капри)[,!:]?\s+/i, '').replace(TOR_PHRASE, ' ').replace(DARK_PHRASE, ' ')
     .replace(/(?<!\p{L})(?:в\s+интернете|в\s+сети|в\s+гугле|онлайн|online)(?!\p{L})/giu, ' '));
   if (!q && !onion) return null;
@@ -492,9 +497,9 @@ export class Chat {
   }
 
   // her line, said without asking her model (your message is in already)
-  reply(text, line) {
+  reply(text, line, { noLog = false } = {}) {
     this.turn = 0;
-    this.remember({ role: 'assistant', content: line });
+    if (!noLog) this.remember({ role: 'assistant', content: line });
     this.panel.stream(line, { done: true });
     this.panel.setChatBusy(false);
     this.syncVerdict();
@@ -539,6 +544,7 @@ export class Chat {
       const how = torHow(text);
       if (how) return this.sendTor(text, how);
     }
+    const noLog = mentionsTor(text);
     const id = Date.now();
     this.turn = id;
     this.routing = id;
@@ -548,8 +554,10 @@ export class Chat {
     this.verdictPending = false;
     this.syncVerdict();
     const entry = { role: 'user', content: text };
-    this.history.push(entry);
-    this.host.chatLog?.({ role: 'user', content: text }); // her Chats window
+    if (!noLog) {
+      this.history.push(entry);
+      this.host.chatLog?.({ role: 'user', content: text }); // her Chats window
+    }
     this.panel.setChatBusy(true);
     this.panel.setActions([]); // a close button she offered before goes with a new message
     this.panel.chatTurn({ quote: text, face: 'aside' });
@@ -564,30 +572,40 @@ export class Chat {
     }
     if (this.routing === id) this.routing = 0;
     if (this.turn !== id) {
-      const at = this.history.indexOf(entry);
-      if (at >= 0) this.history.splice(at, 1);
+      if (!noLog) {
+        const at = this.history.indexOf(entry);
+        if (at >= 0) this.history.splice(at, 1);
+      }
       return;
     }
-    if (route === 'stop') return this.reply(text, STOP_IDLE); // the box is locked while one works: nothing is
+    if (route === 'stop') return this.reply(text, STOP_IDLE, { noLog }); // the box is locked while one works: nothing is
     const worker = route;
     const agent = this.agent || Boolean(worker);
     this.by = this.agent ? 'claude' : worker === 'gemini' ? 'agy' : worker || 'capri'; // who's thinking (skin.js)
     if (!worker && !this.agent && this.shortModel && this.panel.tag) this.panel.tag.textContent = this.shortModel;
     const asked = agent ? null : this.asked(text);
-    if (asked?.kind === 'look') return this.sendLook(text, id);
+    if (asked?.kind === 'look') return this.sendLook(text, id, { noLog });
     const early = asked && asked.kind !== 'close' ? this.doNow(asked) : null;
     this.bond?.heard(text); // "sorry": she lets it go
     // what she greeted you with (angry, sulking…), in the conversation before your message, so her
     // answer carries on from it (after another answer of hers: added to that one, never two in a row)
+    let openingTurn = null;
     if (this.opening) {
-      const at = this.history.length - 1;
-      const before = this.history[at - 1];
-      if (before?.role === 'assistant') this.history[at - 1] = { ...before, content: `${before.content}\n${this.opening}` };
-      else this.history.splice(at, 0, { role: 'assistant', content: this.opening });
+      if (noLog) {
+        openingTurn = { role: 'assistant', content: this.opening };
+      } else {
+        const at = this.history.length - 1;
+        const before = this.history[at - 1];
+        if (before?.role === 'assistant') this.history[at - 1] = { ...before, content: `${before.content}\n${this.opening}` };
+        else this.history.splice(at, 0, { role: 'assistant', content: this.opening });
+      }
       this.opening = null;
     }
     // a task on the computer: her desktop loop in main.js has its own prompt
-    const messages = [{ role: 'system', content: this.persona(WORKER_NAMES[worker] ? worker : null) }, ...this.history.slice(-REMEMBER)];
+    const tail = noLog
+      ? [...this.history.slice(-REMEMBER), ...(openingTurn ? [openingTurn] : []), entry].slice(-REMEMBER)
+      : this.history.slice(-REMEMBER);
+    const messages = [{ role: 'system', content: this.persona(WORKER_NAMES[worker] ? worker : null) }, ...tail];
     // Her mood (angry, sulking…) and her language, said again right by your message, for this answer
     // only. Small local models mostly go by the last thing they read: up in her prompt alone, they
     // forget it (and answer in English after a conversation in English).
@@ -606,13 +624,13 @@ export class Chat {
     clearTimeout(slow);
     if (this.turn !== id) {
       // closed meanwhile: your message goes too, or the next answer would answer it as well
-      if (this.history.at(-1)?.content === text) this.history.pop();
+      if (!noLog && this.history.at(-1)?.content === text) this.history.pop();
       return;
     }
     this.turn = 0;
     if (!res.ok) {
       if (res.error === 'stopped') this.pending?.('no');
-      this.history.pop();
+      if (!noLog) this.history.pop();
       this.panel.setFace('wide');
       // too busy or gone even after trying other models (main.js): said plainly, not the server's JSON
       this.panel.stream(res.error === 'stopped' ? 'Остановила.' : res.code === 'busy' ? this.t.swamped : res.code === 'gone' ? this.t.gone : `${this.t.failed} ${res.error}`, { done: true });
@@ -624,7 +642,9 @@ export class Chat {
     this.warm = true;
     // a picture or clip she sent (main.js photoTask / videoTask): kept in the chat as its mark, shown under her line
     const photos = ['photo', 'video'].includes(worker) ? photoNames(res.text) : [];
-    this.remember({ role: 'assistant', content: [answer, ...photos.map((p) => `[[photo:${p}]]`)].join('\n') });
+    if (!noLog) {
+      this.remember({ role: 'assistant', content: [answer, ...photos.map((p) => `[[photo:${p}]]`)].join('\n') });
+    }
     this.panel.stream(answer, { done: true });
     if (photos.length) this.panel.showPhoto(`capri://gallery/${photos[0]}`);
     this.onAnswer?.(answer);
@@ -646,13 +666,13 @@ export class Chat {
 
   // "Look at my screen" in her chat: she looks (asking you first, the first time) and answers here,
   // the conversation so far in mind.
-  async sendLook(text, id) {
+  async sendLook(text, id, { noLog = false } = {}) {
     const tl = this.brain.t.look;
     const say = (line, face = 'aside') => {
       if (this.turn !== id) return;
       this.turn = 0;
       this.verdictPending = false;
-      this.remember({ role: 'assistant', content: line });
+      if (!noLog) this.remember({ role: 'assistant', content: line });
       this.panel.stream(line, { done: true });
       this.onAnswer?.(line); // out loud, like her other answers
       this.panel.setFace(face);

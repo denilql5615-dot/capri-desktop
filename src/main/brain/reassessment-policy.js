@@ -313,8 +313,9 @@ function createReassessmentPolicy({ now = Date.now, config = {} } = {}) {
     else counts.base_unverified++;
   }
 
-  function stopHint() {
+  function stopHint({ consume = true } = {}) {
     if (stopHintEmitted) return null;
+    if (consume === false) return STOP_HINT_TEXT;
     stopHintEmitted = true;
     counts.stop_hint_count++;
     return STOP_HINT_TEXT;

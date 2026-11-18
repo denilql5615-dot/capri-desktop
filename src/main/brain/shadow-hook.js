@@ -75,6 +75,7 @@ function createShadowHook({
   pendingTtlMs = DEFAULT_PENDING_TTL_MS,
   torCooldownMs = TOR_COOLDOWN_MS,
   isTorActive,
+  isChatTainted,
   setTimer = setTimeout,
   clearTimer = clearTimeout,
   onPendingChange,
@@ -108,7 +109,8 @@ function createShadowHook({
   let pendingWrites = 0;
   let memCore = createShadow();
   let memReady = !preload;
-  let hadPreexistingJournalState = false;
+  let preloadDone = !preload;
+  let writeInvalidated = false;
 
   function checkpointFromSnapshot(snap) {
     return {
@@ -181,12 +183,6 @@ function createShadowHook({
     await fsp.mkdir(dir, { recursive: true });
     const opened = await openJournal(dir);
     if (!opened || typeof opened.appendBatch !== 'function') throw new Error('invalid shadow journal');
-    if (typeof opened.snapshot === 'function') {
-      try {
-        const snap = opened.snapshot();
-        if (snap && snap.task_count > 0) hadPreexistingJournalState = true;
-      } catch {}
-    }
     journal = opened;
     return journal;
   }
@@ -204,17 +200,21 @@ function createShadowHook({
         return;
       }
       if (!j) return;
+      preloadDone = true;
+      // If writes already queued while preload was opening the journal, leave memCore & memReady
+      // for the upcoming write rebuild instead of overwriting or marking partial state ready.
+      if (pendingWrites > 0) return;
       const cp = typeof j.exportCheckpoint === 'function' ? j.exportCheckpoint() : undefined;
       if (cp) {
-        hadPreexistingJournalState = false;
         try {
           memCore = createShadow({ checkpoint: cp });
         } catch {
           memReady = false;
+          writeInvalidated = true;
           return;
         }
       }
-      if (pendingWrites === 0) memReady = true;
+      if (!writeInvalidated) memReady = true;
     });
   }
 
@@ -224,57 +224,58 @@ function createShadowHook({
     advanceMemCore(envelopes);
     pendingWrites++;
     writeChain = writeChain.then(async () => {
-      if (disabled) { counts.discarded++; memReady = false; return; }
+      if (disabled) { counts.discarded++; memReady = false; writeInvalidated = true; return; }
       let j;
       try {
         j = await ensureJournal();
       } catch {
         disabled = true; // journal open failed: stay quiet until restart
         memReady = false;
+        writeInvalidated = true;
         counts.observer_errors++;
         return;
       }
-      if (!j) { counts.discarded++; memReady = false; return; }
+      if (!j) { counts.discarded++; memReady = false; writeInvalidated = true; return; }
       try {
         const res = await j.appendBatch(envelopes);
         if (res?.status === 'accepted' || res?.status === 'duplicate') {
           counts.published++;
-          if (pendingWrites === 1) {
-            const cp = typeof j.exportCheckpoint === 'function' ? j.exportCheckpoint() : undefined;
+          const hasOtherQueued = pendingWrites > 1;
+          if (typeof j.exportCheckpoint === 'function') {
+            const cp = j.exportCheckpoint();
             if (cp) {
-              hadPreexistingJournalState = false;
               try {
                 memCore = createShadow({ checkpoint: cp });
-                memReady = true;
+                writeInvalidated = false;
               } catch {
+                writeInvalidated = true;
                 memReady = false;
               }
-            } else if (hadPreexistingJournalState && res?.state) {
-              hadPreexistingJournalState = false;
-              try {
-                memCore = createShadow({ checkpoint: checkpointFromSnapshot(res.state) });
-                memReady = true;
-              } catch {
-                memReady = false;
-              }
-            } else {
-              memReady = true;
             }
-          } else if (hadPreexistingJournalState) {
-            hadPreexistingJournalState = false;
+          } else if (writeInvalidated && res?.state) {
+            try {
+              memCore = createShadow({ checkpoint: checkpointFromSnapshot(res.state) });
+              writeInvalidated = false;
+            } catch {
+              writeInvalidated = true;
+              memReady = false;
+            }
           }
+          memReady = preloadDone && !hasOtherQueued && !writeInvalidated;
         } else {
           counts.discarded++;
+          writeInvalidated = true;
           memReady = false;
         }
       } catch {
         counts.observer_errors++;
+        writeInvalidated = true;
         memReady = false;
       }
     }).finally(() => { pendingWrites--; });
   }
 
-  function inTorQuarantine() {
+  function inCooldown() {
     const curNow = Number(now());
     let active = false;
     try { active = Boolean(isTorActive?.()); } catch { active = false; }
@@ -283,6 +284,14 @@ function createShadowHook({
       return true;
     }
     return lastTorAt !== null && Number.isFinite(curNow) && curNow - lastTorAt < torCooldownMs;
+  }
+
+  function chatTaintedNow() {
+    try { return Boolean(isChatTainted?.()); } catch { return false; }
+  }
+
+  function inTorQuarantine() {
+    return inCooldown() || chatTaintedNow();
   }
 
   function isEligible(route, opts) {
