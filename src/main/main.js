@@ -742,10 +742,20 @@ async function quickAnswer(said) {
     const memo = quick.parseRememberCommand(said);
     if (memo) {
       if (shouldSkipChatPersistence({ torState, messages: [{ role: 'user', content: said }], tor })) return TOR_PERSIST_BLOCK_MSG;
-      const cfg = config.load();
-      config.save({ memories: [...new Set([...(cfg.memories || []), memo])] });
-      const title = notes.write(notesDir(), { title: memo.split(/\s+/).slice(0, 5).join(' '), type: 'о тебе', text: memo });
-      return `Записала в память Obsidian${title ? ` ([[${title}]])` : ''}: «${memo.slice(0, 140)}».`;
+      const today = new Date().toISOString().slice(0, 10);
+      const title = notes.writePendingCandidate(
+        notesDir(),
+        {
+          topic: memo.split(/\s+/).slice(0, 5).join(' '),
+          source: 'user_remember',
+          link: `capri://chat/${today}`,
+          quote: String(said || memo).replace(/[\r\n]+/g, ' ').trim(),
+          text: memo,
+        },
+        today,
+      );
+      if (!title) return 'Не удалось сохранить карточку в pending_review.';
+      return `Добавила карточку в pending_review на подтверждение ([[${title}]]): «${memo.slice(0, 140)}».`;
     }
     const planCmd = quick.parseQuickPlanCommand(said);
     if (planCmd && localPlanner) {
@@ -886,8 +896,29 @@ async function takeNotes(conversation) {
   const dir = notesDir();
   const known = notes.list(dir).map((n) => n.title);
   const facts = notes.parseFacts(await ollama.jsonChat({ model, messages: notes.extractMessages(fresh, known), schema: notes.EXTRACT_SCHEMA }));
-  const kept = facts.map((fact) => notes.write(dir, fact)).filter(Boolean);
-  if (kept.length) console.log(`[capri] noted: ${kept.join('; ')}`);
+  const today = new Date().toISOString().slice(0, 10);
+  const userQuotes = fresh.filter((m) => m.role === 'user' && typeof m.content === 'string' && m.content.trim()).map((m) => m.content.trim());
+  const fallbackUserQuote = userQuotes[userQuotes.length - 1] || '';
+  const kept = facts
+    .map((fact) => {
+      const matchedUserMsg =
+        userQuotes.find((q) => fact.quote && q.includes(fact.quote)) ||
+        userQuotes.find((q) => q.toLowerCase().includes(fact.title.toLowerCase())) ||
+        fallbackUserQuote;
+      return notes.writePendingCandidate(
+        dir,
+        {
+          topic: fact.title,
+          source: 'chat_extract',
+          link: `capri://chat/${today}`,
+          quote: fact.quote || matchedUserMsg || fact.text,
+          text: fact.text,
+        },
+        today,
+      );
+    })
+    .filter(Boolean);
+  if (kept.length) console.log(`[capri] pending_review: ${kept.join('; ')}`);
   return kept;
 }
 
@@ -2434,10 +2465,23 @@ function registerIpc() {
       telegramChanged = true;
     }
     if (patch?.pimSecrets) patch = { ...patch, pimSecrets: pim.sealSecrets(patch.pimSecrets, setup.sealKey) };
-    // "запомни…" in her chat: a note in her memory too
+    // "запомни…" in her chat: candidate card in pending_review/
     if (Array.isArray(patch?.memories)) {
       const had = new Set(config.load().memories || []);
-      for (const memo of patch.memories.filter((m) => !had.has(m))) notes.write(notesDir(), { title: memo.split(/s+/).slice(0, 5).join(' '), type: 'о тебе', text: memo });
+      const today = new Date().toISOString().slice(0, 10);
+      for (const memo of patch.memories.filter((m) => !had.has(m))) {
+        notes.writePendingCandidate(
+          notesDir(),
+          {
+            topic: memo.split(/\s+/).slice(0, 5).join(' '),
+            source: 'user_remember',
+            link: `capri://chat/${today}`,
+            quote: memo,
+            text: memo,
+          },
+          today,
+        );
+      }
     }
     const next = updateConfig(patch);
     if (telegramChanged) applyTelegram();
