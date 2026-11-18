@@ -1,0 +1,59 @@
+FROM debian:bookworm-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  ca-certificates \
+  python3 \
+  unzip \
+  binutils \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY fetch_camoufox.py /tmp/fetch_camoufox.py
+RUN python3 /tmp/fetch_camoufox.py \
+  && rm -f /tmp/fetch_camoufox.py \
+  && find /opt/camoufox -type f \( -name "*.so*" -o -executable \) -exec strip --strip-unneeded {} + 2>/dev/null || true \
+  && rm -rf /opt/camoufox/*.dbg /opt/camoufox/crashreporter* /opt/camoufox/minidump-analyzer* \
+  && chown -R root:root /opt/camoufox \
+  && chmod -R a+rX /opt/camoufox
+
+# Keep only Linux font pack (L) for headless text extraction; drop macOS/Windows font packs (~1.8 GB)
+RUN rm -rf /opt/camoufox/fonts/M /opt/camoufox/fonts/W /opt/camoufox/fonts/MW /opt/camoufox/fonts/LM /opt/camoufox/fonts/LW /opt/camoufox/fonts/LMW
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  ca-certificates \
+  python3 \
+  procps \
+  libgtk-3-0 \
+  libdbus-glib-1-2 \
+  libxt6 \
+  libx11-xcb1 \
+  libxcomposite1 \
+  libxdamage1 \
+  libxfixes3 \
+  libxrandr2 \
+  libxrender1 \
+  libasound2 \
+  libnss3 \
+  libnspr4 \
+  libfontconfig1 \
+  libfreetype6 \
+  libgbm1 \
+  libegl1 \
+  fonts-dejavu-core \
+  && rm -rf /var/lib/apt/lists/* \
+  && groupadd -g 10001 isolator \
+  && useradd -u 10001 -g 10001 -M -s /usr/sbin/nologin isolator \
+  && mkdir -p /opt/isolator
+
+COPY --from=builder /opt/camoufox /opt/camoufox
+COPY isolator_job.py /opt/isolator/isolator_job.py
+RUN chmod 755 /opt/isolator/isolator_job.py
+
+ENV HOME=/tmp/home \
+  MOZ_HEADLESS=1 \
+  PYTHONUNBUFFERED=1
+
+USER 10001:10001
+
+ENTRYPOINT ["python3", "/opt/isolator/isolator_job.py"]

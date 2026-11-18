@@ -36,6 +36,7 @@ const DEFAULTS = {
   torSocksPort: 9050,
   torBrowserPort: 9340,
   torProfile: '', // '' = <her data folder>/tor-profile
+  torIsolator: 'off', // 'off' | 'on' (Docker Tor isolator v0; off by default)
   webMode: 'search', // 'search' = SearXNG + plain reading, browser for the rest; 'browser' = everything through the browser
   provider: 'ollama', // who answers her chat: a key of llm.js PROVIDERS
   apiKeys: {},       // { openai: 'sk-...' }, else the provider's env variable
