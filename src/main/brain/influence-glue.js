@@ -4,6 +4,8 @@
 // Pure/fail-safe: exceptions or disabled/non-local/Tor/RP turns return the neutral decision.
 
 const SHORT_TRIVIAL_LEN = 12;
+const DAY_MS = 86400000;
+const UTC5_OFFSET_MS = 5 * 60 * 60 * 1000; // fixed UTC+5 (Yekaterinburg/Tashkent, no DST)
 const NEUTRAL = Object.freeze({ main: false, hint: null, decision: null, escalated: false });
 
 function createNeutral() {
@@ -12,6 +14,61 @@ function createNeutral() {
 
 function stripBrainHints(messages) {
   return Array.isArray(messages) ? messages.filter((m) => !m?.brainHint) : [];
+}
+
+function parseUtc5DayIndex(dateStr) {
+  if (typeof dateStr !== 'string') return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr.trim());
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const utc = Date.UTC(y, mo - 1, d);
+  const dt = new Date(utc);
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+  return Math.floor(utc / DAY_MS);
+}
+
+function utc5DayInfo(nowMs = Date.now()) {
+  const n = Number(nowMs);
+  if (!Number.isFinite(n)) return null;
+  const dayIndex = Math.floor((Math.trunc(n) + UTC5_OFFSET_MS) / DAY_MS);
+  const dt = new Date(dayIndex * DAY_MS);
+  const y = String(dt.getUTCFullYear()).padStart(4, '0');
+  const m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(dt.getUTCDate()).padStart(2, '0');
+  return { dayIndex, day: `${y}-${m}-${d}` };
+}
+
+/**
+ * Resolves effective Stage 6 mode and A/B day tag in fixed UTC+5 calendar days:
+ * even day distance from `cfg.brainInfluenceAbStart` -> 'reassessment' (group B), odd -> 'off' (group A).
+ * Invalid/missing start date or timestamp fails closed to 'off' (group null).
+ */
+function resolveInfluenceAb(cfg, nowMs = Date.now()) {
+  const info = utc5DayInfo(nowMs);
+  const ab_day = info ? info.day : null;
+  const raw = cfg?.brainInfluence;
+  if (raw === 'reassessment') {
+    return { mode: 'reassessment', ab_group: null, ab_day };
+  }
+  if (raw === 'ab') {
+    const startIndex = parseUtc5DayIndex(cfg?.brainInfluenceAbStart);
+    if (startIndex === null || !info) {
+      return { mode: 'off', ab_group: null, ab_day };
+    }
+    const even = Math.abs(info.dayIndex - startIndex) % 2 === 0;
+    return {
+      mode: even ? 'reassessment' : 'off',
+      ab_group: even ? 'B' : 'A',
+      ab_day,
+    };
+  }
+  return { mode: 'off', ab_group: null, ab_day };
+}
+
+function effectiveInfluenceMode(cfg, nowMs = Date.now()) {
+  return resolveInfluenceAb(cfg, nowMs).mode;
 }
 
 /**
@@ -58,12 +115,14 @@ function planInfluence({
     if (!channels) {
       return createNeutral();
     }
-    const mode = cfg.brainInfluence === 'reassessment' ? 'reassessment' : 'off';
+    const ab = resolveInfluenceAb(cfg, env?.now !== undefined ? env.now : Date.now());
     const decision = policy.decide({
       channels,
       features,
       ctx: {
-        mode,
+        mode: ab.mode,
+        ab_group: ab.ab_group,
+        ab_day: ab.ab_day,
         brainsReady: Boolean(env?.brainsReady),
         isAuto: Boolean(env?.isAuto),
         wantsFast: Boolean(env?.wantsFast),
@@ -109,4 +168,12 @@ function commitInfluence(policy, plan, { escalated = plan?.escalated, hintDelive
   return false;
 }
 
-module.exports = { planInfluence, commitInfluence, stripBrainHints, SHORT_TRIVIAL_LEN };
+module.exports = {
+  planInfluence,
+  commitInfluence,
+  stripBrainHints,
+  effectiveInfluenceMode,
+  resolveInfluenceAb,
+  utc5DayInfo,
+  SHORT_TRIVIAL_LEN,
+};

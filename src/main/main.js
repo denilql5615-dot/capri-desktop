@@ -2295,7 +2295,7 @@ function registerIpc() {
   const getBrainInfluencePolicy = () => {
     if (brainInfluencePolicy) return brainInfluencePolicy;
     const { createReassessmentPolicy } = require('./brain/reassessment-policy');
-    brainInfluencePolicy = createReassessmentPolicy();
+    brainInfluencePolicy = createReassessmentPolicy({ getConfig: () => config.load() });
     return brainInfluencePolicy;
   };
   const getBrainInfluencePlan = () => {
@@ -3148,18 +3148,24 @@ async function debugHandler(route, body) {
     if (typeof set.brainShadow === 'boolean') patch.brainShadow = set.brainShadow;
     if (set.brainVerdictJudge === 'off' || set.brainVerdictJudge === 'shadow') patch.brainVerdictJudge = set.brainVerdictJudge;
     if (Object.hasOwn(set, 'brainInfluence')) {
-      if (set.brainInfluence !== 'off' && set.brainInfluence !== 'reassessment') {
-        throw new Error('brainInfluence must be off or reassessment');
+      if (set.brainInfluence !== 'off' && set.brainInfluence !== 'reassessment' && set.brainInfluence !== 'ab') {
+        throw new Error('brainInfluence must be off, reassessment, or ab');
       }
       patch.brainInfluence = set.brainInfluence;
     }
     if (Object.keys(patch).length) updateConfig(patch);
     const cfg = config.load(true);
+    const { resolveInfluenceAb } = require('./brain/influence-glue');
+    const ab = resolveInfluenceAb(cfg);
+    const rawInfluence = ['off', 'reassessment', 'ab'].includes(cfg.brainInfluence) ? cfg.brainInfluence : 'off';
     const mem = process.memoryUsage();
     return { ok: true, value: {
       brainShadow: cfg.brainShadow === true,
       brainVerdictJudge: cfg.brainVerdictJudge || 'off',
-      brainInfluence: cfg.brainInfluence === 'reassessment' ? 'reassessment' : 'off',
+      brainInfluence: rawInfluence,
+      effectiveMode: ab.mode,
+      ab_group: ab.ab_group,
+      ab_day: ab.ab_day,
       hook: Boolean(brainShadowHook),
       stats: brainShadowHook ? brainShadowHook.stats() : null,
       policy: brainInfluencePolicy ? brainInfluencePolicy.stats() : null,
