@@ -5,7 +5,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { planInfluence, commitInfluence, stripBrainHints } = require('../src/main/brain/influence-glue');
+const {
+  planInfluence,
+  commitInfluence,
+  stripBrainHints,
+  effectiveInfluenceMode,
+  resolveInfluenceAb,
+  utc5DayInfo,
+} = require('../src/main/brain/influence-glue');
 const { createReassessmentPolicy, STOP_HINT_TEXT } = require('../src/main/brain/reassessment-policy');
 const { createShadowHook, TOR_COOLDOWN_MS } = require('../src/main/brain/shadow-hook');
 const { createChatGlue } = require('../src/main/brain/chat-glue');
@@ -24,9 +31,10 @@ function makeUuid(prefix = 3000) {
   return () => `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}`;
 }
 
-test('config default keeps brainInfluence off', () => {
+test('config default keeps brainInfluence off and sets brainInfluenceAbStart to 2026-11-18', () => {
   const src = fs.readFileSync(path.join(__dirname, '../src/main/config.js'), 'utf8');
   assert.match(src, /brainInfluence:\s*'off'/);
+  assert.match(src, /brainInfluenceAbStart:\s*'2026-11-18'/);
 });
 
 test('planInfluence: brainShadow=false returns neutral without invoking hook or policy', () => {
@@ -1117,4 +1125,106 @@ test('Sol final: peekChannels during an in-flight write that rejects never expos
     releaseAppend?.();
     await hook.close();
   }
+});
+
+test('A/B day schedule: UTC+5 boundary (23:59 vs 00:00), parity from start date, invalid start date -> off', () => {
+  const abCfg = { brainInfluence: 'ab', brainInfluenceAbStart: '2026-11-18' };
+
+  // 2026-11-18 23:59:59.999 UTC+5 == 2026-11-18 18:59:59.999 UTC -> day 0 (even) -> B / reassessment
+  const beforeMidnightUtc5 = Date.UTC(2026, 10, 18, 18, 59, 59, 999);
+  // 2026-11-19 00:00:00.000 UTC+5 == 2026-11-18 19:00:00.000 UTC -> day 1 (odd) -> A / off
+  const atMidnightUtc5 = Date.UTC(2026, 10, 18, 19, 0, 0, 0);
+
+  assert.equal(utc5DayInfo(beforeMidnightUtc5).day, '2026-11-18');
+  assert.equal(utc5DayInfo(atMidnightUtc5).day, '2026-11-19');
+
+  assert.deepEqual(resolveInfluenceAb(abCfg, beforeMidnightUtc5), {
+    mode: 'reassessment',
+    ab_group: 'B',
+    ab_day: '2026-11-18',
+  });
+  assert.deepEqual(resolveInfluenceAb(abCfg, atMidnightUtc5), {
+    mode: 'off',
+    ab_group: 'A',
+    ab_day: '2026-11-19',
+  });
+  assert.equal(effectiveInfluenceMode(abCfg, beforeMidnightUtc5), 'reassessment');
+  assert.equal(effectiveInfluenceMode(abCfg, atMidnightUtc5), 'off');
+
+  // Parity across consecutive UTC+5 days: day +2 -> B (reassessment), day +3 -> A (off)
+  const dayPlus2 = Date.UTC(2026, 10, 20, 7, 0, 0, 0); // 12:00 UTC+5 on 2026-11-20
+  const dayPlus3 = Date.UTC(2026, 10, 21, 7, 0, 0, 0); // 12:00 UTC+5 on 2026-11-21
+  assert.deepEqual(resolveInfluenceAb(abCfg, dayPlus2), { mode: 'reassessment', ab_group: 'B', ab_day: '2026-11-20' });
+  assert.deepEqual(resolveInfluenceAb(abCfg, dayPlus3), { mode: 'off', ab_group: 'A', ab_day: '2026-11-21' });
+
+  // Fixed modes keep ab_group=null while reporting ab_day
+  assert.deepEqual(resolveInfluenceAb({ brainInfluence: 'off', brainInfluenceAbStart: '2026-11-18' }, beforeMidnightUtc5), {
+    mode: 'off',
+    ab_group: null,
+    ab_day: '2026-11-18',
+  });
+  assert.deepEqual(resolveInfluenceAb({ brainInfluence: 'reassessment', brainInfluenceAbStart: '2026-11-18' }, atMidnightUtc5), {
+    mode: 'reassessment',
+    ab_group: null,
+    ab_day: '2026-11-19',
+  });
+
+  // Invalid / missing start dates fail closed to off + ab_group: null
+  for (const badStart of ['', 'bad-date', '2026-02-30', '2026-13-01', '2026/11/18', null, undefined, 12345]) {
+    const res = resolveInfluenceAb({ brainInfluence: 'ab', brainInfluenceAbStart: badStart }, beforeMidnightUtc5);
+    assert.equal(res.mode, 'off');
+    assert.equal(res.ab_group, null);
+  }
+});
+
+test('A/B mode drives planInfluence and tags policy.stats() with ab_group and ab_day', () => {
+  let clock = Date.UTC(2026, 10, 18, 12, 0, 0); // 2026-11-18 17:00 UTC+5 -> B (reassessment)
+  const cfg = {
+    brainShadow: true,
+    brainInfluence: 'ab',
+    brainInfluenceAbStart: '2026-11-18',
+    provider: 'ollama',
+  };
+  const policy = createReassessmentPolicy({ now: () => clock, getConfig: () => cfg });
+  const hotHook = {
+    peekChannels: () => ({ reassessment: 0.72, reassessment_active: 1, stability: 0.9, circadian_quiet: 0 }),
+  };
+
+  // B-day (2026-11-18): effective mode = reassessment -> escalates
+  const dayB = planInfluence({
+    cfg,
+    said: 'нет, ты ошиблась, проверь ещё раз',
+    messages: [{ role: 'user', content: 'нет, ты ошиблась, проверь ещё раз' }],
+    hook: hotHook,
+    policy,
+    env: { local: true, brainsReady: true, isAuto: true, mainActive: false, now: clock },
+    tor,
+  });
+  assert.equal(dayB.main, true);
+  assert.equal(dayB.escalated, true);
+  let st = policy.stats();
+  assert.equal(st.ab_group, 'B');
+  assert.equal(st.ab_day, '2026-11-18');
+  assert.equal(st.trigger_episodes, 1);
+  assert.equal(st.shadow_trigger_episodes, 0);
+
+  // Next day in UTC+5 (2026-11-19): effective mode = off -> neutral main/hint, increments shadow_* counters
+  clock = Date.UTC(2026, 10, 19, 12, 0, 0);
+  const dayA = planInfluence({
+    cfg,
+    said: 'нет, ты ошиблась, проверь ещё раз',
+    messages: [{ role: 'user', content: 'нет, ты ошиблась, проверь ещё раз' }],
+    hook: hotHook,
+    policy,
+    env: { local: true, brainsReady: true, isAuto: true, mainActive: false, now: clock },
+    tor,
+  });
+  assert.equal(dayA.main, false);
+  assert.equal(dayA.hint, null);
+  assert.equal(dayA.escalated, false);
+  st = policy.stats();
+  assert.equal(st.ab_group, 'A');
+  assert.equal(st.ab_day, '2026-11-19');
+  assert.equal(st.shadow_trigger_episodes, 1);
+  assert.equal(st.shadow_escalate, 1);
 });

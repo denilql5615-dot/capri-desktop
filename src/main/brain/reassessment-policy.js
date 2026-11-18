@@ -4,6 +4,8 @@
 // Pure CPU decision logic: no Electron, no network, no disk I/O; time enters via injected `now`.
 // All thresholds cite sections of `genesis-src/reports/brain-stage6-design-2026-11-18.md`.
 
+const { resolveInfluenceAb, utc5DayInfo } = require('./influence-glue');
+
 const DEFAULTS = Object.freeze({
   // §0 / §2.2: hysteresis thresholds for reassessment channel activation & overload
   enter_threshold: 0.65, // §0, §2.2: minimum reassessment to enter escalation optimum
@@ -61,7 +63,7 @@ function roundEvc(v) {
   return Number.isFinite(v) ? Math.round(v * 1e6) / 1e6 : v;
 }
 
-function createReassessmentPolicy({ now = Date.now, config = {} } = {}) {
+function createReassessmentPolicy({ now = Date.now, config = {}, getConfig } = {}) {
   const cfg = { ...DEFAULTS, ...(config && typeof config === 'object' ? config : {}) };
   const escalationTimestamps = [];
   // Lead decision (4): the control days spend a budget of their own, so shadow counts stay comparable
@@ -73,6 +75,8 @@ function createReassessmentPolicy({ now = Date.now, config = {} } = {}) {
   let consecutiveEscalationFailures = 0;
   let trippedUntil = null;
   let lastQuietFlag = 0;
+  let lastAbGroup = null;
+  let lastAbDay = null;
 
   const counts = {
     trigger_episodes: 0,
@@ -136,6 +140,10 @@ function createReassessmentPolicy({ now = Date.now, config = {} } = {}) {
     const atMs = safeNow(now);
     const quiet = bit(channels?.circadian_quiet);
     lastQuietFlag = quiet;
+    if (ctx && (Object.hasOwn(ctx, 'ab_group') || Object.hasOwn(ctx, 'ab_day'))) {
+      lastAbGroup = ctx.ab_group === 'A' || ctx.ab_group === 'B' ? ctx.ab_group : null;
+      lastAbDay = typeof ctx.ab_day === 'string' ? ctx.ab_day : null;
+    }
     const mode = ctx?.mode === 'reassessment' ? 'reassessment' : 'off';
     const budgetLeft = budgetLeftAt(atMs, quiet, mode === 'reassessment' ? escalationTimestamps : shadowTimestamps);
 
@@ -324,12 +332,26 @@ function createReassessmentPolicy({ now = Date.now, config = {} } = {}) {
   function stats() {
     const atMs = safeNow(now);
     const tripped = isTripped(atMs);
+    const dayNow = utc5DayInfo(atMs)?.day ?? null;
+    let abGroup = lastAbGroup;
+    let abDay = dayNow || lastAbDay;
+    if (typeof getConfig === 'function') {
+      try {
+        const ab = resolveInfluenceAb(getConfig(), atMs);
+        abGroup = ab.ab_group;
+        abDay = ab.ab_day;
+      } catch {}
+    } else if (lastAbDay && dayNow && lastAbDay !== dayNow) {
+      abGroup = null;
+    }
     return {
       ...counts,
       budgetLeft: budgetLeftAt(atMs, lastQuietFlag === 1),
       tripped,
       trippedUntil: tripped ? trippedUntil : null,
       lastEscalationNeg: lastEscalationWasNeg,
+      ab_group: abGroup,
+      ab_day: abDay,
     };
   }
 
