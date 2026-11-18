@@ -16,6 +16,7 @@ const ALWAYS = 6; // notes about you she always has in mind
 const MATCHED = 5; // and the ones that fit what you just said
 const VAULT_MATCHED = 3;
 const VAULT_TEXT = 360;
+const PENDING_REVIEW_DIR = 'pending_review';
 
 // Your Obsidian vault, from Obsidian's own list of them: the one opened last among those open (else any)
 function obsidianVault(appData) {
@@ -78,7 +79,7 @@ function searchVault(dir, said, limit = VAULT_MATCHED) {
     let entries = [];
     try { entries = fs.readdirSync(folder, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
-      if (entry.name === '.obsidian' || (folder === root && entry.name === RAW_DIR)) continue; // raw talk isn't knowledge
+      if (entry.name === '.obsidian' || (folder === root && (entry.name === RAW_DIR || entry.name.toLowerCase() === PENDING_REVIEW_DIR))) continue; // raw talk and pending_review aren't knowledge
       const file = path.join(folder, entry.name);
       if (entry.isDirectory()) walk(file);
       else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) files.push(file);
@@ -325,7 +326,7 @@ function parseFacts(answer) {
 }
 
 module.exports = {
-  INDEX, TYPES, EXTRACT_SCHEMA, PLAN_DIR, RAW_DIR, OUT_DIR, dirOf, fileName, list, searchVault, write, writeIndex, writePlanNote,
+  INDEX, TYPES, EXTRACT_SCHEMA, PLAN_DIR, RAW_DIR, OUT_DIR, PENDING_REVIEW_DIR, dirOf, fileName, list, searchVault, write, writeIndex, writePlanNote,
   appendChat, appendSearch, writeOutput,
   recall, prompt, vaultPrompt, extractMessages, parseFacts,
 };

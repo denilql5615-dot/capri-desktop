@@ -68,6 +68,7 @@ const {
 const gemini = require('./gemini');
 const agyApp = require('./agy-app');
 const kiwix = require('./kiwix');
+const memoryRoot = require('./memory-root');
 const council = require('./council');
 const photo = require('./photo');
 const { Router, workerSettings, codexModelFor, hasSecret, ROUTER_VERSION } = require('./router');
@@ -2611,7 +2612,9 @@ function registerIpc() {
     if (!brainShadowHook || config.load().brainShadow !== true) return;
     try { brainShadowHook.verdict(v); } catch {}
   });
+  let verifiedNomadSource = null;
   ipcMain.handle('chat:send', async (_e, { id, messages, voice }) => {
+    verifiedNomadSource = null;
     const abort = new AbortController();
     chats.set(id, abort);
     const turnId = randomUUID();
@@ -2629,6 +2632,30 @@ function registerIpc() {
       const lastUserHasTor = lastUserMsg ? messagesHaveTor([lastUserMsg]) : false;
       const contextHasTor = messagesHaveTor(messages);
       if (lastUserHasTor) touchTor({ inChat: true });
+      const rootQuestion = yourWords(messages);
+      if (cfg.memoryRootLookup === 'on' && memoryRoot.parseNomadRootCommand(rootQuestion)) {
+        const rootHit = await memoryRoot.lookupApprovedRoot({
+          cfg,
+          said: rootQuestion,
+          messages,
+          voice: Boolean(voice),
+          torState,
+          torCtx: contextHasTor,
+          tor,
+          kiwix,
+          ollamaUrl: ollama.base(),
+          loadedModels: ollama.loadedModels,
+          isBusy: () => chats.size > 1,
+          callModel: ollama.jsonChat,
+          signal: abort.signal,
+        });
+        abort.signal.throwIfAborted();
+        const text = rootHit.text || 'Сейчас поиск по проверенным карточкам NOMAD недоступен для этого режима чата.';
+        const nomadSource = rootHit.source && new URL(rootHit.source.link, rootHit.source.origin).href;
+        verifiedNomadSource = nomadSource || null;
+        send(text);
+        return nomadSource ? { ok: true, text, nomadSource } : { ok: true, text };
+      }
       // "включи / выключи ролевой режим": a mode of hers (brains.js), not a message to answer
       const rpTurn = brainsLib.rpCommand(yourWords(messages));
       if (rpTurn !== null) {
@@ -2989,6 +3016,7 @@ function registerIpc() {
   // who'll answer this message: 'claude', 'codex', 'computer', 'photo', 'video', 'stop' or null (her chat model)
   ipcMain.handle('chat:route', async (_e, text, id) => {
     if (guardChatRoute({ torState, text, history: recentTurns, tor })) return null;
+    if (config.load().memoryRootLookup === 'on' && memoryRoot.parseNomadRootCommand(text)) return null;
     const abort = new AbortController();
     chats.set(id, abort);
     try {
@@ -3216,7 +3244,9 @@ function registerIpc() {
   });
   ipcMain.on('chats:open', () => openChats());
   ipcMain.handle('chats:open-link', (event, value) => {
-    if (event.sender !== chatsWin?.webContents) throw new Error('Доступно только из Hub.');
+    const verifiedSource = event.sender === overlay?.webContents && verifiedNomadSource &&
+      value === verifiedNomadSource && !torState.isQuarantined();
+    if (event.sender !== chatsWin?.webContents && !verifiedSource) throw new Error('Доступно только из Hub.');
     const url = new URL(value);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Небезопасная ссылка.');
     return shell.openExternal(url.href);
