@@ -18,6 +18,91 @@ const CLAIM_BAR = 0.5;  // the message rates itself ("это легко, хва�
 const STICKY_MS = 10 * 60 * 1000;
 const TIMEOUT_MS = 12000;
 const CACHE_MS = 60 * 1000;
+const ROUTER_VERSION = 'router-v1';
+const ROUTE_PATHS = Object.freeze(['pre_short', 'pre_quick', 'pre_named', 'pre_photo', 'pre_rp', 'computer_kw', 'router_model', 'router_keywords']);
+const FALLBACK_REASONS = Object.freeze(['none', 'timeout', 'parse_fail', 'prefix_guard']);
+
+function round6(n) {
+  const v = Number(n);
+  return Number.isFinite(v) ? Math.round(v * 1e6) / 1e6 : 0;
+}
+
+function entropy(dist) {
+  if (!dist || typeof dist !== 'object') return 0;
+  let h = 0;
+  for (const raw of Object.values(dist)) {
+    const p = Number(raw);
+    if (Number.isFinite(p) && p > 0) h -= p * Math.log(p);
+  }
+  return round6(h);
+}
+
+function margin(dist) {
+  if (!dist || typeof dist !== 'object') return 0;
+  const vals = Object.values(dist).map(Number).filter((v) => Number.isFinite(v) && v >= 0).sort((a, b) => b - a);
+  if (vals.length === 0) return 0;
+  return round6((vals[0] || 0) - (vals[1] || 0));
+}
+
+function topLogprobsWhitelist(entry, allowed) {
+  const out = {};
+  if (!entry || !Array.isArray(allowed)) return out;
+  const list = Array.isArray(entry.top_logprobs) && entry.top_logprobs.length ? entry.top_logprobs : [entry];
+  for (const alt of list) {
+    const sym = String(alt?.token || '').trim().toUpperCase();
+    const lp = Number(alt?.logprob);
+    if (allowed.includes(sym) && Number.isFinite(lp) && !(sym in out)) out[sym] = round6(lp);
+  }
+  return out;
+}
+
+function lenBucket(text) {
+  const len = String(text || '').length;
+  if (len < 12) return 0;
+  if (len < 200) return 1;
+  if (len < 1000) return 2;
+  return 3;
+}
+
+function computeBinaryPropensity({
+  routePath,
+  tierProbs,
+  whoProbs,
+  model,
+  flags = {},
+  stage6Override = 0,
+  explicitMain = false,
+  wantsFast = false,
+  analysisActive = false,
+} = {}) {
+  const clamp01 = (v) => round6(Math.max(0, Math.min(1, v)));
+  const p_e4b = clamp01((Number(tierProbs?.mechanical) || 0) + (Number(tierProbs?.routine) || 0));
+  const p_26b = clamp01((Number(tierProbs?.complex) || 0) + (Number(tierProbs?.deep) || 0));
+  const deterministicOverride = Boolean(
+    routePath !== 'router_model'
+    || flags.pin_used
+    || flags.secret_guard
+    || flags.sticky_applied
+    || flags.risk_raised
+    || flags.claim_raised
+    || stage6Override
+    || explicitMain
+    || wantsFast
+    || analysisActive
+  );
+  if (deterministicOverride || (model !== 'e4b' && model !== '26b')) {
+    if (model === 'worker' && routePath === 'router_model' && !deterministicOverride) {
+      const pw = clamp01(Number(whoProbs?.W) || 0);
+      return { p_e4b, p_26b, propensity: pw > 0 ? pw : 1, overlapping: 0 };
+    }
+    return { p_e4b, p_26b, propensity: 1, overlapping: 0 };
+  }
+  const rawP = model === '26b' ? p_26b : p_e4b;
+  const roundedP = clamp01(rawP);
+  const propensity = roundedP > 0 ? roundedP : 1;
+  const overlapping = (p_e4b >= 0.03 && p_26b >= 0.03) ? 1 : 0;
+  return { p_e4b, p_26b, propensity, overlapping };
+}
 
 // what each tier means to them
 const CLAUDE_MODEL = { mechanical: 'haiku', routine: 'sonnet', complex: 'opus', deep: 'opus' };
@@ -153,7 +238,7 @@ function choices(entry, allowed) {
 }
 const expected = (dist) => Object.entries(dist).reduce((s, [d, p]) => s + (Number(d) / 9) * p, 0);
 
-/** The model's reply read as { target, probs, risk, selfClaim }: from its token probabilities, or from
+/** The model's reply read as { target, probs, risk, selfClaim, ... }: from its token probabilities, or from
  * the symbols alone (each sure) when it gave none. */
 function parse(reply) {
   const { content = '', logprobs = [] } = typeof reply === 'string' ? { content: reply } : reply || {};
@@ -169,7 +254,22 @@ function parse(reply) {
   const digits = '0123456789'.split('');
   const top = Object.keys(who).sort((a, b) => who[b] - who[a])[0];
   const probs = Object.fromEntries(TIERS.map((t, i) => [t, tiers[String(i + 1)] || 0]));
-  return { target: TARGETS[top], probs, risk: expected(choices(entries[2], digits)), selfClaim: expected(choices(entries[3], digits)) };
+  const whoProbs = { C: who.C || 0, P: who.P || 0, W: who.W || 0 };
+  return {
+    target: TARGETS[top],
+    probs,
+    risk: expected(choices(entries[2], digits)),
+    selfClaim: expected(choices(entries[3], digits)),
+    whoProbs,
+    tierProbs: probs,
+    whoEntropy: entropy(whoProbs),
+    tierEntropy: entropy(probs),
+    tierMargin: margin(probs),
+    topLogprobsSym: [
+      topLogprobsWhitelist(entries[0], Object.keys(TARGETS)),
+      topLogprobsWhitelist(entries[1], Object.keys(TIER_DIGITS)),
+    ],
+  };
 }
 
 /** The tier from the model's probabilities, its bars and guards (pure: tested on its own). */
@@ -195,43 +295,91 @@ class Router {
   /** A worker took the task at this tier: the next turns of it don't go lighter. */
   hold(tier) { this.last = { tier: higher(tier, this.last && this.now() - this.last.at < STICKY_MS ? this.last.tier : tier), at: this.now() }; }
 
-  /** Hers, her hands or a worker's, and how hard: { target: 'capri'|'computer'|'worker'|null, tier, by, why }. */
+  /** Hers, her hands or a worker's, and how hard: { target: 'capri'|'computer'|'worker'|null, tier, by, why, ... }. */
   async decide(text, { model, context = [], signal } = {}) {
     signal?.throwIfAborted();
     const key = String(text || '');
     const hit = this.cache.get(key);
     if (hit && this.now() - hit.at < CACHE_MS) return hit.decision;
+    const t0 = this.now();
     const pin = pinOf(key);
     const secret = hasSecret(key);
     const reference = referenceTier(key);
+    const riskyCode = riskyByCode(key);
+    const claimsCode = claimsByCode(key);
     let judged = null;
+    let fallbackReason = model && this.chat ? 'none' : 'prefix_guard';
     if (model && this.chat) {
       const abort = new AbortController();
       const timer = setTimeout(() => abort.abort(), this.timeoutMs);
       try {
         const combined = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
         judged = parse(await this.chat(model, messagesFor(key, context), combined));
-        if (riskyByCode(key)) judged.risk = Math.max(judged.risk, 0.8);
-        if (claimsByCode(key)) judged.selfClaim = Math.max(judged.selfClaim, 0.8);
+        if (riskyCode) judged.risk = Math.max(judged.risk, 0.8);
+        if (claimsCode) judged.selfClaim = Math.max(judged.selfClaim, 0.8);
       } catch (err) {
         signal?.throwIfAborted();
+        fallbackReason = abort.signal.aborted ? 'timeout' : 'parse_fail';
         console.warn('[capri] router:', abort.signal.aborted ? 'too slow' : err.message);
       } finally {
         clearTimeout(timer);
       }
     }
     signal?.throwIfAborted();
-    let tier = pin || (judged ? tierOf(judged, { reference }) : riskyByCode(key) ? higher(reference, 'complex') : reference);
+    let barStepUp = 0;
+    let riskRaised = 0;
+    let claimRaised = 0;
+    if (judged) {
+      const [top, second] = [...TIERS].sort((a, b) => judged.probs[b] - judged.probs[a] || rank(b) - rank(a));
+      const afterBar = judged.probs[top] >= BARS[top] ? top : higher(top, second);
+      barStepUp = Number(!pin && afterBar !== top);
+      const afterRisk = judged.risk >= RISK_BAR ? higher(afterBar, 'complex') : afterBar;
+      riskRaised = Number(!pin && afterRisk !== afterBar);
+      const afterClaim = judged.selfClaim >= CLAIM_BAR ? higher(afterRisk, reference) : afterRisk;
+      claimRaised = Number(!pin && afterClaim !== afterRisk);
+    } else {
+      const afterRisk = riskyCode ? higher(reference, 'complex') : reference;
+      riskRaised = Number(!pin && afterRisk !== reference);
+    }
+    let tier = pin || (judged ? tierOf(judged, { reference }) : riskyCode ? higher(reference, 'complex') : reference);
     // a task carries on: the tier holds within it (a pin is yours: it wins)
+    const beforeSticky = tier;
     if (!pin && this.last && this.now() - this.last.at < STICKY_MS) tier = higher(tier, this.last.tier);
+    const stickyApplied = Number(tier !== beforeSticky);
     // the model's pick (null: it had no say); a secret never goes to a worker on its own (main.js: one
     // you name yourself still gets it)
     let target = judged ? judged.target : null;
-    if (target === 'computer' && OPEN_ONLY_RE.test(key) && !THEN_RE.test(key)) target = 'capri';
+    const openOnlyGuard = Number(target === 'computer' && OPEN_ONLY_RE.test(key) && !THEN_RE.test(key));
+    if (openOnlyGuard) target = 'capri';
     if (secret && target === 'worker') target = 'capri';
+    const flags = {
+      pin_used: pin ? 1 : 0,
+      secret_guard: secret ? 1 : 0,
+      risky_by_code: riskyCode ? 1 : 0,
+      claims_by_code: claimsCode ? 1 : 0,
+      bar_step_up: barStepUp,
+      risk_raised: riskRaised,
+      claim_raised: claimRaised,
+      sticky_applied: stickyApplied,
+      open_only_guard: openOnlyGuard,
+      reference_tier: rank(reference) + 1,
+    };
     const decision = {
       target, tier, by: judged ? 'model' : 'keywords',
       why: [pin && `pin ${pin}`, secret && 'secret', judged && `p=${TIERS.map((t) => `${t[0]}${judged.probs[t].toFixed(2)}`).join(' ')} risk=${judged.risk.toFixed(2)} claim=${judged.selfClaim.toFixed(2)}`].filter(Boolean).join('; '),
+      router_version: ROUTER_VERSION,
+      route_path: judged ? 'router_model' : 'router_keywords',
+      fallback_reason: (pin && fallbackReason === 'none') ? 'prefix_guard' : fallbackReason,
+      router_latency_ms: Math.max(0, Math.round((this.now() - t0) || 0)),
+      who_probs: judged ? { ...judged.whoProbs } : { C: 0, P: 0, W: 0 },
+      tier_probs: judged ? { ...judged.probs } : { mechanical: 0, routine: 0, complex: 0, deep: 0 },
+      who_entropy: judged ? judged.whoEntropy : 0,
+      tier_entropy: judged ? judged.tierEntropy : 0,
+      tier_margin: judged ? judged.tierMargin : 0,
+      risk: round6(judged ? judged.risk : (riskyCode ? 0.8 : 0)),
+      self_claim: round6(judged ? judged.selfClaim : (claimsCode ? 0.8 : 0)),
+      top_logprobs_sym: judged ? judged.topLogprobsSym : [{}, {}],
+      flags,
     };
     this.cache.set(key, { decision, at: this.now() });
     for (const [k, v] of this.cache) if (this.now() - v.at >= CACHE_MS) this.cache.delete(k);
@@ -252,4 +400,8 @@ function workerSettings(tier, { computer = false } = {}) {
   return { claudeModel: CLAUDE_MODEL[floor], codexEffort: CODEX_EFFORT[floor], codexModel: CODEX_MODEL[floor], tier: floor };
 }
 
-module.exports = { Router, TIERS, PROMPT, pinOf, hasSecret, riskyByCode, claimsByCode, referenceTier, parse, tierOf, workerSettings, codexModelFor, messagesFor };
+module.exports = {
+  Router, TIERS, PROMPT, pinOf, hasSecret, riskyByCode, claimsByCode, referenceTier,
+  parse, tierOf, workerSettings, codexModelFor, messagesFor,
+  ROUTER_VERSION, ROUTE_PATHS, FALLBACK_REASONS, lenBucket, computeBinaryPropensity, entropy, margin,
+};

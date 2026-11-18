@@ -50,7 +50,7 @@ const agyApp = require('./agy-app');
 const kiwix = require('./kiwix');
 const council = require('./council');
 const photo = require('./photo');
-const { Router, workerSettings, codexModelFor, hasSecret } = require('./router');
+const { Router, workerSettings, codexModelFor, hasSecret, ROUTER_VERSION } = require('./router');
 const quick = require('./quick');
 const brief = require('./brief');
 const { Comfy, checkWorkflow } = require('./comfy');
@@ -127,6 +127,7 @@ const torState = createTorState({
 function forgetChats() {
   torState.resetChat();
   try { brainShadowHook?.dropPending?.(); } catch {}
+  try { routerJournalInstance?.dropPending?.(); } catch {}
   llm.resetClaude();
   saveMemory({ history: [], claude: null });
   chatLog.write(chatsFile(), chatLog.cut(chatLog.read(chatsFile())));
@@ -1595,22 +1596,22 @@ let recentTurns = []; // the last exchange, for the router ("а теперь т�
 async function routeOf(text, context = [], signal) {
   const cfg = config.load();
   const media = photo.kind(text); // "скинь фото" / "скинь видео": ComfyUI, whoever is her brain
-  if (media) return { worker: media };
-  if (brainsLib.rpCommand(text) !== null) return { worker: null }; // her roleplay mode on/off: hers
+  if (media) return { worker: media, route_path: 'pre_photo', fallback_reason: 'prefix_guard', router_latency_ms: 0, router_version: ROUTER_VERSION, router: null };
+  if (brainsLib.rpCommand(text) !== null) return { worker: null, route_path: 'pre_rp', fallback_reason: 'prefix_guard', router_latency_ms: 0, router_version: ROUTER_VERSION, router: null }; // her roleplay mode on/off: hers
 
-  if (cfg.provider === 'claude') return { worker: null };
+  if (cfg.provider === 'claude') return { worker: null, route_path: 'pre_named', fallback_reason: 'prefix_guard', router_latency_ms: 0, router_version: ROUTER_VERSION, router: null };
   const named = workers.route(text);
-  if (named === 'stop') return { worker: 'stop' };
+  if (named === 'stop') return { worker: 'stop', route_path: 'pre_named', fallback_reason: 'prefix_guard', router_latency_ms: 0, router_version: ROUTER_VERSION, router: null };
   const canHands = Boolean(desktopCli?.installed);
   const keyComputer = canHands && agent.isComputerTask(text);
-  if (!named && !keyComputer && String(text || '').trim().length < SHORT_MESSAGE) return { worker: null };
+  if (!named && !keyComputer && String(text || '').trim().length < SHORT_MESSAGE) return { worker: null, route_path: 'pre_short', fallback_reason: 'prefix_guard', router_latency_ms: 0, router_version: ROUTER_VERSION, router: null };
   const isFast = quick.isQuick(text) || quick.isQuickMail(text) || quick.isQuickMusic(text)
     || quick.isQuickPcStatus(text) || quick.isQuickAgentsStatus(text)
     || quick.isQuickAlta(text) || quick.isQuickFreeMemory(text)
     || Boolean(quick.parseClipboardCommand(text)) || Boolean(quick.parseQuickPlanCommand(text))
     || Boolean(quick.parseQuickRemoteCommand(text)) || Boolean(quick.parseQuickSearchCommand(text))
     || Boolean(quick.parseRememberCommand(text));
-  if (!named && !keyComputer && isFast) return { worker: null }; // her quick answer (quick.js)
+  if (!named && !keyComputer && isFast) return { worker: null, route_path: 'pre_quick', fallback_reason: 'prefix_guard', router_latency_ms: 0, router_version: ROUTER_VERSION, router: null }; // her quick answer (quick.js)
   // Use the configured chat model for routing too; loading a second local model would waste VRAM.
   // model, loaded anyway: with the roleplay one in VRAM a second model wouldn't fit, so keywords then
   const model = cfg.provider === 'ollama' && cfg.router !== false ? pickModel(cfg) : null;
@@ -1631,8 +1632,17 @@ async function routeOf(text, context = [], signal) {
   } else if (d.target === 'worker' && !localOnly) {
     worker = workers.handsWorker(cfg.computerWorker) || (cfg.computerWorker !== 'capri' && workers.findAgy() ? 'gemini' : null); // 'capri' chosen, or none on this PC: hers
   }
+  const routePath = named ? 'pre_named' : keyComputer ? 'computer_kw' : d.route_path;
+  const fallbackReason = (named || keyComputer) && d.fallback_reason === 'none' ? 'prefix_guard' : d.fallback_reason;
   console.log(`[capri] route: ${worker || 'capri'}${computer ? ' +pc' : ''}${localOnly ? ' local' : ''} ${d.tier} (${d.by}${d.why ? `; ${d.why}` : ''})`);
-  return { worker, tier: d.tier, computer, localOnly };
+  return {
+    worker, tier: d.tier, computer, localOnly,
+    route_path: routePath,
+    fallback_reason: fallbackReason,
+    router_latency_ms: d.router_latency_ms,
+    router_version: d.router_version,
+    router: d,
+  };
 }
 
 // ---------------------------------------------------------------- her hands on the PC (agent.js, policy.js)
@@ -2014,6 +2024,7 @@ const TOR_RULE = 'Поиск через Tor — законная обычная 
 function touchTor({ inChat = true } = {}) {
   torState.touch({ inChat });
   try { brainShadowHook?.torTouched(); } catch {}
+  try { routerJournalInstance?.torTouched(); } catch {}
 }
 
 async function torReady(cfg) {
@@ -2072,7 +2083,10 @@ const agentWeb = createAgentWeb({
   browserOpts,
   notesDir,
   torState,
-  onTorTouched: () => { try { brainShadowHook?.torTouched(); } catch {} },
+  onTorTouched: () => {
+    try { brainShadowHook?.torTouched(); } catch {}
+    try { routerJournalInstance?.torTouched(); } catch {}
+  },
 });
 
 // Her council's members (council.js), each only thinking: Gemini Hydrogen on the web (your subscription),
@@ -2143,6 +2157,7 @@ let brainShadowHook = null;
 let brainChatGlue = null;
 let brainInfluencePolicy = null;
 let brainInfluencePlanner = null;
+let routerJournalInstance = null;
 
 function registerIpc() {
   ipcMain.on('overlay:interactive', (_e, on) => {
@@ -2303,6 +2318,19 @@ function registerIpc() {
     brainInfluencePlanner = require('./brain/influence-glue').planInfluence;
     return brainInfluencePlanner;
   };
+  const getRouterJournal = () => {
+    if (routerJournalInstance) return routerJournalInstance;
+    const { createRouterJournal } = require('./brain/router-journal');
+    const { contextMentionsTor } = require('./brain/shadow-hook');
+    routerJournalInstance = createRouterJournal({
+      dir: path.join(app.getPath('userData'), 'router-journal', 'v1'),
+      isTorActive: () => torState.isQuarantined(),
+      isEnabled: () => config.load().routerJournal === 'on',
+      contextMentionsTor,
+      tor,
+    });
+    return routerJournalInstance;
+  };
   // her answer, streamed to the overlay piece by piece as `chat:delta`
   const getBrainShadowHook = () => {
     if (brainShadowHook) return brainShadowHook;
@@ -2333,9 +2361,14 @@ function registerIpc() {
           if (overlay && !overlay.isDestroyed()) overlay.webContents.send('brain:pending', Boolean(pending));
         } catch {}
       },
-      onVerdict: (meta, verdict) => {
+      onVerdict: (meta, verdict, info) => {
         try {
           getBrainInfluencePolicy().recordOutcome({ escalated: Boolean(meta?.escalated), verdict });
+        } catch {}
+        try {
+          if (config.load().routerJournal === 'on') {
+            getRouterJournal().onVerdict(meta, verdict, info);
+          }
         } catch {}
       },
     });
@@ -2370,6 +2403,7 @@ function registerIpc() {
   ipcMain.handle('chat:send', async (_e, { id, messages, voice }) => {
     const abort = new AbortController();
     chats.set(id, abort);
+    const turnId = randomUUID();
     try {
       let streamed = false;
       const send = (text) => {
@@ -2462,11 +2496,46 @@ function registerIpc() {
         }
       };
       let text;
-      if (['claude', 'codex', 'gemini'].includes(worker)) text = await cloudOrLocal();
-      else if (worker === 'computer') text = await computerTask(messages, send, abort.signal);
-      else if (worker === 'photo') text = await photoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal);
-      else if (worker === 'video') text = await videoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal);
-      else {
+      if (['claude', 'codex', 'gemini', 'computer', 'photo', 'video'].includes(worker)) {
+        const genStart = Date.now();
+        let workerOutcome = 'completed';
+        try {
+          if (['claude', 'codex', 'gemini'].includes(worker)) text = await cloudOrLocal();
+          else if (worker === 'computer') text = await computerTask(messages, send, abort.signal);
+          else if (worker === 'photo') text = await photoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal);
+          else text = await videoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal);
+        } catch (err) {
+          const isAb = abort.signal.aborted || err?.message === 'stopped' || err?.name === 'AbortError' || err?.code === 'ABORT_ERR';
+          workerOutcome = isAb ? 'cancelled' : 'failed';
+          throw err;
+        } finally {
+          if (cfg.routerJournal === 'on' && !tor && !torState.isQuarantined() && !contextHasTor && cfg.rp !== true) {
+            try {
+              const saidNow = yourWords(messages);
+              const rolesReady = cfg.provider === 'ollama' && brains.ready(chatModels);
+              const isAuto = Boolean(rolesReady && brains.isAuto(cfg.chatModel, chatModels));
+              const modelEnum = (['claude', 'codex', 'gemini'].includes(worker) && actualWorker === null) ? '26b' : 'worker';
+              getRouterJournal().recordTurn({
+                turnId,
+                tsMs: Date.now(),
+                cfg,
+                route,
+                said: saidNow,
+                messages,
+                voice: Boolean(voice),
+                model: modelEnum,
+                workerClass: 'unknown',
+                brainsReady: rolesReady,
+                isAuto,
+                mainActive: brains.mainActive(),
+                generationLatencyMs: Math.max(0, Date.now() - genStart),
+                outcome: workerOutcome,
+                mode: 'off',
+              });
+            } catch {}
+          }
+        }
+      } else {
         const pickedModel = pickModel(cfg);
         const cloudBlockedForTor = contextHasTor && (
           cfg.provider !== 'ollama'
@@ -2481,17 +2550,27 @@ function registerIpc() {
         let turnEscalated = false;
         let hintDelivered = false;
         let brainWantedMainOnly = false;
+        const said = yourWords(messages);
+        const rolesReady = cfg.provider === 'ollama' && brains.ready(chatModels);
+        const isAuto = Boolean(rolesReady && brains.isAuto(cfg.chatModel, chatModels));
+        const localTurn = cfg.provider === 'ollama' && Boolean(pickedModel && llm.isLocal(cfg.provider, cfg, pickedModel));
+        const needTelemetry = cfg.brainShadow === true || cfg.routerJournal === 'on';
+        const mainLoadedBefore = (localTurn && needTelemetry) ? await isMainBrainLoaded(abort.signal) : false;
+        abort.signal.throwIfAborted();
+        const torCtx = torState.isQuarantined() || contextHasTor || messagesHaveTor(messages);
+        const analysis = brainsLib.analysisMode(cfg, { rolesReady, auto: isAuto, tor: torCtx, text: said });
+        const explicitMain = brainsLib.wantsMain(said) || brainsLib.wantsLocal(said);
+        const wantsFast = brainsLib.wantsFast(said);
+        let preFeatures = null;
+        let preChannels = null;
+        if (needTelemetry && worker === null && !torCtx && cfg.rp !== true) {
+          try { preFeatures = require('./brain/amygdala').salience(said); } catch {}
+          if (cfg.brainShadow === true) {
+            try { preChannels = brainShadowHook?.peekChannels?.(Date.now(), preFeatures) || null; } catch {}
+          }
+        }
         if (cfg.brainShadow === true && worker === null) {
-          const said = yourWords(messages);
-          const rolesReady = cfg.provider === 'ollama' && brains.ready(chatModels);
-          const isAuto = Boolean(rolesReady && brains.isAuto(cfg.chatModel, chatModels));
-          const localTurn = cfg.provider === 'ollama' && Boolean(pickedModel && llm.isLocal(cfg.provider, cfg, pickedModel));
-          const mainLoaded = localTurn ? await isMainBrainLoaded(abort.signal) : false;
-          abort.signal.throwIfAborted();
           try {
-            const torCtx = torState.isQuarantined() || contextHasTor || messagesHaveTor(messages);
-            const analysis = brainsLib.analysisMode(cfg, { rolesReady, auto: isAuto, tor: torCtx, text: said });
-            const explicitMain = brainsLib.wantsMain(said) || brainsLib.wantsLocal(said);
             influence = getBrainInfluencePlan()({
               cfg,
               said,
@@ -2505,10 +2584,10 @@ function registerIpc() {
                 local: localTurn,
                 brainsReady: rolesReady,
                 isAuto,
-                mainActive: mainLoaded,
+                mainActive: mainLoadedBefore,
                 gpuBusy: false,
                 voice: Boolean(voice),
-                wantsFast: brainsLib.wantsFast(said),
+                wantsFast,
                 wantsMain: brainsLib.wantsMain(said) || analysis.active,
                 wantsLocal: brainsLib.wantsLocal(said),
                 rp: cfg.rp === true,
@@ -2522,17 +2601,64 @@ function registerIpc() {
           } catch {}
           try {
             shadowTurn = getBrainChatGlue().startLocal(route, messages, cfg, abort.signal, {
-              meta: { escalated: turnEscalated },
+              meta: { escalated: turnEscalated, turnId },
             });
           } catch {}
         }
         let answeredModel = null;
         let answeredLocal = false;
         let recordedMainError = false;
+        let swapLatencyMs = 0;
+        let genLatencyMs = 0;
+        let genStart = 0;
+        let routerLogged = false;
+        const recordLocalRouterTurn = (outcome, torAborted) => {
+          if (routerLogged || cfg.routerJournal !== 'on' || tor || torAborted || torState.isQuarantined() || contextHasTor || cfg.rp === true) return;
+          routerLogged = true;
+          try {
+            const intendedMain = !wantsFast && (Boolean(influence.main) || analysis.active || explicitMain);
+            const effectiveModel = answeredModel || (intendedMain && isAuto ? brains.main : pickedModel);
+            const effectiveLocal = answeredModel ? answeredLocal : localTurn;
+            const modelEnum = (!effectiveLocal || cfg.provider !== 'ollama')
+              ? 'cloud'
+              : (rolesReady && effectiveModel === brains.main ? '26b' : 'e4b');
+            const workerClass = (route.worker === null && !route.computer && effectiveLocal) ? 'ordinary' : 'unknown';
+            const stage6Override = turnEscalated && (answeredModel === brains.main || (outcome !== 'completed' && !answeredModel)) ? 1 : 0;
+            const coldSwap26b = modelEnum === '26b' && !mainLoadedBefore;
+            getRouterJournal().recordTurn({
+              turnId,
+              tsMs: Date.now(),
+              cfg,
+              route,
+              said,
+              messages,
+              voice: Boolean(voice),
+              features: preFeatures || undefined,
+              channels: preChannels,
+              model: modelEnum,
+              workerClass,
+              stage6Override,
+              explicitMain,
+              wantsFast,
+              analysisActive: analysis.active,
+              mainActive: mainLoadedBefore,
+              brainsReady: rolesReady,
+              isAuto,
+              swapLatencyMs,
+              generationLatencyMs: genLatencyMs,
+              coldSwap26b,
+              outcome,
+              mode: cfg.brainInfluence === 'reassessment' ? 'shadow' : 'off',
+            });
+          } catch {}
+        };
         try {
+          const prepStart = Date.now();
           const prepared = await prepLocal(cfg, messages, { main: !torState.isQuarantined() && influence.main });
+          swapLatencyMs = Math.max(0, Date.now() - prepStart);
           const torAfterPrep = torState.isQuarantined() || messagesHaveTor(messages) || messagesHaveTor(prepared?.messages);
           if (torAfterPrep) {
+            try { routerJournalInstance?.torTouched(); } catch {}
             if (brainWantedMainOnly) {
               try { await brains.release(); } catch {}
             }
@@ -2548,6 +2674,7 @@ function registerIpc() {
             ? { ...prepared, messages: [...prepared.messages, { role: 'system', content: influence.hint, brainHint: true }] }
             : prepared;
           // any switch to another model (possibly a cloud one) abandons the observation
+          genStart = Date.now();
           text = await chatWithFallback(
             cfg,
             toSend,
@@ -2575,6 +2702,7 @@ function registerIpc() {
               },
             },
           );
+          genLatencyMs = Math.max(0, Date.now() - genStart);
           const canCommitMain = turnEscalated && answeredModel === brains.main && !torAfterPrep && !torState.isQuarantined();
           const canCommitHint = hintDelivered && answeredLocal && !torAfterPrep && !torState.isQuarantined();
           if (cfg.brainShadow === true && (canCommitMain || canCommitHint)) {
@@ -2586,10 +2714,17 @@ function registerIpc() {
               });
             } catch {}
           }
+          recordLocalRouterTurn('completed', torAfterPrep);
           if (shadowTurn) {
-            try { brainChatGlue?.afterSuccess(shadowTurn); shadowTurn = null; } catch {}
+            const intendedMain = !wantsFast && (Boolean(influence.main) || analysis.active || explicitMain);
+            const effectiveModel = answeredModel || (intendedMain && isAuto ? brains.main : pickedModel);
+            const modelEnum = (!answeredLocal || cfg.provider !== 'ollama') ? 'cloud' : (rolesReady && effectiveModel === brains.main ? '26b' : 'e4b');
+            try { brainChatGlue?.afterSuccess(shadowTurn, { escalated: canCommitMain, turnId, model: modelEnum }); shadowTurn = null; } catch {}
           }
         } catch (err) {
+          if (genStart) genLatencyMs = Math.max(0, Date.now() - genStart);
+          const isAb = abort.signal.aborted || err?.message === 'stopped' || err?.name === 'AbortError' || err?.code === 'ABORT_ERR';
+          recordLocalRouterTurn(isAb ? 'cancelled' : 'failed', torCtx);
           if (shadowTurn) {
             try { brainChatGlue?.afterError(shadowTurn, err, abort.signal); } catch {}
           }
@@ -3141,8 +3276,8 @@ async function debugHandler(route, body) {
     return { ok: true, value: { dir: notesDir(), kept: await takeNotes(readMemory().history || []) } };
   }
   if (route === 'brain') {
-    // the brain shadow (src/main/brain): set its flags ({ set: { brainShadow, brainVerdictJudge, brainInfluence } }),
-    // read its in-memory counters, Stage 6 policy stats, and this process's memory. Numbers only — no text, no ids.
+    // the brain shadow (src/main/brain): set its flags ({ set: { brainShadow, brainVerdictJudge, brainInfluence, routerJournal } }),
+    // read its in-memory counters, Stage 6 policy stats, Stage 7a router journal stats, and this process's memory. Numbers only — no text, no ids.
     const set = body.set && typeof body.set === 'object' ? body.set : {};
     const patch = {};
     if (typeof set.brainShadow === 'boolean') patch.brainShadow = set.brainShadow;
@@ -3152,6 +3287,12 @@ async function debugHandler(route, body) {
         throw new Error('brainInfluence must be off, reassessment, or ab');
       }
       patch.brainInfluence = set.brainInfluence;
+    }
+    if (Object.hasOwn(set, 'routerJournal')) {
+      if (set.routerJournal !== 'off' && set.routerJournal !== 'on') {
+        throw new Error('routerJournal must be off or on');
+      }
+      patch.routerJournal = set.routerJournal;
     }
     if (Object.keys(patch).length) updateConfig(patch);
     const cfg = config.load(true);
@@ -3166,8 +3307,10 @@ async function debugHandler(route, body) {
       effectiveMode: ab.mode,
       ab_group: ab.ab_group,
       ab_day: ab.ab_day,
+      routerJournal: cfg.routerJournal === 'on' ? 'on' : 'off',
       hook: Boolean(brainShadowHook),
       stats: brainShadowHook ? brainShadowHook.stats() : null,
+      routerJournalStats: routerJournalInstance ? routerJournalInstance.stats() : null,
       policy: brainInfluencePolicy ? brainInfluencePolicy.stats() : null,
       memory: { rss: mem.rss, heapUsed: mem.heapUsed }, journalDir: path.join(app.getPath('userData'), 'brain-journal'),
     } };
@@ -3333,12 +3476,15 @@ function main() {
 
   let brainShadowClosing = false;
   app.on('before-quit', (e) => {
-    if (brainShadowClosing || !brainShadowHook) return;
+    if (brainShadowClosing || (!brainShadowHook && !routerJournalInstance)) return;
     brainShadowClosing = true;
     e.preventDefault();
     let timer;
     Promise.race([
-      Promise.resolve(brainShadowHook.close()).catch(() => {}),
+      Promise.allSettled([
+        Promise.resolve(brainShadowHook?.close?.()),
+        Promise.resolve(routerJournalInstance?.close?.()),
+      ]),
       new Promise((r) => { timer = setTimeout(r, 2000); }),
     ]).finally(() => {
       clearTimeout(timer);
@@ -3348,6 +3494,7 @@ function main() {
 
   app.on('will-quit', () => {
     try { brainShadowHook?.close(); } catch {}
+    try { routerJournalInstance?.close(); } catch {}
     capriBrowser.releaseAll(); // her control session in your browser ended, so the next Capri can attach
     agentSessions?.stopAll();
     globalShortcut.unregisterAll();

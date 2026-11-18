@@ -85,10 +85,10 @@ function createChatGlue({
     }
   }
 
-  function afterSuccess(turn) {
+  function afterSuccess(turn, extraMeta) {
     if (!turn || typeof getHook !== 'function') return;
     try {
-      getHook(false)?.hold(turn);
+      getHook(false)?.hold(turn, extraMeta);
     } catch {}
   }
 
