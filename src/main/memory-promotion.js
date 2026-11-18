@@ -209,6 +209,12 @@ function validatePromotionPair(cards, cardMap, candidateId, previousId = null) {
   if (isTorTaintedCard(candidate)) {
     throw makeAuditError('Продвижение заблокировано: обнаружен Tor-источник или карантин', 'invalid_origin', { cardId: candId });
   }
+  if (candidate.status === 'conflicted') {
+    throw makeAuditError(`Карточка-кандидат ${candId} находится в статусе conflicted`, 'conflicted_card', {
+      cardId: candId,
+      previousId: prevId,
+    });
+  }
   if (!CANDIDATE_STATUSES.has(candidate.status)) {
     throw new Error(`Недопустимый статус кандидата (${candidate.status}) для ${candId}`);
   }
@@ -241,6 +247,12 @@ function validatePromotionPair(cards, cardMap, candidateId, previousId = null) {
     if (hasSpoofedOrigin(previous) || isTorTaintedCard(previous)) {
       throw makeAuditError('Продвижение заблокировано: Tor-метка или поддельный origin у прежней карточки', 'invalid_origin', { cardId: prevId });
     }
+    if (previous.status === 'conflicted') {
+      throw makeAuditError(`Прежняя карточка ${prevId} находится в статусе conflicted`, 'conflicted_card', {
+        cardId: prevId,
+        candidateId: candId,
+      });
+    }
     if (previous.status !== 'verified') {
       throw new Error(`Прежняя карточка должна иметь статус verified (${previous.status}) для ${prevId}`);
     }
@@ -268,15 +280,20 @@ function buildPromotedPair(candidate, previous, operationId = null) {
     ...(operationId ? { promotionOperationId: operationId } : {}),
   };
   if (next.rollbackOf) delete next.rollbackOf;
+  if (next.restoredByRollbackId) delete next.restoredByRollbackId;
+  if (next.conflictReason) delete next.conflictReason;
 
-  const archivedPrevious = previous
-    ? {
+  let archivedPrevious = null;
+  if (previous) {
+    archivedPrevious = {
       ...clone(previous),
       status: 'archived',
       supersededBy: candidate.id,
       ...(operationId ? { archivedByOperationId: operationId } : {}),
-    }
-    : null;
+    };
+    if (archivedPrevious.restoredByRollbackId) delete archivedPrevious.restoredByRollbackId;
+    if (archivedPrevious.conflictReason) delete archivedPrevious.conflictReason;
+  }
   return { next, archivedPrevious };
 }
 
@@ -380,7 +397,16 @@ function readAuditLog(journalDir) {
   const auditPath = path.join(journalDir, AUDIT_FILE);
   if (!fs.existsSync(auditPath)) return [];
   const lines = fs.readFileSync(auditPath, 'utf8').split(/\r?\n/).filter((l) => l.trim());
-  return lines.map((line) => JSON.parse(line));
+  const entries = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    try {
+      entries.push(JSON.parse(lines[i]));
+    } catch (err) {
+      if (i === lines.length - 1) break;
+      throw err;
+    }
+  }
+  return entries;
 }
 
 function appendAuditEvent(journalDir, event) {
@@ -460,6 +486,19 @@ function buildCoreHandlers({ journalDir, loadBaseCards, onBeforeJournal, onAfter
       }
     }
 
+    for (const event of audits) {
+      if (event.event === 'card_conflicted' && event.cardId && cardMap.has(event.cardId)) {
+        const cur = cardMap.get(event.cardId);
+        if (cur.status !== 'archived') {
+          cardMap.set(event.cardId, {
+            ...clone(cur),
+            status: 'conflicted',
+            ...(event.reason ? { conflictReason: event.reason } : {}),
+          });
+        }
+      }
+    }
+
     const orderedCards = baseCards.map((c) => cardMap.get(c.id));
     assertSingleActivePerLineage(orderedCards);
 
@@ -518,20 +557,64 @@ function buildCoreHandlers({ journalDir, loadBaseCards, onBeforeJournal, onAfter
   function cancel(previewData, operationId) {
     const opId = normalizeStr(operationId || previewData?.operationId);
     if (!opId || /[\r\n]/.test(opId)) throw new Error('Требуется корректный непустой operationId');
-    const state = deriveState();
-    if (state.opsById.has(opId)) {
-      throw new Error(`Нельзя отменить уже зафиксированную операцию ${opId}`);
+    if (writing) throw new Error('Конкурентная запись заблокирована (single-writer)');
+    writing = true;
+    try {
+      const state = deriveState();
+      if (state.opsById.has(opId)) {
+        throw new Error(`Нельзя отменить уже зафиксированную операцию ${opId}`);
+      }
+      if (!state.cancelledIds.has(opId)) {
+        appendAuditEvent(journalDir, {
+          event: 'cancelled',
+          operationId: opId,
+          candidateId: normalizeStr(previewData?.candidateId) || null,
+          previousId: previewData?.previousId ?? null,
+          version: normalizeStr(previewData?.version) || null,
+        });
+      }
+      return { ok: true, cancelled: true, operationId: opId };
+    } finally {
+      writing = false;
     }
-    if (!state.cancelledIds.has(opId)) {
+  }
+
+  function markConflicted(cardId, reason = '', operationId = null) {
+    const targetId = normalizeStr(cardId);
+    if (!targetId) throw new Error('Требуется корректный cardId');
+    const opId = operationId == null ? null : normalizeStr(operationId);
+    if (opId !== null && (!opId || /[\r\n]/.test(opId))) {
+      throw new Error('Требуется корректный operationId');
+    }
+    if (writing) throw new Error('Конкурентная запись заблокирована (single-writer)');
+    writing = true;
+    try {
+      const state = deriveState();
+      const current = state.cardMap.get(targetId);
+      if (!current) throw new Error(`Карточка не найдена: ${targetId}`);
+      if (current.status === 'archived') {
+        throw new Error(`Нельзя перевести архивную карточку ${targetId} в статус conflicted`);
+      }
+      if (current.status === 'conflicted') {
+        return { ok: true, card: clone(current), alreadyConflicted: true };
+      }
+      const reasonStr = normalizeStr(reason) || null;
+      const updated = {
+        ...clone(current),
+        status: 'conflicted',
+        ...(reasonStr ? { conflictReason: reasonStr } : {}),
+      };
       appendAuditEvent(journalDir, {
-        event: 'cancelled',
+        event: 'card_conflicted',
         operationId: opId,
-        candidateId: normalizeStr(previewData?.candidateId) || null,
-        previousId: previewData?.previousId ?? null,
-        version: normalizeStr(previewData?.version) || null,
+        cardId: targetId,
+        previousStatus: current.status,
+        reason: reasonStr,
       });
+      return { ok: true, card: updated };
+    } finally {
+      writing = false;
     }
-    return { ok: true, cancelled: true, operationId: opId };
   }
 
   function confirm(previewData, operationId) {
@@ -724,7 +807,7 @@ function buildCoreHandlers({ journalDir, loadBaseCards, onBeforeJournal, onAfter
     }
   }
 
-  return { read, preview, cancel, confirm, rollback, auditEvents, deriveState };
+  return { read, preview, cancel, confirm, rollback, markConflicted, auditEvents, deriveState };
 }
 
 function createPromotionPilot({ journalDir, cards, beforePublish } = {}) {
@@ -781,6 +864,7 @@ function createPromotionPilot({ journalDir, cards, beforePublish } = {}) {
     cancel: core.cancel,
     confirm,
     rollback: core.rollback,
+    markConflicted: core.markConflicted,
     auditEvents: core.auditEvents,
   };
 }
@@ -971,6 +1055,9 @@ function readMarkdownCardsFromDir(root, folderRel, defaultLayer, defaultStatus) 
       ...(meta.supersedes ? { supersedes: meta.supersedes } : {}),
       ...(meta.superseded_by ? { supersededBy: meta.superseded_by } : {}),
       ...(meta.rollback_of ? { rollbackOf: meta.rollback_of } : {}),
+      ...(meta.promotion_operation_id ? { promotionOperationId: meta.promotion_operation_id } : {}),
+      ...(meta.restored_by_rollback_id ? { restoredByRollbackId: meta.restored_by_rollback_id } : {}),
+      ...(meta.conflict_reason ? { conflictReason: meta.conflict_reason } : {}),
       _meta: meta,
       _keyOrder: keyOrder,
       _relPath: relPath,
@@ -1000,6 +1087,8 @@ function cardToMarkdown(card, baseCard) {
   else delete meta.promotion_operation_id;
   if (card.restoredByRollbackId) meta.restored_by_rollback_id = card.restoredByRollbackId;
   else delete meta.restored_by_rollback_id;
+  if (card.conflictReason) meta.conflict_reason = card.conflictReason;
+  else delete meta.conflict_reason;
 
   return serializeFrontmatter(meta, card.claim || '', keyOrder);
 }
@@ -1193,18 +1282,75 @@ function createVaultPromotionStore({ vaultDir, journalDir, beforeDiskStep } = {}
   const cancel = (previewData, operationId) => {
     const opId = normalizeStr(operationId || previewData?.operationId);
     if (!opId || /[\r\n]/.test(opId)) throw new Error('Требуется корректный непустой operationId');
-    const state = deriveDiskState();
-    if (state.opsById.has(opId)) throw new Error(`Нельзя отменить уже зафиксированную операцию ${opId}`);
-    if (!state.cancelledIds.has(opId)) {
-      appendAuditEvent(journalDir, {
-        event: 'cancelled',
-        operationId: opId,
-        candidateId: normalizeStr(previewData?.candidateId) || null,
-        previousId: previewData?.previousId ?? null,
-        version: normalizeStr(previewData?.version) || null,
-      });
+    if (writing) throw new Error('Конкурентная запись заблокирована (single-writer)');
+    writing = true;
+    try {
+      const state = deriveDiskState();
+      if (state.opsById.has(opId)) throw new Error(`Нельзя отменить уже зафиксированную операцию ${opId}`);
+      if (!state.cancelledIds.has(opId)) {
+        appendAuditEvent(journalDir, {
+          event: 'cancelled',
+          operationId: opId,
+          candidateId: normalizeStr(previewData?.candidateId) || null,
+          previousId: previewData?.previousId ?? null,
+          version: normalizeStr(previewData?.version) || null,
+        });
+      }
+      return { ok: true, cancelled: true, operationId: opId };
+    } finally {
+      writing = false;
     }
-    return { ok: true, cancelled: true, operationId: opId };
+  };
+
+  const markConflicted = (cardId, reason = '', operationId = null) => {
+    const targetId = normalizeStr(cardId);
+    if (!targetId) throw new Error('Требуется корректный cardId');
+    const opId = operationId == null ? null : normalizeStr(operationId);
+    if (opId !== null && (!opId || /[\r\n]/.test(opId))) {
+      throw new Error('Требуется корректный operationId');
+    }
+    if (writing) throw new Error('Конкурентная запись заблокирована (single-writer)');
+    writing = true;
+    try {
+      const state = deriveDiskState();
+      const current = state.cardMap.get(targetId);
+      if (!current) throw new Error(`Карточка не найдена: ${targetId}`);
+      if (current.status === 'archived') {
+        throw new Error(`Нельзя перевести архивную карточку ${targetId} в статус conflicted`);
+      }
+      if (current.status === 'conflicted') {
+        return { ok: true, card: clone(current), alreadyConflicted: true };
+      }
+      const rawCard = diskCards.find((c) => c.id === targetId);
+      const reasonStr = normalizeStr(reason) || null;
+      const updated = {
+        ...clone(current),
+        status: 'conflicted',
+        ...(reasonStr ? { conflictReason: reasonStr } : {}),
+      };
+      const pendingDirRel = findExistingDir(root, [PENDING_REVIEW_DIR]) || PENDING_REVIEW_DIR;
+      const currentRel = rawCard._relPath;
+      const inPending = currentRel.toLowerCase().startsWith(`${PENDING_REVIEW_DIR}/`);
+      const targetRel = inPending
+        ? currentRel
+        : pickUniqueRelPath(root, pendingDirRel, path.basename(currentRel));
+      if (typeof beforeDiskStep === 'function') beforeDiskStep('before_conflict_write', { cardId: targetId, targetRel });
+      atomicWriteText(path.join(root, ...targetRel.split('/')), cardToMarkdown(updated, rawCard));
+      if (!inPending) {
+        if (typeof beforeDiskStep === 'function') beforeDiskStep('before_conflict_unlink', { cardId: targetId, currentRel });
+        safeUnlink(path.join(root, ...currentRel.split('/')));
+      }
+      appendAuditEvent(journalDir, {
+        event: 'card_conflicted',
+        operationId: opId,
+        cardId: targetId,
+        previousStatus: current.status,
+        reason: reasonStr,
+      });
+      return { ok: true, card: updated };
+    } finally {
+      writing = false;
+    }
   };
 
   const confirm = (previewData, operationId) => {
@@ -1431,6 +1577,7 @@ function createVaultPromotionStore({ vaultDir, journalDir, beforeDiskStep } = {}
     cancel,
     confirm,
     rollback,
+    markConflicted,
     auditEvents,
   };
 }
@@ -1543,6 +1690,8 @@ module.exports = {
   createPromotionPilot,
   createVaultPromotionStore,
   reconcileVaultJournal,
+  readAuditLog,
+  assertSingleActivePerLineage,
   parseFrontmatter,
   serializeFrontmatter,
   formatPromotionPreview,
