@@ -301,7 +301,7 @@ const EXTRACT_SCHEMA = {
       maxItems: 3,
       items: {
         type: 'object',
-        properties: { title: { type: 'string' }, type: { type: 'string', enum: TYPES }, text: { type: 'string' } },
+        properties: { title: { type: 'string' }, type: { type: 'string', enum: TYPES }, text: { type: 'string' }, quote: { type: 'string' } },
         required: ['title', 'type', 'text'],
       },
     },
@@ -329,21 +329,89 @@ function extractMessages(conversation, known, today = new Date().toISOString().s
   ];
 }
 
-// The facts in her model's answer, checked: [{ title, type, text }]
+// The facts in her model's answer, checked: [{ title, type, text, quote? }]
 function parseFacts(answer) {
   try {
     const { facts } = JSON.parse(answer);
     return (Array.isArray(facts) ? facts : [])
       .filter((f) => f && typeof f.title === 'string' && typeof f.text === 'string' && fileName(f.title) && f.text.trim())
       .filter((f) => !TYPES.includes(f.title.trim().toLowerCase())) // a title that's only its kind says nothing
+      .map((f) => ({
+        ...f,
+        ...(typeof f.quote === 'string' && f.quote.trim() ? { quote: f.quote.trim() } : {}),
+      }))
       .slice(0, 3);
   } catch {
     return [];
   }
 }
 
+function sanitizeYamlLine(val) {
+  const oneLine = String(val ?? '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return JSON.stringify(oneLine);
+}
+
+function writeUniquePendingFile(pendingDir, baseName, content) {
+  for (let index = 1; index < 1000; index += 1) {
+    const candidate = index === 1 ? baseName : `${baseName}-${index}`;
+    const fullPath = path.join(pendingDir, `${candidate}.md`);
+    try {
+      fs.writeFileSync(fullPath, content, { encoding: 'utf8', flag: 'wx' });
+      return { name: candidate, filePath: fullPath };
+    } catch (err) {
+      if (err?.code !== 'EEXIST') throw err;
+    }
+  }
+  throw new Error(`Too many pending_review name collisions for ${baseName}`);
+}
+
+function writePendingCandidate(dir, payload = {}, today = new Date().toISOString().slice(0, 10)) {
+  if (!dir || !payload || typeof payload !== 'object') return null;
+  const topic = String(payload.topic || payload.title || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const source = String(payload.source || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const link = String(payload.link || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const quote = String(payload.quote || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT);
+  const claim = String(payload.text || payload.claim || '').trim().slice(0, MAX_TEXT);
+
+  if (!topic || !source || !link || !quote || !claim) return null;
+
+  const baseName = fileName(topic);
+  if (!baseName) return null;
+
+  const pendingDir = path.join(vaultRoot(dir), PENDING_REVIEW_DIR);
+  fs.mkdirSync(pendingDir, { recursive: true });
+
+  const layer = payload.layer === '10_ствол' ? '10_ствол' : '20_крона';
+  const created = String(today || new Date().toISOString().slice(0, 10)).trim();
+  const uid = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const slug = baseName.toLowerCase().replace(/[^a-zа-яё0-9]+/gi, '-').replace(/^-+|-+$/g, '') || 'card';
+  const id = String(payload.id || `${slug}-${uid}`).trim();
+
+  const frontmatter = [
+    '---',
+    `id: ${sanitizeYamlLine(id)}`,
+    'status: candidate',
+    `layer: ${sanitizeYamlLine(layer)}`,
+    `topic: ${sanitizeYamlLine(topic)}`,
+    `source: ${sanitizeYamlLine(source)}`,
+    `link: ${sanitizeYamlLine(link)}`,
+    `quote: ${sanitizeYamlLine(quote)}`,
+    `created: ${sanitizeYamlLine(created)}`,
+    '---',
+    '',
+    claim,
+    '',
+  ].join('\n');
+
+  const { name } = writeUniquePendingFile(pendingDir, baseName, frontmatter);
+  return name;
+}
+
 module.exports = {
-  INDEX, TYPES, EXTRACT_SCHEMA, PLAN_DIR, RAW_DIR, OUT_DIR, PENDING_REVIEW_DIR, dirOf, fileName, list, searchVault, write, writeIndex, writePlanNote,
+  INDEX, TYPES, EXTRACT_SCHEMA, PLAN_DIR, RAW_DIR, OUT_DIR, PENDING_REVIEW_DIR, dirOf, fileName, list, searchVault, write, writePendingCandidate, writeIndex, writePlanNote,
   appendChat, appendSearch, writeOutput,
   recall, prompt, vaultPrompt, extractMessages, parseFacts,
 };
