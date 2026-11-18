@@ -33,6 +33,26 @@ test('kiwix: read needs a /content link; an error page is told', async () => {
   await assert.rejects(kiwix.search('x', { books: ['x'], url: 'http://k3', fetchImpl: bad }), /No such book/);
 });
 
+test('kiwix: read keeps valid percent-encoding, encodes raw Unicode/spaces, stays under /content', async () => {
+  const urls = [];
+  const fetchImpl = async (u) => (urls.push(u), { ok: true, text: async () => '<p>ok</p>' });
+  await kiwix.read('/content/b/C%2B%2B_%3A_x%20y', { url: 'http://k:8090', fetchImpl });
+  await kiwix.read('/content/b/Привет мир', { url: 'http://k:8090', fetchImpl });
+  assert.equal(urls[0], 'http://k:8090/content/b/C%2B%2B_%3A_x%20y');
+  assert.equal(urls[1], 'http://k:8090/content/b/%D0%9F%D1%80%D0%B8%D0%B2%D0%B5%D1%82%20%D0%BC%D0%B8%D1%80');
+  await assert.rejects(kiwix.read('/content/b/../../x', { url: 'http://k', fetchImpl }), /нужна ссылка/);
+  await assert.rejects(kiwix.read('/content/b/%2e%2e/%2E%2E/x', { url: 'http://k', fetchImpl }), /нужна ссылка/);
+  await kiwix.read('/content/b/A?x=1#sec', { url: 'http://k:8090', fetchImpl });
+  assert.equal(urls[2], 'http://k:8090/content/b/A?x=1#sec');
+  await assert.rejects(kiwix.read('/content/..?x', { url: 'http://k', fetchImpl }), /нужна ссылка/);
+  await assert.rejects(kiwix.read('/content/..\\x', { url: 'http://k', fetchImpl }), /нужна ссылка/);
+  assert.equal(urls.length, 3);
+  await kiwix.read('/content/b/C%2B%2B%3F_y?x=1#sec', { url: 'http://k:8090/kiwix/', fetchImpl });
+  assert.equal(urls[3], 'http://k:8090/kiwix/content/b/C%2B%2B%3F_y?x=1#sec');
+  await assert.rejects(kiwix.read('/content/../x', { url: 'http://k:8090/kiwix/', fetchImpl }), /нужна ссылка/);
+  assert.equal(urls.length, 4);
+});
+
 test('kiwix: local search stays local, and only availability errors retry on the home server', async () => {
   const home = 'http://home-nomad';
   const requests = [];
