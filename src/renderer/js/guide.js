@@ -84,6 +84,13 @@ export class Guide {
   // Run a scene: she stays put meanwhile, and stops pointing at the end whatever happened.
   // A new scene ends the one that was on (its panel goes, it returns); only the last one cleans up.
   async scene(play) {
+    const cur = this.panel.current;
+    if (cur?.chat && !cur.guide) {
+      if (this.panel.chatBusy) return;
+      if (typeof cur.onClose === 'function') cur.onClose();
+      else this.panel.hide({ force: true });
+      if (this.panel.current === cur) this.panel.hide({ force: true });
+    }
     const { capri } = this;
     const id = ++this.sceneId;
     this.answer(null);

@@ -75,11 +75,13 @@ function createShadowHook({
   pendingTtlMs = DEFAULT_PENDING_TTL_MS,
   torCooldownMs = TOR_COOLDOWN_MS,
   isTorActive,
+  isChatTainted,
   setTimer = setTimeout,
   clearTimer = clearTimeout,
   onPendingChange,
   onVerdict,
   verdictJudge,
+  judgeChainTimeoutMs,
   preload = false,
 } = {}) {
   const buffer = createTaskBuffer(bufferOptions);
@@ -108,7 +110,8 @@ function createShadowHook({
   let pendingWrites = 0;
   let memCore = createShadow();
   let memReady = !preload;
-  let hadPreexistingJournalState = false;
+  let preloadDone = !preload;
+  let writeInvalidated = false;
 
   function checkpointFromSnapshot(snap) {
     return {
@@ -181,12 +184,6 @@ function createShadowHook({
     await fsp.mkdir(dir, { recursive: true });
     const opened = await openJournal(dir);
     if (!opened || typeof opened.appendBatch !== 'function') throw new Error('invalid shadow journal');
-    if (typeof opened.snapshot === 'function') {
-      try {
-        const snap = opened.snapshot();
-        if (snap && snap.task_count > 0) hadPreexistingJournalState = true;
-      } catch {}
-    }
     journal = opened;
     return journal;
   }
@@ -204,77 +201,83 @@ function createShadowHook({
         return;
       }
       if (!j) return;
+      preloadDone = true;
+      // If writes already queued while preload was opening the journal, leave memCore & memReady
+      // for the upcoming write rebuild instead of overwriting or marking partial state ready.
+      if (pendingWrites > 0) return;
       const cp = typeof j.exportCheckpoint === 'function' ? j.exportCheckpoint() : undefined;
       if (cp) {
-        hadPreexistingJournalState = false;
         try {
           memCore = createShadow({ checkpoint: cp });
         } catch {
           memReady = false;
+          writeInvalidated = true;
           return;
         }
       }
-      if (pendingWrites === 0) memReady = true;
+      if (!writeInvalidated) memReady = true;
     });
   }
 
   function enqueuePublish(batch) {
     if (disabled || closed || pendingWrites >= MAX_PENDING_WRITES) { counts.discarded++; return; }
     const envelopes = batch.map((event) => ({ privacy: 'ordinary', event }));
-    advanceMemCore(envelopes);
     pendingWrites++;
     writeChain = writeChain.then(async () => {
-      if (disabled) { counts.discarded++; memReady = false; return; }
+      if (disabled) { counts.discarded++; memReady = false; writeInvalidated = true; return; }
       let j;
       try {
         j = await ensureJournal();
       } catch {
         disabled = true; // journal open failed: stay quiet until restart
         memReady = false;
+        writeInvalidated = true;
         counts.observer_errors++;
         return;
       }
-      if (!j) { counts.discarded++; memReady = false; return; }
+      if (!j) { counts.discarded++; memReady = false; writeInvalidated = true; return; }
       try {
         const res = await j.appendBatch(envelopes);
         if (res?.status === 'accepted' || res?.status === 'duplicate') {
           counts.published++;
-          if (pendingWrites === 1) {
-            const cp = typeof j.exportCheckpoint === 'function' ? j.exportCheckpoint() : undefined;
+          const hasOtherQueued = pendingWrites > 1;
+          if (typeof j.exportCheckpoint === 'function') {
+            const cp = j.exportCheckpoint();
             if (cp) {
-              hadPreexistingJournalState = false;
               try {
                 memCore = createShadow({ checkpoint: cp });
-                memReady = true;
+                writeInvalidated = false;
               } catch {
+                writeInvalidated = true;
                 memReady = false;
               }
-            } else if (hadPreexistingJournalState && res?.state) {
-              hadPreexistingJournalState = false;
-              try {
-                memCore = createShadow({ checkpoint: checkpointFromSnapshot(res.state) });
-                memReady = true;
-              } catch {
-                memReady = false;
-              }
-            } else {
-              memReady = true;
             }
-          } else if (hadPreexistingJournalState) {
-            hadPreexistingJournalState = false;
+          } else if (res?.state) {
+            try {
+              memCore = createShadow({ checkpoint: checkpointFromSnapshot(res.state) });
+              writeInvalidated = false;
+            } catch {
+              writeInvalidated = true;
+              memReady = false;
+            }
+          } else if (!writeInvalidated) {
+            advanceMemCore(envelopes);
           }
+          memReady = preloadDone && !hasOtherQueued && !writeInvalidated;
         } else {
           counts.discarded++;
+          writeInvalidated = true;
           memReady = false;
         }
       } catch {
         counts.observer_errors++;
+        writeInvalidated = true;
         memReady = false;
       }
     }).finally(() => { pendingWrites--; });
   }
 
-  function inTorQuarantine() {
+  function inCooldown() {
     const curNow = Number(now());
     let active = false;
     try { active = Boolean(isTorActive?.()); } catch { active = false; }
@@ -283,6 +286,14 @@ function createShadowHook({
       return true;
     }
     return lastTorAt !== null && Number.isFinite(curNow) && curNow - lastTorAt < torCooldownMs;
+  }
+
+  function chatTaintedNow() {
+    try { return Boolean(isChatTainted?.()); } catch { return false; }
+  }
+
+  function inTorQuarantine() {
+    return inCooldown() || chatTaintedNow();
   }
 
   function isEligible(route, opts) {
@@ -482,11 +493,31 @@ function createShadowHook({
   }
 
   function enqueueJudge(item) {
-    if (!verdictJudge || disabled || closed || !item) return;
+    if (!verdictJudge || disabled || closed || !item || inTorQuarantine()) return;
     const epoch = judgeEpoch;
-    judgeChain = judgeChain.then(() => {
-      if (disabled || epoch !== judgeEpoch) return null;
-      return verdictJudge.judge(item.text, { dictVerdict: item.dictVerdict });
+    const baseCapMs = Number.isFinite(judgeChainTimeoutMs) && judgeChainTimeoutMs > 0
+      ? judgeChainTimeoutMs
+      : (Number.isFinite(verdictJudge.maxTimeoutMs) && verdictJudge.maxTimeoutMs > 0 ? verdictJudge.maxTimeoutMs : 6000) + 1000;
+    judgeChain = judgeChain.then(async () => {
+      if (disabled || closed || epoch !== judgeEpoch || inTorQuarantine()) return null;
+      let timer = null;
+      try {
+        const pendingJudge = Promise.resolve().then(() => verdictJudge.judge(item.text, { dictVerdict: item.dictVerdict }));
+        return await Promise.race([
+          pendingJudge,
+          new Promise((resolve) => {
+            timer = setTimer(() => {
+              try { verdictJudge.abortAll?.(); } catch {}
+              resolve(null);
+            }, baseCapMs);
+            timer?.unref?.();
+          }),
+        ]);
+      } finally {
+        if (timer != null) {
+          try { clearTimer(timer); } catch {}
+        }
+      }
     }).catch(() => null);
   }
 
@@ -494,6 +525,7 @@ function createShadowHook({
     if (!deferredJudge || disabled || closed) return;
     const item = deferredJudge;
     deferredJudge = null;
+    if (inTorQuarantine()) return;
     enqueueJudge(item);
   }
 

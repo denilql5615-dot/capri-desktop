@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { planInfluence, stripBrainHints } = require('../src/main/brain/influence-glue');
+const { planInfluence, commitInfluence, stripBrainHints } = require('../src/main/brain/influence-glue');
 const { createReassessmentPolicy, STOP_HINT_TEXT } = require('../src/main/brain/reassessment-policy');
 const { createShadowHook, TOR_COOLDOWN_MS } = require('../src/main/brain/shadow-hook');
 const { createChatGlue } = require('../src/main/brain/chat-glue');
@@ -13,7 +13,7 @@ const { openRotatingJournal } = require('../src/main/brain/rotating-journal');
 const { createVerdictJudge } = require('../src/main/brain/verdict-judge');
 const { createShadow, CONFIG } = require('../src/main/brain/index');
 const { salience } = require('../src/main/brain/amygdala');
-const { createTorState } = require('../src/main/tor-guard');
+const { createTorState, shouldSkipChatPersistence } = require('../src/main/tor-guard');
 const brainsLib = require('../src/main/brains');
 const tor = require('../src/main/tor');
 
@@ -73,7 +73,7 @@ test('planInfluence: off mode returns neutral main/hint while tracking shadow_* 
   assert.equal(st.escalation_count, 0);
 });
 
-test('planInfluence: reassessment + channel 0.7 + contradiction escalates to main=true and consumes budget', () => {
+test('planInfluence: reassessment + channel 0.7 + contradiction returns escalate decision without charging until commitInfluence', () => {
   const clock = Date.UTC(2026, 10, 18, 12, 0, 0);
   const policy = createReassessmentPolicy({ now: () => clock });
   const fakeHook = {
@@ -94,11 +94,22 @@ test('planInfluence: reassessment + channel 0.7 + contradiction escalates to mai
   assert.equal(res.hint, null);
   assert.equal(res.escalated, true);
   assert.equal(res.decision?.action, 'escalate');
+  // P2-3: planInfluence must NOT spend budget before the 26B turn actually completes/fails
+  assert.equal(policy.stats().escalation_count, 0);
+  assert.equal(policy.stats().budgetLeft, 2);
+
+  // Abort or model switch skips commitInfluence -> budget remains untouched
+  assert.equal(commitInfluence(policy, res, { aborted: true }), false);
+  assert.equal(commitInfluence(policy, res, { escalated: false }), false);
+  assert.equal(policy.stats().escalation_count, 0);
+
+  // Real 26B execution commits the slot
+  assert.equal(commitInfluence(policy, res), true);
   assert.equal(policy.stats().escalation_count, 1);
   assert.equal(policy.stats().budgetLeft, 1);
 });
 
-test('planInfluence: overload yields STOP_HINT_TEXT once per active series, then null', () => {
+test('planInfluence: overload peeks STOP_HINT_TEXT without consuming until commitInfluence', () => {
   const clock = Date.UTC(2026, 10, 18, 12, 0, 0);
   const policy = createReassessmentPolicy({ now: () => clock });
   const fakeHook = {
@@ -118,12 +129,20 @@ test('planInfluence: overload yields STOP_HINT_TEXT once per active series, then
   assert.equal(first.main, false);
   assert.equal(first.escalated, false);
   assert.equal(first.hint, STOP_HINT_TEXT);
+  assert.equal(policy.stats().stop_hint_count, 0);
 
-  const second = call();
-  assert.equal(second.main, false);
-  assert.equal(second.escalated, false);
-  assert.equal(second.hint, null);
-  assert.equal(policy.stats().stop_report_count, 2);
+  // Aborted turn before send -> stopHint stays available for the next attempt in the series
+  assert.equal(commitInfluence(policy, first, { aborted: true }), false);
+  const retry = call();
+  assert.equal(retry.hint, STOP_HINT_TEXT);
+
+  // Delivered turn consumes stopHint once per series
+  assert.equal(commitInfluence(policy, retry), true);
+  const after = call();
+  assert.equal(after.main, false);
+  assert.equal(after.escalated, false);
+  assert.equal(after.hint, null);
+  assert.equal(policy.stats().stop_report_count, 3);
   assert.equal(policy.stats().stop_hint_count, 1);
 });
 
@@ -714,5 +733,388 @@ test('planInfluence forwards env.voice into policy.decide ctx and blocks cold vo
   });
   assert.equal(hotVoice.main, true);
   assert.equal(hotVoice.escalated, true);
+  assert.equal(policy.stats().escalation_count, 0);
+  assert.equal(commitInfluence(policy, hotVoice), true);
   assert.equal(policy.stats().escalation_count, 1);
+});
+
+test('P2-1: chatTainted blocks tainted chat without extending cooldown across chats:new', async () => {
+  const dir = mkDir();
+  let clock = Date.UTC(2026, 10, 18, 17, 0, 0);
+  const torState = createTorState({ now: () => clock });
+  const hook = createShadowHook({
+    dir,
+    now: () => clock,
+    uuid: makeUuid(15000),
+    isTorActive: () => torState.inCooldown(),
+    isChatTainted: () => torState.isChatTainted(),
+  });
+  const glue = createChatGlue({
+    getHook: () => hook,
+    tor,
+    isTorBlocked: () => torState.inCooldown(),
+    isChatTainted: () => torState.isChatTainted(),
+    isLocalModel: () => true,
+  });
+  const cfg = { brainShadow: true, provider: 'ollama', rp: false };
+
+  try {
+    // 1. Tor touch at t=0 -> both cooldown and chatTainted active
+    torState.touch({ inChat: true });
+    hook.torTouched();
+
+    // 2. Advance 15 min (> 10m cooldown) while still in same tainted chat
+    clock += TOR_COOLDOWN_MS + 5 * 60 * 1000;
+    assert.equal(torState.inCooldown(), false);
+    assert.equal(torState.isChatTainted(), true);
+
+    // Clearnet turn in tainted chat sees null peekChannels and does not start, WITHOUT extending lastTorAt
+    assert.equal(hook.peekChannels(clock, { urgency: 1 }), null);
+    glue.beforeTurn([{ role: 'user', content: 'обычный вопрос' }], cfg);
+    assert.equal(glue.startLocal({ worker: null }, [{ role: 'user', content: 'ещё вопрос' }], cfg, new AbortController().signal), null);
+    await hook.flush();
+    assert.equal(hook.stats().published, 0);
+
+    // 3. Reset chat (chats:new) 5s later -> clean chat is IMMEDIATELY observable without waiting another 10m!
+    clock += 5000;
+    torState.resetChat();
+    assert.equal(torState.isQuarantined(), false);
+    assert.equal(hook.isTorBlocked(), false);
+    assert.ok(hook.peekChannels(clock, { urgency: 0 }));
+
+    const cleanTurn = glue.startLocal({ worker: null }, [{ role: 'user', content: 'привет в новом чате' }], cfg, new AbortController().signal);
+    cleanTurn.complete({ verified: true, utility: 1 });
+    await hook.flush();
+    assert.equal(hook.stats().published, 1);
+  } finally {
+    await hook.close();
+  }
+});
+
+test('P2-2: preload racing with queued write & concurrent batch failure resync memCore accurately from exportCheckpoint', async () => {
+  const baseTime = Date.UTC(2026, 10, 18, 18, 0, 0);
+
+  // Scenario A: write queued before delayed cold preload finishes -> preload must not clobber batch1
+  const dirA = mkDir();
+  let clkA = baseTime;
+  const seed = createShadowHook({ dir: dirA, now: () => (clkA += 1000), uuid: makeUuid(16000) });
+  seed.start({ worker: null }, { features: { urgency: 1, contradiction: 0 } }).complete({ verified: true, utility: -1 });
+  await seed.close();
+
+  const seedCheck = await openRotatingJournal(dirA);
+  try {
+    assert.equal(seedCheck.snapshot().task_count, 1);
+  } finally {
+    await seedCheck.close();
+  }
+  let openEnteredResolve;
+  const openEntered = new Promise((r) => { openEnteredResolve = r; });
+  let releaseOpen;
+  const hookA = createShadowHook({
+    dir: dirA,
+    preload: true,
+    openJournal: async () => {
+      openEnteredResolve();
+      await new Promise((r) => { releaseOpen = r; });
+      return openRotatingJournal(dirA);
+    },
+    now: () => (clkA += 1000),
+    uuid: makeUuid(17000),
+  });
+  try {
+    await openEntered;
+    // Queue batch1 while preload open is still pending
+    const t1 = hookA.start({ worker: null }, { features: { urgency: 1, contradiction: 1 } });
+    t1.complete({ verified: true, utility: -1 });
+    assert.equal(hookA.peekChannels(clkA + 1000, { urgency: 0 }), null);
+
+    releaseOpen();
+    await hookA.flush();
+    const peekA = hookA.peekChannels(clkA + 1000, { urgency: 0 });
+    assert.ok(peekA);
+    // Must include BOTH preexisting negative turn AND queued batch1 (> 0.45 -> ~0.70, not just single ~0.45)
+    assert.ok(peekA.reassessment >= 0.65);
+  } finally {
+    releaseOpen?.();
+    await hookA.close();
+  }
+  const diskAfterA = await openRotatingJournal(dirA);
+  try {
+    assert.equal(diskAfterA.snapshot().task_count, 2);
+  } finally {
+    await diskAfterA.close();
+  }
+
+  // Scenario B: concurrent batch1 (fails) + batch2 (succeeds) while queued together -> stays null until batch2 rebuilds from exportCheckpoint
+  let attempt = 0;
+  let diskCoreB = createShadow();
+  let write1EnteredResolve;
+  const write1Entered = new Promise((r) => { write1EnteredResolve = r; });
+  let write2EnteredResolve;
+  const write2Entered = new Promise((r) => { write2EnteredResolve = r; });
+  let releaseWrite1;
+  let releaseWrite2;
+  const jB = {
+    snapshot: () => diskCoreB.snapshot(),
+    exportCheckpoint: () => diskCoreB.exportCheckpoint(),
+    appendBatch: async (envs) => {
+      attempt++;
+      if (attempt === 1) {
+        write1EnteredResolve();
+        await new Promise((r) => { releaseWrite1 = r; });
+        throw new Error('batch1 EIO');
+      }
+      if (attempt === 2) {
+        write2EnteredResolve();
+        await new Promise((r) => { releaseWrite2 = r; });
+      }
+      for (const env of envs) diskCoreB.ingest(env);
+      return { status: 'accepted', state: diskCoreB.snapshot() };
+    },
+    close: async () => {},
+  };
+  let clkB = baseTime;
+  const hookB = createShadowHook({
+    dir: mkDir(),
+    preload: true,
+    openJournal: async () => jB,
+    now: () => (clkB += 1000),
+    uuid: makeUuid(18000),
+  });
+  try {
+    await hookB.flush();
+    assert.ok(hookB.peekChannels(clkB + 1000, { urgency: 0 }));
+
+    hookB.start({ worker: null }, { features: { urgency: 1, contradiction: 1 } }).complete({ verified: true, utility: -1 });
+    hookB.start({ worker: null }, { features: { urgency: 0, contradiction: 0 } }).complete({ verified: true, utility: 1 });
+    await write1Entered;
+    releaseWrite1();
+    await write2Entered;
+    // Right after batch1 failed and before batch2 commits: memReady must be false -> peekChannels === null!
+    assert.equal(hookB.peekChannels(clkB + 1000, { urgency: 0 }), null);
+    releaseWrite2();
+    await hookB.flush();
+
+    const peekB = hookB.peekChannels(clkB + 1000, { urgency: 0 });
+    assert.ok(peekB);
+    // Only batch2 (utility: +1) reached disk; failed batch1 (-1, urgency: 1) must NOT linger in memCore
+    assert.equal(peekB.reassessment, 0);
+  } finally {
+    releaseWrite1?.();
+    releaseWrite2?.();
+    await hookB.close();
+  }
+});
+
+test('P1-1: shouldSkipChatPersistence blocks vault/notes on quarantined state or string/array Tor messages', () => {
+  let clock = 1_000_000;
+  const torState = createTorState({ now: () => clock });
+  const onionMsg = 'http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/';
+
+  assert.equal(shouldSkipChatPersistence({
+    torState,
+    messages: [{ role: 'user', content: 'привет' }, { role: 'assistant', content: 'привет' }],
+    tor,
+  }), false);
+
+  // Bare .onion without search verb & multimodal array content -> skip
+  assert.equal(shouldSkipChatPersistence({
+    torState,
+    messages: [{ role: 'user', content: `почему не открывается ${onionMsg}` }],
+    tor,
+  }), true);
+  assert.equal(shouldSkipChatPersistence({
+    torState,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'вот цитата из даркнета' }] }],
+    tor,
+  }), true);
+
+  // Quarantined chat -> skips even ordinary clearnet messages
+  torState.touch({ inChat: true });
+  clock += TOR_COOLDOWN_MS + 60_000;
+  assert.equal(shouldSkipChatPersistence({
+    torState,
+    messages: [{ role: 'user', content: 'обычный вопрос' }],
+    tor,
+  }), true);
+});
+
+test('Sol final: llm.chat strips brainHint on Ollama cloud model, keeps it on local Ollama', async () => {
+  const ollama = require('../src/main/ollama');
+  const llm = require('../src/main/llm');
+  const origFetch = globalThis.fetch;
+  const seenBodies = [];
+  const rawMsgs = [
+    { role: 'system', content: 'персона' },
+    { role: 'user', content: 'вопрос' },
+    { role: 'system', content: STOP_HINT_TEXT, brainHint: true },
+  ];
+  try {
+    globalThis.fetch = async (url, init) => {
+      if (String(url).includes('/api/chat')) {
+        seenBodies.push(JSON.parse(init.body));
+        const ndjson = new ReadableStream({
+          start(ctrl) {
+            ctrl.enqueue(new TextEncoder().encode(JSON.stringify({ message: { content: 'ок' }, done: true }) + '\n'));
+            ctrl.close();
+          },
+        });
+        return new Response(ndjson, { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    };
+
+    assert.equal(ollama.isCloud('beam:cloud'), true);
+    await llm.chat('ollama', {}, { model: 'beam:cloud', messages: rawMsgs }, () => {}, new AbortController().signal);
+    assert.equal(seenBodies[0].messages.some((m) => m.brainHint), false);
+    assert.equal(seenBodies[0].messages.length, 2);
+
+    await llm.chat('ollama', {}, { model: 'gemma4:e4b-local', messages: rawMsgs }, () => {}, new AbortController().signal);
+    assert.equal(seenBodies[1].messages.some((m) => m.brainHint), true);
+    assert.equal(seenBodies[1].messages.length, 3);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('Sol final: judge blocks during Tor quarantine, rechecks isBusy after /api/ps, and hook.close does not hang when callModel ignores abort', async () => {
+  const dir = mkDir();
+  let clock = Date.UTC(2026, 10, 18, 19, 0, 0);
+  let quarantined = false;
+  let judgeCalls = 0;
+
+  // 1. In-flight callModel ignores AbortSignal -> close() must still resolve within ~timeout+1s via judgeChain Promise.race
+  const hangingJudge = createVerdictJudge({
+    timeoutMs: 25,
+    mainTimeoutMs: 25,
+    maxPerMinute: 100,
+    callModel: () => {
+      judgeCalls++;
+      return new Promise(() => {}); // ignores abort signal completely
+    },
+  });
+  const hook = createShadowHook({
+    dir,
+    now: () => clock,
+    uuid: makeUuid(19000),
+    isTorActive: () => quarantined,
+    verdictJudge: hangingJudge,
+  });
+  const glue = createChatGlue({ getHook: () => hook, tor, isLocalModel: () => true });
+  const cfg = { brainShadow: true, brainVerdictJudge: 'shadow', provider: 'ollama', rp: false };
+
+  const t1 = glue.startLocal({ worker: null }, [{ role: 'user', content: 'вопрос 1' }], cfg, new AbortController().signal);
+  glue.afterSuccess(t1);
+  glue.beforeTurn([{ role: 'user', content: 'ну норм' }], cfg);
+  glue.afterTurn(cfg); // starts judge in judgeChain
+  await new Promise((r) => setTimeout(r, 15));
+  assert.equal(judgeCalls, 1);
+
+  const t0 = Date.now();
+  await hook.close();
+  assert.ok(Date.now() - t0 < 2500);
+
+  // 2. Tor quarantine prevents runDeferredJudge from calling judge at all
+  let torJudgeCalls = 0;
+  const hookTor = createShadowHook({
+    dir: mkDir(),
+    now: () => clock,
+    uuid: makeUuid(20000),
+    isTorActive: () => quarantined,
+    verdictJudge: createVerdictJudge({
+      maxPerMinute: 100,
+      callModel: async () => { torJudgeCalls++; return '{"v":"PLUS"}'; },
+    }),
+  });
+  const glueTor = createChatGlue({ getHook: () => hookTor, tor, isLocalModel: () => true });
+  glueTor.afterSuccess(glueTor.startLocal({ worker: null }, [{ role: 'user', content: 'раз' }], cfg, new AbortController().signal));
+  glueTor.beforeTurn([{ role: 'user', content: 'ну вроде норм' }], cfg);
+  quarantined = true;
+  glueTor.afterTurn(cfg);
+  await hookTor.close();
+  assert.equal(torJudgeCalls, 0);
+
+  // 3. Busy turning true DURING await /api/ps prevents judge callModel cleanly
+  let busyNow = false;
+  let releasePs;
+  let busyCallCount = 0;
+  const busyJudge = createVerdictJudge({
+    isBusy: () => busyNow,
+    resolveModel: async () => new Promise((r) => { releasePs = r; }),
+    callModel: async () => { busyCallCount++; return '{"v":"PLUS"}'; },
+  });
+  const pendingJudge = busyJudge.judge('ну вот норм');
+  await new Promise((r) => setTimeout(r, 5));
+  busyNow = true;
+  releasePs('gemma4:e4b');
+  const res = await pendingJudge;
+  assert.deepEqual(res, { status: 'skipped_busy', verdict: null, model: null });
+  assert.equal(busyCallCount, 0);
+});
+
+test('Sol final: peekChannels during an in-flight write that rejects never exposes unconfirmed packet and flips to null on reject', async () => {
+  const baseTime = Date.UTC(2026, 10, 18, 20, 0, 0);
+  let diskCore = createShadow();
+  let enteredResolve;
+  const entered = new Promise((r) => { enteredResolve = r; });
+  let releaseAppend;
+  let mode = 'accept';
+
+  const hook = createShadowHook({
+    dir: mkDir(),
+    preload: true,
+    openJournal: async () => ({
+      snapshot: () => diskCore.snapshot(),
+      exportCheckpoint: () => diskCore.exportCheckpoint(),
+      appendBatch: async (envs) => {
+        if (mode === 'reject_paused') {
+          enteredResolve();
+          await new Promise((r) => { releaseAppend = r; });
+          return { status: 'rejected' };
+        }
+        for (const env of envs) diskCore.ingest(env);
+        return { status: 'accepted', state: diskCore.snapshot() };
+      },
+      close: async () => {},
+    }),
+    now: () => baseTime,
+    uuid: makeUuid(21000),
+  });
+
+  try {
+    await hook.flush();
+    // Seed 1 confirmed negative turn (~0.45 reassessment)
+    hook.start({ worker: null }, { features: { urgency: 1, contradiction: 1 } }).complete({ verified: true, utility: -1 });
+    await hook.flush();
+    const initial = hook.peekChannels(baseTime, { urgency: 0, contradiction: 0 });
+    assert.ok(initial);
+    assert.ok(initial.reassessment >= 0.44 && initial.reassessment < 0.65);
+
+    // Start 2nd negative turn whose write is paused in flight and will reject (would have crossed 0.65 if exposed)
+    mode = 'reject_paused';
+    hook.start({ worker: null }, { features: { urgency: 1, contradiction: 1 } }).complete({ verified: true, utility: -1 });
+    await entered;
+
+    // While write is in flight BEFORE rejection: projection uses last confirmed checkpoint ONLY (never sees rejected packet!)
+    const duringWrite = hook.peekChannels(baseTime + 1000, { urgency: 0, contradiction: 0 });
+    assert.ok(duringWrite);
+    assert.ok(duringWrite.reassessment < 0.65);
+
+    releaseAppend();
+    await hook.flush();
+    // After rejection: memReady is false -> null
+    assert.equal(hook.peekChannels(baseTime + 1000, { urgency: 0, contradiction: 0 }), null);
+
+    // Next valid confirmed write restores confirmed checkpoint cleanly (initial + turn 3 -> >= 0.65)
+    mode = 'accept';
+    hook.start({ worker: null }, { features: { urgency: 1, contradiction: 1 } }).complete({ verified: true, utility: -1 });
+    await hook.flush();
+    const afterConfirm = hook.peekChannels(baseTime + 2000, { urgency: 0, contradiction: 0 });
+    assert.ok(afterConfirm);
+    assert.ok(afterConfirm.reassessment >= 0.65);
+    assert.equal(diskCore.snapshot().record_count, 4);
+  } finally {
+    releaseAppend?.();
+    await hook.close();
+  }
 });

@@ -137,9 +137,9 @@ export class Look {
       this.fx.crackle({ x: spot.x + spot.w / 2, y: spot.y + spot.h / 2 }, { life: 650, radius: 36 });
       this.voice.play('blip');
       const line = pick(t.prank);
-      if (this.panel.say({ kind: 'info', face: 'smug', line, hold: 4500 }) !== false) {
-        this.chat.onAnswer?.(line);
-      }
+      const shown = this.panel.say({ kind: 'info', face: 'smug', line, hold: 4500 });
+      if (shown === false) return false;
+      this.chat.onAnswer?.(line);
       await sleep(3600);
       return !this.chat.open;
     } finally {
