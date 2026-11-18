@@ -8,6 +8,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const memoryRag = require('./memory-rag');
 
 const INDEX = '_Память.md';
 const TYPES = ['о тебе', 'проект', 'договорённость', 'вкус'];
@@ -96,25 +97,50 @@ function searchVault(dir, said, limit = VAULT_MATCHED, { history = false, journa
     }
   };
   walk(root);
-  return files.map((file) => {
+  const unquote = (v) => {
+    const s = String(v || '').trim();
+    if (s.startsWith('"') && s.endsWith('"')) {
+      try { return String(JSON.parse(s)); } catch { return s.slice(1, -1); }
+    }
+    if (s.startsWith("'") && s.endsWith("'")) return s.slice(1, -1);
+    return s;
+  };
+  const candidates = files.map((file) => {
     let parsed;
     try { parsed = parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
     const relative = path.relative(root, file);
     const layer = relative.split(path.sep)[0].toLowerCase();
+    const status = unquote(parsed.meta.status);
+    if (status === 'conflicted') return null;
     if (history || ACTIVE_MEMORY_DIRS.has(layer)) {
       const requiredStatus = history ? 'archived' : 'verified';
-      if (![requiredStatus, `"${requiredStatus}"`, `'${requiredStatus}'`].includes(parsed.meta.status)) return null;
+      if (status !== requiredStatus) return null;
     }
     const { text } = parsed;
     const title = path.basename(file, path.extname(file));
-    const titleWords = stems(title);
-    const textWords = stems(text.slice(0, 4000));
-    let score = 0;
-    for (const word of words) score += (titleWords.has(word) ? 3 : 0) + (textWords.has(word) ? 1 : 0);
-    if (!score) return null;
     const excerpt = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 4).join(' ').slice(0, VAULT_TEXT);
-    return { title, text: excerpt, score, file: relative };
-  }).filter(Boolean).sort((a, b) => b.score - a.score || a.file.localeCompare(b.file, 'ru')).slice(0, limit);
+    return {
+      title,
+      text: excerpt,
+      body: text.slice(0, 4000),
+      file: relative,
+      layer: unquote(parsed.meta.layer) || layer,
+      status,
+      topic: unquote(parsed.meta.topic),
+      source: unquote(parsed.meta.source),
+      link: unquote(parsed.meta.link),
+      quote: unquote(parsed.meta.quote),
+      created: unquote(parsed.meta.created || parsed.meta['создано']),
+      updated: unquote(parsed.meta.updated || parsed.meta['обновлено']),
+    };
+  }).filter(Boolean);
+  return memoryRag.rankCards(candidates, said, { limit }).map((item) => ({
+    title: item.title,
+    text: item.text,
+    score: item.score,
+    file: item.file,
+    factors: item.factors,
+  }));
 }
 
 function vaultPrompt(matches) {
@@ -384,7 +410,7 @@ function writePendingCandidate(dir, payload = {}, today = new Date().toISOString
   const pendingDir = path.join(vaultRoot(dir), PENDING_REVIEW_DIR);
   fs.mkdirSync(pendingDir, { recursive: true });
 
-  const layer = payload.layer === '10_ствол' ? '10_ствол' : '20_крона';
+  const layer = memoryRag.classifyShelf(payload);
   const created = String(today || new Date().toISOString().slice(0, 10)).trim();
   const uid = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   const slug = baseName.toLowerCase().replace(/[^a-zа-яё0-9]+/gi, '-').replace(/^-+|-+$/g, '') || 'card';
