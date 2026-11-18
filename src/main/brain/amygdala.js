@@ -7,6 +7,8 @@ const MAX_SALIENCE_CHARS = 1500;
 const MAX_VERDICT_CHARS = 60;
 const URGENCY_THRESHOLD = 0.60;
 const CONTRADICTION_THRESHOLD = 0.60;
+const UNCERTAINTY_THRESHOLD = 0.60;
+const NOVELTY_THRESHOLD = 0.60;
 
 const TECH_ABBREVS = new Set([
   'API', 'CPU', 'GPU', 'RAM', 'IPC', 'URL', 'MCP', 'UTC', 'SSD', 'SQL', 'PDF',
@@ -44,6 +46,47 @@ const RE_EXPECTATION_MISMATCH = new RegExp(
 );
 const RE_POLITE_TRANSITION = w('нет,\\s*спасибо|не\\s+надо|не\\s+важно|неважно|нет\\s+проблем|да,\\s*но\\s+теперь|ок,\\s*а|no\\s+thanks|never\\s*mind|no\\s+problem|got\\s+it,\\s*now');
 
+const UNCERTAINTY_PATTERNS = [
+  w('не\\s+уверен[аы]?|сомневаюсь|точно\\s+ли|насколько\\s+это\\s+точно'),
+  w('(?:приведи|укажи|дай|проверь|подтверди)\\s+источник(?:ом|и|ами)?'),
+  w('откуда\\s+(?:эт[оа]\\s+)?информация|откуда\\s+это|докажи'),
+  w('not\\s+sure|uncertain|verify\\s+source|cite\\s+source|citation|double-?check|is\\s+that\\s+accurate'),
+];
+const UNCERTAINTY_DAMPEN_PATTERNS = [
+  w('не\\s+срочно|простым\\s+языком|перечитай\\s+условие|напомни|вчера\\s+обсуждали|как\\s+обычно|просто\\s+расскажи'),
+  w('no\\s+rush|in\\s+simple\\s+terms|re-?read\\s+the\\s+prompt|as\\s+usual'),
+];
+const NOVELTY_PATTERNS = [
+  w('впервые|с\\s+нуля|нов(?:ый|ая|ое)\\s+(?:проект|стек|задач[аи])|раньше\\s+не\\s+(?:делал|пользовал(?:ся|ась)|настраивал)|никогда\\s+не\\s+пробовал[аи]?|переходим\\s+на|незнаком(?:ая|ый|ое)\\s+технологи(?:я|и)'),
+  w('first\\s+time|from\\s+scratch|brand\\s+new|never\\s+used|migrating\\s+to|unfamiliar\\s+with'),
+];
+
+function scoreUncertainty(cleaned) {
+  let matched = false;
+  for (const re of UNCERTAINTY_PATTERNS) {
+    if (re.test(cleaned)) {
+      matched = true;
+      break;
+    }
+  }
+  if (!matched) return 0;
+  let damp = 0;
+  for (const re of UNCERTAINTY_DAMPEN_PATTERNS) {
+    if (re.test(cleaned)) {
+      damp = 0.55;
+      break;
+    }
+  }
+  return clip01(0.75 - damp);
+}
+
+function scoreNovelty(cleaned) {
+  for (const re of NOVELTY_PATTERNS) {
+    if (re.test(cleaned)) return 0.75;
+  }
+  return 0;
+}
+
 const RE_POSITIVE_VERDICT = /^(?:(?:да|ок|yes)[,.\s]+)?(?:всё\s+)?(?:верно|правильно|сработало|помогло|работает|именно\s+то|correct|it\s+worked|that\s+worked)[!.\s]*$/iu;
 const RE_NEGATIVE_VERDICT = /^(?:(?:нет|no)[,.\s]+)?(?:нет[,.\s]+ошибка|неверно|неправильно|не\s+сработало|не\s+помогло|не\s+то|ты\s+ошиблась|сломано|wrong|didn't\s+work|did\s+not\s+work|not\s+it)[!.\s]*$/iu;
 
@@ -79,12 +122,14 @@ function salience(text) {
   const hasExpectationMismatch = Number(RE_EXPECTATION_MISMATCH.test(cleaned));
   const hasPoliteOrTransition = Number(RE_POLITE_TRANSITION.test(cleaned));
   const sCon = clip01(0.70 * hasDirectCorrection + 0.50 * hasExpectationMismatch - 0.60 * hasPoliteOrTransition);
+  const sUnc = scoreUncertainty(cleaned);
+  const sNov = scoreNovelty(cleaned);
 
   return {
     urgency: sUrg >= URGENCY_THRESHOLD ? 1 : 0,
     contradiction: sCon >= CONTRADICTION_THRESHOLD ? 1 : 0,
-    novelty: 0,
-    uncertainty: 0,
+    novelty: sNov >= NOVELTY_THRESHOLD ? 1 : 0,
+    uncertainty: sUnc >= UNCERTAINTY_THRESHOLD ? 1 : 0,
   };
 }
 

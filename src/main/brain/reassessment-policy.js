@@ -27,7 +27,13 @@ const DEFAULTS = Object.freeze({
   evc_warm_load_cost: 0.05, // §2.3.2: cost when 26B is already warm (`mainActive === true`)
   evc_cold_load_cost: 0.45, // §2.3.2: cost for cold swap E4B -> 26B
   evc_quiet_penalty: 0.20, // §2.3.2: extra penalty during quiet hours (`circadian_quiet === 1`)
+  evc_low_stability_penalty: 0.15, // Stage 6 V2: raise escalation bar when stability is low
   low_stability_max: 0.35, // §2.3.2: stability <= 0.35 (`stability_active === 1`) after neg -> stop
+
+  // Stage 6 V2: evidence_need channel thresholds & hint budget
+  evidence_enter_threshold: 0.65,
+  evidence_budget_window_ms: 10 * 60 * 1000,
+  evidence_budget_max: 3,
 
   // §4: circuit breaker thresholds
   breaker_consecutive_failures: 3, // §4: 3 consecutive escalation failures (-1 or 26B error) -> trip
@@ -43,6 +49,11 @@ const DEFAULTS = Object.freeze({
 const STOP_HINT_TEXT = [
   'Предыдущие попытки решения не сошлись.',
   'Кратко назови одно главное препятствие и предложи пользователю уточнить условие или передать задачу внешнему агенту, без догадок и обещаний.',
+].join(' ');
+
+const EVIDENCE_HINT_TEXT = [
+  'Повышена неопределённость или новизна:',
+  'опирайся только на подтверждённые факты и источники, явно отметь пробелы без догадок.',
 ].join(' ');
 
 function safeNow(now) {
@@ -68,7 +79,10 @@ function createReassessmentPolicy({ now = Date.now, config = {}, getConfig } = {
   const escalationTimestamps = [];
   // Lead decision (4): the control days spend a budget of their own, so shadow counts stay comparable
   const shadowTimestamps = [];
+  const evidenceTimestamps = [];
+  const shadowEvidenceTimestamps = [];
   const committedDecisions = new WeakSet();
+  const committedEvidenceDecisions = new WeakSet();
 
   let stopHintEmitted = false;
   let lastEscalationWasNeg = false;
@@ -83,9 +97,12 @@ function createReassessmentPolicy({ now = Date.now, config = {}, getConfig } = {
     escalation_count: 0,
     stop_report_count: 0,
     stop_hint_count: 0,
+    evidence_count: 0,
+    stability_guard_count: 0,
     shadow_trigger_episodes: 0,
     shadow_escalate: 0,
     shadow_stop: 0,
+    shadow_evidence: 0,
     esc_pos: 0,
     esc_neg: 0,
     esc_unverified: 0,
@@ -96,8 +113,8 @@ function createReassessmentPolicy({ now = Date.now, config = {}, getConfig } = {
     trip_count: 0,
   };
 
-  function pruneWindow(atMs, list = escalationTimestamps) {
-    while (list.length > 0 && atMs - list[0] >= cfg.budget_window_ms) {
+  function pruneWindow(atMs, list = escalationTimestamps, windowMs = cfg.budget_window_ms) {
+    while (list.length > 0 && atMs - list[0] >= windowMs) {
       list.shift();
     }
   }
@@ -120,11 +137,23 @@ function createReassessmentPolicy({ now = Date.now, config = {}, getConfig } = {
     return Math.max(0, maxAllowed - list.length);
   }
 
+  function evidenceBudgetLeftAt(atMs, list = evidenceTimestamps) {
+    pruneWindow(atMs, list, cfg.evidence_budget_window_ms);
+    return Math.max(0, cfg.evidence_budget_max - list.length);
+  }
+
+  function isLowStability(channels) {
+    const stability = num(channels?.stability, 1);
+    const stabilityActive = bit(channels?.stability_active);
+    return stabilityActive === 1 || stability <= cfg.low_stability_max;
+  }
+
   function computeEvc(channels, features, ctx) {
     const stability = num(channels?.stability, 1);
     const quiet = bit(channels?.circadian_quiet);
     const contradiction = bit(features?.contradiction);
     const urgency = bit(features?.urgency);
+    const stabilityPenalty = isLowStability(channels) ? cfg.evc_low_stability_penalty : 0;
 
     const benefit = cfg.evc_base_benefit
       + cfg.evc_contradiction_benefit * contradiction
@@ -133,7 +162,7 @@ function createReassessmentPolicy({ now = Date.now, config = {}, getConfig } = {
 
     const loadCost = ctx?.mainActive === true ? cfg.evc_warm_load_cost : cfg.evc_cold_load_cost;
     const quietPenalty = quiet === 1 ? cfg.evc_quiet_penalty : 0;
-    return roundEvc(benefit - (loadCost + quietPenalty));
+    return roundEvc(benefit - (loadCost + quietPenalty + stabilityPenalty));
   }
 
   function decide({ channels = {}, features = {}, ctx = {} } = {}) {
@@ -173,17 +202,50 @@ function createReassessmentPolicy({ now = Date.now, config = {}, getConfig } = {
       return { action: 'none', reason: 'clarify', evc: 0, budgetLeft };
     }
     // §4: circuit breaker tripped.
-    if (isTripped(atMs)) {
+    if (ctx?.tripped === true || isTripped(atMs)) {
       return { action: 'none', reason: 'tripped', evc: 0, budgetLeft };
     }
 
+    const stabilityGuarded = isLowStability(channels);
+    const evidenceActive = bit(channels?.evidence_need_active) === 1
+      || num(channels?.evidence_need, 0) >= cfg.evidence_enter_threshold;
+    const evList = mode === 'reassessment' ? evidenceTimestamps : shadowEvidenceTimestamps;
+    const evidenceBudgetLeft = evidenceBudgetLeftAt(atMs, evList);
+
+    const tryEvidence = (evcVal, countedTrigger = false) => {
+      if (!evidenceActive || evidenceBudgetLeft <= 0) return null;
+      if (ctx?.shortTrivial === true && bit(features?.uncertainty) === 0 && bit(features?.novelty) === 0) {
+        return null;
+      }
+      if (mode === 'reassessment') {
+        if (!countedTrigger) counts.trigger_episodes++;
+        return {
+          action: 'evidence',
+          reason: 'evidence_need_active',
+          evc: evcVal,
+          budgetLeft,
+          evidenceBudgetLeft,
+          stabilityGuarded,
+        };
+      }
+      if (!countedTrigger) counts.shadow_trigger_episodes++;
+      counts.shadow_evidence++;
+      shadowEvidenceTimestamps.push(atMs);
+      return {
+        action: 'none',
+        reason: 'mode_off',
+        evc: evcVal,
+        budgetLeft,
+        evidenceBudgetLeft,
+        stabilityGuarded,
+      };
+    };
+
     const reassessment = num(channels?.reassessment, 0);
     if (active !== 1 || reassessment < cfg.enter_threshold) {
-      return { action: 'none', reason: 'inactive', evc: 0, budgetLeft };
+      return tryEvidence(0, false) || { action: 'none', reason: 'inactive', evc: 0, budgetLeft, stabilityGuarded };
     }
 
-    const stability = num(channels?.stability, 1);
-    const stabilityActive = bit(channels?.stability_active);
     const contradiction = bit(features?.contradiction);
     const urgency = bit(features?.urgency);
     const prevEscNeg = ctx?.lastEscalationNeg !== undefined ? Boolean(ctx.lastEscalationNeg) : lastEscalationWasNeg;
@@ -199,7 +261,7 @@ function createReassessmentPolicy({ now = Date.now, config = {}, getConfig } = {
     } else if (budgetLeft <= 0 || cfg.budget_per_turn <= 0) {
       candidateAction = 'stop';
       candidateReason = 'budget_exhausted';
-    } else if ((stabilityActive === 1 || stability <= cfg.low_stability_max) && prevEscNeg) {
+    } else if (stabilityGuarded && prevEscNeg) {
       candidateAction = 'stop';
       candidateReason = 'low_stability_after_neg';
     } else if (ctx?.brainsReady === false) {
@@ -232,14 +294,29 @@ function createReassessmentPolicy({ now = Date.now, config = {}, getConfig } = {
       candidateReason = 'voice_cold';
     }
 
+    if (candidateAction === 'none') {
+      const evDecision = tryEvidence(candidateEvc, true);
+      if (evDecision) {
+        if (mode === 'reassessment') {
+          counts.trigger_episodes++;
+          if (stabilityGuarded) counts.stability_guard_count++;
+        } else {
+          counts.shadow_trigger_episodes++;
+        }
+        return evDecision;
+      }
+    }
+
     if (mode === 'reassessment') {
       counts.trigger_episodes++;
       if (candidateAction === 'stop') counts.stop_report_count++;
+      if (stabilityGuarded && candidateAction !== 'escalate') counts.stability_guard_count++;
       return {
         action: candidateAction,
         reason: candidateReason,
         evc: candidateEvc,
         budgetLeft,
+        stabilityGuarded,
       };
     }
 
@@ -256,6 +333,7 @@ function createReassessmentPolicy({ now = Date.now, config = {}, getConfig } = {
       reason: candidateAction === 'none' ? candidateReason : 'mode_off',
       evc: candidateEvc,
       budgetLeft,
+      stabilityGuarded,
     };
   }
 
@@ -329,6 +407,24 @@ function createReassessmentPolicy({ now = Date.now, config = {}, getConfig } = {
     return STOP_HINT_TEXT;
   }
 
+  function evidenceHint({ consume = true, decision = null } = {}) {
+    const atMs = safeNow(now);
+    const left = evidenceBudgetLeftAt(atMs, evidenceTimestamps);
+    if (consume === false) {
+      return left > 0 ? EVIDENCE_HINT_TEXT : null;
+    }
+    if (decision && typeof decision === 'object') {
+      if (committedEvidenceDecisions.has(decision)) return null;
+      committedEvidenceDecisions.add(decision);
+    }
+    if (left <= 0 && !(decision && typeof decision === 'object' && decision.action === 'evidence')) {
+      return null;
+    }
+    evidenceTimestamps.push(atMs);
+    counts.evidence_count++;
+    return EVIDENCE_HINT_TEXT;
+  }
+
   function stats() {
     const atMs = safeNow(now);
     const tripped = isTripped(atMs);
@@ -347,6 +443,7 @@ function createReassessmentPolicy({ now = Date.now, config = {}, getConfig } = {
     return {
       ...counts,
       budgetLeft: budgetLeftAt(atMs, lastQuietFlag === 1),
+      evidenceBudgetLeft: evidenceBudgetLeftAt(atMs, evidenceTimestamps),
       tripped,
       trippedUntil: tripped ? trippedUntil : null,
       lastEscalationNeg: lastEscalationWasNeg,
@@ -360,6 +457,7 @@ function createReassessmentPolicy({ now = Date.now, config = {}, getConfig } = {
     commit,
     recordOutcome,
     stopHint,
+    evidenceHint,
     stats,
   });
 }
@@ -367,5 +465,6 @@ function createReassessmentPolicy({ now = Date.now, config = {}, getConfig } = {
 module.exports = {
   DEFAULTS,
   STOP_HINT_TEXT,
+  EVIDENCE_HINT_TEXT,
   createReassessmentPolicy,
 };
