@@ -54,7 +54,7 @@ function createChatGlue({
     } catch {}
   }
 
-  function startLocal(route, messages, cfg, signal) {
+  function startLocal(route, messages, cfg, signal, opts) {
     if (cfg?.brainShadow !== true || typeof getHook !== 'function') return null;
     try {
       if (cfg.rp === true || signal?.aborted) return null;
@@ -71,6 +71,7 @@ function createChatGlue({
         local: true,
         rp: cfg.rp === true,
         features,
+        ...(opts?.meta && { meta: opts.meta }),
       });
     } catch {
       return null;

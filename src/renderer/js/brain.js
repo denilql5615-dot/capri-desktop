@@ -324,15 +324,29 @@ export class Brain {
       done({ hold: 8000 });
       return;
     }
+    const earnIfLong = () => {
+      if ((s.taskStart && Date.now() - s.taskStart >= LONG_JOB_MS) || s.count >= LONG_JOB_ACTIONS) this.capri.earnUplink();
+    };
+    const chatOpen = () => Boolean(this.panel.current?.chat && !this.panel.current.guide);
+    if (chatOpen()) {
+      done({ summary, hold: 14000 });
+      earnIfLong();
+      return;
+    }
     // clear the stage: nothing should cover her victory pose
     this.panel.hide();
     // quick back-and-forth answers don't deserve the whole show
     const bigJob = s.count >= 3 || (s.taskStart && Date.now() - s.taskStart > 20000);
     if (bigJob) await this.capri.teleport(this.capri.spot('stage'));
+    if (chatOpen()) {
+      done({ summary, hold: 14000 });
+      earnIfLong();
+      return;
+    }
     // the panel comes in once she's back down from her victory pose
     this.capri.celebrate({ onSpeak: () => done({ summary, hold: 14000 }) });
     // a long one: she'll send the red light up to the satellite once it's all quiet
-    if ((s.taskStart && Date.now() - s.taskStart >= LONG_JOB_MS) || s.count >= LONG_JOB_ACTIONS) this.capri.earnUplink();
+    earnIfLong();
   }
 
   // Is the window you typed your prompt in (Claude's) no longer the one in front?

@@ -5,16 +5,21 @@
 // paths, model names, error messages or renderer IDs into the journal.
 const crypto = require('node:crypto');
 const fsp = require('node:fs/promises');
-const { CONFIG } = require('./index');
+const { CONFIG, createShadow } = require('./index');
 const { createTaskBuffer } = require('./task-buffer');
 const { openRotatingJournal, MAX_DAY_TIME_MS } = require('./rotating-journal');
 const { freezeSnapshot } = require('./snapshot');
 const { verdictOf } = require('./amygdala');
 
-const NOOP_TURN = Object.freeze({ complete() {}, fail() {}, cancel() {} });
+const NOOP_TURN = Object.freeze({ complete() {}, fail() {}, cancel() {}, wasTorCancelled: () => false });
 const MAX_PENDING_WRITES = 64; // own publish chain is bounded too, not only the journal's queue
 const DEFAULT_PENDING_TTL_MS = 120000;
 const TOR_COOLDOWN_MS = 10 * 60 * 1000;
+const PEEK_IDS = Object.freeze({
+  event_id: '00000000-0000-4000-8000-000000000001',
+  task_id: '00000000-0000-4000-8000-000000000002',
+  source_id: '00000000-0000-4000-8000-000000000003',
+});
 const bit = (v) => (v === 1 ? 1 : 0);
 
 // Fail-closed Tor screen over the WHOLE chat context (every role, every turn), not only the last
@@ -73,7 +78,9 @@ function createShadowHook({
   setTimer = setTimeout,
   clearTimer = clearTimeout,
   onPendingChange,
+  onVerdict,
   verdictJudge,
+  preload = false,
 } = {}) {
   const buffer = createTaskBuffer(bufferOptions);
   const counts = {
@@ -85,6 +92,8 @@ function createShadowHook({
     unverified: 0,
   };
   const activeTurns = new Set();
+  const turnMeta = new WeakMap();
+  const torCancelledTurns = new WeakSet();
   let pending = null;
   let lastNotifiedPending = false;
   let lastTorAt = null;
@@ -97,6 +106,38 @@ function createShadowHook({
   let deferredJudge = null;
   let judgeEpoch = 0;
   let pendingWrites = 0;
+  let memCore = createShadow();
+  let memReady = !preload;
+  let hadPreexistingJournalState = false;
+
+  function checkpointFromSnapshot(snap) {
+    return {
+      state: {
+        time_ms: snap.time_ms,
+        reassessment: snap.reassessment,
+        evidence_need: snap.evidence_need,
+        stability: snap.stability,
+        reassessment_active: snap.reassessment_active,
+        evidence_need_active: snap.evidence_need_active,
+        stability_active: snap.stability_active,
+        circadian_quiet: snap.circadian_quiet,
+        rpe_count: snap.rpe_count,
+        last_rpe: snap.last_rpe,
+      },
+      transitions: { reassessment: null, evidence_need: null, stability: null },
+      impulses: { reassessment: null, evidence_need: null, stability: null },
+    };
+  }
+
+  function advanceMemCore(envelopes) {
+    try {
+      const snap = memCore.snapshot();
+      if (snap.task_count + 1 > CONFIG.max_tasks || snap.record_count + envelopes.length > CONFIG.max_events) {
+        memCore = createShadow({ checkpoint: memCore.exportCheckpoint() });
+      }
+      for (const env of envelopes) memCore.ingest(env);
+    } catch {}
+  }
 
   function notifyPending(next) {
     const val = Boolean(next);
@@ -105,6 +146,11 @@ function createShadowHook({
     if (typeof onPendingChange === 'function') {
       try { onPendingChange(val); } catch {}
     }
+  }
+
+  function emitVerdict(meta, value) {
+    if (typeof onVerdict !== 'function') return;
+    try { onVerdict(meta || {}, value); } catch {}
   }
 
   function clearPending({ cancel = true, outcome = 'unverified' } = {}) {
@@ -118,6 +164,11 @@ function createShadowHook({
     if (entry.timer != null) {
       try { clearTimer(entry.timer); } catch {}
     }
+    // Stage 6 breaker sees exactly the verdict the core gets (buttons / dictionary); the judge stays shadow
+    if (outcome !== 'tor') {
+      const verdictVal = outcome === 'pos' ? 1 : outcome === 'neg' ? -1 : 0;
+      emitVerdict(entry.meta, verdictVal);
+    }
     if (cancel) {
       try { entry.turn.cancel(); } catch { counts.observer_errors++; }
     }
@@ -130,31 +181,95 @@ function createShadowHook({
     await fsp.mkdir(dir, { recursive: true });
     const opened = await openJournal(dir);
     if (!opened || typeof opened.appendBatch !== 'function') throw new Error('invalid shadow journal');
+    if (typeof opened.snapshot === 'function') {
+      try {
+        const snap = opened.snapshot();
+        if (snap && snap.task_count > 0) hadPreexistingJournalState = true;
+      } catch {}
+    }
     journal = opened;
     return journal;
+  }
+
+  if (preload && typeof dir === 'string' && dir) {
+    writeChain = writeChain.then(async () => {
+      if (disabled || closed) return;
+      let j;
+      try {
+        j = await ensureJournal();
+      } catch {
+        disabled = true;
+        memReady = false;
+        counts.observer_errors++;
+        return;
+      }
+      if (!j) return;
+      const cp = typeof j.exportCheckpoint === 'function' ? j.exportCheckpoint() : undefined;
+      if (cp) {
+        hadPreexistingJournalState = false;
+        try {
+          memCore = createShadow({ checkpoint: cp });
+        } catch {
+          memReady = false;
+          return;
+        }
+      }
+      if (pendingWrites === 0) memReady = true;
+    });
   }
 
   function enqueuePublish(batch) {
     if (disabled || closed || pendingWrites >= MAX_PENDING_WRITES) { counts.discarded++; return; }
     const envelopes = batch.map((event) => ({ privacy: 'ordinary', event }));
+    advanceMemCore(envelopes);
     pendingWrites++;
     writeChain = writeChain.then(async () => {
-      if (disabled) { counts.discarded++; return; }
+      if (disabled) { counts.discarded++; memReady = false; return; }
       let j;
       try {
         j = await ensureJournal();
       } catch {
         disabled = true; // journal open failed: stay quiet until restart
+        memReady = false;
         counts.observer_errors++;
         return;
       }
-      if (!j) { counts.discarded++; return; }
+      if (!j) { counts.discarded++; memReady = false; return; }
       try {
         const res = await j.appendBatch(envelopes);
-        if (res?.status === 'accepted' || res?.status === 'duplicate') counts.published++;
-        else counts.discarded++;
+        if (res?.status === 'accepted' || res?.status === 'duplicate') {
+          counts.published++;
+          if (pendingWrites === 1) {
+            const cp = typeof j.exportCheckpoint === 'function' ? j.exportCheckpoint() : undefined;
+            if (cp) {
+              hadPreexistingJournalState = false;
+              try {
+                memCore = createShadow({ checkpoint: cp });
+                memReady = true;
+              } catch {
+                memReady = false;
+              }
+            } else if (hadPreexistingJournalState && res?.state) {
+              hadPreexistingJournalState = false;
+              try {
+                memCore = createShadow({ checkpoint: checkpointFromSnapshot(res.state) });
+                memReady = true;
+              } catch {
+                memReady = false;
+              }
+            } else {
+              memReady = true;
+            }
+          } else if (hadPreexistingJournalState) {
+            hadPreexistingJournalState = false;
+          }
+        } else {
+          counts.discarded++;
+          memReady = false;
+        }
       } catch {
         counts.observer_errors++;
+        memReady = false;
       }
     }).finally(() => { pendingWrites--; });
   }
@@ -185,7 +300,7 @@ function createShadowHook({
     return snap !== null && typeof snap === 'object' && snap.worker === null && !snap.computer;
   }
 
-  function openTurnOnRoot(root, signal, features) {
+  function openTurnOnRoot(root, signal, features, meta) {
     const task_id = uuid();
     const source_id = uuid();
     let seq = 0;
@@ -292,8 +407,10 @@ function createShadowHook({
           cleanup();
         }
       },
+      wasTorCancelled: () => torCancelledTurns.has(turn),
     });
     activeTurns.add(turn);
+    if (meta && typeof meta === 'object') turnMeta.set(turn, { ...meta });
     return turn;
   }
 
@@ -302,7 +419,7 @@ function createShadowHook({
     let root = null;
     try {
       root = buffer.open('ordinary');
-      return openTurnOnRoot(root, opts?.signal, opts?.features);
+      return openTurnOnRoot(root, opts?.signal, opts?.features, opts?.meta);
     } catch {
       counts.observer_errors++;
       if (root) buffer.cancel(root);
@@ -316,7 +433,7 @@ function createShadowHook({
       if (disabled || closed) { turn.cancel(); return; }
       clearPending({ cancel: true, outcome: 'unverified' });
       const heldAt = Number(now());
-      const entry = { turn, timer: null, heldAt };
+      const entry = { turn, meta: turnMeta.get(turn) || {}, timer: null, heldAt };
       pending = entry;
       entry.timer = setTimer(() => {
         if (pending !== entry) return;
@@ -473,8 +590,51 @@ function createShadowHook({
       const curNow = Number(now());
       if (Number.isFinite(curNow)) lastTorAt = curNow;
       dropPending({ outcome: 'tor' });
-      for (const turn of [...activeTurns]) turn.cancel();
+      for (const turn of [...activeTurns]) {
+        torCancelledTurns.add(turn);
+        turn.cancel();
+      }
     } catch {}
+  }
+
+  // Read-only projection of core channels at `nowMs` plus current turn features (zero disk I/O, no state mutation).
+  function peekChannels(nowMs, features = {}) {
+    if (disabled || closed || !memReady || inTorQuarantine() || features?.tor === true) return null;
+    try {
+      const at = safeTime(nowMs === undefined || nowMs === null ? now() : nowMs);
+      const baseSnap = memCore.snapshot();
+      const probe = createShadow({ checkpoint: memCore.exportCheckpoint() });
+      const res = probe.ingest({
+        privacy: 'ordinary',
+        event: {
+          type: 'message',
+          schema_version: CONFIG.schema_version,
+          config_version: CONFIG.version,
+          event_id: PEEK_IDS.event_id,
+          task_id: PEEK_IDS.task_id,
+          source_id: PEEK_IDS.source_id,
+          source_seq: 1,
+          task_seq: 1,
+          occurred_at_ms: at,
+          received_at_ms: at,
+          origin: 'user',
+          route: 'unknown',
+          novelty: 0,
+          uncertainty: 0,
+          contradiction: bit(features?.contradiction),
+          urgency: bit(features?.urgency),
+        },
+      });
+      if (res?.status !== 'accepted' || !res.state) return null;
+      return Object.freeze({
+        ...res.state,
+        record_count: baseSnap.record_count,
+        event_count: baseSnap.event_count,
+        task_count: baseSnap.task_count,
+      });
+    } catch {
+      return null;
+    }
   }
 
   return Object.freeze({
@@ -486,6 +646,7 @@ function createShadowHook({
     dropPending,
     torTouched,
     isTorBlocked: inTorQuarantine,
+    peekChannels,
     withTurn,
     stats: () => ({
       ...counts,

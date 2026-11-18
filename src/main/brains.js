@@ -13,6 +13,8 @@
 const FAST = 'hf.co/llmfan46/gemma-4-E4B-it-uncensored-heretic-GGUF:Q4_K_M';
 const MAIN = 'hf.co/llmfan46/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-GGUF:Q4_0';
 const MAIN_IDLE_MS = 5 * 60 * 1000;
+const ANALYSIS_PREDICT = 2048;
+const ANALYSIS_CHARS = 4000;
 // stored by older builds as her one chat model: read as "auto" (the roles) from now on
 const LEGACY = ['gemma4:26b-a4b-it-qat', 'qwen3:8b', 'qwen3.5:4b', 'hf.co/limloop/MN-12B-Faun-RP-RU-GGUF:Q3_K_M'];
 
@@ -23,6 +25,11 @@ const MAIN_RE = new RegExp(`${L}(основн[а-яёa-z]* модел|больш
 const LOCAL_RE = new RegExp(`${L}(локально|локальн[а-яёa-z]* модел[а-яёa-z]*|без облака|без интернета|офлайн|оффлайн|offline)`, 'i');
 // "быстрая модель", "отпусти основную": the main one out now, the fast one back
 const FAST_RE = new RegExp(`${L}(быстр[а-яёa-z]* модел|л[её]гк[а-яёa-z]* модел|отпусти основную|выгрузи основную)`, 'i');
+// "режим аналитика", "разбери документ", "длинная задача", "подробный разбор", "подробный отчёт"
+const ANALYSIS_RE = new RegExp(
+  `${L}(режим[а-яё]*\\s+аналитик[а-яё]*|разбер[а-яё]*\\s+(?:этот\\s+|эту\\s+|данный\\s+)?документ[а-яё]*|длинн[а-яё]*\\s+задач[а-яё]*|подробн[а-яё]*\\s+(?:разбор|отч[её]т)[а-яё]*)`,
+  'i',
+);
 // anything like an emergency: the roleplay prompt stays out, whatever the mode
 const EMERGENCY_RE = new RegExp(`${L}(кровотеч|кровь (хлещет|не останавлив)|не дыш|задыха|без сознания|потерял[а-яёa-z]* сознан|ожог|перелом|инсульт|инфаркт|сердечн[а-яёa-z]* приступ|отравил|отравлен|судорог|утону|захлебну|анафилак|скор(ую|ая)|112|03\\b|суицид|покончить с собой)`, 'i');
 // "включи ролевой режим" / "выключи ролевой", "ролевой режим вкл/выкл"
@@ -39,7 +46,18 @@ const RP_PROMPT = [
 const wantsMain = (text) => MAIN_RE.test(String(text || ''));
 const wantsLocal = (text) => LOCAL_RE.test(String(text || ''));
 const wantsFast = (text) => FAST_RE.test(String(text || ''));
+const wantsAnalysis = (text) => ANALYSIS_RE.test(String(text || ''));
 const isEmergency = (text) => EMERGENCY_RE.test(String(text || ''));
+
+/** Long-task ("аналитик") activation predicate for ordinary local Ollama auto-role turns. */
+function analysisMode(cfg, { rolesReady = false, auto = false, tor = false, text = '' } = {}) {
+  const said = typeof text === 'string' ? text : '';
+  if (cfg?.provider !== 'ollama' || !rolesReady || !auto || cfg?.rp === true || tor || !said || wantsFast(said)) {
+    return { active: false, numPredict: undefined };
+  }
+  const active = wantsAnalysis(said) || said.length > ANALYSIS_CHARS;
+  return active ? { active: true, numPredict: ANALYSIS_PREDICT } : { active: false, numPredict: undefined };
+}
 
 /** true / false when you turn roleplay on / off, null when the words aren't about it. */
 function rpCommand(text) {
@@ -127,4 +145,4 @@ class Brains {
   }
 }
 
-module.exports = { Brains, FAST, MAIN, LEGACY, RP_PROMPT, wantsMain, wantsLocal, wantsFast, isEmergency, rpCommand, withRp };
+module.exports = { Brains, FAST, MAIN, LEGACY, RP_PROMPT, ANALYSIS_PREDICT, ANALYSIS_CHARS, wantsMain, wantsLocal, wantsFast, wantsAnalysis, analysisMode, isEmergency, rpCommand, withRp };

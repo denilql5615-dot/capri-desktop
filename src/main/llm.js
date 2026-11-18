@@ -11,6 +11,7 @@ const { randomUUID } = require('node:crypto');
 const { spawn, execFile } = require('node:child_process');
 const ollama = require('./ollama');
 const { findClaude } = require('./workers');
+const { stripBrainHints } = require('./brain/influence-glue');
 
 const PROVIDERS = {
   ollama: { label: 'Ollama (local)', kind: 'ollama', local: true },
@@ -216,12 +217,14 @@ function restoreClaude(saved) {
 
 const isChatSession = (id) => Boolean(id) && id === claudeSession;
 
-async function chat(id, cfg, { model, messages, numPredict }, onDelta, signal) {
+async function chat(id, cfg, { model, messages, numPredict, numCtx }, onDelta, signal) {
   const p = endpoint(id, cfg);
-  if (p.kind === 'ollama') return ollama.chat({ model, messages, numPredict }, onDelta, signal);
+  if (p.kind === 'ollama') return ollama.chat({ model, messages, numPredict, numCtx }, onDelta, signal);
+  // Stop hints are scoped to local Ollama turns only and never cross to cloud / Claude Code providers.
+  const filtered = stripBrainHints(messages);
   // Claude Code keeps its own memory of the conversation: only her persona and your last message go
-  if (p.kind === 'claude') return claudeChat(cfg, messages.at(-1).content, messages[0].content, onDelta, signal);
-  return openaiChat(p, { model, messages }, onDelta, signal);
+  if (p.kind === 'claude') return claudeChat(cfg, filtered.at(-1)?.content || '', filtered[0]?.content || '', onDelta, signal);
+  return openaiChat(p, { model, messages: filtered }, onDelta, signal);
 }
 
 // Whether her answers stay on this PC: a server on this machine (and with Ollama, not a cloud model).

@@ -77,6 +77,7 @@ const OLLAMA_SITE = 'https://ollama.com';
 const brainsLib = require('./brains');
 const brains = new brainsLib.Brains({ ollama });
 ollama.pin(brains.fast);
+ollama.setContextFor(brains.main, 16384);
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'capri', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
@@ -1365,9 +1366,9 @@ async function applyPhone() {
         if (fast) return { text: fast, brain: 'quick' };
         const cfg = config.load();
         if (!chatModels) await refreshModels();
-        const enriched = await prepLocal(cfg, messages); // her brain picked first, then the model it means
+        const { messages: enriched, numPredict } = await prepLocal(cfg, messages); // her brain picked first, then the model it means
         const model = pickModel(cfg);
-        const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages: enriched }, () => {}, signal);
+        const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages: enriched, numPredict }, () => {}, signal);
         return { text, brain: model || cfg.provider };
       },
       speak: (text) => (config.load().voice.tts ? speech.speak(text, config.load().voice) : Promise.resolve(null)),
@@ -1802,25 +1803,39 @@ function galleryList() {
 // модель", "локально"), for roleplay, or standing in for the cloud (main); the fast one otherwise. Your
 // notes and mail added as always; the roleplay prompt only when it's on and nothing sounds like an
 // emergency. Resolves with the messages to send.
+function messagesHaveTor(messages) {
+  return Array.isArray(messages) && messages.some((m) => {
+    const c = typeof m?.content === 'string' ? m.content : '';
+    return c && (tor.wantsTor(c) || tor.wantsDark(c) || Boolean(tor.onionLink(c)));
+  });
+}
+
 async function prepLocal(cfg, messages, { main = false } = {}) {
   const said = yourWords(messages);
   const rp = cfg.rp === true && !brainsLib.isEmergency(said);
-  if (cfg.provider === 'ollama' && brains.ready(chatModels) && brains.isAuto(cfg.chatModel, chatModels)) {
+  const rolesReady = cfg.provider === 'ollama' && brains.ready(chatModels);
+  const auto = rolesReady && brains.isAuto(cfg.chatModel, chatModels);
+  const torCtx = torState.isQuarantined() || messagesHaveTor(messages);
+  // a long document keeps its long answer even when the turn was sent to the 26B for another reason
+  const analysis = brainsLib.analysisMode(cfg, { rolesReady, auto, tor: torCtx, text: said });
+  if (auto) {
     if (!main && brainsLib.wantsFast(said)) await brains.release();
-    else if (main || rp || brainsLib.wantsMain(said) || brainsLib.wantsLocal(said)) await brains.use('main');
+    else if (main || rp || analysis.active || brainsLib.wantsMain(said) || brainsLib.wantsLocal(said)) await brains.use('main');
     else await brains.use('fast');
   }
   const enriched = await withPim(withNotes(messages), said);
-  return rp ? brainsLib.withRp(enriched) : enriched;
+  return { messages: rp ? brainsLib.withRp(enriched) : enriched, numPredict: analysis.numPredict };
 }
 
-async function chatWithFallback(cfg, messages, send, signal, streamed, onSwitch) {
+async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch) {
+  let messages = Array.isArray(prepared) ? prepared : prepared.messages;
+  const numPredict = Array.isArray(prepared) ? undefined : prepared.numPredict;
   let model = pickModel(cfg);
   const tried = new Set();
   let busy = 0;
   for (;;) {
     try {
-      const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages }, send, signal);
+      const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict }, send, signal);
       if (model !== pickModel(cfg)) updateConfig({ chatModel: model });
       return text;
     } catch (err) {
@@ -1834,6 +1849,9 @@ async function chatWithFallback(cfg, messages, send, signal, streamed, onSwitch)
       if (!next || tried.size >= 3) throw err;
       model = next;
       busy = 0;
+      if (Array.isArray(messages) && messages.some((m) => m?.brainHint)) {
+        messages = require('./brain/influence-glue').stripBrainHints(messages);
+      }
       try { onSwitch?.(model); } catch {} // e.g. the brain shadow stops watching: the turn left its local model
     }
   }
@@ -2090,6 +2108,8 @@ function createTray() {
 // cfg.brainShadow is on; module-level so the quit handlers in main() can close it
 let brainShadowHook = null;
 let brainChatGlue = null;
+let brainInfluencePolicy = null;
+let brainInfluencePlanner = null;
 
 function registerIpc() {
   ipcMain.on('overlay:interactive', (_e, on) => {
@@ -2239,39 +2259,49 @@ function registerIpc() {
     const local = llm.isLocal(provider, cfg, model);
     return { ok: true, provider, model, agent: provider === 'claude', local, warmup: provider === 'ollama' && local };
   });
+  const getBrainInfluencePolicy = () => {
+    if (brainInfluencePolicy) return brainInfluencePolicy;
+    const { createReassessmentPolicy } = require('./brain/reassessment-policy');
+    brainInfluencePolicy = createReassessmentPolicy();
+    return brainInfluencePolicy;
+  };
+  const getBrainInfluencePlan = () => {
+    if (brainInfluencePlanner) return brainInfluencePlanner;
+    brainInfluencePlanner = require('./brain/influence-glue').planInfluence;
+    return brainInfluencePlanner;
+  };
   // her answer, streamed to the overlay piece by piece as `chat:delta`
   const getBrainShadowHook = () => {
     if (brainShadowHook) return brainShadowHook;
     const { createShadowHook } = require('./brain/shadow-hook');
-    const { createVerdictJudge } = require('./brain/verdict-judge');
+    const { createVerdictJudge, createLoadedModelSelector } = require('./brain/verdict-judge');
     const { CONFIG: brainConfig } = require('./brain');
-    let psCache = { at: 0, ready: false };
     const verdictJudge = createVerdictJudge({
-      model: brains.fast,
+      fastModel: brains.fast,
+      mainModel: brains.main,
+      resolveModel: createLoadedModelSelector({
+        fastModel: brains.fast,
+        mainModel: brains.main,
+        loadedModels: (psSignal) => ollama.loadedModels(psSignal),
+        timeoutMs: 300,
+      }),
       callModel: (req, signal) => ollama.jsonChat(req, signal),
       isBusy: () => chats.size > 0,
-      isModelReady: async (signal) => {
-        if (brains.mainActive()) return false;
-        const nowMs = Date.now();
-        if (nowMs - psCache.at < 3000) return psCache.ready;
-        const psSignal = signal
-          ? AbortSignal.any([signal, AbortSignal.timeout(300)])
-          : AbortSignal.timeout(300);
-        const loaded = await ollama.loadedModels(psSignal);
-        if (!loaded) return false;
-        const ready = loaded.includes(brains.fast) && !loaded.includes(brains.main);
-        psCache = { at: Date.now(), ready };
-        return ready;
-      },
     });
     brainShadowHook = createShadowHook({
       // one folder per journal format: formats never mix, older folders are left untouched
       dir: path.join(app.getPath('userData'), 'brain-journal', `v${brainConfig.schema_version}`),
+      preload: true,
       verdictJudge,
-      isTorActive: () => torState.inCooldown(),
+      isTorActive: () => torState.isQuarantined(),
       onPendingChange: (pending) => {
         try {
           if (overlay && !overlay.isDestroyed()) overlay.webContents.send('brain:pending', Boolean(pending));
+        } catch {}
+      },
+      onVerdict: (meta, verdict) => {
+        try {
+          getBrainInfluencePolicy().recordOutcome({ escalated: Boolean(meta?.escalated), verdict });
         } catch {}
       },
     });
@@ -2284,7 +2314,7 @@ function registerIpc() {
       getHook: (create = true) => (create ? getBrainShadowHook() : brainShadowHook),
       tor,
       yourWords,
-      isTorBlocked: () => torState.inCooldown(),
+      isTorBlocked: () => torState.isQuarantined(),
       isLocalModel: (cfg) => {
         const model = pickModel(cfg);
         return Boolean(model && llm.isLocal(cfg.provider, cfg, model));
@@ -2292,6 +2322,9 @@ function registerIpc() {
     });
     return brainChatGlue;
   };
+  if (config.load().brainShadow === true) {
+    try { getBrainShadowHook(); } catch {}
+  }
   ipcMain.on('brain:verdict', (event, v) => {
     const sender = event?.sender;
     if (!sender || (sender !== overlay?.webContents && sender !== chatsWin?.webContents)) return;
@@ -2299,7 +2332,7 @@ function registerIpc() {
     if (!brainShadowHook || config.load().brainShadow !== true) return;
     try { brainShadowHook.verdict(v); } catch {}
   });
-  ipcMain.handle('chat:send', async (_e, { id, messages }) => {
+  ipcMain.handle('chat:send', async (_e, { id, messages, voice }) => {
     const abort = new AbortController();
     chats.set(id, abort);
     try {
@@ -2390,23 +2423,76 @@ function registerIpc() {
       else if (worker === 'video') text = await videoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal);
       else {
         let shadowTurn = null;
+        let influence = { main: false, hint: null, decision: null, escalated: false };
+        let turnEscalated = false;
         if (cfg.brainShadow === true && worker === null) {
-          try { shadowTurn = getBrainChatGlue().startLocal(route, messages, cfg, abort.signal); } catch {}
+          try {
+            const said = yourWords(messages);
+            const rolesReady = cfg.provider === 'ollama' && brains.ready(chatModels);
+            const isAuto = Boolean(rolesReady && brains.isAuto(cfg.chatModel, chatModels));
+            const pickedModel = pickModel(cfg);
+            const localTurn = cfg.provider === 'ollama' && Boolean(pickedModel && llm.isLocal(cfg.provider, cfg, pickedModel));
+            const torCtx = torState.isQuarantined() || messagesHaveTor(messages);
+            const analysis = brainsLib.analysisMode(cfg, { rolesReady, auto: isAuto, tor: torCtx, text: said });
+            influence = getBrainInfluencePlan()({
+              cfg,
+              said,
+              messages,
+              route,
+              quick: Boolean(fast),
+              hook: getBrainShadowHook(),
+              policy: getBrainInfluencePolicy(),
+              tor,
+              env: {
+                local: localTurn,
+                brainsReady: rolesReady,
+                isAuto,
+                mainActive: brains.mainActive(),
+                gpuBusy: false,
+                voice: Boolean(voice),
+                wantsFast: brainsLib.wantsFast(said),
+                wantsMain: brainsLib.wantsMain(said) || analysis.active,
+                wantsLocal: brainsLib.wantsLocal(said),
+                rp: cfg.rp === true,
+                tor: torState.isQuarantined(),
+                now: Date.now(),
+              },
+            });
+            turnEscalated = Boolean(influence.escalated);
+          } catch {}
+          try {
+            shadowTurn = getBrainChatGlue().startLocal(route, messages, cfg, abort.signal, {
+              meta: { escalated: turnEscalated },
+            });
+          } catch {}
         }
         try {
+          const prepared = await prepLocal(cfg, messages, { main: influence.main });
+          // stage 6 stop hint: one system line at the very end, never in roleplay
+          const toSend = influence.hint && cfg.rp !== true
+            ? { ...prepared, messages: [...prepared.messages, { role: 'system', content: influence.hint, brainHint: true }] }
+            : prepared;
           // any switch to another model (possibly a cloud one) abandons the observation
           text = await chatWithFallback(
             cfg,
-            await prepLocal(cfg, messages),
+            toSend,
             send,
             abort.signal,
             () => streamed,
-            () => { try { brainChatGlue?.onModelSwitch(shadowTurn); } catch {} },
+            () => {
+              turnEscalated = false;
+              try { brainChatGlue?.onModelSwitch(shadowTurn); } catch {}
+            },
           );
           if (shadowTurn) {
             try { brainChatGlue?.afterSuccess(shadowTurn); shadowTurn = null; } catch {}
           }
         } catch (err) {
+          const torTouchedTurn = torState.isQuarantined() || Boolean(shadowTurn?.wasTorCancelled?.());
+          if (turnEscalated && !torTouchedTurn && !abort.signal.aborted && err?.message !== 'stopped'
+              && err?.name !== 'AbortError' && err?.code !== 'ABORT_ERR') {
+            try { brainInfluencePolicy?.recordOutcome({ escalated: true, error: true }); } catch {}
+          }
           if (shadowTurn) {
             try { brainChatGlue?.afterError(shadowTurn, err, abort.signal); } catch {}
           }
@@ -2955,18 +3041,28 @@ async function debugHandler(route, body) {
     return { ok: true, value: { dir: notesDir(), kept: await takeNotes(readMemory().history || []) } };
   }
   if (route === 'brain') {
-    // the brain shadow (src/main/brain): set its two flags ({ set: { brainShadow, brainVerdictJudge } }), read its
-    // in-memory counters and this process's memory. Numbers only — no text, no ids.
+    // the brain shadow (src/main/brain): set its flags ({ set: { brainShadow, brainVerdictJudge, brainInfluence } }),
+    // read its in-memory counters, Stage 6 policy stats, and this process's memory. Numbers only — no text, no ids.
     const set = body.set && typeof body.set === 'object' ? body.set : {};
     const patch = {};
     if (typeof set.brainShadow === 'boolean') patch.brainShadow = set.brainShadow;
     if (set.brainVerdictJudge === 'off' || set.brainVerdictJudge === 'shadow') patch.brainVerdictJudge = set.brainVerdictJudge;
+    if (Object.hasOwn(set, 'brainInfluence')) {
+      if (set.brainInfluence !== 'off' && set.brainInfluence !== 'reassessment') {
+        throw new Error('brainInfluence must be off or reassessment');
+      }
+      patch.brainInfluence = set.brainInfluence;
+    }
     if (Object.keys(patch).length) updateConfig(patch);
     const cfg = config.load(true);
     const mem = process.memoryUsage();
     return { ok: true, value: {
-      brainShadow: cfg.brainShadow === true, brainVerdictJudge: cfg.brainVerdictJudge || 'off',
-      hook: Boolean(brainShadowHook), stats: brainShadowHook ? brainShadowHook.stats() : null,
+      brainShadow: cfg.brainShadow === true,
+      brainVerdictJudge: cfg.brainVerdictJudge || 'off',
+      brainInfluence: cfg.brainInfluence === 'reassessment' ? 'reassessment' : 'off',
+      hook: Boolean(brainShadowHook),
+      stats: brainShadowHook ? brainShadowHook.stats() : null,
+      policy: brainInfluencePolicy ? brainInfluencePolicy.stats() : null,
       memory: { rss: mem.rss, heapUsed: mem.heapUsed }, journalDir: path.join(app.getPath('userData'), 'brain-journal'),
     } };
   }
