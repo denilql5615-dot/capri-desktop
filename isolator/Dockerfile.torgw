@@ -1,0 +1,17 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends tor ca-certificates iproute2 \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN printf '%s\n' \
+  '#!/bin/sh' \
+  'set -eu' \
+  'BIND_IP="${TOR_BIND_IP:-172.25.0.2}"' \
+  'exec tor --SocksPort "${BIND_IP}:9050" --SocksPolicy "accept 172.25.0.0/16,reject *" --DataDirectory /tmp/tor-data --RunAsDaemon 0 --Log "notice stdout"' \
+  > /usr/local/bin/start-torgw.sh \
+  && chmod 755 /usr/local/bin/start-torgw.sh
+
+USER debian-tor
+
+CMD ["/usr/local/bin/start-torgw.sh"]

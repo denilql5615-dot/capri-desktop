@@ -44,6 +44,7 @@ const phonepack = require('./phonepack');
 const web = require('./web');
 const capriBrowser = require('./browser');
 const tor = require('./tor');
+const torIsolator = require('./tor-isolator');
 const {
   TOR_CLOUD_BLOCK_MSG,
   TOR_PERSIST_BLOCK_MSG,
@@ -2112,18 +2113,30 @@ async function torSearch(q, cfg, how = {}) {
   const onion = how.onion ? tor.onionLink(how.onion) : tor.onionLink(q);
   const dark = Boolean(how.dark) || Boolean(how.onion) || Boolean(onion) || tor.wantsDark(q);
   try {
-    await torReady(cfg);
     const roles = brains.ready(await ollama.models().catch(() => []));
+    const chat = async (messages, { howto } = {}) => {
+      const model = await pickTorSearchModel({ cfg, roles, brains, ollama, llm, chatModels, howto });
+      if (!model) {
+        throw new Error('Нет локальной модели Ollama для ответа по результатам Tor (облачные модели для Tor запрещены).');
+      }
+      return ollama.chat({ model, messages, numPredict: howto ? 1200 : 500 }, () => {});
+    };
+    if (cfg?.torIsolator === 'on') {
+      if (cfg.tor === false) throw new Error('узел Tor выключен в трее');
+      const said = await torIsolator.answerIsolated(q, {
+        node: dark ? 'dark' : 'tor',
+        onion,
+        rule: dark ? ONION_RULE : TOR_RULE,
+        chat,
+      });
+      if (said.answer) return { answer: said.answer, sources: said.sources, blocked: said.blocked, tor: true, isolator: true };
+      return { error: 'Через Tor-изолятор поиск ничего не нашёл.', tor: true };
+    }
+    await torReady(cfg);
     const getSession = async () => (session = session || await capriBrowser.openSession(torOpts(cfg)));
     const said = await web.answer(q, {
       rule: dark ? ONION_RULE : TOR_RULE,
-      chat: async (messages, { howto } = {}) => {
-        const model = await pickTorSearchModel({ cfg, roles, brains, ollama, llm, chatModels, howto });
-        if (!model) {
-          throw new Error('Нет локальной модели Ollama для ответа по результатам Tor (облачные модели для Tor запрещены).');
-        }
-        return ollama.chat({ model, messages, numPredict: howto ? 1200 : 500 }, () => {});
-      },
+      chat,
       browserSearch: async (query) => (onion
         ? [{ title: new URL(onion).hostname, url: onion, snippet: '' }]
         : (await getSession()).search(query, { engine: dark ? 'ahmia' : undefined })),
@@ -2133,6 +2146,9 @@ async function torSearch(q, cfg, how = {}) {
     if (said.answer) return { answer: said.answer, sources: said.sources, blocked: said.blocked, tor: true };
     return { error: 'Через Tor поиск ничего не нашёл.', tor: true };
   } catch (err) {
+    if (cfg?.torIsolator === 'on') {
+      return { error: `Через Tor-изолятор не вышло: ${err.message}. Мимо изолятора не отправляла.`, tor: true };
+    }
     return { error: `Через Tor не вышло: ${err.message}. Мимо Tor не отправляла.`, tor: true };
   } finally {
     if (session) await session.close();
@@ -2156,6 +2172,7 @@ const agentWeb = createAgentWeb({
   browserOpts,
   notesDir,
   torState,
+  torIsolator,
   onTorTouched: () => {
     try { brainShadowHook?.torTouched(); } catch {}
     try { routerJournalInstance?.torTouched(); } catch {}
@@ -3425,7 +3442,18 @@ async function debugHandler(route, body) {
   if (route === 'models') {
     // which model she'd chat with, and why: what Ollama lists and what her config says
     const cfg = config.load(true);
-    return { ok: true, value: { chatModels, configured: cfg.chatModel, provider: cfg.provider, picked: pickModel(cfg), config: config.file() } };
+    return { ok: true, value: { chatModels, configured: cfg.chatModel, provider: cfg.provider, picked: pickModel(cfg), torIsolator: cfg.torIsolator === 'on' ? 'on' : 'off', config: config.file() } };
+  }
+  if (route === 'isolator') {
+    const set = body?.set && typeof body.set === 'object' ? body.set : {};
+    if (Object.hasOwn(set, 'torIsolator')) {
+      if (set.torIsolator !== 'off' && set.torIsolator !== 'on') {
+        throw new Error('torIsolator must be off or on');
+      }
+      updateConfig({ torIsolator: set.torIsolator });
+    }
+    const cfg = config.load(true);
+    return { ok: true, value: { torIsolator: cfg.torIsolator === 'on' ? 'on' : 'off', ...(await torIsolator.status()) } };
   }
   if (route === 'pim') {
     // what her chat would add for a phrase (mail, calendar): its size and line count only, not the content
