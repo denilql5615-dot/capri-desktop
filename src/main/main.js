@@ -45,6 +45,7 @@ const web = require('./web');
 const capriBrowser = require('./browser');
 const tor = require('./tor');
 const torIsolator = require('./tor-isolator');
+const torSafe = require('./tor-safe');
 const {
   TOR_CLOUD_BLOCK_MSG,
   TOR_PERSIST_BLOCK_MSG,
@@ -924,6 +925,93 @@ function openChats() {
   chatsWin.once('ready-to-show', () => chatsWin?.show());
   chatsWin.on('closed', () => { chatsWin = null; });
 }
+
+let torSafeWin = null;
+function openTorSafeWindow(mode = 'open') {
+  const safeMode = mode === 'create' ? 'create' : 'open';
+  const targetUrl = `capri://app/src/renderer/tor-safe.html?mode=${safeMode}`;
+  if (torSafeWin && !torSafeWin.isDestroyed()) {
+    if (torSafeWin.isMinimized()) torSafeWin.restore();
+    torSafeWin.loadURL(targetUrl);
+    torSafeWin.show();
+    torSafeWin.focus();
+    return;
+  }
+  const b = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+  const width = Math.min(780, b.width - 80);
+  const height = Math.min(540, b.height - 80);
+  torSafeWin = new BrowserWindow({
+    x: Math.round(b.x + (b.width - width) / 2),
+    y: Math.round(b.y + (b.height - height) / 2),
+    width,
+    height,
+    minWidth: 520,
+    minHeight: 380,
+    show: false,
+    title: 'Сейф Tor (age)',
+    backgroundColor: '#101112',
+    icon: HUB_ICON,
+    frame: true,
+    skipTaskbar: false,
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, '..', 'tor-safe-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  torSafeWin.setContentProtection(true);
+  torSafeWin.loadURL(targetUrl);
+  torSafeWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  torSafeWin.webContents.on('will-navigate', (event) => event.preventDefault());
+  torSafeWin.once('ready-to-show', () => torSafeWin?.show());
+  torSafeWin.on('closed', () => { torSafeWin = null; });
+}
+
+let torSafeDestroyPrompt = null;
+function destroyTorSafeKeyInteractive() {
+  if (torSafeDestroyPrompt) return torSafeDestroyPrompt;
+  const cfg = config.load();
+  torSafeDestroyPrompt = torSafe.confirmAndDestroyKey({
+    dir: cfg.torSafeDir,
+    showMessageBox: (...args) => dialog.showMessageBox(...args),
+    parentWindow: torSafeWin && !torSafeWin.isDestroyed() ? torSafeWin : null,
+    onDestroyed: () => rebuildTray(),
+  }).finally(() => { torSafeDestroyPrompt = null; });
+  return torSafeDestroyPrompt;
+}
+
+function torSafeMenu(cfg) {
+  const st = torSafe.status({ dir: cfg.torSafeDir });
+  const statusLabel = !st.dirAllowed
+    ? 'Путь запрещён (только D:\\)'
+    : st.hasKey
+      ? `Ключ: создан · записей: ${st.count}`
+      : 'Ключ: не создан';
+  return {
+    label: 'Сейф Tor',
+    submenu: [
+      { label: statusLabel, enabled: false },
+      {
+        label: 'Записывать находки изолятора в сейф',
+        type: 'checkbox',
+        checked: cfg.torSafe === 'on',
+        click: (item) => updateConfig({ torSafe: item.checked ? 'on' : 'off' }),
+      },
+      { type: 'separator' },
+      { label: 'Создать ключ…', enabled: !st.hasIdentity && !st.hasRecipient && st.dirAllowed, click: () => openTorSafeWindow('create') },
+      { label: 'Открыть…', click: () => openTorSafeWindow('open') },
+      {
+        label: 'Уничтожить ключ…',
+        enabled: (st.hasIdentity || st.hasRecipient) && st.dirAllowed,
+        click: () => {
+          destroyTorSafeKeyInteractive().catch(() => {});
+        },
+      },
+    ],
+  };
+}
 const DEMO_TERMINAL = `<body style="margin:0;background:#14101c;color:#8f8aa3;font:13px/1.7 Consolas,monospace;padding:14px 18px">
 <div style="color:#36ff7a">PS C:\\night-city-api&gt; npm test -- gigs</div>
 <div>&nbsp;&nbsp;GET /gigs</div><div style="color:#36ff7a">&nbsp;&nbsp;&nbsp;&nbsp;✓ returns 20 items per page</div>
@@ -1068,6 +1156,7 @@ function rebuildTray() {
     { label: t.talk, click: () => sendCommand('chat') },
     { label: t.chats, click: openChats },
     { label: t.notes, click: openNotes },
+    torSafeMenu(cfg),
     { label: 'Proton Mail Bridge…', click: () => sendCommand('setupProton') },
     { label: 'Proton Calendar…', click: () => sendCommand('setupCalendar') },
     { label: 'Gmail reserve…', click: () => sendCommand('setupGmail') },
@@ -2129,7 +2218,28 @@ async function torSearch(q, cfg, how = {}) {
         rule: dark ? ONION_RULE : TOR_RULE,
         chat,
       });
-      if (said.answer) return { answer: said.answer, sources: said.sources, blocked: said.blocked, tor: true, isolator: true };
+      if (said.answer) {
+        let safeRes = { saved: false, reason: 'off' };
+        try {
+          safeRes = await torSafe.recordSearchIfEnabled({ cfg, query: q, result: said });
+        } catch {
+          safeRes = { saved: false, reason: 'write_error', notice: 'В сейф Tor не записано: ошибка записи на диск.' };
+        }
+        if (safeRes.saved) rebuildTray();
+        const finalAnswer = !safeRes.saved && safeRes.notice ? `${said.answer}\n\n(${safeRes.notice})` : said.answer;
+        return {
+          answer: finalAnswer,
+          sources: said.sources,
+          blocked: said.blocked,
+          tor: true,
+          isolator: true,
+          ...(cfg?.torSafe === 'on' ? {
+            safeSaved: Boolean(safeRes.saved),
+            ...(safeRes.id ? { safeId: safeRes.id } : {}),
+            ...(safeRes.notice ? { safeNotice: safeRes.notice } : {}),
+          } : {}),
+        };
+      }
       return { error: 'Через Tor-изолятор поиск ничего не нашёл.', tor: true };
     }
     await torReady(cfg);
@@ -2143,7 +2253,15 @@ async function torSearch(q, cfg, how = {}) {
       renderMany: async (urls) => (await getSession()).readMany(urls),
       fetchImpl: async () => { throw new Error('no plain downloads for a Tor request'); },
     });
-    if (said.answer) return { answer: said.answer, sources: said.sources, blocked: said.blocked, tor: true };
+    if (said.answer) {
+      let finalAnswer = said.answer;
+      let safeNotice = '';
+      if (cfg?.torSafe === 'on') {
+        safeNotice = 'В сейф Tor не записано: сохраняются только ответы через Tor-изолятор.';
+        finalAnswer = `${said.answer}\n\n(${safeNotice})`;
+      }
+      return { answer: finalAnswer, sources: said.sources, blocked: said.blocked, tor: true, ...(safeNotice ? { safeSaved: false, safeNotice } : {}) };
+    }
     return { error: 'Через Tor поиск ничего не нашёл.', tor: true };
   } catch (err) {
     if (cfg?.torIsolator === 'on') {
@@ -2306,6 +2424,7 @@ function registerIpc() {
   });
   ipcMain.handle('hooks:status', () => activeHooks().status());
   ipcMain.handle('config:set', (_e, patch) => {
+    if (patch && Object.hasOwn(patch, 'torSafeDir')) torSafe.assertSafeDir(patch.torSafeDir);
     let telegramChanged = false;
     if (typeof patch?.telegramToken === 'string') {
       patch = { ...patch, telegramToken: patch.telegramToken ? setup.sealKey(patch.telegramToken.trim()) : null, telegramChatId: null };
@@ -3328,6 +3447,37 @@ function registerIpc() {
       return [];
     }
   });
+  const requireTorSafeSender = (event) => {
+    if (!torSafeWin || torSafeWin.isDestroyed() || event.sender !== torSafeWin.webContents) {
+      throw new Error('Доступно только из окна Сейфа Tor.');
+    }
+  };
+  ipcMain.handle('tor-safe:state', (event) => {
+    requireTorSafeSender(event);
+    const cfg = config.load();
+    return { ...torSafe.status({ dir: cfg.torSafeDir }), enabled: cfg.torSafe === 'on' };
+  });
+  ipcMain.handle('tor-safe:set-enabled', (event, on) => {
+    requireTorSafeSender(event);
+    updateConfig({ torSafe: on ? 'on' : 'off' });
+    return { ok: true, enabled: Boolean(on) };
+  });
+  ipcMain.handle('tor-safe:create-key', async (event, passphrase) => {
+    requireTorSafeSender(event);
+    const cfg = config.load();
+    const created = await torSafe.createKey({ dir: cfg.torSafeDir, passphrase });
+    rebuildTray();
+    return { ok: true, recipient: created.recipient, dir: created.dir };
+  });
+  ipcMain.handle('tor-safe:unlock', async (event, passphrase) => {
+    requireTorSafeSender(event);
+    const cfg = config.load();
+    return torSafe.unlockEntries({ dir: cfg.torSafeDir, passphrase });
+  });
+  ipcMain.handle('tor-safe:destroy-key', async (event) => {
+    requireTorSafeSender(event);
+    return destroyTorSafeKeyInteractive();
+  });
 }
 
 // Only in --dev: lets scripts drive the overlay and grab frames of it (no desktop content, just our window).
@@ -3446,14 +3596,37 @@ async function debugHandler(route, body) {
   }
   if (route === 'isolator') {
     const set = body?.set && typeof body.set === 'object' ? body.set : {};
+    const patch = {};
     if (Object.hasOwn(set, 'torIsolator')) {
       if (set.torIsolator !== 'off' && set.torIsolator !== 'on') {
         throw new Error('torIsolator must be off or on');
       }
-      updateConfig({ torIsolator: set.torIsolator });
+      patch.torIsolator = set.torIsolator;
     }
+    if (Object.hasOwn(set, 'torSafe')) {
+      if (set.torSafe !== 'off' && set.torSafe !== 'on') {
+        throw new Error('torSafe must be off or on');
+      }
+      patch.torSafe = set.torSafe;
+    }
+    if (Object.keys(patch).length) updateConfig(patch);
     const cfg = config.load(true);
-    return { ok: true, value: { torIsolator: cfg.torIsolator === 'on' ? 'on' : 'off', ...(await torIsolator.status()) } };
+    const safe = torSafe.status({ dir: cfg.torSafeDir });
+    return {
+      ok: true,
+      value: {
+        torIsolator: cfg.torIsolator === 'on' ? 'on' : 'off',
+        torSafe: cfg.torSafe === 'on' ? 'on' : 'off',
+        safe: {
+          dir: safe.dir,
+          dirAllowed: safe.dirAllowed,
+          hasKey: safe.hasKey,
+          count: safe.count,
+          ...(safe.error ? { error: safe.error } : {}),
+        },
+        ...(await torIsolator.status()),
+      },
+    };
   }
   if (route === 'pim') {
     // what her chat would add for a phrase (mail, calendar): its size and line count only, not the content

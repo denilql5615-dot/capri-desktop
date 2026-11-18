@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'">
+  <title>Сейф Tor (age)</title>
+  <link rel="icon" href="../../assets/icons/capri.png">
+  <link rel="stylesheet" href="styles/capri.css">
+  <link rel="stylesheet" href="styles/tor-safe.css">
+</head>
+<body>
+  <div class="safe">
+    <header class="safe__bar">
+      <span class="safe__brand">/// CAPRI.VAULT</span>
+      <span class="safe__tag">AGE·X25519</span>
+      <span class="safe__status" id="statusBadge"></span>
+      <span class="safe__dir" id="safeDir"></span>
+    </header>
+
+    <section class="safe__box" id="createView" hidden>
+      <h2>Создать ключ сейфа Tor</h2>
+      <p class="safe__note">Закрытый ключ шифруется вашей парольной фразой (scrypt) и сохраняется в <code>identity.age</code>, открытый ключ — в <code>recipient.txt</code>. Если фраза или файлы ключей утеряны и нет резервной копии, расшифровать записи нельзя.</p>
+      <form id="createForm" autocomplete="off">
+        <label class="safe__field">
+          <span>Парольная фраза (от 8 символов)</span>
+          <input class="panel__input" id="passNew" type="password" minlength="8" autocomplete="new-password" required>
+        </label>
+        <label class="safe__field">
+          <span>Повторите фразу</span>
+          <input class="panel__input" id="passConfirm" type="password" minlength="8" autocomplete="new-password" required>
+        </label>
+        <div class="safe__actions">
+          <button class="panel__action is-primary" type="submit">Создать ключ</button>
+          <button class="panel__action" id="goOpenBtn" type="button">Перейти к открытию</button>
+        </div>
+      </form>
+      <p class="safe__msg" id="createMsg" role="status"></p>
+    </section>
+
+    <section class="safe__box" id="openView" hidden>
+      <form class="safe__unlock" id="unlockForm" autocomplete="off">
+        <input class="panel__input" id="passUnlock" type="password" placeholder="Парольная фраза от сейфа…" autocomplete="off" required>
+        <button class="panel__action is-primary" type="submit">Открыть</button>
+        <button class="panel__action" id="lockBtn" type="button" hidden>Заблокировать</button>
+        <button class="panel__action is-danger" id="destroyBtn" type="button" hidden>Уничтожить ключ…</button>
+      </form>
+      <p class="safe__msg" id="openMsg" role="status"></p>
+      <div class="safe__workspace" id="workspace" hidden>
+        <aside class="safe__list" id="entryList" aria-label="Записи в сейфе"></aside>
+        <main class="safe__detail" id="entryDetail"></main>
+      </div>
+    </section>
+  </div>
+  <script src="js/tor-safe.js"></script>
+</body>
+</html>

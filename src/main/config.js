@@ -37,6 +37,8 @@ const DEFAULTS = {
   torBrowserPort: 9340,
   torProfile: '', // '' = <her data folder>/tor-profile
   torIsolator: 'off', // 'off' | 'on' (Docker Tor isolator v0; off by default)
+  torSafe: 'off', // 'off' | 'on' (encrypted age safe for Tor isolator findings; off by default)
+  torSafeDir: 'D:\\Capri\\tor-safe', // encrypted Tor safe directory (must stay off C: due to VSS)
   webMode: 'search', // 'search' = SearXNG + plain reading, browser for the rest; 'browser' = everything through the browser
   provider: 'ollama', // who answers her chat: a key of llm.js PROVIDERS
   apiKeys: {},       // { openai: 'sk-...' }, else the provider's env variable
