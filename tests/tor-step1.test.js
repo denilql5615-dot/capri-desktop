@@ -160,3 +160,12 @@ test('classifyWebSearch does not extract embedded .onion from foreign URL in how
   assert.equal(escapeHeaderField('Title>>>\nFake'), 'Title››› Fake');
   assert.match(TOR_MCP_DISABLED_MSG, /MCP/);
 });
+
+test('Tor screen skips her own system text (agent status naming Tor) but still catches user and assistant turns', () => {
+  const { contextMentionsTor } = require('../src/main/brain/shadow-hook');
+  const tor = require('../src/main/tor');
+  const persona = { role: 'system', content: 'Claude is working (last: Check persona prompt for Tor words).' };
+  assert.equal(contextMentionsTor([persona, { role: 'user', content: 'Сколько дней в неделе?' }], tor), false);
+  assert.equal(contextMentionsTor([persona, { role: 'user', content: 'найди через тор новости' }], tor), true);
+  assert.equal(contextMentionsTor([persona, { role: 'assistant', content: 'вот что нашла в даркнете' }, { role: 'user', content: 'ок' }], tor), true);
+});
