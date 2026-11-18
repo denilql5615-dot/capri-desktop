@@ -72,10 +72,13 @@ function list(dir) {
 
 // The rest of the Obsidian vault: only a few notes that match this message. Her own Capri/ notes are
 // still handled by list()/recall(), so their metadata and index keep their old meaning.
-function searchVault(dir, said, limit = VAULT_MATCHED, { history = false } = {}) {
+function searchVault(dir, said, limit = VAULT_MATCHED, { history = false, journalDir = null } = {}) {
   const words = stems(said);
   if (!words.size) return [];
   const root = path.basename(dir).toLowerCase() === 'capri' ? path.dirname(dir) : dir;
+  if (journalDir) {
+    require('./memory-promotion').reconcileVaultJournal(root, journalDir);
+  }
   const files = [];
   const walk = (folder) => {
     let entries = [];

@@ -426,6 +426,7 @@ export class Chat {
     this.afterPending = false;
     this.verdictPending = false;
     if (abort && this.turn) this.stopTurn();
+    if (abort && this.pending && !this.asking) this.pending('abort');
     this.turn = 0;
     this.syncVerdict();
     this.report();
@@ -538,9 +539,67 @@ export class Chat {
     this.panel.setChatBusy(false);
   }
 
+  clearStalePromotionActions() {
+    if (this.pending && !this.asking) this.pending('abort');
+    this.panel.setActions([]);
+  }
+
   async send(text, { voice = false } = {}) {
     if (this.turn || !this.open) return;
     if (!this.agent) {
+      const promo = /^(?:капри,?\s+)?(?:подтверди(?:ть)?\s+память|проверь\s+память)(?:\s*:\s*([\s\S]*))?$/iu.exec(text);
+      if (promo) {
+        const id = Date.now();
+        this.turn = id;
+        this.afterToken++;
+        this.afterPending = false;
+        this.verdictPending = false;
+        this.syncVerdict();
+        this.panel.setChatBusy(true);
+        this.clearStalePromotionActions();
+        this.panel.chatTurn({ quote: text, face: 'aside' });
+        if (mentionsTor(text)) {
+          this.reply(text, 'Подтверждение памяти недоступно в Tor-диалоге.', { noLog: true });
+          return;
+        }
+        let res;
+        try { res = await this.host.chatMemoryPreview((promo[1] || '').trim()); }
+        catch { res = { ok: false, text: 'Не удалось подготовить предпросмотр памяти.' }; }
+        if (this.turn !== id) return;
+        if (!res || !res.ok || !res.preview) {
+          this.reply(text, res?.text || 'Кандидатов для подтверждения памяти нет.', { noLog: true });
+          return;
+        }
+        let handled = false;
+        const onDecision = async (actionId) => {
+          if (handled) return;
+          handled = true;
+          if (this.pending === onDecision) this.pending = null;
+          this.panel.setActions([]);
+          if (actionId === 'abort') return;
+          if (actionId === 'confirm' || actionId === 'yes') {
+            let out;
+            try { out = await this.host.chatMemoryConfirm(res.preview); }
+            catch { out = { ok: false, text: 'Не удалось подтвердить замену памяти.' }; }
+            this.panel.stream(`${res.text}\n\n${out?.text || 'Память обновлена.'}`, { done: true });
+          } else {
+            let out;
+            try { out = await this.host.chatMemoryCancel(res.preview); }
+            catch { out = { ok: true, text: 'Замена отменена, ничего не записано.' }; }
+            this.panel.stream(`${res.text}\n\n${out?.text || 'Замена отменена, ничего не записано.'}`, { done: true });
+          }
+        };
+        this.pending = onDecision;
+        this.turn = 0;
+        this.panel.setChatBusy(false);
+        this.syncVerdict();
+        this.panel.stream(res.text, { done: true });
+        this.panel.setActions([
+          { id: 'confirm', label: 'Подтвердить замену', primary: true },
+          { id: 'cancel', label: 'Отменить' },
+        ], onDecision);
+        return;
+      }
       const history = /^(?:капри,?\s+)?архив памяти\s*:\s*([\s\S]*)$/iu.exec(text);
       if (history) {
         const id = Date.now();
@@ -550,7 +609,7 @@ export class Chat {
         this.verdictPending = false;
         this.syncVerdict();
         this.panel.setChatBusy(true);
-        this.panel.setActions([]);
+        this.clearStalePromotionActions();
         this.panel.chatTurn({ quote: text, face: 'aside' });
         let line;
         try { line = await this.host.chatMemoryHistory(history[1]); }
@@ -576,7 +635,7 @@ export class Chat {
       this.host.chatLog?.({ role: 'user', content: text }); // her Chats window
     }
     this.panel.setChatBusy(true);
-    this.panel.setActions([]); // a close button she offered before goes with a new message
+    this.clearStalePromotionActions(); // a close button she offered before goes with a new message
     this.panel.chatTurn({ quote: text, face: 'aside' });
     this.capri.pulse();
     this.onMessage?.();
