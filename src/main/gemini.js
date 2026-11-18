@@ -26,8 +26,8 @@ const MODELS = {
   fast: 'Flash-Lite', // quick facts, summaries, translations
   everyday: 'Hydrogen', // everyday tasks and quick analysis
   code: 'Hydrogen', // code: its coding beats Argon's at the same cost, about twice as fast
-  research: 'Argon', // research and analysis: fewest made-up facts, top on HLE and ARC-AGI-2
-  hardest: 'Argon', // the hardest reasoning and a final check
+  research: 'Neon', // research and analysis: replaced Argon in gemini.google.com (Nov 2026)
+  hardest: 'Neon', // the hardest reasoning and a final check
 };
 
 let queue = Promise.resolve();
@@ -145,7 +145,7 @@ async function askIn(page, prompt, { chat = null, model = null, task = null, fil
   const want = model ? (MODELS[model] || String(model)) : null;
   // Argon answers in Gemini's "Задача" (Task) mode; in plain chat it drops text questions after minutes
   // of thinking (found 2026-11-17: the same question, 4 min and dropped in chat, 20 s as a task)
-  const asTask = task ?? /argon/i.test(want || '');
+  const asTask = task ?? /(?:argon|neon)/i.test(want || '');
   if (asTask) {
     // its button shows up a few seconds after the page
     let on = false;

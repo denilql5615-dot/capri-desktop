@@ -134,3 +134,9 @@ test('ask: one question at a time, a pause between them, the session closed each
   assert.equal(closes, 2);
   assert.ok(x.answer && y.answer);
 });
+
+test('MODELS maps research and hardest roles to Neon', () => {
+  assert.equal(gemini.MODELS.research, 'Neon');
+  assert.equal(gemini.MODELS.hardest, 'Neon');
+  assert.equal(gemini.MODELS.code, 'Hydrogen');
+});
