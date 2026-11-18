@@ -151,12 +151,12 @@ function createShadowHook({
     }
   }
 
-  function emitVerdict(meta, value) {
+  function emitVerdict(meta, value, info) {
     if (typeof onVerdict !== 'function') return;
-    try { onVerdict(meta || {}, value); } catch {}
+    try { onVerdict(meta || {}, value, info || { source: 'none' }); } catch {}
   }
 
-  function clearPending({ cancel = true, outcome = 'unverified' } = {}) {
+  function clearPending({ cancel = true, outcome = 'unverified', source = 'none' } = {}) {
     if (!pending) return;
     const entry = pending;
     pending = null;
@@ -170,7 +170,7 @@ function createShadowHook({
     // Stage 6 breaker sees exactly the verdict the core gets (buttons / dictionary); the judge stays shadow
     if (outcome !== 'tor') {
       const verdictVal = outcome === 'pos' ? 1 : outcome === 'neg' ? -1 : 0;
-      emitVerdict(entry.meta, verdictVal);
+      emitVerdict(entry.meta, verdictVal, { source });
     }
     if (cancel) {
       try { entry.turn.cancel(); } catch { counts.observer_errors++; }
@@ -438,13 +438,16 @@ function createShadowHook({
     }
   }
 
-  function hold(turn) {
+  function hold(turn, extraMeta) {
     try {
       if (!turn || !activeTurns.has(turn)) return;
       if (disabled || closed) { turn.cancel(); return; }
       clearPending({ cancel: true, outcome: 'unverified' });
       const heldAt = Number(now());
-      const entry = { turn, meta: turnMeta.get(turn) || {}, timer: null, heldAt };
+      const prevMeta = turnMeta.get(turn) || {};
+      const mergedMeta = extraMeta && typeof extraMeta === 'object' ? { ...prevMeta, ...extraMeta } : prevMeta;
+      turnMeta.set(turn, mergedMeta);
+      const entry = { turn, meta: mergedMeta, timer: null, heldAt };
       pending = entry;
       entry.timer = setTimer(() => {
         if (pending !== entry) return;
@@ -482,7 +485,7 @@ function createShadowHook({
         clearPending({ cancel: true, outcome: 'unverified' });
         return false;
       }
-      clearPending({ cancel: false, outcome: v === 1 ? 'pos' : 'neg' });
+      clearPending({ cancel: false, outcome: v === 1 ? 'pos' : 'neg', source: 'button' });
       entry.turn.complete({ verified: true, utility: v });
       return true;
     } catch {
@@ -549,7 +552,7 @@ function createShadowHook({
       const said = opts?.said;
       const v = verdictOf(said);
       if (v === 1 || v === -1) {
-        clearPending({ cancel: false, outcome: v === 1 ? 'pos' : 'neg' });
+        clearPending({ cancel: false, outcome: v === 1 ? 'pos' : 'neg', source: 'dict' });
         entry.turn.complete({ verified: true, utility: v });
       } else {
         clearPending({ cancel: false, outcome: 'unverified' });

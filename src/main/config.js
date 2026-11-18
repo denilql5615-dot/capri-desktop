@@ -21,6 +21,7 @@ const DEFAULTS = {
   brainShadow: false, // passive brain shadow observer for local chat only; off by default
   brainVerdictJudge: 'off', // 'off' | 'shadow' (shadow E4B verdict classifier; off by default)
   brainInfluence: 'off', // 'off' | 'reassessment' (Stage 6 channel influence; off by default)
+  routerJournal: 'off', // 'off' | 'on' (Stage 7a router decision & outcome journal; off by default)
   searxUrl: 'http://192.168.0.108:8888', // her web search (web.js): our SearXNG on the home server, out through Proton on the PC
   capriBrowser: 'auto', // her browser (browser.js): 'auto' = your Windows default, or a name (LibreWolf, Brave…), or a path to an exe
   capriBrowserProfile: '', // a profile folder of yours for her (e.g. Camoufox MAIN); '' = her own profile per browser
