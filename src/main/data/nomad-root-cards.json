@@ -1,0 +1,362 @@
+[
+  {
+    "id": "root-001",
+    "title": "git stash",
+    "claim": "Команда git stash без аргументов равносильна git stash push.",
+    "book": "devdocs_en_git_2026-10",
+    "link": "/content/devdocs_en_git_2026-10/git-stash",
+    "quote": "Calling git stash without any arguments is equivalent to git stash push",
+    "lang": "en"
+  },
+  {
+    "id": "root-002",
+    "title": "br",
+    "claim": "HTML-элемент <br> создаёт перенос строки в тексте.",
+    "book": "devdocs_en_html_2026-10",
+    "link": "/content/devdocs_en_html_2026-10/reference/elements/br",
+    "quote": "The <br> HTML element produces a line break in text (carriage-return).",
+    "lang": "en"
+  },
+  {
+    "id": "root-003",
+    "title": "Difference Between delay() and a while Loop with millis() in Arduino?",
+    "claim": "Основа неблокирующего кода — никогда ничего не ждать.",
+    "book": "arduino.stackexchange.com_en_all_2026-10",
+    "link": "/content/arduino.stackexchange.com_en_all_2026-10/questions/97344/difference-between-delay-and-a-while-loop-with-millis-in-arduino",
+    "quote": "It is the basis of non-blocking code, to never wait for anything",
+    "lang": "en"
+  },
+  {
+    "id": "root-004",
+    "title": "Байкал",
+    "claim": "Озеро Байкал находится на границе Иркутской области и Бурятии.",
+    "book": "wikivoyage_ru_all_maxi_2026-09",
+    "link": "/content/wikivoyage_ru_all_maxi_2026-09/%D0%91%D0%B0%D0%B9%D0%BA%D0%B0%D0%BB",
+    "quote": "Озеро Байкал находится на границе Иркутской области и Республики Бурятия",
+    "lang": "ru"
+  },
+  {
+    "id": "root-005",
+    "title": "Classic béchamel sauce | Based Cooking",
+    "claim": "Ру получают, вмешивая муку в полностью растопленное сливочное масло.",
+    "book": "based.cooking_en_all_2026-11",
+    "link": "/content/based.cooking_en_all_2026-11/based.cooking/classic-bechamel-sauce/",
+    "quote": "Once the butter is fully melted add the flour and stir it in to make a roux.",
+    "lang": "en"
+  },
+  {
+    "id": "root-006",
+    "title": "git cherry-pick — применение изменений существующих коммитов",
+    "claim": "Команда git-cherry-pick применяет изменения, внесённые некоторыми существующими коммитами.",
+    "book": "devdocs_en_git_2026-10",
+    "link": "/content/devdocs_en_git_2026-10/git-cherry-pick",
+    "quote": "git-cherry-pick - Apply the changes introduced by some existing commits",
+    "lang": "en"
+  },
+  {
+    "id": "root-007",
+    "title": "git worktree remove — удаление связанного рабочего дерева",
+    "claim": "После завершения работы со связанным рабочим деревом его удаляют командой git worktree remove.",
+    "book": "devdocs_en_git_2026-10",
+    "link": "/content/devdocs_en_git_2026-10/git-worktree",
+    "quote": "When you are done with a linked worktree, remove it with git worktree remove",
+    "lang": "en"
+  },
+  {
+    "id": "root-008",
+    "title": "Bash Pipelines — код возврата асинхронного конвейера",
+    "claim": "Код возврата асинхронного конвейера равен 0.",
+    "book": "devdocs_en_bash_2026-10",
+    "link": "/content/devdocs_en_bash_2026-10/pipelines",
+    "quote": "The return status of an asynchronous pipeline is 0.",
+    "lang": "en"
+  },
+  {
+    "id": "root-009",
+    "title": "Bash Redirections — порядок обработки перенаправлений",
+    "claim": "Перенаправления обрабатываются в порядке их появления слева направо.",
+    "book": "devdocs_en_bash_2026-10",
+    "link": "/content/devdocs_en_bash_2026-10/redirections",
+    "quote": "Redirections are processed in the order they appear, from left to right.",
+    "lang": "en"
+  },
+  {
+    "id": "root-010",
+    "title": "HTML <details> и <summary> — метка виджета раскрытия",
+    "claim": "Содержимое элемента <summary> используется в качестве метки для виджета раскрытия.",
+    "book": "devdocs_en_html_2026-10",
+    "link": "/content/devdocs_en_html_2026-10/reference/elements/details",
+    "quote": "The contents of the <summary> element are used as the label for the disclosure widget.",
+    "lang": "en"
+  },
+  {
+    "id": "root-011",
+    "title": "CSS box-sizing — вычисление ширины и высоты элемента",
+    "claim": "CSS-свойство box-sizing задаёт, как вычисляются общая ширина и высота элемента.",
+    "book": "devdocs_en_css_2026-10",
+    "link": "/content/devdocs_en_css_2026-10/properties/box-sizing",
+    "quote": "The box-sizing CSS property sets how the total width and height of an element is calculated.",
+    "lang": "en"
+  },
+  {
+    "id": "root-012",
+    "title": "Python functools.cached_property — разрешение записи атрибута",
+    "claim": "Обычное свойство property блокирует запись атрибута без заданного сеттера, тогда как cached_property разрешает запись.",
+    "book": "devdocs_en_python_2026-10",
+    "link": "/content/devdocs_en_python_2026-10/library/functools",
+    "quote": "A regular property blocks attribute writes unless a setter is defined. In contrast, a cached_property allows writes.",
+    "lang": "en"
+  },
+  {
+    "id": "root-013",
+    "title": "Python collections.Counter — установка счётчика в ноль",
+    "claim": "Установка счётчика в ноль не удаляет элемент из Counter.",
+    "book": "devdocs_en_python_2026-10",
+    "link": "/content/devdocs_en_python_2026-10/library/collections",
+    "quote": "Setting a count to zero does not remove an element from a counter.",
+    "lang": "en"
+  },
+  {
+    "id": "root-014",
+    "title": "Arduino analogWrite — фиксированный диапазон в ядре",
+    "claim": "Диапазон analogWrite нельзя изменить, поскольку он зафиксирован в коде ядра.",
+    "book": "arduino.stackexchange.com_en_all_2026-10",
+    "link": "/content/arduino.stackexchange.com_en_all_2026-10/questions/31436/arduinouno-mega-is-there-a-way-to-exceed-256-in-analogwrite",
+    "quote": "You can't change analogWrite's range, since that is fixed in the core software.",
+    "lang": "en"
+  },
+  {
+    "id": "root-015",
+    "title": "ATmega328P и AVR — сопротивление внутренней подтяжки 20–50 кОм",
+    "claim": "По документации ATMega328P и большинства других AVR значение внутренней подтяжки составляет 20–50 кОм.",
+    "book": "arduino.stackexchange.com_en_all_2026-10",
+    "link": "/content/arduino.stackexchange.com_en_all_2026-10/questions/84323/i2c-pull-up-resistors-and-an-i2c-mux",
+    "quote": "The ATMega328P datasheet (along with most other AVR datasheets) will tell you that the internal pullup value is between 20K-50K.",
+    "lang": "en"
+  },
+  {
+    "id": "root-016",
+    "title": "Развязывающий (decoupling) и шунтирующий (bypass) конденсаторы",
+    "claim": "Развязывающие (decoupling) и шунтирующие (bypass) конденсаторы — это одно и то же.",
+    "book": "electronics.stackexchange.com_en_all_2026-10",
+    "link": "/content/electronics.stackexchange.com_en_all_2026-10/questions/233308/why-decoupling-capacitors-used-for-power-rails-should-be-very-close-to-the-ic-",
+    "quote": "Decoupling caps and bypass caps are indeed the same thing.",
+    "lang": "en"
+  },
+  {
+    "id": "root-017",
+    "title": "Диод Шоттки (Schottky diode) — прямое падение напряжения 150–450 мВ",
+    "claim": "У кремниевого p–n-диода прямое напряжение обычно 600–700 мВ, а у диода Шоттки — 150–450 мВ.",
+    "book": "wikipedia_en_all_mini_2026-06",
+    "link": "/content/wikipedia_en_all_mini_2026-06/Schottky_diode",
+    "quote": "A silicon p–n diode has a typical forward voltage of 600–700 mV, while the Schottky's forward voltage is 150–450 mV.",
+    "lang": "en"
+  },
+  {
+    "id": "root-018",
+    "title": "Термопаста (thermal paste) в телефоне отводит тепло от процессора",
+    "claim": "Термопаста в телефоне переносит тепло от процессора на другую часть телефона.",
+    "book": "ifixit_en_all_2025-12",
+    "link": "/content/ifixit_en_all_2025-12/Guide/How%2Bto%2BApply%2BThermal%2BPaste%2Bto%2BPhones/157417",
+    "quote": "Thermal paste helps transfer this heat from the processor to another part of the phone",
+    "lang": "en"
+  },
+  {
+    "id": "root-019",
+    "title": "Spudger как рычаг при вскрытии корпуса Xbox 360 E",
+    "claim": "При вскрытии Xbox 360 E спаджер прижимают в щель и тянут на себя, как рычаг.",
+    "book": "ifixit_en_all_2025-12",
+    "link": "/content/ifixit_en_all_2025-12/Guide/Disassembling%2BXbox%2B360%2BE%2BBottom%2BBody/22620",
+    "quote": "Pull back on the spudger like a lever, keeping it pressed firmly into the crevice.",
+    "lang": "en"
+  },
+  {
+    "id": "root-020",
+    "title": "Винты Pentalobe 3,6 мм у док-разъёма iPhone 5",
+    "claim": "У iPhone 5 два винта Pentalobe длиной 3,6 мм рядом с док-разъёмом снимают отвёрткой Pentalobe.",
+    "book": "ifixit_en_all_2025-12",
+    "link": "/content/ifixit_en_all_2025-12/Guide/iPhone%2B5%2BPentalobe%2BScrews%2BReplacement/26273",
+    "quote": "Use the Pentalobe screwdriver to remove the two 3.6 mm Pentalobe screws near the dock connector.",
+    "lang": "en"
+  },
+  {
+    "id": "root-021",
+    "title": "Шлейф экрана Canon PowerShot A720 IS и разъём ZIF",
+    "claim": "Ленточный кабель ЖК-экрана Canon PowerShot A720 IS отсоединяют от разъёма ZIF, придерживая его пальцами.",
+    "book": "ifixit_en_all_2025-12",
+    "link": "/content/ifixit_en_all_2025-12/Guide/Canon%2BPowershot%2BA720%2BIS%2BLens%2BReplacement/37814",
+    "quote": "grab the LCD Screen's ribbon wire with your thumb and index finger and carefully disconnect it from the ZIF connector.",
+    "lang": "en"
+  },
+  {
+    "id": "root-022",
+    "title": "Opening pick: метка 3 мм маркером на кончике",
+    "claim": "Открывающий медиатор (opening pick) размечают перманентным маркером на расстоянии 3 мм от кончика.",
+    "book": "ifixit_en_all_2025-12",
+    "link": "/content/ifixit_en_all_2025-12/Guide/Mark%2Byour%2BOpening%2BPicks%2Bat%2B3%2Bmm/160338",
+    "quote": "Measure 3 mm from the tip and mark the opening pick with a permanent marker.",
+    "lang": "en"
+  },
+  {
+    "id": "root-023",
+    "title": "Металлоискатель для стен из штукатурки по дранке (lath and plaster)",
+    "claim": "Металлоискатель находит стойки в стене из дранки со штукатуркой по шляпкам гвоздей, которыми дранка прибита к стойкам.",
+    "book": "diy.stackexchange.com_en_all_2026-10",
+    "link": "/content/diy.stackexchange.com_en_all_2026-10/questions/41411/what-features-do-i-need-in-a-stud-finder-for-use-on-plaster-walls",
+    "quote": "metal finders work by finding the nail heads that attach the wood lath to the studs.",
+    "lang": "en"
+  },
+  {
+    "id": "root-024",
+    "title": "MS-полимерный герметик (MS polymer sealant) без растворителя",
+    "claim": "MS-полимерный герметик не имеет запаха, не содержит растворителя и отверждается влагой воздуха.",
+    "book": "diy.stackexchange.com_en_all_2026-10",
+    "link": "/content/diy.stackexchange.com_en_all_2026-10/questions/170345/what-s-the-difference-between-silicone-sealant-and-ms-polymer-sealant",
+    "quote": "it's odorless (no solvent, it cures with [water from the] air)",
+    "lang": "en"
+  },
+  {
+    "id": "root-025",
+    "title": "Rim joist даёт ровную опору для стоек ограждения",
+    "claim": "Торцевая балка настила (rim joist) даёт ровную поверхность, к которой крепят стойки ограждения.",
+    "book": "diy.stackexchange.com_en_all_2026-10",
+    "link": "/content/diy.stackexchange.com_en_all_2026-10/questions/195829/do-i-need-rim-joist-for-this-tree-house-platform-what-will-happen-if-i-leave-t",
+    "quote": "Having the nice straight, even surface of the rim joist gives a good mating surface for screwing the railing posts",
+    "lang": "en"
+  },
+  {
+    "id": "root-026",
+    "title": "Шаг стоек каркасной стены 16 дюймов (stud spacing)",
+    "claim": "В большинстве жилых построек США стойки каркасной стены стоят с шагом 16 дюймов от центра до центра.",
+    "book": "diy.stackexchange.com_en_all_2026-10",
+    "link": "/content/diy.stackexchange.com_en_all_2026-10/questions/14929/how-far-apart-are-studs",
+    "quote": "Yes, in most US residential construction they are 16\" center to center.",
+    "lang": "en"
+  },
+  {
+    "id": "root-027",
+    "title": "Sill seal под опорным брусом (sill plate)",
+    "claim": "Sill seal укладывают под опорный брус (sill plate); обычно это недорогие рулоны пены.",
+    "book": "diy.stackexchange.com_en_all_2026-10",
+    "link": "/content/diy.stackexchange.com_en_all_2026-10/questions/175335/sill-plate-on-an-8-inch-wide-cinder-block-wall",
+    "quote": "add a sill seal below your sill plate. These are usually inexpensive rolls of foam",
+    "lang": "en"
+  },
+  {
+    "id": "root-028",
+    "title": "Ру (roux): смесь муки и жира для соусов",
+    "claim": "Ру — это варёная смесь муки и жира (чаще масла) в разных пропорциях.",
+    "book": "wikibooks_en_all_nopic_2026-10",
+    "link": "/content/wikibooks_en_all_nopic_2026-10/Cookbook%3ARoux",
+    "quote": "Roux is a basic cooked mixture of varying ratios of flour and fat",
+    "lang": "en"
+  },
+  {
+    "id": "root-029",
+    "title": "Деглазирование (deglazing) сковороды и pan sauce",
+    "claim": "Деглазирование — приём, при котором растворяют прилипшие к сковороде подрумяненные остатки еды, чтобы сделать соус.",
+    "book": "wikibooks_en_all_nopic_2026-10",
+    "link": "/content/wikibooks_en_all_nopic_2026-10/Cookbook%3ADeglazing",
+    "quote": "Deglazing is a cooking technique for removing and dissolving browned food residue from a pan to make a sauce",
+    "lang": "en"
+  },
+  {
+    "id": "root-030",
+    "title": "Пищевая сода (baking soda) и разрыхлитель (baking powder)",
+    "claim": "Пищевая сода — чистый бикарбонат натрия, а разрыхлитель содержит ещё и кислотный компонент.",
+    "book": "cooking.stackexchange.com_en_all_2026-10",
+    "link": "/content/cooking.stackexchange.com_en_all_2026-10/questions/4/what-is-the-difference-between-baking-soda-and-baking-powder",
+    "quote": "Baking soda is pure sodium bicarbonate, while baking powder includes an acidifying agent",
+    "lang": "en"
+  },
+  {
+    "id": "root-031",
+    "title": "Парбойлинг (parboiling): частичная варка в кипятке",
+    "claim": "Парбойлинг — это варка продукта в кипящей воде, чтобы дать ему фору перед следующим способом приготовления.",
+    "book": "cooking.stackexchange.com_en_all_2026-10",
+    "link": "/content/cooking.stackexchange.com_en_all_2026-10/questions/46677/what-is-the-difference-in-blanching-and-parboiling",
+    "quote": "parboiling means that you cook something in boiling water to give it a head start.",
+    "lang": "en"
+  },
+  {
+    "id": "root-032",
+    "title": "Причина вершинной гнили плодов (Blossom End Rot) у томатов",
+    "claim": "Вершинная гниль (BER) вызывается дефицитом кальция, обычно спровоцированным колебаниями поступления воды к растению.",
+    "book": "gardening.stackexchange.com_en_all_2026-10",
+    "link": "/content/gardening.stackexchange.com_en_all_2026-10/questions/987/what-else-besides-calcium-deficiency-could-be-causing-tomato-blossom-end-rot",
+    "quote": "BER is caused by calcium deficiency, usually induced by fluctuations in the plant's water supply",
+    "lang": "en"
+  },
+  {
+    "id": "root-033",
+    "title": "Оптимальное соотношение углерода и азота (C:N) в компосте",
+    "claim": "Идеальное соотношение углерода и азота (C:N) в компосте должно составлять примерно от 20:1 до 30:1.",
+    "book": "gardening.stackexchange.com_en_all_2026-10",
+    "link": "/content/gardening.stackexchange.com_en_all_2026-10/questions/tagged/carbon-nitrogen-ratio",
+    "quote": "Compost should ideally have a C:N ratio of about 20:1 to 30:1.",
+    "lang": "en"
+  },
+  {
+    "id": "root-034",
+    "title": "Прореживающая обрезка (thinning cuts) плодовых деревьев",
+    "claim": "Прореживающие срезы при обрезке полностью удаляют целый побег, ветвь или сук до места их отхождения.",
+    "book": "gardening.stackexchange.com_en_all_2026-10",
+    "link": "/content/gardening.stackexchange.com_en_all_2026-10/questions/65211/how-to-prune-a-new-cherry-plant",
+    "quote": "Thinning cuts are those which remove an entire shoot, branch, or limb up to the point of its origin",
+    "lang": "en"
+  },
+  {
+    "id": "root-035",
+    "title": "Севооборот и снижение потребности в удобрениях и гербицидах",
+    "claim": "Грамотно выстроенный севооборот способен снизить потребность в синтетических удобрениях и гербицидах.",
+    "book": "wikipedia_en_all_mini_2026-06",
+    "link": "/content/wikipedia_en_all_mini_2026-06/Crop_rotation",
+    "quote": "a well-designed crop rotation can reduce the need for synthetic fertilizers and herbicides",
+    "lang": "en"
+  },
+  {
+    "id": "root-036",
+    "title": "Мульчирование почвы для снижения испарения влаги и поливов",
+    "claim": "При мульчировании существенно сокращается испарение влаги из почвы и снижается необходимость частых поливов.",
+    "book": "wikipedia_ru_all_nopic_2026-10",
+    "link": "/content/wikipedia_ru_all_nopic_2026-10/%D0%9C%D1%83%D0%BB%D1%8C%D1%87%D0%B8%D1%80%D0%BE%D0%B2%D0%B0%D0%BD%D0%B8%D0%B5",
+    "quote": "При мульчировании значительно сокращается испарение влаги из почвы и, как следствие, снижается необходимость частых поливов.",
+    "lang": "ru"
+  },
+  {
+    "id": "root-037",
+    "title": "Географическая граница между Северным и Средним Каспием",
+    "claim": "Условная граница между Северным и Средним Каспием проходит по линии остров Чечень — мыс Тюб-Караган.",
+    "book": "wikipedia_ru_all_nopic_2026-10",
+    "link": "/content/wikipedia_ru_all_nopic_2026-10/%D0%9A%D0%B0%D1%81%D0%BF%D0%B8%D0%B9%D1%81%D0%BA%D0%BE%D0%B5_%D0%BC%D0%BE%D1%80%D0%B5",
+    "quote": "Условная граница между Северным и Средним Каспием проходит по линии остров Чечень — мыс Тюб-Караган",
+    "lang": "ru"
+  },
+  {
+    "id": "root-038",
+    "title": "Истоки Амазонки: слияние рек Мантаро и Апуримак в Укаяли",
+    "claim": "Реки Мантаро и Апуримак сливаются и вместе с другими притоками образуют реку Укаяли.",
+    "book": "wikipedia_en_all_mini_2026-06",
+    "link": "/content/wikipedia_en_all_mini_2026-06/Amazon_River",
+    "quote": "The Mantaro and Apurímac rivers join, and with other tributaries form the Ucayali River",
+    "lang": "en"
+  },
+  {
+    "id": "root-039",
+    "title": "Возраст и исторический статус Самарканда (Средняя Азия)",
+    "claim": "Самарканд является одним из самых древних городов Средней Азии, ему более 2750 лет.",
+    "book": "wikivoyage_ru_all_maxi_2026-09",
+    "link": "/content/wikivoyage_ru_all_maxi_2026-09/%D0%A1%D0%B0%D0%BC%D0%B0%D1%80%D0%BA%D0%B0%D0%BD%D0%B4",
+    "quote": "Самарканд — один из самых древних городов Средней Азии, ему более 2750 лет.",
+    "lang": "ru"
+  },
+  {
+    "id": "root-040",
+    "title": "Расположение курорта Чолпон-Ата на озере Иссык-Куль",
+    "claim": "Город-курорт Чолпон-Ата находится в Киргизии на северном берегу озера Иссык-Куль.",
+    "book": "wikivoyage_ru_all_maxi_2026-09",
+    "link": "/content/wikivoyage_ru_all_maxi_2026-09/%D0%A7%D0%BE%D0%BB%D0%BF%D0%BE%D0%BD-%D0%90%D1%82%D0%B0",
+    "quote": "Чолпон-Ата — город-курорт в Киргизии на северном берегу озера Иссык-Куль.",
+    "lang": "ru"
+  }
+]
