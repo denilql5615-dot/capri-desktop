@@ -415,3 +415,168 @@ test('answerIsolated passes defanged sources and delimited text to local chat', 
   assert.ok(capturedMessages[1].content.includes('hxxps://example[.]org/doc'));
   assert.equal(capturedMessages[1].content.includes('https://example.org/doc'), false);
 });
+
+test('ephemeral job container sets --log-driver=none and assertSafeDockerArgs enforces it without touching gateway', async () => {
+  const args = buildDockerRunArgs({ containerName: 'capri-tor-job-nolog', seccompPath: SECCOMP_FILE });
+  assert.ok(args.includes('--log-driver=none'));
+  assertSafeDockerArgs(args);
+
+  const withoutLogDriver = args.filter((a) => a !== '--log-driver=none');
+  assert.throws(() => assertSafeDockerArgs(withoutLogDriver), /missing required.*--log-driver=none/);
+
+  assert.throws(() => assertSafeDockerArgs([...withoutLogDriver, '--log-driver=local']), /unsafe docker flag forbidden/);
+  assert.throws(() => assertSafeDockerArgs([...args, '--log-driver=json-file']), /unsafe docker flag forbidden/);
+  assert.throws(() => assertSafeDockerArgs([...args, '--log-driver', 'local']), /unsafe docker flag forbidden/);
+
+  let gwCreated = false;
+  let netnsCreated = false;
+  const mock = createMockSpawn((cmdArgs) => {
+    const sub = cmdArgs[0];
+    if (sub === 'version') return { code: 0, stdout: '29.9.3\n' };
+    if (sub === 'image' && cmdArgs[1] === 'inspect') return { code: 0, stdout: '[{}]' };
+    if (sub === 'network' && cmdArgs[1] === 'inspect') return { code: 0, stdout: JSON.stringify([{ Internal: true }]) };
+    if (sub === 'network' && cmdArgs[1] === 'connect') return { code: 0, stdout: '' };
+    if (sub === 'create') {
+      gwCreated = true;
+      return { code: 0, stdout: 'gw-id\n' };
+    }
+    if (sub === 'start') return { code: 0, stdout: '' };
+    if (sub === 'container' && cmdArgs[1] === 'inspect') {
+      if (cmdArgs[2] === 'capri-tor-gw') {
+        return gwCreated
+          ? { code: 0, stdout: JSON.stringify([{ State: { Running: true }, NetworkSettings: { Networks: { 'capri-tor-int': { IPAddress: GW_IP } } } }]) }
+          : { code: 1, stdout: '' };
+      }
+      if (cmdArgs[2] === NETNS_CONTAINER) {
+        return netnsCreated
+          ? { code: 0, stdout: JSON.stringify([{ State: { Running: true } }]) }
+          : { code: 1, stdout: '' };
+      }
+    }
+    if (sub === 'logs') return { code: 0, stdout: 'Bootstrapped 100% (done)\n' };
+    if (sub === 'exec' && cmdArgs.includes('ip')) return { code: 0, stdout: `${GW_IP} dev eth0 scope link\n` };
+    if (sub === 'run' && cmdArgs.includes(NETNS_CONTAINER)) {
+      netnsCreated = true;
+      return { code: 0, stdout: 'netns-id\n' };
+    }
+    if (sub === 'run' && cmdArgs.includes(ISOLATOR_IMAGE)) {
+      return { code: 0, stdout: JSON.stringify({ v: 1, ok: true, isTor: true, node: 'tor', fetched_at: 1700000000000, results: [], pages: [] }) };
+    }
+    return { code: 1, stderr: `unexpected: ${cmdArgs.join(' ')}` };
+  });
+
+  const isolator = createTorIsolator({ spawn: mock.spawn, seccompPath: SECCOMP_FILE, existsSync: () => true, pause: async () => {} });
+  await isolator.runJob({ mode: 'search', query: 'onion check', node: 'tor' });
+
+  const jobRun = mock.calls.find((c) => c.args[0] === 'run' && c.args.includes(ISOLATOR_IMAGE));
+  assert.ok(jobRun);
+  assert.ok(jobRun.args.includes('--log-driver=none'));
+
+  const gwCreate = mock.calls.find((c) => c.args[0] === 'create' && c.args.includes('capri-tor-gw'));
+  const netnsRun = mock.calls.find((c) => c.args[0] === 'run' && c.args.includes(NETNS_CONTAINER));
+  assert.ok(gwCreate);
+  assert.ok(netnsRun);
+  for (const c of [gwCreate, netnsRun]) {
+    assert.equal(c.args.some((a) => String(a).startsWith('--log-driver')), false);
+  }
+});
+
+test('runJob and runCmd bound stdout/stderr and do not leak raw child output in errors', async () => {
+  const secretStdout = 'RAW_LEAK_STDOUT_ONION_PAYLOAD_12345';
+  const secretStderr = 'RAW_LEAK_STDERR_CONTAINER_TRACE_67890';
+
+  // 1. Non-zero exit in runJob does not echo raw stdout/stderr
+  {
+    const mock = createMockSpawn(makeHealthyDockerHandler(() => ({
+      code: 42,
+      stdout: secretStdout,
+      stderr: secretStderr,
+    })));
+    const isolator = createTorIsolator({ spawn: mock.spawn, seccompPath: SECCOMP_FILE, existsSync: () => true, pause: async () => {} });
+    await assert.rejects(
+      () => isolator.runJob({ mode: 'search', query: 'q', node: 'tor' }),
+      (err) => {
+        assert.match(err.message, /Tor-изолятор завершился с кодом 42/);
+        assert.equal(err.message.includes(secretStdout), false);
+        assert.equal(err.message.includes(secretStderr), false);
+        return true;
+      },
+    );
+  }
+
+  // 2. Malformed JSON stdout in runJob does not leak raw stdout snippet from JSON.parse SyntaxError
+  {
+    const mock = createMockSpawn(makeHealthyDockerHandler(() => ({
+      code: 0,
+      stdout: `NOT_JSON_${secretStdout}`,
+      stderr: secretStderr,
+    })));
+    const isolator = createTorIsolator({ spawn: mock.spawn, seccompPath: SECCOMP_FILE, existsSync: () => true, pause: async () => {} });
+    await assert.rejects(
+      () => isolator.runJob({ mode: 'search', query: 'q', node: 'tor' }),
+      (err) => {
+        assert.equal(err.message, 'Некорректный JSON от Tor-изолятора');
+        assert.equal(err.message.includes(secretStdout), false);
+        assert.equal(err.message.includes(secretStderr), false);
+        return true;
+      },
+    );
+  }
+
+  // A rejected JSON result can contain private text in its error field.
+  {
+    const mock = createMockSpawn(makeHealthyDockerHandler(() => ({
+      code: 0,
+      stdout: JSON.stringify({ ok: false, error: secretStdout }),
+    })));
+    const isolator = createTorIsolator({ spawn: mock.spawn, seccompPath: SECCOMP_FILE, existsSync: () => true, pause: async () => {} });
+    await assert.rejects(
+      () => isolator.runJob({ mode: 'search', query: 'q', node: 'tor' }),
+      { message: 'Tor-изолятор не подтвердил результат' },
+    );
+  }
+
+  // 3. Oversized stdout in runJob trips buffer cap, removes container, and does not echo payload
+  {
+    const hugeChunk = `${secretStdout}${'A'.repeat(1024 * 1024 + 64)}`;
+    const mock = createMockSpawn(makeHealthyDockerHandler(() => ({
+      code: 0,
+      stdout: hugeChunk,
+      stderr: '',
+    })));
+    const isolator = createTorIsolator({ spawn: mock.spawn, seccompPath: SECCOMP_FILE, existsSync: () => true, pause: async () => {} });
+    await assert.rejects(
+      () => isolator.runJob({ mode: 'search', query: 'q', node: 'tor' }),
+      (err) => {
+        assert.match(err.message, /Превышен лимит вывода Tor-изолятора/);
+        assert.equal(err.message.includes(secretStdout), false);
+        return true;
+      },
+    );
+    assert.ok(mock.calls.some((c) => c.args[0] === 'rm' && c.args[1] === '-f'));
+  }
+
+  // 4. Non-zero docker helper command (runCmd) does not echo raw stderr/stdout
+  {
+    const baseHandler = makeHealthyDockerHandler();
+    const mock = createMockSpawn((args, stdin) => {
+      if (args[0] === 'network' && args[1] === 'inspect') {
+        return { code: 1, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'network' && args[1] === 'create') {
+        return { code: 1, stdout: secretStdout, stderr: secretStderr };
+      }
+      return baseHandler(args, stdin);
+    });
+    const isolator = createTorIsolator({ spawn: mock.spawn, seccompPath: SECCOMP_FILE, existsSync: () => true, pause: async () => {} });
+    await assert.rejects(
+      () => isolator.ensureGateway(),
+      (err) => {
+        assert.match(err.message, /docker network завершился с кодом 1/);
+        assert.equal(err.message.includes(secretStdout), false);
+        assert.equal(err.message.includes(secretStderr), false);
+        return true;
+      },
+    );
+  }
+});

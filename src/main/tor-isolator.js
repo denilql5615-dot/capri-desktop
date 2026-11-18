@@ -148,6 +148,35 @@ function resolveCdr(customCdr) {
   };
 }
 
+const MAX_CMD_STDOUT_BYTES = 512 * 1024;
+const MAX_CMD_STDERR_BYTES = 64 * 1024;
+const MAX_JOB_STDOUT_BYTES = 1024 * 1024;
+
+function appendBoundedChunk(state, chunk, maxBytes, { hardFail = false } = {}) {
+  if (state.overflow) return !hardFail;
+  const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ''), 'utf8');
+  const remaining = maxBytes - state.bytes;
+  if (buf.length > remaining) {
+    if (hardFail) {
+      state.overflow = true;
+      return false;
+    }
+    if (remaining > 0) {
+      state.chunks.push(buf.subarray(0, remaining));
+      state.bytes += remaining;
+    }
+    state.overflow = true;
+    return true;
+  }
+  state.chunks.push(buf);
+  state.bytes += buf.length;
+  return true;
+}
+
+function decodeChunks(state) {
+  return Buffer.concat(state.chunks, state.bytes).toString('utf8');
+}
+
 function buildDockerRunArgs({ containerName, seccompPath = DEFAULT_SECCOMP_PATH } = {}) {
   if (!containerName || typeof containerName !== 'string') {
     throw new Error('containerName is required for docker run');
@@ -156,6 +185,7 @@ function buildDockerRunArgs({ containerName, seccompPath = DEFAULT_SECCOMP_PATH 
     'run',
     '--rm',
     '-i',
+    '--log-driver=none',
     '--name',
     containerName,
     '--network',
@@ -180,7 +210,14 @@ function assertSafeDockerArgs(args) {
   if (!Array.isArray(args)) throw new Error('docker args must be an array');
   for (const a of args) {
     const s = String(a);
-    if (FORBIDDEN_DOCKER_FLAGS.has(s) || s.startsWith('--mount=') || s.startsWith('-v=') || s.includes('seccomp=unconfined')) {
+    if (
+      FORBIDDEN_DOCKER_FLAGS.has(s) ||
+      s.startsWith('--mount=') ||
+      s.startsWith('-v=') ||
+      s.includes('seccomp=unconfined') ||
+      s === '--log-driver' ||
+      (s.startsWith('--log-driver=') && s !== '--log-driver=none')
+    ) {
       throw new Error(`unsafe docker flag forbidden: ${s}`);
     }
   }
@@ -188,6 +225,7 @@ function assertSafeDockerArgs(args) {
   const required = [
     '--rm',
     '-i',
+    '--log-driver=none',
     `container:${NETNS_CONTAINER}`,
     '10001:10001',
     '--cap-drop=ALL',
@@ -217,13 +255,14 @@ function createTorIsolator(deps = {}) {
   const uuidFn = deps.uuid || (() => randomUUID().slice(0, 8));
 
   const runCmd = (args, { input = null, timeoutMs = 15000, allowFail = false } = {}) => new Promise((resolve, reject) => {
+    const cmdName = String(args?.[0] || 'cmd').slice(0, 32);
     const child = spawnImpl('docker', args, {
       stdio: [input !== null ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       shell: false,
       windowsHide: true,
     });
-    let stdout = '';
-    let stderr = '';
+    const stdoutState = { chunks: [], bytes: 0, overflow: false };
+    const stderrState = { chunks: [], bytes: 0, overflow: false };
     let settled = false;
     let timer = null;
 
@@ -238,19 +277,25 @@ function createTorIsolator(deps = {}) {
     if (timeoutMs > 0) {
       timer = setTimeout(() => {
         try { child.kill(); } catch {}
-        finish(new Error(`docker command timed out: docker ${args[0] || ''}`));
+        finish(new Error(`docker command timed out: docker ${cmdName}`));
       }, timeoutMs);
     }
 
-    child.stdout?.on('data', (d) => { stdout += d.toString('utf8'); });
-    child.stderr?.on('data', (d) => { stderr += d.toString('utf8'); });
+    child.stdout?.on('data', (d) => {
+      if (!appendBoundedChunk(stdoutState, d, MAX_CMD_STDOUT_BYTES, { hardFail: !allowFail })) {
+        try { child.kill(); } catch {}
+        finish(new Error(`Превышен лимит вывода docker ${cmdName}`));
+      }
+    });
+    child.stderr?.on('data', (d) => {
+      appendBoundedChunk(stderrState, d, MAX_CMD_STDERR_BYTES);
+    });
     child.on('error', (err) => finish(err));
     child.on('close', (code) => {
       if (code === 0 || allowFail) {
-        finish(null, { code: code ?? 0, stdout, stderr });
+        finish(null, { code: code ?? 0, stdout: decodeChunks(stdoutState), stderr: decodeChunks(stderrState) });
       } else {
-        const msg = (stderr || stdout || `exit ${code}`).trim();
-        finish(new Error(msg));
+        finish(new Error(`docker ${cmdName} завершился с кодом ${code ?? 'unknown'}`));
       }
     });
 
@@ -431,8 +476,7 @@ function createTorIsolator(deps = {}) {
         windowsHide: true,
       });
 
-      let stdout = '';
-      let stderr = '';
+      const stdoutState = { chunks: [], bytes: 0, overflow: false };
       let settled = false;
       let timer = null;
 
@@ -454,8 +498,12 @@ function createTorIsolator(deps = {}) {
         }, timeoutMs);
       }
 
-      child.stdout?.on('data', (d) => { stdout += d.toString('utf8'); });
-      child.stderr?.on('data', (d) => { stderr += d.toString('utf8'); });
+      child.stdout?.on('data', (d) => {
+        if (!appendBoundedChunk(stdoutState, d, MAX_JOB_STDOUT_BYTES, { hardFail: true })) {
+          cleanupAndReject(new Error('Превышен лимит вывода Tor-изолятора'));
+        }
+      });
+      child.stderr?.on('data', () => {});
       child.on('error', (err) => {
         if (settled) return;
         settled = true;
@@ -469,10 +517,9 @@ function createTorIsolator(deps = {}) {
         if (timer) clearTimeout(timer);
         if (signal && onAbort) signal.removeEventListener('abort', onAbort);
         if (code !== 0) {
-          const msg = (stderr || stdout || `docker run exit ${code}`).trim();
-          return reject(new Error(msg));
+          return reject(new Error(`Tor-изолятор завершился с кодом ${code ?? 'unknown'}`));
         }
-        resolve(stdout);
+        resolve(decodeChunks(stdoutState));
       });
 
       const stdinBuf = Buffer.from(JSON.stringify(payload), 'utf8');
@@ -487,14 +534,14 @@ function createTorIsolator(deps = {}) {
     let parsed;
     try {
       parsed = JSON.parse(lastLine);
-    } catch (err) {
-      throw new Error(`Некорректный JSON от Tor-изолятора: ${err.message}`);
+    } catch {
+      throw new Error('Некорректный JSON от Tor-изолятора');
     }
 
     const cdr = resolveCdr(deps.cdr);
     const sanitized = cdr.sanitizeIsolatorResult(parsed);
     if (!sanitized || sanitized.ok !== true) {
-      throw new Error(sanitized?.error || 'Tor-изолятор не подтвердил результат (fail-closed)');
+      throw new Error('Tor-изолятор не подтвердил результат');
     }
     return sanitized;
   }
