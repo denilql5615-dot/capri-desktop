@@ -28,6 +28,9 @@ const bit = (v) => (v === 1 ? 1 : 0);
 function contextMentionsTor(messages, { wantsTor, onionLink }) {
   if (!Array.isArray(messages)) return true;
   for (const m of messages) {
+    // her own system text (persona, the live status of the agents she watches, mood/language notes, brain
+    // hints) is not Tor material: an agent's action named "Tor" there must not taint every turn
+    if (m?.role === 'system') continue;
     const c = m?.content;
     let parts;
     if (typeof c === 'string') parts = [c];
