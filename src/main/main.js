@@ -2579,7 +2579,7 @@ function registerIpc() {
           workerOutcome = isAb ? 'cancelled' : 'failed';
           throw err;
         } finally {
-          if (cfg.routerJournal === 'on' && !tor && !torState.isQuarantined() && !contextHasTor && cfg.rp !== true) {
+          if (cfg.routerJournal === 'on' && !torState.isQuarantined() && !contextHasTor && cfg.rp !== true) {
             try {
               const saidNow = yourWords(messages);
               const rolesReady = cfg.provider === 'ollama' && brains.ready(chatModels);
@@ -2681,7 +2681,7 @@ function registerIpc() {
         let genStart = 0;
         let routerLogged = false;
         const recordLocalRouterTurn = (outcome, torAborted) => {
-          if (routerLogged || cfg.routerJournal !== 'on' || tor || torAborted || torState.isQuarantined() || contextHasTor || cfg.rp === true) return;
+          if (routerLogged || cfg.routerJournal !== 'on' || torAborted || torState.isQuarantined() || contextHasTor || cfg.rp === true) return;
           routerLogged = true;
           try {
             const intendedMain = !wantsFast && (Boolean(influence.main) || analysis.active || explicitMain);
