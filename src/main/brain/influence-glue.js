@@ -10,6 +10,10 @@ function createNeutral() {
   return { ...NEUTRAL };
 }
 
+function stripBrainHints(messages) {
+  return Array.isArray(messages) ? messages.filter((m) => !m?.brainHint) : [];
+}
+
 /**
  * Evaluates Stage 6 reassessment influence before `prepLocal` on an ordinary local turn.
  * Never throws; calls `policy.commit` on `escalate` and `policy.stopHint` on `stop`.
@@ -28,7 +32,8 @@ function planInfluence({
   tor,
 } = {}) {
   try {
-    if (!cfg || cfg.brainShadow !== true || !policy || typeof policy.decide !== 'function') {
+    if (!cfg || cfg.brainShadow !== true || cfg.provider !== 'ollama' || env?.local !== true
+        || !policy || typeof policy.decide !== 'function') {
       return createNeutral();
     }
     const isRp = Boolean(env?.rp ?? (cfg.rp === true));
@@ -66,6 +71,7 @@ function planInfluence({
         wantsLocal: Boolean(env?.wantsLocal),
         mainActive: Boolean(env?.mainActive),
         gpuBusy: Boolean(env?.gpuBusy),
+        voice: Boolean(env?.voice),
         rp: false,
         tor: false,
         shortTrivial: text.trim().length < SHORT_TRIVIAL_LEN,
@@ -90,4 +96,4 @@ function planInfluence({
   }
 }
 
-module.exports = { planInfluence, SHORT_TRIVIAL_LEN };
+module.exports = { planInfluence, stripBrainHints, SHORT_TRIVIAL_LEN };

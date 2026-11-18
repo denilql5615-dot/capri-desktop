@@ -11,7 +11,7 @@ const { openRotatingJournal, MAX_DAY_TIME_MS } = require('./rotating-journal');
 const { freezeSnapshot } = require('./snapshot');
 const { verdictOf } = require('./amygdala');
 
-const NOOP_TURN = Object.freeze({ complete() {}, fail() {}, cancel() {} });
+const NOOP_TURN = Object.freeze({ complete() {}, fail() {}, cancel() {}, wasTorCancelled: () => false });
 const MAX_PENDING_WRITES = 64; // own publish chain is bounded too, not only the journal's queue
 const DEFAULT_PENDING_TTL_MS = 120000;
 const TOR_COOLDOWN_MS = 10 * 60 * 1000;
@@ -80,6 +80,7 @@ function createShadowHook({
   onPendingChange,
   onVerdict,
   verdictJudge,
+  preload = false,
 } = {}) {
   const buffer = createTaskBuffer(bufferOptions);
   const counts = {
@@ -92,6 +93,7 @@ function createShadowHook({
   };
   const activeTurns = new Set();
   const turnMeta = new WeakMap();
+  const torCancelledTurns = new WeakSet();
   let pending = null;
   let lastNotifiedPending = false;
   let lastTorAt = null;
@@ -105,6 +107,7 @@ function createShadowHook({
   let judgeEpoch = 0;
   let pendingWrites = 0;
   let memCore = createShadow();
+  let memReady = !preload;
   let hadPreexistingJournalState = false;
 
   function checkpointFromSnapshot(snap) {
@@ -188,22 +191,50 @@ function createShadowHook({
     return journal;
   }
 
+  if (preload && typeof dir === 'string' && dir) {
+    writeChain = writeChain.then(async () => {
+      if (disabled || closed) return;
+      let j;
+      try {
+        j = await ensureJournal();
+      } catch {
+        disabled = true;
+        memReady = false;
+        counts.observer_errors++;
+        return;
+      }
+      if (!j) return;
+      const cp = typeof j.exportCheckpoint === 'function' ? j.exportCheckpoint() : undefined;
+      if (cp) {
+        hadPreexistingJournalState = false;
+        try {
+          memCore = createShadow({ checkpoint: cp });
+        } catch {
+          memReady = false;
+          return;
+        }
+      }
+      if (pendingWrites === 0) memReady = true;
+    });
+  }
+
   function enqueuePublish(batch) {
     if (disabled || closed || pendingWrites >= MAX_PENDING_WRITES) { counts.discarded++; return; }
     const envelopes = batch.map((event) => ({ privacy: 'ordinary', event }));
     advanceMemCore(envelopes);
     pendingWrites++;
     writeChain = writeChain.then(async () => {
-      if (disabled) { counts.discarded++; return; }
+      if (disabled) { counts.discarded++; memReady = false; return; }
       let j;
       try {
         j = await ensureJournal();
       } catch {
         disabled = true; // journal open failed: stay quiet until restart
+        memReady = false;
         counts.observer_errors++;
         return;
       }
-      if (!j) { counts.discarded++; return; }
+      if (!j) { counts.discarded++; memReady = false; return; }
       try {
         const res = await j.appendBatch(envelopes);
         if (res?.status === 'accepted' || res?.status === 'duplicate') {
@@ -212,19 +243,33 @@ function createShadowHook({
             const cp = typeof j.exportCheckpoint === 'function' ? j.exportCheckpoint() : undefined;
             if (cp) {
               hadPreexistingJournalState = false;
-              try { memCore = createShadow({ checkpoint: cp }); } catch {}
+              try {
+                memCore = createShadow({ checkpoint: cp });
+                memReady = true;
+              } catch {
+                memReady = false;
+              }
             } else if (hadPreexistingJournalState && res?.state) {
               hadPreexistingJournalState = false;
-              try { memCore = createShadow({ checkpoint: checkpointFromSnapshot(res.state) }); } catch {}
+              try {
+                memCore = createShadow({ checkpoint: checkpointFromSnapshot(res.state) });
+                memReady = true;
+              } catch {
+                memReady = false;
+              }
+            } else {
+              memReady = true;
             }
           } else if (hadPreexistingJournalState) {
             hadPreexistingJournalState = false;
           }
         } else {
           counts.discarded++;
+          memReady = false;
         }
       } catch {
         counts.observer_errors++;
+        memReady = false;
       }
     }).finally(() => { pendingWrites--; });
   }
@@ -362,6 +407,7 @@ function createShadowHook({
           cleanup();
         }
       },
+      wasTorCancelled: () => torCancelledTurns.has(turn),
     });
     activeTurns.add(turn);
     if (meta && typeof meta === 'object') turnMeta.set(turn, { ...meta });
@@ -544,13 +590,16 @@ function createShadowHook({
       const curNow = Number(now());
       if (Number.isFinite(curNow)) lastTorAt = curNow;
       dropPending({ outcome: 'tor' });
-      for (const turn of [...activeTurns]) turn.cancel();
+      for (const turn of [...activeTurns]) {
+        torCancelledTurns.add(turn);
+        turn.cancel();
+      }
     } catch {}
   }
 
   // Read-only projection of core channels at `nowMs` plus current turn features (zero disk I/O, no state mutation).
   function peekChannels(nowMs, features = {}) {
-    if (disabled || closed || inTorQuarantine() || features?.tor === true) return null;
+    if (disabled || closed || !memReady || inTorQuarantine() || features?.tor === true) return null;
     try {
       const at = safeTime(nowMs === undefined || nowMs === null ? now() : nowMs);
       const baseSnap = memCore.snapshot();

@@ -130,13 +130,18 @@ export class Look {
     try {
       const spot = { x: win.x + win.w - 124, y: win.y + win.h - 54, w: 88, h: 30 };
       if (!(await this.capri.pointAt(spot, { label: t.prankLabel }))) return false;
+      if (this.chat.open || this.guide.running || this.panel.visible
+          || this.capri.busy || this.capri.stowed || this.capri.dormant || this.capri.hidden) {
+        return false;
+      }
       this.fx.crackle({ x: spot.x + spot.w / 2, y: spot.y + spot.h / 2 }, { life: 650, radius: 36 });
       this.voice.play('blip');
       const line = pick(t.prank);
-      this.panel.say({ kind: 'info', face: 'smug', line, hold: 4500 });
-      this.chat.onAnswer?.(line);
+      if (this.panel.say({ kind: 'info', face: 'smug', line, hold: 4500 }) !== false) {
+        this.chat.onAnswer?.(line);
+      }
       await sleep(3600);
-      return true;
+      return !this.chat.open;
     } finally {
       this.capri.stopPointing();
       this.pranking = false;

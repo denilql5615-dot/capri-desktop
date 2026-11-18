@@ -72,39 +72,36 @@ function parseJudgeReply(raw, userText = '') {
 }
 
 /**
- * Caches Ollama `/api/ps` loaded model names for `cacheMs` (default 3 s) and checks whether the
- * currently requested judge model (`targetModel` / `brains.current()`) is loaded on its own in VRAM.
- * Returns false (no swap) if nothing is loaded or both `brains.fast` and `brains.main` sit loaded.
+ * Picks the active judge model strictly from a fresh `/api/ps` loaded-model list:
+ * only 26B loaded -> 26B, only E4B loaded -> E4B, both / empty / any foreign model -> null.
  */
-function createLoadedModelCheck({
-  brains,
+function selectLoadedJudgeModel(loaded, { fastModel = FAST, mainModel = MAIN } = {}) {
+  if (!Array.isArray(loaded)) return null;
+  const unique = [...new Set(loaded.filter((m) => typeof m === 'string' && m))];
+  if (unique.length !== 1) return null;
+  return unique[0] === mainModel || unique[0] === fastModel ? unique[0] : null;
+}
+
+/**
+ * Queries `/api/ps` fresh right before each judge invocation (no cache, no `brains.current()`).
+ */
+function createLoadedModelSelector({
+  fastModel = FAST,
+  mainModel = MAIN,
   loadedModels,
-  now = Date.now,
-  cacheMs = 3000,
   timeoutMs = 300,
 } = {}) {
-  let psCache = { at: 0, models: null };
-
-  return async (signal, targetModel) => {
-    if (!brains || typeof loadedModels !== 'function') return false;
-    const nowMs = Number(now());
-    let loaded = psCache.models && (nowMs - psCache.at < cacheMs) ? psCache.models : null;
-    if (!loaded) {
-      const timeoutSig = AbortSignal.timeout(timeoutMs);
-      const psSignal = signal ? AbortSignal.any([signal, timeoutSig]) : timeoutSig;
-      const fetched = await loadedModels(psSignal);
-      if (!Array.isArray(fetched)) return false;
-      loaded = [...fetched];
-      psCache = { at: Number(now()), models: loaded };
+  return async (signal) => {
+    if (typeof loadedModels !== 'function') return null;
+    const timeoutSig = AbortSignal.timeout(timeoutMs);
+    const psSignal = signal ? AbortSignal.any([signal, timeoutSig]) : timeoutSig;
+    let fetched;
+    try {
+      fetched = await loadedModels(psSignal);
+    } catch {
+      return null;
     }
-    const current = typeof targetModel === 'string' && targetModel ? targetModel : brains.current?.();
-    if (!current) return false;
-    const hasFast = loaded.includes(brains.fast);
-    const hasMain = loaded.includes(brains.main);
-    if (hasFast && hasMain) return false;
-    if (current === brains.main) return hasMain;
-    if (current === brains.fast) return hasFast;
-    return loaded.includes(current);
+    return selectLoadedJudgeModel(fetched, { fastModel, mainModel });
   };
 }
 
@@ -151,10 +148,10 @@ function createVerdictJudge({
     while (arr.length && curNow - arr[0] >= windowMs) arr.shift();
   }
 
-  function pickModel() {
+  async function resolveActiveModel(signal) {
     try {
       const raw = typeof resolveModel === 'function'
-        ? resolveModel()
+        ? await resolveModel(signal)
         : typeof model === 'function'
           ? model()
           : model;
@@ -215,12 +212,6 @@ function createVerdictJudge({
       return { status: 'skipped_rate', verdict: null, model: null };
     }
 
-    const activeModel = pickModel();
-    if (!activeModel) {
-      counts.skipped_not_loaded++;
-      return { status: 'skipped_not_loaded', verdict: null, model: null };
-    }
-
     const entry = {
       controller: new AbortController(),
       timer: null,
@@ -228,14 +219,22 @@ function createVerdictJudge({
       cancelled: false,
     };
     active.add(entry);
-    entry.timer = setTimer(() => {
-      if (entry.cancelled) return;
-      entry.timedOut = true;
-      try { entry.controller.abort(new Error('verdict judge timeout')); } catch {}
-    }, activeModel === mainModel ? mainTimeoutMs : timeoutMs);
-    entry.timer?.unref?.();
 
     try {
+      const activeModel = await resolveActiveModel(entry.controller.signal);
+      if (entry.cancelled) return { status: 'aborted', verdict: null, model: null };
+      if (!activeModel) {
+        counts.skipped_not_loaded++;
+        return { status: 'skipped_not_loaded', verdict: null, model: null };
+      }
+
+      entry.timer = setTimer(() => {
+        if (entry.cancelled) return;
+        entry.timedOut = true;
+        try { entry.controller.abort(new Error('verdict judge timeout')); } catch {}
+      }, activeModel === mainModel ? mainTimeoutMs : timeoutMs);
+      entry.timer?.unref?.();
+
       if (typeof isModelReady === 'function') {
         const ready = await isModelReady(entry.controller.signal, activeModel);
         if (entry.cancelled) return { status: 'aborted', verdict: null, model: null };
@@ -321,6 +320,7 @@ module.exports = {
   isJudgeableText,
   messagesForJudge,
   parseJudgeReply,
-  createLoadedModelCheck,
+  selectLoadedJudgeModel,
+  createLoadedModelSelector,
   createVerdictJudge,
 };

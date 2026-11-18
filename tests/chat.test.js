@@ -508,3 +508,69 @@ test('Brain.onStop() and Jealousy.chase() do not hide panel when chat is open', 
   }
 });
 
+test('Look.prank() aborts cleanly when chat opens during pointAt and only speaks via onAnswer when panel.say succeeds', async () => {
+  globalThis.matchMedia = () => ({ matches: false, addEventListener() {} });
+  try {
+    const { Look } = await import(moduleUrl(path.join(__dirname, '../src/renderer/js/look.js')));
+    const makeLook = ({ sayResult = true, pointImpl }) => {
+      const log = { crackles: 0, blips: 0, says: 0, answers: 0, stops: 0 };
+      const win = { id: 1, x: 100, y: 100, w: 600, h: 400 };
+      const look = Object.assign(Object.create(Look.prototype), {
+        pranking: false,
+        capri: {
+          busy: false, dragging: false, stowed: false, dormant: false, hidden: false, act: false, pointing: false,
+          stance: 'stand', mode: 'idle',
+          windows: { wins: [win], fg: 1 },
+          canPoint: () => true,
+          pointAt: (spot, opts) => pointImpl(spot, opts, look),
+          stopPointing: () => { log.stops++; },
+        },
+        panel: {
+          visible: false,
+          say() { log.says++; return sayResult; },
+        },
+        brain: { t: { look: { prankLabel: 'тык', prank: ['нажала!'] } } },
+        chat: {
+          open: false,
+          onAnswer: () => { log.answers++; },
+        },
+        guide: { running: false },
+        fx: { crackle() { log.crackles++; } },
+        voice: { play() { log.blips++; } },
+      });
+      return { look, log };
+    };
+
+    // 1. Chat opens while await capri.pointAt() is pending -> returns false, no crackle/blip/say/onAnswer
+    let releasePoint;
+    const case1 = makeLook({
+      pointImpl: () => new Promise((r) => { releasePoint = r; }),
+    });
+    const p1 = case1.look.prank();
+    await new Promise((r) => setTimeout(r, 0));
+    case1.look.chat.open = true;
+    releasePoint(true);
+    const res1 = await p1;
+    assert.equal(res1, false);
+    assert.equal(case1.log.stops, 1);
+    assert.equal(case1.log.crackles, 0);
+    assert.equal(case1.log.blips, 0);
+    assert.equal(case1.log.says, 0);
+    assert.equal(case1.log.answers, 0);
+
+    // 2. Chat stays closed, panel.say returns false (blocked) -> onAnswer must NOT speak
+    const case2 = makeLook({
+      sayResult: false,
+      pointImpl: async () => true,
+    });
+    const p2 = case2.look.prank();
+    // Wait long enough only for pointAt; sleep(3600) will wait unless aborted, so verify synchronous calls after microtask?
+    // Actually sleep(3600) waits 3.6s; let's check both post-say immediately and after await:
+    await p2;
+    assert.equal(case2.log.says, 1);
+    assert.equal(case2.log.answers, 0);
+  } finally {
+    delete globalThis.matchMedia;
+  }
+});
+

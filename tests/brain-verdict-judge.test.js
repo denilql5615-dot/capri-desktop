@@ -11,7 +11,8 @@ const {
   VERDICT_SCHEMA,
   parseJudgeReply,
   messagesForJudge,
-  createLoadedModelCheck,
+  selectLoadedJudgeModel,
+  createLoadedModelSelector,
   createVerdictJudge,
 } = require('../src/main/brain/verdict-judge');
 const { createShadowHook } = require('../src/main/brain/shadow-hook');
@@ -174,6 +175,8 @@ test('circuit breaker disables after 5 consecutive errors/timeouts and recovers 
     signal.addEventListener('abort', () => reject(new Error('aborted by timeout')), { once: true });
   });
   const pendingTimeout = judge.judge('зависло');
+  // the timer starts once the judge model is resolved (async): let that settle first
+  await new Promise((r) => setImmediate(r));
   assert.equal(timers.at(-1).ms, 1500);
   timers.at(-1).fn();
   assert.equal((await pendingTimeout).status, 'error');
@@ -332,10 +335,19 @@ test('offline 70-phrase eval passes with deterministic stub and flags broken mod
   assert.equal(badReport.gates.false_minus_on_none_le_5pct, false);
 });
 
-test('dynamic brains.current() judges with E4B or 26B without swap, caches loaded list 3s, and tracks judged_fast/main', async () => {
+test('fresh /api/ps selector picks loaded 26B or E4B without cache or brains.current(), skipping both/empty/foreign', async () => {
+  assert.equal(selectLoadedJudgeModel([MAIN]), MAIN);
+  assert.equal(selectLoadedJudgeModel([FAST]), FAST);
+  assert.equal(selectLoadedJudgeModel([FAST, MAIN]), null);
+  assert.equal(selectLoadedJudgeModel([]), null);
+  assert.equal(selectLoadedJudgeModel(['qwen3:8b']), null);
+  assert.equal(selectLoadedJudgeModel([FAST, 'qwen3:8b']), null);
+  assert.equal(selectLoadedJudgeModel(null), null);
+
   let nowMs = Date.UTC(2026, 10, 18, 4, 0, 0);
   let loadedList = [FAST];
   let psCalls = 0;
+  let lastPsSignal = null;
   const seenModels = [];
 
   const brains = new Brains({
@@ -347,17 +359,22 @@ test('dynamic brains.current() judges with E4B or 26B without swap, caches loade
     setTimer: () => ({ unref() {} }),
     clearTimer: () => {},
   });
+  // Intentionally flip brains.current() to MAIN even though /api/ps only has FAST -> selector MUST ignore brains.current()!
+  await brains.use('main');
+  assert.equal(brains.current(), MAIN);
 
   const judge = createVerdictJudge({
-    model: () => brains.current(),
+    fastModel: FAST,
+    mainModel: MAIN,
     now: () => nowMs,
     maxPerMinute: 100,
-    isModelReady: createLoadedModelCheck({
-      brains,
-      now: () => nowMs,
-      cacheMs: 3000,
-      loadedModels: async () => {
+    resolveModel: createLoadedModelSelector({
+      fastModel: FAST,
+      mainModel: MAIN,
+      timeoutMs: 300,
+      loadedModels: async (psSignal) => {
         psCalls++;
+        lastPsSignal = psSignal;
         return loadedList;
       },
     }),
@@ -367,36 +384,33 @@ test('dynamic brains.current() judges with E4B or 26B without swap, caches loade
     },
   });
 
-  // 1. E4B active and alone in /api/ps -> judges with FAST
+  // 1. Only E4B loaded -> judges with FAST regardless of brains.current() === MAIN
   const rFast = await judge.judge('да, сработало', { dictVerdict: 1 });
   assert.deepEqual(rFast, { status: 'ok', verdict: 'PLUS', model: FAST });
   assert.equal(psCalls, 1);
+  assert.ok(lastPsSignal instanceof AbortSignal);
 
-  // 2. Brains swaps to 26B within 3s psCache -> cached list still has [FAST], so skips cleanly without extra /api/ps call
-  await brains.use('main');
-  assert.equal(brains.current(), MAIN);
-  const rMismatch = await judge.judge('ну норм');
-  assert.deepEqual(rMismatch, { status: 'skipped_not_loaded', verdict: null, model: null });
-  assert.equal(psCalls, 1);
-
-  // 3. After 3s cache expiry with BOTH loaded in VRAM -> skipped_not_loaded
-  nowMs += 3000;
-  loadedList = [FAST, MAIN];
-  const rBoth = await judge.judge('ну норм');
-  assert.deepEqual(rBoth, { status: 'skipped_not_loaded', verdict: null, model: null });
-  assert.equal(psCalls, 2);
-
-  // 4. After 3s with only 26B loaded -> judges with MAIN
-  nowMs += 3000;
+  // 2. Back-to-back (<1ms later, zero cache!) swap in /api/ps to [MAIN] -> immediately queries fresh /api/ps and picks MAIN
   loadedList = [MAIN];
   const rMain = await judge.judge('отлично, подошло', { dictVerdict: 1 });
   assert.deepEqual(rMain, { status: 'ok', verdict: 'PLUS', model: MAIN });
+  assert.equal(psCalls, 2);
+
+  // 3. Both loaded -> skipped_not_loaded (fresh check)
+  loadedList = [FAST, MAIN];
+  const rBoth = await judge.judge('ну норм');
+  assert.deepEqual(rBoth, { status: 'skipped_not_loaded', verdict: null, model: null });
   assert.equal(psCalls, 3);
 
-  // 5. After 3s with nothing loaded -> skipped_not_loaded
-  nowMs += 3000;
+  // 4. Foreign model loaded -> skipped_not_loaded
+  loadedList = ['qwen3:8b'];
+  assert.deepEqual(await judge.judge('норм вроде'), { status: 'skipped_not_loaded', verdict: null, model: null });
+  assert.equal(psCalls, 4);
+
+  // 5. Nothing loaded -> skipped_not_loaded
   loadedList = [];
   assert.deepEqual(await judge.judge('помогло'), { status: 'skipped_not_loaded', verdict: null, model: null });
+  assert.equal(psCalls, 5);
 
   assert.deepEqual(seenModels, [FAST, MAIN]);
   const st = judge.stats();
@@ -439,5 +453,15 @@ test('judging with the 26B gets the longer timeout (it sits partly in RAM), the 
   });
   await make(MAIN).judge('верно');
   await make(FAST).judge('верно');
-  assert.deepEqual(seen, [6000, 1500]);
+
+  // Selector-resolved models also get 6000 ms for 26B and 1500 ms for E4B
+  const makeFromPs = (psList) => createVerdictJudge({
+    resolveModel: createLoadedModelSelector({ loadedModels: async () => psList }),
+    callModel: async () => '{"v":"PLUS"}',
+    setTimer: (_fn, ms) => { seen.push(ms); return { unref() {} }; },
+    clearTimer: () => {},
+  });
+  await makeFromPs([MAIN]).judge('верно');
+  await makeFromPs([FAST]).judge('верно');
+  assert.deepEqual(seen, [6000, 1500, 6000, 1500]);
 });

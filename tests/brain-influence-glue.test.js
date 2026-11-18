@@ -5,14 +5,16 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { planInfluence } = require('../src/main/brain/influence-glue');
+const { planInfluence, stripBrainHints } = require('../src/main/brain/influence-glue');
 const { createReassessmentPolicy, STOP_HINT_TEXT } = require('../src/main/brain/reassessment-policy');
-const { createShadowHook } = require('../src/main/brain/shadow-hook');
+const { createShadowHook, TOR_COOLDOWN_MS } = require('../src/main/brain/shadow-hook');
 const { createChatGlue } = require('../src/main/brain/chat-glue');
 const { openRotatingJournal } = require('../src/main/brain/rotating-journal');
 const { createVerdictJudge } = require('../src/main/brain/verdict-judge');
 const { createShadow, CONFIG } = require('../src/main/brain/index');
 const { salience } = require('../src/main/brain/amygdala');
+const { createTorState } = require('../src/main/tor-guard');
+const brainsLib = require('../src/main/brains');
 const tor = require('../src/main/tor');
 
 const mkDir = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'brain-inf-')), 'brain-journal');
@@ -53,12 +55,12 @@ test('planInfluence: off mode returns neutral main/hint while tracking shadow_* 
   };
 
   const res = planInfluence({
-    cfg: { brainShadow: true, brainInfluence: 'off' },
+    cfg: { brainShadow: true, brainInfluence: 'off', provider: 'ollama' },
     said: 'нет, не сработало',
     messages: [{ role: 'user', content: 'нет, не сработало' }],
     hook: fakeHook,
     policy,
-    env: { brainsReady: true, isAuto: true, mainActive: false, now: clock },
+    env: { local: true, brainsReady: true, isAuto: true, mainActive: false, now: clock },
     tor,
   });
 
@@ -79,12 +81,12 @@ test('planInfluence: reassessment + channel 0.7 + contradiction escalates to mai
   };
 
   const res = planInfluence({
-    cfg: { brainShadow: true, brainInfluence: 'reassessment' },
+    cfg: { brainShadow: true, brainInfluence: 'reassessment', provider: 'ollama' },
     said: 'нет, ты ошиблась в этом расчёте',
     messages: [{ role: 'user', content: 'нет, ты ошиблась в этом расчёте' }],
     hook: fakeHook,
     policy,
-    env: { brainsReady: true, isAuto: true, mainActive: false, now: clock },
+    env: { local: true, brainsReady: true, isAuto: true, mainActive: false, now: clock },
     tor,
   });
 
@@ -103,12 +105,12 @@ test('planInfluence: overload yields STOP_HINT_TEXT once per active series, then
     peekChannels: () => ({ reassessment: 0.9, reassessment_active: 1, stability: 1, circadian_quiet: 0 }),
   };
   const call = () => planInfluence({
-    cfg: { brainShadow: true, brainInfluence: 'reassessment' },
+    cfg: { brainShadow: true, brainInfluence: 'reassessment', provider: 'ollama' },
     said: 'нет, опять ошибка в ответе',
     messages: [{ role: 'user', content: 'нет, опять ошибка в ответе' }],
     hook: fakeHook,
     policy,
-    env: { brainsReady: true, isAuto: true, now: clock },
+    env: { local: true, brainsReady: true, isAuto: true, now: clock },
     tor,
   });
 
@@ -134,35 +136,35 @@ test('planInfluence: Tor, RP, non-local worker routes, and hook errors all fail 
 
   // Tor wording in history context
   assert.deepEqual(planInfluence({
-    cfg: { brainShadow: true, brainInfluence: 'reassessment' },
+    cfg: { brainShadow: true, brainInfluence: 'reassessment', provider: 'ollama' },
     said: 'нет, это не то',
     messages: [{ role: 'user', content: 'найди через тор' }, { role: 'user', content: 'нет, это не то' }],
     hook: hotHook,
     policy,
-    env: { brainsReady: true, isAuto: true, now: clock },
+    env: { local: true, brainsReady: true, isAuto: true, now: clock },
     tor,
   }), { main: false, hint: null, decision: null, escalated: false });
 
   // RP mode
   assert.deepEqual(planInfluence({
-    cfg: { brainShadow: true, brainInfluence: 'reassessment', rp: true },
+    cfg: { brainShadow: true, brainInfluence: 'reassessment', provider: 'ollama', rp: true },
     said: 'нет, не то',
     messages: [{ role: 'user', content: 'нет, не то' }],
     hook: hotHook,
     policy,
-    env: { brainsReady: true, isAuto: true, rp: true, now: clock },
+    env: { local: true, brainsReady: true, isAuto: true, rp: true, now: clock },
     tor,
   }), { main: false, hint: null, decision: null, escalated: false });
 
   // Cloud worker / computer route
   assert.deepEqual(planInfluence({
-    cfg: { brainShadow: true, brainInfluence: 'reassessment' },
+    cfg: { brainShadow: true, brainInfluence: 'reassessment', provider: 'ollama' },
     said: 'нет, не то',
     messages: [{ role: 'user', content: 'нет, не то' }],
     route: { worker: 'claude' },
     hook: hotHook,
     policy,
-    env: { brainsReady: true, isAuto: true, now: clock },
+    env: { local: true, brainsReady: true, isAuto: true, now: clock },
     tor,
   }), { main: false, hint: null, decision: null, escalated: false });
 
@@ -171,12 +173,12 @@ test('planInfluence: Tor, RP, non-local worker routes, and hook errors all fail 
     peekChannels() { throw new Error('boom'); },
   };
   assert.deepEqual(planInfluence({
-    cfg: { brainShadow: true, brainInfluence: 'reassessment' },
+    cfg: { brainShadow: true, brainInfluence: 'reassessment', provider: 'ollama' },
     said: 'нет, не то',
     messages: [{ role: 'user', content: 'нет, не то' }],
     hook: brokenHook,
     policy,
-    env: { brainsReady: true, isAuto: true, now: clock },
+    env: { local: true, brainsReady: true, isAuto: true, now: clock },
     tor,
   }), { main: false, hint: null, decision: null, escalated: false });
   assert.equal(policy.stats().trigger_episodes, 0);
@@ -364,5 +366,298 @@ test('rotatingJournal.exportCheckpoint() + shadowHook memCore full resync preser
     assert.ok(p3.reassessment >= 0.45);
   } finally {
     await hook3.close();
+  }
+});
+
+test('Tor quarantine (chatTainted after cooldown expires) blocks verdict -> onVerdict/recordOutcome and marks mid-turn cancellation', async () => {
+  const dir = mkDir();
+  let clock = Date.UTC(2026, 10, 18, 13, 0, 0);
+  const torState = createTorState({ now: () => clock });
+  const policy = createReassessmentPolicy({ now: () => clock });
+  const outcomes = [];
+
+  const hook = createShadowHook({
+    dir,
+    now: () => clock,
+    uuid: makeUuid(10000),
+    isTorActive: () => torState.isQuarantined(),
+    onVerdict: (meta, verdict) => {
+      outcomes.push({ meta, verdict });
+      policy.recordOutcome({ escalated: Boolean(meta?.escalated), verdict });
+    },
+  });
+  const glue = createChatGlue({
+    getHook: () => hook,
+    tor,
+    isTorBlocked: () => torState.isQuarantined(),
+    isLocalModel: () => true,
+  });
+  const cfg = { brainShadow: true, brainInfluence: 'reassessment', provider: 'ollama', rp: false };
+
+  try {
+    // Mid-turn Tor activation marks shadowTurn.wasTorCancelled() === true
+    const midTurn = glue.startLocal({ worker: null }, [{ role: 'user', content: 'вопрос' }], cfg, new AbortController().signal, {
+      meta: { escalated: true },
+    });
+    assert.equal(midTurn.wasTorCancelled(), false);
+    torState.touch({ inChat: true });
+    hook.torTouched();
+    assert.equal(midTurn.wasTorCancelled(), true);
+
+    // Advance clock PAST cooldown expiry in the SAME chat: inCooldown() === false, chatTainted === true -> isQuarantined() === true
+    clock += TOR_COOLDOWN_MS + 60_000;
+    assert.equal(torState.inCooldown(), false);
+    assert.equal(torState.isChatTainted(), true);
+    assert.equal(torState.isQuarantined(), true);
+
+    // Clearnet phrasing in tainted chat after cooldown: must NOT start turn or deliver verdict to onVerdict / recordOutcome
+    assert.deepEqual(planInfluence({
+      cfg,
+      said: 'нет, неверно',
+      messages: [{ role: 'user', content: 'нет, неверно' }],
+      hook,
+      policy,
+      env: { local: true, brainsReady: true, isAuto: true, tor: torState.isQuarantined(), now: clock },
+      tor,
+    }), { main: false, hint: null, decision: null, escalated: false });
+
+    const blockedTurn = glue.startLocal({ worker: null }, [{ role: 'user', content: 'проверь' }], cfg, new AbortController().signal, {
+      meta: { escalated: true },
+    });
+    glue.afterSuccess(blockedTurn);
+    assert.equal(hook.verdict(1), false);
+    glue.beforeTurn([{ role: 'user', content: 'да, верно' }], cfg);
+    glue.afterTurn(cfg);
+    await hook.flush();
+
+    assert.equal(outcomes.length, 0);
+    assert.equal(policy.stats().base_pos, 0);
+    assert.equal(policy.stats().esc_pos, 0);
+    assert.equal(hook.stats().published, 0);
+  } finally {
+    await hook.close();
+  }
+});
+
+test('non-ollama / non-local turns get neutral planInfluence, stripBrainHints + llm.chat strip brainHint before OpenAI and Claude', async () => {
+  const clock = Date.UTC(2026, 10, 18, 14, 0, 0);
+  const policy = createReassessmentPolicy({ now: () => clock });
+  const hotHook = {
+    peekChannels: () => ({ reassessment: 0.9, reassessment_active: 1, stability: 1, circadian_quiet: 0 }),
+  };
+
+  // (a) Non-ollama providers or local=false must stay strictly neutral without spending stop_hint_count
+  for (const [cfg, env] of [
+    [{ brainShadow: true, brainInfluence: 'reassessment', provider: 'claude' }, { local: false, brainsReady: true, isAuto: true, now: clock }],
+    [{ brainShadow: true, brainInfluence: 'reassessment', provider: 'openai' }, { local: false, brainsReady: true, isAuto: true, now: clock }],
+    [{ brainShadow: true, brainInfluence: 'reassessment', provider: 'ollama' }, { local: false, brainsReady: true, isAuto: true, now: clock }],
+  ]) {
+    const res = planInfluence({
+      cfg,
+      said: 'нет, ошибка в коде',
+      messages: [{ role: 'user', content: 'нет, ошибка в коде' }],
+      hook: hotHook,
+      policy,
+      env,
+      tor,
+    });
+    assert.deepEqual(res, { main: false, hint: null, decision: null, escalated: false });
+  }
+  assert.equal(policy.stats().trigger_episodes, 0);
+  assert.equal(policy.stats().stop_hint_count, 0);
+
+  // (b) stripBrainHints leaves regular system/user messages intact and drops only brainHint: true
+  const rawMsgs = [
+    { role: 'system', content: 'персона' },
+    { role: 'user', content: 'привет, объясни кратко' },
+    { role: 'system', content: STOP_HINT_TEXT, brainHint: true },
+  ];
+  const stripped = stripBrainHints(rawMsgs);
+  assert.deepEqual(stripped, [
+    { role: 'system', content: 'персона' },
+    { role: 'user', content: 'привет, объясни кратко' },
+  ]);
+
+  // (c) llm.chat filters brainHint for non-ollama (OpenAI-compatible & Claude Code stdin never see brainHint)
+  const { EventEmitter } = require('node:events');
+  const { PassThrough } = require('node:stream');
+  const cp = require('node:child_process');
+  const llmPath = require.resolve('../src/main/llm');
+  const origFetch = globalThis.fetch;
+  const origSpawn = cp.spawn;
+  const prevCached = require.cache[llmPath];
+  delete require.cache[llmPath];
+
+  let seenOpenAiBody = null;
+  let seenClaudeStdin = '';
+  try {
+    globalThis.fetch = async (_url, init) => {
+      seenOpenAiBody = JSON.parse(init.body);
+      const sse = new ReadableStream({
+        start(ctrl) {
+          ctrl.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"ок"}}]}\n\ndata: [DONE]\n\n'));
+          ctrl.close();
+        },
+      });
+      return new Response(sse, { status: 200 });
+    };
+    cp.spawn = () => {
+      const child = new EventEmitter();
+      child.stdin = new PassThrough();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.stdin.on('data', (d) => { seenClaudeStdin += d.toString('utf8'); });
+      child.stdin.on('end', () => {
+        child.stdout.write(JSON.stringify({ type: 'result', result: 'ответ клода' }) + '\n');
+        child.stdout.end();
+        child.emit('close', 0);
+      });
+      return child;
+    };
+
+    const freshLlm = require('../src/main/llm');
+    await freshLlm.chat('openai', { apiKeys: { openai: 'sk-test' } }, {
+      model: 'gpt-4o',
+      messages: rawMsgs,
+    }, () => {}, new AbortController().signal);
+    assert.deepEqual(seenOpenAiBody.messages, stripped);
+
+    await freshLlm.chat('claude', {}, {
+      model: 'Claude Code',
+      messages: rawMsgs,
+    }, () => {}, new AbortController().signal);
+    assert.equal(seenClaudeStdin, 'привет, объясни кратко');
+    assert.equal(seenClaudeStdin.includes(STOP_HINT_TEXT), false);
+  } finally {
+    globalThis.fetch = origFetch;
+    cp.spawn = origSpawn;
+    delete require.cache[llmPath];
+    if (prevCached) require.cache[llmPath] = prevCached;
+  }
+});
+
+test('analysisMode feeds wantsMain into planInfluence -> user_main without spending budget', () => {
+  const clock = Date.UTC(2026, 10, 18, 15, 0, 0);
+  const policy = createReassessmentPolicy({ now: () => clock });
+  const hotHook = {
+    peekChannels: () => ({ reassessment: 0.72, reassessment_active: 1, stability: 1, circadian_quiet: 0 }),
+  };
+  const said = 'разбери документ подробно, нет, там ошибка';
+  const cfg = { brainShadow: true, brainInfluence: 'reassessment', provider: 'ollama', rp: false };
+  const analysis = brainsLib.analysisMode(cfg, { rolesReady: true, auto: true, tor: false, text: said });
+  assert.equal(analysis.active, true);
+
+  const res = planInfluence({
+    cfg,
+    said,
+    messages: [{ role: 'user', content: said }],
+    hook: hotHook,
+    policy,
+    env: {
+      local: true,
+      brainsReady: true,
+      isAuto: true,
+      mainActive: false,
+      gpuBusy: false,
+      wantsFast: brainsLib.wantsFast(said),
+      wantsMain: brainsLib.wantsMain(said) || analysis.active,
+      wantsLocal: brainsLib.wantsLocal(said),
+      now: clock,
+    },
+    tor,
+  });
+
+  assert.equal(res.main, false);
+  assert.equal(res.hint, null);
+  assert.equal(res.escalated, false);
+  assert.equal(res.decision?.action, 'none');
+  assert.equal(res.decision?.reason, 'user_main');
+  assert.equal(policy.stats().escalation_count, 0);
+  assert.equal(policy.stats().budgetLeft, 2);
+});
+
+test('shadowHook preload readiness (null before cold load -> journal state after, empty ready) and write-failure invalidation', async () => {
+  const baseTime = Date.UTC(2026, 10, 18, 16, 0, 0);
+
+  // 1. Existing non-empty journal: cold preload starts null, loads exportCheckpoint() asynchronously
+  const dirNonEmpty = mkDir();
+  let clk1 = baseTime;
+  const seedHook = createShadowHook({ dir: dirNonEmpty, now: () => (clk1 += 2000), uuid: makeUuid(11000) });
+  for (let i = 0; i < 2; i++) {
+    const t = seedHook.start({ worker: null }, { features: { urgency: 1, contradiction: 1 } });
+    t.complete({ verified: true, utility: -1 });
+  }
+  await seedHook.close();
+
+  const coldHook = createShadowHook({ dir: dirNonEmpty, preload: true, now: () => clk1 + 1000, uuid: makeUuid(12000) });
+  try {
+    assert.equal(coldHook.peekChannels(clk1 + 1000, { urgency: 1, contradiction: 0 }), null);
+    await coldHook.flush();
+    const loaded = coldHook.peekChannels(clk1 + 1000, { urgency: 1, contradiction: 0 });
+    assert.ok(loaded);
+    assert.ok(loaded.reassessment >= 0.45);
+  } finally {
+    await coldHook.close();
+  }
+
+  // 2. Empty directory with preload=true starts null, becomes ready after flush
+  const emptyDir = mkDir();
+  const emptyHook = createShadowHook({ dir: emptyDir, preload: true, now: () => baseTime, uuid: makeUuid(13000) });
+  try {
+    assert.equal(emptyHook.peekChannels(baseTime, { urgency: 0 }), null);
+    await emptyHook.flush();
+    const readyEmpty = emptyHook.peekChannels(baseTime, { urgency: 0 });
+    assert.ok(readyEmpty);
+    assert.equal(readyEmpty.reassessment, 0);
+  } finally {
+    await emptyHook.close();
+  }
+
+  // 3. Failed/rejected batch resets ready=false (peekChannels -> null) until next successful write rebuilds memCore
+  let writeAttempt = 0;
+  let coreFromDisk = createShadow();
+  const mockJournal = {
+    snapshot: () => coreFromDisk.snapshot(),
+    exportCheckpoint: () => coreFromDisk.exportCheckpoint(),
+    appendBatch: async (envs) => {
+      writeAttempt++;
+      if (writeAttempt === 1) throw new Error('disk EIO');
+      if (writeAttempt === 2) return { status: 'rejected' };
+      for (const env of envs) coreFromDisk.ingest(env);
+      return { status: 'accepted', state: coreFromDisk.snapshot() };
+    },
+    close: async () => {},
+  };
+
+  let clkFail = baseTime;
+  const failHook = createShadowHook({
+    dir: mkDir(),
+    preload: true,
+    openJournal: async () => mockJournal,
+    now: () => (clkFail += 1000),
+    uuid: makeUuid(14000),
+  });
+  try {
+    await failHook.flush();
+    assert.ok(failHook.peekChannels(clkFail + 1000, { urgency: 0 }));
+
+    // Attempt 1 throws -> ready becomes false, peekChannels returns null
+    failHook.start({ worker: null }, { features: { urgency: 1, contradiction: 1 } }).complete({ verified: true, utility: -1 });
+    await failHook.flush();
+    assert.equal(failHook.peekChannels(clkFail + 1000, { urgency: 0 }), null);
+
+    // Attempt 2 returns rejected -> still null
+    failHook.start({ worker: null }, { features: { urgency: 1, contradiction: 1 } }).complete({ verified: true, utility: -1 });
+    await failHook.flush();
+    assert.equal(failHook.peekChannels(clkFail + 1000, { urgency: 0 }), null);
+
+    // Attempt 3 succeeds with pendingWrites === 1 -> memCore rebuilds cleanly from exportCheckpoint() -> ready true
+    failHook.start({ worker: null }, { features: { urgency: 1, contradiction: 1 } }).complete({ verified: true, utility: -1 });
+    await failHook.flush();
+    const recovered = failHook.peekChannels(clkFail + 1000, { urgency: 0, contradiction: 0 });
+    assert.ok(recovered);
+    assert.ok(recovered.reassessment < 0.65); // only Attempt 3 is in disk core, NOT failed Attempts 1 & 2!
+  } finally {
+    await failHook.close();
   }
 });
