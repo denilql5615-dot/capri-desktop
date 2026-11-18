@@ -112,3 +112,32 @@ test('Segmenter: a segment from a little before speech to a pause; a click is no
   assert.strictEqual(got.length, 1);
   assert.strictEqual(got[0], 6 + 8 + 7); // six 100 ms blocks before speech, then speech and pause
 });
+
+test('Listen.finish and Listen.heard pass { voice: true } to chat.send', async () => {
+  const { Listen } = await load();
+  const sent = [];
+  const makeListen = () => Object.assign(Object.create(Listen.prototype), {
+    stream: {},
+    hearing: false,
+    host: {
+      transcribe: async () => ({ ok: true, text: 'капри, проверь расчёт' }),
+      wakeTrace() {},
+    },
+    chat: {
+      open: true,
+      turn: 0,
+      pending: null,
+      send(text, opts) { sent.push({ text, opts }); },
+    },
+    panel: { chatInput: null },
+    close: async () => new Uint8Array([1, 2, 3]),
+    hint() {},
+  });
+
+  await makeListen().finish();
+  await makeListen().heard(new Uint8Array([1, 2, 3]));
+  assert.deepStrictEqual(sent, [
+    { text: 'капри, проверь расчёт', opts: { voice: true } },
+    { text: 'проверь расчёт', opts: { voice: true } },
+  ]);
+});

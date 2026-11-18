@@ -533,7 +533,7 @@ export class Chat {
     this.panel.setChatBusy(false);
   }
 
-  async send(text) {
+  async send(text, { voice = false } = {}) {
     if (this.turn || !this.open) return;
     if (!this.agent) {
       const how = torHow(text);
@@ -602,7 +602,7 @@ export class Chat {
     const slow = wait && setTimeout(() => {
       if (this.turn === id && !this.answer) this.panel.stream(wait);
     }, worker ? 300 : LOADING_AFTER_MS); // passed on: said right away, with how to stop it
-    const res = await this.host.chatSend({ id, messages });
+    const res = await this.host.chatSend({ id, messages, voice: Boolean(voice) });
     clearTimeout(slow);
     if (this.turn !== id) {
       // closed meanwhile: your message goes too, or the next answer would answer it as well

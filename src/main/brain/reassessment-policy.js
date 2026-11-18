@@ -32,6 +32,9 @@ const DEFAULTS = Object.freeze({
   breaker_min_verified: 5, // §4: minimum verified escalation outcomes for relative failure check
   breaker_neg_rate_margin: 0.15, // §4: max allowed excess over baseline neg rate (+15 pp)
   breaker_cooldown_ms: 60 * 60 * 1000, // §4: 60-minute trip duration
+
+  // Stage 6 voice guard: avoid 6-12s cold E4B -> 26B swap silence during hands-free voice turns.
+  voice_cold_escalation: false,
 });
 
 // §2.2 (Variant C) + Lead decision (3): short 1-2 sentence system hint for stop mode, no promises.
@@ -213,6 +216,12 @@ function createReassessmentPolicy({ now = Date.now, config = {} } = {}) {
     } else {
       candidateAction = 'escalate';
       candidateReason = 'reassessment_optimum';
+    }
+
+    // Voice turns keep 26B warm-only: block cold escalation while still allowing stop hints.
+    if (candidateAction === 'escalate' && !cfg.voice_cold_escalation && ctx?.voice === true && ctx?.mainActive !== true) {
+      candidateAction = 'none';
+      candidateReason = 'voice_cold';
     }
 
     if (mode === 'reassessment') {

@@ -238,7 +238,7 @@ export class Listen {
       if (!this.chat.open) await this.chat.start();
       if (this.chat.open && !this.chat.turn) {
         this.host.wakeTrace?.('accepted');
-        this.chat.send(wake.rest);
+        this.chat.send(wake.rest, { voice: true });
       }
     } finally {
       this.hearing = false;
@@ -308,7 +308,7 @@ export class Listen {
       const answer = parseAnswer(res.text);
       return answer ? this.chat.answerPending(answer) : this.hint('Скажи «да», «на час» или «нет».');
     }
-    this.chat.send(res.text);
+    this.chat.send(res.text, { voice: true });
   }
 
   // her answer, out loud (only the latest: a new one, or you talking, cuts it off)

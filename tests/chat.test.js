@@ -574,3 +574,63 @@ test('Look.prank() aborts cleanly when chat opens during pointAt and only speaks
   }
 });
 
+test('Chat.send forwards voice flag to host.chatSend (false by default, true when { voice: true })', async () => {
+  globalThis.matchMedia = () => ({ matches: false, addEventListener() {} });
+  try {
+    const { Chat } = await import(moduleUrl(path.join(__dirname, '../src/renderer/js/chat.js')));
+    const seen = [];
+    const chat = Object.assign(Object.create(Chat.prototype), {
+      open: true,
+      turn: 0,
+      routing: 0,
+      agent: false,
+      cold: false,
+      warm: true,
+      opening: null,
+      answer: '',
+      verdictPending: false,
+      afterPending: false,
+      afterToken: 0,
+      history: [],
+      apps: [],
+      appsReady: Promise.resolve(),
+      shortModel: '',
+      brain: { t: { chat: { loading: '' } } },
+      bond: null,
+      capri: { pulse() {} },
+      host: {
+        chatLog() {},
+        chatRoute: async () => null,
+        chatSend: async (req) => {
+          seen.push(req);
+          return { ok: true, text: 'Ок.' };
+        },
+      },
+      panel: {
+        current: { chat: {}, actions: [] },
+        streaming: false,
+        setVerdict() {},
+        setChatBusy() {},
+        setActions() {},
+        chatTurn() {},
+        stream() {},
+        setFace() {},
+      },
+      asked: () => null,
+      persona: () => '',
+      languageNote: () => '',
+      remember() {},
+      listApps() {},
+      after: async () => {},
+    });
+
+    await chat.send('привет текстом');
+    await chat.send('привет голосом', { voice: true });
+    assert.equal(seen.length, 2);
+    assert.equal(seen[0].voice, false);
+    assert.equal(seen[1].voice, true);
+  } finally {
+    delete globalThis.matchMedia;
+  }
+});
+
