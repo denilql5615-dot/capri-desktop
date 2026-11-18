@@ -4,7 +4,13 @@
 // Pure/injected dependencies so Tor routing, two-circuit Gemini checks, worker context trimming,
 // and clearnet/logging refusals can be tested directly without Electron or network access.
 
-const TOR_COOLDOWN_MS = 10 * 60 * 1000;
+// 5 min (Danyal, 2026-11-18): long enough against timing correlation of a Tor session with his Google
+// account in Gemini, short enough not to block Gemini for long; cfg.torCooldownMin overrides (1..30)
+const TOR_COOLDOWN_MS = 5 * 60 * 1000;
+const cooldownFromConfig = (cfg) => {
+  const n = Number(cfg?.torCooldownMin);
+  return Number.isFinite(n) ? Math.min(30, Math.max(1, n)) * 60 * 1000 : TOR_COOLDOWN_MS;
+};
 const { contextMentionsTor } = require('./brain/shadow-hook');
 
 function shouldSkipChatPersistence({ torState, messages, tor } = {}) {
@@ -51,7 +57,7 @@ function escapeHeaderField(text) {
 }
 
 const TOR_CLOUD_BLOCK_MSG = 'Запрос с Tor/onion/даркнет-контекстом не отправляется в облачные модели. Выберите локальную модель Ollama.';
-const TOR_CAPTURE_BLOCK_MSG = 'Захват и просмотр экрана отключены в Tor-карантине (до нового чистого чата и конца 10-минутного окна).';
+const TOR_CAPTURE_BLOCK_MSG = 'Захват и просмотр экрана отключены в Tor-карантине (до нового чистого чата и конца карантина после Tor, 5 мин).';
 const TOR_MEDIA_BLOCK_MSG = 'Генерация фото и видео отключена в Tor-контексте и на время Tor-карантина (ничего не сохраняю в галерею).';
 const TOR_CLIPBOARD_BLOCK_MSG = 'Запись в системный буфер обмена отключена в Tor-контексте и на время Tor-карантина.';
 const TOR_PERSIST_BLOCK_MSG = 'В защищённом Tor-чате я не сохраняю заметки, память и задачи на диск и в Obsidian.';
@@ -352,7 +358,7 @@ function createAgentWeb({
     async askGemini({ prompt, chat, model, files } = {}) {
       if (torState && (torState.inCooldown() || torState.isChatTainted())) {
         touchTor({ extendCooldown: false });
-        throw new Error('Gemini временно недоступен: в этом чате использовался Tor или действует 10-минутный карантин.');
+        throw new Error('Gemini временно недоступен: в этом чате использовался Tor или ещё идёт карантин после Tor (5 минут).');
       }
       const fileHit = Array.isArray(files) && files.some((f) => typeof f === 'string' && hasExplicitTorCommand(f, tor));
       if (hasExplicitTorCommand(prompt, tor) || fileHit) {
@@ -436,6 +442,7 @@ function createAgentWeb({
 
 module.exports = {
   TOR_COOLDOWN_MS,
+  cooldownFromConfig,
   TOR_CLOUD_BLOCK_MSG,
   TOR_CAPTURE_BLOCK_MSG,
   TOR_MEDIA_BLOCK_MSG,
