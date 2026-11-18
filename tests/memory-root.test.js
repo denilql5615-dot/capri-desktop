@@ -257,7 +257,11 @@ test('strict verdict and exact contiguous span grounding enforce Unicode token/n
   assert.equal(memoryRoot.parseE4BVerdict('Думаю: SPAN: git stash push | VERDICT: YES').verdict, 'NO');
   assert.equal(memoryRoot.parseE4BVerdict('SPAN: git stash push | VERDICT: YES | VERDICT: NO').verdict, 'NO');
   assert.equal(memoryRoot.parseE4BVerdict('SPAN: NONE | VERDICT: YES').verdict, 'NO');
-  assert.equal(memoryRoot.parseE4BVerdict(`SPAN: ${Array(12).fill('word').join(' ')} | VERDICT: YES`).verdict, 'NO');
+  assert.equal(memoryRoot.parseE4BVerdict(`SPAN: ${'a'.repeat(121)} | VERDICT: YES`).verdict, 'NO');
+  const sentence = 'Use the first heading as a label for the disclosure widget.';
+  const extracted = memoryRoot.parseE4BVerdict(`SPAN: ${sentence} | VERDICT: YES`);
+  assert.equal(extracted.verdict, 'YES');
+  assert.equal(memoryRoot.isSpanGroundedInCard(extracted.span, { quote: sentence }), true);
 
   const cards = memoryRoot.getApprovedCards();
   const screwCard = cards.find((c) => c.id === 'root-020');

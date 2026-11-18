@@ -631,7 +631,7 @@ function parseE4BVerdict(rawText) {
   if (verdict === 'NO') {
     return { verdict: 'NO', span: /^none$/i.test(span) ? 'NONE' : span, raw: text };
   }
-  if (!span || /^(?:none|no_answer|n\/a|null)$/i.test(span) || span.length > 120 || span.split(/\s+/).length > 6) {
+  if (!span || /^(?:none|no_answer|n\/a|null)$/i.test(span) || span.length > 120) {
     return { verdict: 'NO', span: '', raw: text };
   }
   return { verdict: 'YES', span, raw: text };
