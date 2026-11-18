@@ -352,9 +352,9 @@ function createAgentWeb({
         endSession?.();
       }
     },
-    nomadSearch: ({ query, lang, books, limit }) => kiwix.search(query, { lang, books, limit, url: getConfig().kiwixUrl || kiwix.DEFAULT_URL }),
-    nomadRead: ({ link, chars }) => kiwix.read(link, { chars, url: getConfig().kiwixUrl || kiwix.DEFAULT_URL }),
-    nomadCatalog: async () => (await kiwix.catalog({ url: getConfig().kiwixUrl || kiwix.DEFAULT_URL })).map(({ name, title, lang }) => ({ name, title, lang })),
+    nomadSearch: ({ query, lang, books, limit }) => kiwix.fromLocalFirst((url) => kiwix.search(query, { lang, books, limit, url }), getConfig().kiwixUrl),
+    nomadRead: ({ link, chars }) => kiwix.fromLocalFirst((url) => kiwix.read(link, { chars, url }), getConfig().kiwixUrl),
+    nomadCatalog: async () => (await kiwix.fromLocalFirst((url) => kiwix.catalog({ url }), getConfig().kiwixUrl)).map(({ name, title, lang }) => ({ name, title, lang })),
     async askGemini({ prompt, chat, model, files } = {}) {
       if (torState && (torState.inCooldown() || torState.isChatTainted())) {
         touchTor({ extendCooldown: false });

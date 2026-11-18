@@ -7,7 +7,31 @@
 const { textOf } = require('./web');
 
 const DEFAULT_URL = 'http://192.168.0.108:8090';
+const LOCAL_URL = 'http://127.0.0.1:8090';
 const LANGS = { en: 'eng', ru: 'rus', eng: 'eng', rus: 'rus' };
+
+class KiwixUnavailable extends Error {}
+
+async function request(url, fetchImpl, timeout) {
+  let res;
+  try {
+    res = await fetchImpl(url, { signal: AbortSignal.timeout(timeout) });
+  } catch (cause) {
+    throw new KiwixUnavailable('Kiwix недоступен', { cause });
+  }
+  if (res.status >= 500) throw new KiwixUnavailable(`Kiwix недоступен (${res.status})`);
+  return res;
+}
+
+async function fromLocalFirst(run, serverUrl) {
+  serverUrl ||= DEFAULT_URL;
+  try {
+    return await run(LOCAL_URL);
+  } catch (err) {
+    if (!(err instanceof KiwixUnavailable) || serverUrl === LOCAL_URL) throw err;
+  }
+  return run(serverUrl);
+}
 
 const decode = (s) => String(s || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, '&');
 const strip = (s) => decode(String(s || '').replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim();
@@ -15,7 +39,7 @@ const tag = (xml, name) => (String(xml).match(new RegExp(`<${name}[^>]*>([\\s\\S
 
 /** The libraries: [{ name, title, lang, content }] (content: the /content/<book> path). */
 async function catalog({ url = DEFAULT_URL, fetchImpl = fetch } = {}) {
-  const res = await fetchImpl(`${url}/catalog/v2/entries?count=-1`, { signal: AbortSignal.timeout(20000) });
+  const res = await request(`${url}/catalog/v2/entries?count=-1`, fetchImpl, 20000);
   if (!res.ok) throw new Error(`kiwix catalog ${res.status}`);
   const xml = await res.text();
   // search wants the full dated name (the content path's last part), not the short <name>
@@ -49,7 +73,7 @@ async function search(pattern, { lang = 'en', books = null, limit = 10, start = 
     if (!names.length) throw new Error(`в NOMAD нет библиотек на языке «${lang}»`);
   }
   const which = names.map((b) => `books.name=${encodeURIComponent(b)}`).join('&');
-  const res = await fetchImpl(`${url}/search?${which}&pattern=${encodeURIComponent(q)}&pageLength=${Math.min(50, limit)}&start=${start}&format=xml`, { signal: AbortSignal.timeout(30000) });
+  const res = await request(`${url}/search?${which}&pattern=${encodeURIComponent(q)}&pageLength=${Math.min(50, limit)}&start=${start}&format=xml`, fetchImpl, 30000);
   const xml = await res.text();
   if (!res.ok || /<error>/.test(xml)) throw new Error(`kiwix search: ${strip(tag(xml, 'detail')) || res.status}`);
   return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].map(([, it]) => ({
@@ -65,9 +89,9 @@ async function search(pattern, { lang = 'en', books = null, limit = 10, start = 
 async function read(link, { chars = 12000, url = DEFAULT_URL, fetchImpl = fetch } = {}) {
   const path = String(link || '');
   if (!/^\/content\//.test(path)) throw new Error('нужна ссылка вида /content/<книга>/<статья>');
-  const res = await fetchImpl(`${url}${encodeURI(decodeURI(path))}`, { signal: AbortSignal.timeout(30000) });
+  const res = await request(`${url}${encodeURI(decodeURI(path))}`, fetchImpl, 30000);
   if (!res.ok) throw new Error(`kiwix read ${res.status}`);
   return textOf(await res.text()).slice(0, chars);
 }
 
-module.exports = { catalog, search, read, DEFAULT_URL };
+module.exports = { catalog, search, read, fromLocalFirst, DEFAULT_URL, LOCAL_URL };
