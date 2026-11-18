@@ -83,6 +83,7 @@ function planInfluence({
   quick = false,
   hook,
   policy,
+  ab,
   env = {},
   salience,
   contextMentionsTor,
@@ -115,14 +116,15 @@ function planInfluence({
     if (!channels) {
       return createNeutral();
     }
-    const ab = resolveInfluenceAb(cfg, env?.now !== undefined ? env.now : Date.now());
+    const preAb = ab && typeof ab === 'object' ? ab : (env?.ab && typeof env.ab === 'object' ? env.ab : null);
+    const resolvedAb = preAb || resolveInfluenceAb(cfg, env?.now !== undefined ? env.now : Date.now());
     const decision = policy.decide({
       channels,
       features,
       ctx: {
-        mode: ab.mode,
-        ab_group: ab.ab_group,
-        ab_day: ab.ab_day,
+        mode: resolvedAb.mode,
+        ab_group: resolvedAb.ab_group,
+        ab_day: resolvedAb.ab_day,
         brainsReady: Boolean(env?.brainsReady),
         isAuto: Boolean(env?.isAuto),
         wantsFast: Boolean(env?.wantsFast),

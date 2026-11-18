@@ -52,6 +52,8 @@ function escapeHeaderField(text) {
 
 const TOR_CLOUD_BLOCK_MSG = 'Запрос с Tor/onion/даркнет-контекстом не отправляется в облачные модели. Выберите локальную модель Ollama.';
 const TOR_CAPTURE_BLOCK_MSG = 'Захват и просмотр экрана отключены в Tor-карантине (до нового чистого чата и конца 10-минутного окна).';
+const TOR_MEDIA_BLOCK_MSG = 'Генерация фото и видео отключена в Tor-контексте и на время Tor-карантина (ничего не сохраняю в галерею).';
+const TOR_CLIPBOARD_BLOCK_MSG = 'Запись в системный буфер обмена отключена в Tor-контексте и на время Tor-карантина.';
 const TOR_PERSIST_BLOCK_MSG = 'В защищённом Tor-чате я не сохраняю заметки, память и задачи на диск и в Obsidian.';
 const TOR_MCP_DISABLED_MSG = 'Выдача Tor/darknet/.onion через MCP для облачных агентов временно отключена до запуска контейнерного изолятора. Локально в Капри поиск через Tor продолжает работать.';
 
@@ -92,8 +94,23 @@ async function pickTorSearchModel({ cfg, roles, brains, ollama, llm, chatModels,
   return null;
 }
 
-function guardChatRoute({ torState, text, tor } = {}) {
-  return Boolean(torState?.isQuarantined?.() || hasTorSignal(text, tor) || contextMentionsTor([{ role: 'user', content: text }], tor));
+function createTorSafeRoute({ routerVersion = 'router-v1' } = {}) {
+  return {
+    worker: null,
+    tier: 'routine',
+    computer: false,
+    localOnly: true,
+    route_path: 'router_keywords',
+    fallback_reason: 'prefix_guard',
+    router_latency_ms: 0,
+    router_version: routerVersion,
+    router: null,
+  };
+}
+
+function guardChatRoute({ torState, text, history, tor } = {}) {
+  const msgs = [...(Array.isArray(history) ? history : []), { role: 'user', content: text }];
+  return Boolean(torState?.isQuarantined?.() || hasTorSignal(text, tor) || contextMentionsTor(msgs, tor));
 }
 
 function guardWorkerChoice({ worker, torState, messages, tor } = {}) {
@@ -103,9 +120,34 @@ function guardWorkerChoice({ worker, torState, messages, tor } = {}) {
   return worker;
 }
 
+async function resolveSafeRoute({ torState, text, messages, recentTurns = [], tor, routeFn, signal, routerVersion = 'router-v1' } = {}) {
+  if (shouldSkipChatPersistence({ torState, messages, tor })) {
+    return createTorSafeRoute({ routerVersion });
+  }
+  const route = await routeFn(text, recentTurns, signal);
+  if (shouldSkipChatPersistence({ torState, messages, tor }) || guardWorkerChoice({ worker: route?.worker, torState, messages, tor }) !== route?.worker) {
+    return { ...route, worker: null, computer: false, localOnly: true };
+  }
+  return route;
+}
+
 function guardScreenCapture({ torState } = {}) {
   if (torState?.isQuarantined?.()) {
     return { ok: false, code: 'tor', error: TOR_CAPTURE_BLOCK_MSG };
+  }
+  return { ok: true };
+}
+
+function guardMediaGeneration({ torState, messages, tor } = {}) {
+  if (shouldSkipChatPersistence({ torState, messages, tor })) {
+    return { ok: false, code: 'tor', error: TOR_MEDIA_BLOCK_MSG };
+  }
+  return { ok: true };
+}
+
+function guardClipboardWrite({ torState, messages, tor } = {}) {
+  if (shouldSkipChatPersistence({ torState, messages, tor })) {
+    return { ok: false, code: 'tor', error: TOR_CLIPBOARD_BLOCK_MSG };
   }
   return { ok: true };
 }
@@ -360,6 +402,8 @@ module.exports = {
   TOR_COOLDOWN_MS,
   TOR_CLOUD_BLOCK_MSG,
   TOR_CAPTURE_BLOCK_MSG,
+  TOR_MEDIA_BLOCK_MSG,
+  TOR_CLIPBOARD_BLOCK_MSG,
   TOR_PERSIST_BLOCK_MSG,
   TOR_MCP_DISABLED_MSG,
   escapePromptDelimiters,
@@ -370,9 +414,13 @@ module.exports = {
   isLocalOnlyModelAllowed,
   pickSafeFallbackModel,
   pickTorSearchModel,
+  createTorSafeRoute,
   guardChatRoute,
   guardWorkerChoice,
+  resolveSafeRoute,
   guardScreenCapture,
+  guardMediaGeneration,
+  guardClipboardWrite,
   classifyWebSearch,
   selectWorkerMessages,
   shouldSkipChatPersistence,

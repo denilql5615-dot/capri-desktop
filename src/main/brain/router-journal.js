@@ -9,11 +9,15 @@ const path = require('node:path');
 const { canonical } = require('./index');
 const { ROUTE_PATHS, FALLBACK_REASONS, lenBucket, computeBinaryPropensity } = require('../router');
 const { utc5DayKey, MAX_DAY_TIME_MS } = require('./rotating-journal');
+const { resolveInfluenceAb } = require('./influence-glue');
 
 const SCHEMA_VERSION = 1;
 const MODELS = Object.freeze(['e4b', '26b', 'cloud', 'worker']);
 const WORKER_CLASSES = Object.freeze(['ordinary', 'unknown']);
 const MODES = Object.freeze(['off', 'shadow', 'on']);
+const AB_GROUPS = Object.freeze(['A', 'B']);
+const INFLUENCE_MODES = Object.freeze(['off', 'reassessment']);
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MODALITIES = Object.freeze(['text', 'voice']);
 const TARGETS = Object.freeze(['capri', 'computer', 'worker', 'none']);
 const TIERS = Object.freeze(['mechanical', 'routine', 'complex', 'deep']);
@@ -82,7 +86,8 @@ function sanitizeLogprobMap(obj, allowedTokens) {
 function sanitizeDecisionRecord(r) {
   assertExactKeys(r, [
     'schema_version', 'kind', 'router_version', 'weights_version', 'turn_id', 'ts_ms',
-    'mode', 'input_modality', 'route_path', 'fallback_reason',
+    'mode', 'ab_group', 'ab_day', 'influence_mode',
+    'input_modality', 'route_path', 'fallback_reason',
     'pre', 'raw_router', 'action', 'timing',
   ]);
   if (r.schema_version !== SCHEMA_VERSION) fail('schema_version');
@@ -92,6 +97,9 @@ function sanitizeDecisionRecord(r) {
   if (typeof r.turn_id !== 'string' || !UUID_V4.test(r.turn_id)) fail('turn_id');
   checkNum(r.ts_ms, 0, MAX_DAY_TIME_MS, { integer: true });
   checkChoice(r.mode, MODES);
+  if (r.ab_group !== null) checkChoice(r.ab_group, AB_GROUPS);
+  if (r.ab_day !== null && (typeof r.ab_day !== 'string' || !DAY_RE.test(r.ab_day))) fail('ab_day');
+  checkChoice(r.influence_mode, INFLUENCE_MODES);
   checkChoice(r.input_modality, MODALITIES);
   checkChoice(r.route_path, ROUTE_PATHS);
   checkChoice(r.fallback_reason, FALLBACK_REASONS);
@@ -175,6 +183,9 @@ function sanitizeDecisionRecord(r) {
     turn_id: r.turn_id,
     ts_ms: r.ts_ms,
     mode: r.mode,
+    ab_group: r.ab_group,
+    ab_day: r.ab_day,
+    influence_mode: r.influence_mode,
     input_modality: r.input_modality,
     route_path: r.route_path,
     fallback_reason: r.fallback_reason,
@@ -277,7 +288,11 @@ function buildDecisionRecord({
   coldSwap26b = false,
   outcome = 'completed',
   prediction,
-  mode = 'off',
+  mode,
+  abGroup,
+  abDay,
+  influenceMode,
+  startedAtMs,
   weightsVersion = 'v0',
 } = {}) {
   const userText = typeof said === 'string' ? said : String(text || '');
@@ -331,6 +346,13 @@ function buildDecisionRecord({
       : round6(1 - Math.min(1, riskVal) * 0.5);
   }
 
+  const refMs = startedAtMs !== undefined ? startedAtMs : tsMs;
+  const resolvedAb = resolveInfluenceAb(cfg, refMs !== undefined ? refMs : Date.now());
+  const finalInfluenceMode = INFLUENCE_MODES.includes(influenceMode) ? influenceMode : resolvedAb.mode;
+  const finalAbGroup = abGroup === undefined ? resolvedAb.ab_group : (AB_GROUPS.includes(abGroup) ? abGroup : null);
+  const finalAbDay = abDay === undefined ? resolvedAb.ab_day : (typeof abDay === 'string' && DAY_RE.test(abDay) ? abDay : null);
+  const finalMode = MODES.includes(mode) ? mode : (finalInfluenceMode === 'reassessment' ? 'shadow' : 'off');
+
   return {
     schema_version: SCHEMA_VERSION,
     kind: 'decision',
@@ -338,7 +360,10 @@ function buildDecisionRecord({
     weights_version: SAFE_TAG.test(String(weightsVersion)) ? String(weightsVersion) : 'v0',
     turn_id: turnId,
     ts_ms: Math.max(0, Math.trunc(Number(tsMs) || 0)),
-    mode: MODES.includes(mode) ? mode : 'off',
+    mode: finalMode,
+    ab_group: finalAbGroup,
+    ab_day: finalAbDay,
+    influence_mode: finalInfluenceMode,
     input_modality: voice ? 'voice' : 'text',
     route_path: routePath,
     fallback_reason: fallbackReason,
@@ -654,7 +679,7 @@ function createRouterJournal({
         return { status: 'skipped_rp' };
       }
       const turnId = typeof input.turnId === 'string' && UUID_V4.test(input.turnId) ? input.turnId : uuid();
-      const tsMs = input.tsMs !== undefined ? input.tsMs : now();
+      const tsMs = input.tsMs !== undefined ? input.tsMs : (input.startedAtMs !== undefined ? input.startedAtMs : now());
       const record = buildDecisionRecord({ ...input, turnId, tsMs });
       return recordDecision(record, { torActive: false, rp: false });
     } catch {
@@ -782,6 +807,8 @@ module.exports = {
   MODELS,
   WORKER_CLASSES,
   MODES,
+  AB_GROUPS,
+  INFLUENCE_MODES,
   MODALITIES,
   TARGETS,
   TIERS,

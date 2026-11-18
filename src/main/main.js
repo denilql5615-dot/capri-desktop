@@ -50,9 +50,13 @@ const {
   isLocalOnlyModelAllowed,
   pickSafeFallbackModel,
   pickTorSearchModel,
+  createTorSafeRoute,
   guardChatRoute,
   guardWorkerChoice,
+  resolveSafeRoute,
   guardScreenCapture,
+  guardMediaGeneration,
+  guardClipboardWrite,
   classifyWebSearch,
   selectWorkerMessages,
   shouldSkipChatPersistence,
@@ -759,6 +763,8 @@ async function quickAnswer(said) {
     const clipCmd = quick.parseClipboardCommand(said);
     if (clipCmd) {
       if (clipCmd.type === 'set') {
+        const clipGuard = guardClipboardWrite({ torState, messages: [{ role: 'user', content: said }], tor });
+        if (!clipGuard.ok) return clipGuard.error;
         await clipboard.writeText(clipCmd.text);
         return `Скопировала в буфер обмена ПК: «${clipCmd.text.slice(0, 120)}».`;
       }
@@ -1623,6 +1629,10 @@ let recentTurns = []; // the last exchange, for the router ("а теперь т�
 // only), 'photo' / 'video', 'stop', or null (her chat model). tier: how hard (router.js); computer: it
 // needs hands on the PC (handsFor).
 async function routeOf(text, context = [], signal) {
+  const routeMsgs = [...(Array.isArray(context) ? context : []), { role: 'user', content: text }];
+  if (shouldSkipChatPersistence({ torState, messages: routeMsgs, tor })) {
+    return createTorSafeRoute({ routerVersion: ROUTER_VERSION });
+  }
   const cfg = config.load();
   const media = photo.kind(text); // "скинь фото" / "скинь видео": ComfyUI, whoever is her brain
   if (media) return { worker: media, route_path: 'pre_photo', fallback_reason: 'prefix_guard', router_latency_ms: 0, router_version: ROUTER_VERSION, router: null };
@@ -1784,26 +1794,28 @@ async function pickComfyWorkflow() {
 
 // what to draw, worked out by her chat model while it's still loaded: tags, her or not, her line with it
 async function planPhoto(said, history, signal) {
+  const mediaGuard = guardMediaGeneration({
+    torState,
+    messages: [...(Array.isArray(history) ? history : []), { role: 'user', content: said }],
+    tor,
+  });
+  if (!mediaGuard.ok) return photo.parsePlan('', said);
   const cfg = config.load();
   if (cfg.provider !== 'ollama') return photo.parsePlan('', said);
   if (!chatModels) await refreshModels();
   const model = pickModel(cfg);
-  const torSensitive = torState.isQuarantined() || messagesHaveTor([...(Array.isArray(history) ? history : []), { role: 'user', content: said }]);
-  if (torSensitive && !isLocalOnlyModelAllowed({ cfg, model, llm, ollama, localOnly: true })) {
-    return photo.parsePlan('', said);
-  }
   const answer = await ollama.jsonChat({ model, messages: photo.promptMessages(said, history), schema: photo.SCHEMA }, signal).catch(() => '');
   return photo.parsePlan(answer, said);
 }
 
 /** A picture for what you said: into her gallery; her line with [[photo:<file>]], which her chats draw. */
 async function photoTask(said, history = [], signal) {
-  const cfg = config.load();
-  if (!chatModels) await refreshModels();
-  const torSensitive = torState.isQuarantined() || messagesHaveTor([...(Array.isArray(history) ? history : []), { role: 'user', content: said }]);
-  if (torSensitive && !isLocalOnlyModelAllowed({ cfg, model: pickModel(cfg), llm, ollama, localOnly: true })) {
-    return TOR_CLOUD_BLOCK_MSG;
-  }
+  const mediaGuard = guardMediaGeneration({
+    torState,
+    messages: [...(Array.isArray(history) ? history : []), { role: 'user', content: said }],
+    tor,
+  });
+  if (!mediaGuard.ok) return mediaGuard.error;
   if (!comfy.installed) return 'Не могу: ComfyUI на этом ПК не нашла. Поставь Comfy Desktop, и скину.';
   const plan = await planPhoto(said, history, signal);
   console.log(`[capri] photo (${plan.her ? 'her' : 'not her'}): ${plan.tags}`);
@@ -1811,9 +1823,7 @@ async function photoTask(said, history = [], signal) {
   const name = photo.galleryName();
   fs.mkdirSync(galleryDir(), { recursive: true });
   fs.writeFileSync(path.join(galleryDir(), name), png);
-  if (!torSensitive) {
-    fs.writeFileSync(path.join(galleryDir(), photo.metaName(name)), JSON.stringify({ said, prompt, her: plan.her, at: Date.now() }, null, 2));
-  }
+  fs.writeFileSync(path.join(galleryDir(), photo.metaName(name)), JSON.stringify({ said, prompt, her: plan.her, at: Date.now() }, null, 2));
   chatsWin?.webContents.send('gallery:changed');
   return `${plan.caption || 'Держи.'}\n[[photo:${name}]]`;
 }
@@ -1821,12 +1831,12 @@ async function photoTask(said, history = [], signal) {
 /** "Скинь видео": a still of her drawn, then brought to life (comfy.js animate); the clip into her gallery,
  * her line with [[photo:<file>.webm]], which her chats play. A few minutes: she says so first. */
 async function videoTask(said, history = [], signal) {
-  const cfg = config.load();
-  if (!chatModels) await refreshModels();
-  const torSensitive = torState.isQuarantined() || messagesHaveTor([...(Array.isArray(history) ? history : []), { role: 'user', content: said }]);
-  if (torSensitive && !isLocalOnlyModelAllowed({ cfg, model: pickModel(cfg), llm, ollama, localOnly: true })) {
-    return TOR_CLOUD_BLOCK_MSG;
-  }
+  const mediaGuard = guardMediaGeneration({
+    torState,
+    messages: [...(Array.isArray(history) ? history : []), { role: 'user', content: said }],
+    tor,
+  });
+  if (!mediaGuard.ok) return mediaGuard.error;
   if (!comfy.installed) return 'Не могу: ComfyUI на этом ПК не нашла. Поставь Comfy Desktop, и скину.';
   const missing = comfy.videoMissing();
   if (missing?.length) return `Видео пока не могу: не докачаны модели (${missing.join(', ')}).`;
@@ -1836,9 +1846,7 @@ async function videoTask(said, history = [], signal) {
   const name = photo.galleryName(new Date(), Math.random(), 'webm');
   fs.mkdirSync(galleryDir(), { recursive: true });
   fs.writeFileSync(path.join(galleryDir(), name), webm);
-  if (!torSensitive) {
-    fs.writeFileSync(path.join(galleryDir(), photo.metaName(name)), JSON.stringify({ said, prompt, her: true, video: true, at: Date.now() }, null, 2));
-  }
+  fs.writeFileSync(path.join(galleryDir(), photo.metaName(name)), JSON.stringify({ said, prompt, her: true, video: true, at: Date.now() }, null, 2));
   chatsWin?.webContents.send('gallery:changed');
   return `${plan.caption || 'Держи.'}\n[[photo:${name}]]`;
 }
@@ -2469,6 +2477,7 @@ function registerIpc() {
     const abort = new AbortController();
     chats.set(id, abort);
     const turnId = randomUUID();
+    const turnStartedAt = Date.now();
     try {
       let streamed = false;
       const send = (text) => {
@@ -2477,6 +2486,7 @@ function registerIpc() {
         chatsWin?.webContents.send('chats:delta', text); // her Chats window shows it coming too
       };
       const cfg = config.load();
+      const turnAb = require('./brain/influence-glue').resolveInfluenceAb(cfg, turnStartedAt);
       const lastUserMsg = Array.isArray(messages) ? messages.findLast((m) => m?.role === 'user') : null;
       const lastUserHasTor = lastUserMsg ? messagesHaveTor([lastUserMsg]) : false;
       const contextHasTor = messagesHaveTor(messages);
@@ -2496,13 +2506,18 @@ function registerIpc() {
       if (cfg.brainShadow === true) {
         try { getBrainChatGlue().beforeTurn(messages, cfg); } catch {}
       }
-      // who takes it (routeOf: Claude or Codex named, real work, a task on the PC, or hers) and how hard
-      let route = await routeOf(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-3, -1), abort.signal);
+      // Check Tor quarantine/origin BEFORE routeOf so Tor context never enters router LLM.
+      let route = await resolveSafeRoute({
+        torState,
+        text: yourWords(messages),
+        messages,
+        recentTurns: messages.filter((m) => m.role !== 'system').slice(-3, -1),
+        tor,
+        routeFn: routeOf,
+        signal: abort.signal,
+        routerVersion: ROUTER_VERSION,
+      });
       abort.signal.throwIfAborted();
-      // Tor-sensitive turns must never be sent to cloud workers even if an agent was named.
-      if (guardWorkerChoice({ worker: route.worker, torState, messages, tor }) !== route.worker) {
-        route = { ...route, worker: null, computer: false };
-      }
       const { worker } = route;
       const hands = await handsFor(worker, route.computer, abort.signal);
       abort.signal.throwIfAborted();
@@ -2587,7 +2602,8 @@ function registerIpc() {
               const modelEnum = (['claude', 'codex', 'gemini'].includes(worker) && actualWorker === null) ? '26b' : 'worker';
               getRouterJournal().recordTurn({
                 turnId,
-                tsMs: Date.now(),
+                tsMs: turnStartedAt,
+                startedAtMs: turnStartedAt,
                 cfg,
                 route,
                 said: saidNow,
@@ -2600,7 +2616,10 @@ function registerIpc() {
                 mainActive: brains.mainActive(),
                 generationLatencyMs: Math.max(0, Date.now() - genStart),
                 outcome: workerOutcome,
-                mode: 'off',
+                mode: turnAb.mode === 'reassessment' ? 'shadow' : 'off',
+                abGroup: turnAb.ab_group,
+                abDay: turnAb.ab_day,
+                influenceMode: turnAb.mode,
               });
             } catch {}
           }
@@ -2647,6 +2666,7 @@ function registerIpc() {
               quick: Boolean(fast),
               hook: getBrainShadowHook(),
               policy: getBrainInfluencePolicy(),
+              ab: turnAb,
               tor,
               env: {
                 local: localTurn,
@@ -2660,7 +2680,8 @@ function registerIpc() {
                 wantsLocal: brainsLib.wantsLocal(said),
                 rp: cfg.rp === true,
                 tor: torCtx,
-                now: Date.now(),
+                ab: turnAb,
+                now: turnStartedAt,
               },
             });
             turnEscalated = Boolean(influence.escalated);
@@ -2695,7 +2716,8 @@ function registerIpc() {
             const coldSwap26b = modelEnum === '26b' && !mainLoadedBefore;
             getRouterJournal().recordTurn({
               turnId,
-              tsMs: Date.now(),
+              tsMs: turnStartedAt,
+              startedAtMs: turnStartedAt,
               cfg,
               route,
               said,
@@ -2716,7 +2738,10 @@ function registerIpc() {
               generationLatencyMs: genLatencyMs,
               coldSwap26b,
               outcome,
-              mode: cfg.brainInfluence === 'reassessment' ? 'shadow' : 'off',
+              mode: turnAb.mode === 'reassessment' ? 'shadow' : 'off',
+              abGroup: turnAb.ab_group,
+              abDay: turnAb.ab_day,
+              influenceMode: turnAb.mode,
             });
           } catch {}
         };
@@ -2825,12 +2850,12 @@ function registerIpc() {
   ipcMain.on('chat:stop', (_e, id) => chats.get(id)?.abort());
   // who'll answer this message: 'claude', 'codex', 'computer', 'photo', 'video', 'stop' or null (her chat model)
   ipcMain.handle('chat:route', async (_e, text, id) => {
-    if (guardChatRoute({ torState, text, tor })) return null;
+    if (guardChatRoute({ torState, text, history: recentTurns, tor })) return null;
     const abort = new AbortController();
     chats.set(id, abort);
     try {
       const worker = (await routeOf(text, recentTurns, abort.signal)).worker;
-      return guardChatRoute({ torState, text, tor }) ? null : worker;
+      return guardChatRoute({ torState, text, history: recentTurns, tor }) ? null : worker;
     } finally {
       chats.delete(id);
     }
