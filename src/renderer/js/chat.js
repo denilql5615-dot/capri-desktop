@@ -696,7 +696,7 @@ export class Chat {
       return;
     }
     const snap = await this.host.lookSnap();
-    if (!snap.ok) return say(fmt(tl.failed, { error: snap.error }));
+    if (!snap.ok) return say(snap.code === 'tor' ? snap.error : fmt(tl.failed, { error: snap.error }));
     this.look.effect();
     const res = await this.host.lookSay({
       id: snap.id,
@@ -706,7 +706,7 @@ export class Chat {
     });
     if (!res.ok) {
       const model = String(res.model || '…').replace(/:latest$/, '');
-      return say(res.code === 'novision' ? fmt(tl.noVision, { model }) : res.code === 'noai' ? tl.noAI : fmt(tl.failed, { error: res.error || '…' }));
+      return say(res.code === 'tor' ? res.error : res.code === 'novision' ? fmt(tl.noVision, { model }) : res.code === 'noai' ? tl.noAI : fmt(tl.failed, { error: res.error || '…' }));
     }
     const answer = clean(res.text).replace(/^["“«]\s*|\s*["”»]$/g, '') || '…';
     this.seen = { text: answer, at: Date.now() };
