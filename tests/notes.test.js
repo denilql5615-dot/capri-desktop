@@ -89,3 +89,18 @@ test('her notes go in the vault you opened last', () => {
   assert.equal(notes.dirOf({ appData, documents: 'X' }), path.join(fresh, 'Capri'));
   assert.equal(notes.dirOf({ notesDir: 'D:/mine', appData, documents: 'X' }), 'D:/mine');
 });
+
+test('searchVault excludes top-level pending_review quarantine folder', () => {
+  const vault = tmp();
+  const dir = path.join(vault, 'Capri');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(path.join(vault, 'pending_review'), { recursive: true });
+  fs.mkdirSync(path.join(vault, 'GENESIS'), { recursive: true });
+  fs.writeFileSync(path.join(vault, 'pending_review', 'Карантин.md'), '# Карантин\n\nУникальный токен оникс42 из pending_review.');
+  fs.writeFileSync(path.join(vault, 'GENESIS', 'Разрешено.md'), '# Разрешено\n\nУникальный токен оникс42 из проверенной заметки.');
+
+  const found = notes.searchVault(dir, 'оникс42', 5);
+  assert.deepEqual(found.map((n) => n.file), [path.join('GENESIS', 'Разрешено.md')]);
+  assert.ok(found.every((n) => !n.file.toLowerCase().startsWith('pending_review')));
+  fs.rmSync(vault, { recursive: true, force: true });
+});
