@@ -14,7 +14,7 @@ const { verdictOf } = require('./amygdala');
 const NOOP_TURN = Object.freeze({ complete() {}, fail() {}, cancel() {}, wasTorCancelled: () => false });
 const MAX_PENDING_WRITES = 64; // own publish chain is bounded too, not only the journal's queue
 const DEFAULT_PENDING_TTL_MS = 120000;
-const TOR_COOLDOWN_MS = 10 * 60 * 1000;
+const TOR_COOLDOWN_MS = 5 * 60 * 1000; // same as tor-guard's default; main.js passes the configured value
 const PEEK_IDS = Object.freeze({
   event_id: '00000000-0000-4000-8000-000000000001',
   task_id: '00000000-0000-4000-8000-000000000002',

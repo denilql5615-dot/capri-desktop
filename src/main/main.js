@@ -135,6 +135,7 @@ function saveMemory(patch) {
   }
 }
 const torState = createTorState({
+  cooldownMs: require('./tor-guard').cooldownFromConfig(config.load()),
   isBrowserActive: () => {
     const cfg = config.load();
     const torPort = cfg.torBrowserPort || 9340;
@@ -2443,6 +2444,7 @@ function registerIpc() {
       // one folder per journal format: formats never mix, older folders are left untouched
       dir: path.join(app.getPath('userData'), 'brain-journal', `v${brainConfig.schema_version}`),
       preload: true,
+      torCooldownMs: require('./tor-guard').cooldownFromConfig(config.load()),
       verdictJudge,
       isTorActive: () => torState.inCooldown(),
       isChatTainted: () => torState.isChatTainted(),

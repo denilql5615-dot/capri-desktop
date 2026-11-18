@@ -104,7 +104,12 @@ test('classifyWebSearch: dark/onion without tor flag or Tor text in query routes
 });
 
 test('createTorState tracks lastTorAt 10-minute cooldown, live 9340 browser, and per-chat taint reset', () => {
-  assert.equal(TOR_COOLDOWN_MS, 10 * 60 * 1000);
+  assert.equal(TOR_COOLDOWN_MS, 5 * 60 * 1000);
+  const { cooldownFromConfig } = require('../src/main/tor-guard');
+  assert.equal(cooldownFromConfig({}), 5 * 60 * 1000);
+  assert.equal(cooldownFromConfig({ torCooldownMin: 1 }), 60 * 1000);
+  assert.equal(cooldownFromConfig({ torCooldownMin: 0 }), 60 * 1000);
+  assert.equal(cooldownFromConfig({ torCooldownMin: 99 }), 30 * 60 * 1000);
   let clock = 1_000_000;
   let browserOpen = false;
   const state = createTorState({ now: () => clock, isBrowserActive: () => browserOpen });
