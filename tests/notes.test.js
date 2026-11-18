@@ -129,3 +129,39 @@ test('ordinary memory search and explicit history expose only their respective c
   assert.deepEqual(titles(), ['Крона', 'Обычная заметка', 'Ствол']);
   assert.deepEqual(titles({ history: true }), ['Предыдущая']);
 });
+
+test('searchVault reconciles incomplete promotion journal before returning active or archive hits', (t) => {
+  const { createVaultPromotionStore } = require('../src/main/memory-promotion');
+  const vault = tmp();
+  const journalDir = tmp();
+  t.after(() => {
+    fs.rmSync(vault, { recursive: true, force: true });
+    fs.rmSync(journalDir, { recursive: true, force: true });
+  });
+  fs.mkdirSync(path.join(vault, '10_Ствол'), { recursive: true });
+  fs.mkdirSync(path.join(vault, 'pending_review'), { recursive: true });
+  fs.writeFileSync(
+    path.join(vault, '10_Ствол', 'Порт.md'),
+    '---\nid: card-port-1\nstatus: verified\nlayer: 10_ствол\ntopic: local-port\nsource: vault_doc\nlink: notes/old.md\nquote: порт 18080\n---\nТестовый порт макета ксилофон77: 18080.\n',
+  );
+  fs.writeFileSync(
+    path.join(vault, 'pending_review', 'Порт-новый.md'),
+    '---\nid: card-port-2\nstatus: candidate\nlayer: 10_ствол\ntopic: local-port\nsource: vault_doc\nlink: notes/new.md\nquote: порт 18090\n---\nТестовый порт макета ксилофон77: 18090.\n',
+  );
+
+  const crashingStore = createVaultPromotionStore({
+    vaultDir: vault,
+    journalDir,
+    beforeDiskStep: (stage) => {
+      if (stage === 'before_active_write') throw new Error('disk interrupted before active write');
+    },
+  });
+  const pre = crashingStore.preview('card-port-2', 'card-port-1');
+  assert.throws(() => crashingStore.confirm(pre, 'op-notes-wal'), /interrupted/);
+
+  // Reconciler runs automatically inside searchVault when journalDir is passed
+  const activeHits = notes.searchVault(path.join(vault, 'Capri'), 'ксилофон77', 5, { journalDir });
+  assert.deepEqual(activeHits.map((h) => h.title), ['Порт-новый']);
+  const archiveHits = notes.searchVault(path.join(vault, 'Capri'), 'ксилофон77', 5, { history: true, journalDir });
+  assert.deepEqual(archiveHits.map((h) => h.title), ['Порт']);
+});

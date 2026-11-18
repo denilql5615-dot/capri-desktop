@@ -794,3 +794,129 @@ test('P2-4: Guide.scene() closes idle open chat via chat.close / panel.hide({ fo
   }
 });
 
+test('memory promotion command previews changes, supports cancel, guards confirm against double click, and blocks Tor/agent', async (t) => {
+  globalThis.matchMedia = () => ({ matches: false, addEventListener() {} });
+  t.after(() => { delete globalThis.matchMedia; });
+  const { Chat } = await import(moduleUrl(path.join(__dirname, '../src/renderer/js/chat.js')));
+
+  const makeChat = (overrides = {}) => {
+    const rendered = [];
+    const actionsLog = [];
+    const calls = { preview: [], confirm: [], cancel: [], route: [] };
+    let actionHandler = null;
+    const previewObj = { operationId: 'op-ui-1', candidateId: 'cand-2', previousId: 'old-1', version: 'v0:abc' };
+    const chat = Object.assign(Object.create(Chat.prototype), {
+      open: true,
+      turn: 0,
+      afterToken: 0,
+      agent: false,
+      history: [],
+      capri: { pulse() {} },
+      syncVerdict() {},
+      panel: {
+        setChatBusy() {},
+        chatTurn() {},
+        stream(text) { rendered.push(text); },
+        setActions(actions, handler) {
+          actionsLog.push(actions.map((a) => a.id));
+          actionHandler = handler || null;
+        },
+      },
+      host: {
+        async chatMemoryPreview(query) {
+          calls.preview.push(query);
+          return { ok: true, text: 'Что изменится: old-1 -> archived, cand-2 -> verified', preview: previewObj };
+        },
+        async chatMemoryConfirm(pre) {
+          calls.confirm.push(pre.operationId);
+          return { ok: true, text: 'Подтверждено: cand-2.' };
+        },
+        async chatMemoryCancel(pre) {
+          calls.cancel.push(pre.operationId);
+          return { ok: true, text: 'Замена отменена, ничего не записано.' };
+        },
+        chatRoute(text) { calls.route.push(text); return null; },
+        chatSend() { return ''; },
+        chatLog() {},
+      },
+      remember() { assert.fail('Memory promotion preview/confirm must stay out of chat history'); },
+      ...overrides,
+    });
+    return { chat, rendered, actionsLog, calls, click: (id) => actionHandler?.(id) };
+  };
+
+  // 1. Cancel path leaves confirm untouched
+  const cancelCase = makeChat();
+  await cancelCase.chat.send('Капри, проверь память: локальный порт');
+  assert.deepEqual(cancelCase.calls.preview, ['локальный порт']);
+  assert.deepEqual(cancelCase.actionsLog.at(-1), ['confirm', 'cancel']);
+  await cancelCase.click('cancel');
+  assert.deepEqual(cancelCase.calls.cancel, ['op-ui-1']);
+  assert.deepEqual(cancelCase.calls.confirm, []);
+  assert.match(cancelCase.rendered.at(-1), /Замена отменена/);
+
+  // 2. Confirm path fires only once even if clicked twice rapidly
+  const confirmCase = makeChat();
+  await confirmCase.chat.send('подтвердить память');
+  await Promise.all([confirmCase.click('confirm'), confirmCase.click('confirm')]);
+  assert.deepEqual(confirmCase.calls.confirm, ['op-ui-1']);
+  assert.deepEqual(confirmCase.calls.cancel, []);
+  assert.match(confirmCase.rendered.at(-1), /Подтверждено: cand-2/);
+
+  // 3. Tor query is blocked locally before touching preview IPC
+  const torCase = makeChat();
+  await torCase.chat.send('подтверди память: http://exampleonion1234.onion');
+  assert.deepEqual(torCase.calls.preview, []);
+  assert.match(torCase.rendered.at(-1), /Tor-диалоге/);
+
+  // 4. Agent mode does not intercept user-only confirmation command
+  const agentCase = makeChat({
+    agent: true,
+    apps: [],
+    appsReady: Promise.resolve(),
+    brain: { t: { chat: { working: '', loading: '', failed: '' } } },
+    remember() {},
+    asked: () => null,
+    persona: () => 'persona',
+    languageNote: () => '',
+    listApps() {},
+    after: async () => {},
+  });
+  agentCase.chat.panel.current = { chat: {}, actions: [] };
+  agentCase.chat.panel.setFace = () => {};
+  agentCase.chat.host.chatSend = async () => ({ ok: true, text: 'agent' });
+  await agentCase.chat.send('подтверди память');
+  assert.deepEqual(agentCase.calls.preview, []);
+
+  // 5. Sending another message or closing chat dismisses leftover promotion pending callback
+  const staleMsgCase = makeChat({
+    apps: [],
+    appsReady: Promise.resolve(),
+    capri: { pulse() {}, nextMove: 0, nextGaze: 0 },
+    brain: { t: { chat: { working: '', loading: '', failed: '' } } },
+    remember() {},
+    asked: () => null,
+    persona: () => 'persona',
+    languageNote: () => '',
+    listApps() {},
+    after: async () => {},
+  });
+  staleMsgCase.chat.panel.current = { chat: {}, actions: [] };
+  staleMsgCase.chat.panel.setFace = () => {};
+  staleMsgCase.chat.host.chatRoute = async () => null;
+  staleMsgCase.chat.host.chatSend = async () => ({ ok: true, text: 'ok' });
+  await staleMsgCase.chat.send('подтверди память');
+  await staleMsgCase.chat.send('обычный вопрос без клика');
+  staleMsgCase.chat.answerPending('yes');
+  assert.deepEqual(staleMsgCase.calls.confirm, []);
+  assert.deepEqual(staleMsgCase.calls.cancel, []);
+
+  const closeCase = makeChat({ capri: { pulse() {}, nextMove: 0, nextGaze: 0 } });
+  closeCase.chat.host.focusOverlay = () => {};
+  await closeCase.chat.send('подтверди память');
+  closeCase.chat.panel.hide = () => {};
+  closeCase.chat.close(true);
+  closeCase.chat.answerPending('yes');
+  assert.deepEqual(closeCase.calls.confirm, []);
+});
+

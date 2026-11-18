@@ -33,6 +33,7 @@ const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
 const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('./hub-artifacts');
 const notes = require('./notes');
+const { registerMemoryPromotionIpc } = require('./memory-promotion');
 const pim = require('./pim');
 const pimImap = require('./pim-imap');
 const pimMcp = require('./pim-mcp');
@@ -86,9 +87,9 @@ const HUB_ICON = path.join(ROOT, 'assets', 'icons', 'capri.png');
 // Her data (config, memory, chats) in %APPDATA%capri-desktop whether she runs from the repo or installed:
 // installed, Electron would name the folder after her product name ("Capri Desktop"), and "Capri" is
 // GENESIS's, the Capri before her, still installed alongside
-app.setPath('userData', path.join(app.getPath('appData'), 'capri-desktop'));
-app.setName(HUB_NAME);
 const DEV = process.argv.includes('--dev');
+app.setPath('userData', DEV && process.env.CAPRI_USER_DATA ? path.resolve(process.env.CAPRI_USER_DATA) : path.join(app.getPath('appData'), 'capri-desktop'));
+app.setName(HUB_NAME);
 const PORT = Number(process.env.CAPRI_PORT) || 47823;
 const SOUND_EXT = /\.(mp3|wav|ogg|m4a)$/i;
 
@@ -803,7 +804,7 @@ async function quickAnswer(said) {
     const searchQ = quick.parseQuickSearchCommand(said);
     if (searchQ) {
       const [vaultHits, fileHits] = await Promise.all([
-        Promise.resolve(notes.searchVault(notesDir(), searchQ, 4)).catch(() => []),
+        Promise.resolve(notes.searchVault(notesDir(), searchQ, 4, { journalDir: path.join(app.getPath('userData'), 'memory-journal') })).catch(() => []),
         files.search(searchQ).catch(() => []),
       ]);
       return quick.quickSearchAnswer({ query: searchQ, vaultHits, fileHits });
@@ -2612,6 +2613,7 @@ function registerIpc() {
     if (!brainShadowHook || config.load().brainShadow !== true) return;
     try { brainShadowHook.verdict(v); } catch {}
   });
+  const memoryJournalDir = () => path.join(app.getPath('userData'), 'memory-journal');
   ipcMain.handle('chat:memory-history', (event, text) => {
     if (event.sender !== overlay?.webContents) throw new Error('Доступно только из диалога Капри.');
     const query = typeof text === 'string' ? text.trim() : '';
@@ -2619,10 +2621,21 @@ function registerIpc() {
     if (shouldSkipChatPersistence({ torState, messages: [{ role: 'user', content: query }], tor })) {
       return 'Архив памяти сейчас недоступен в этом диалоге.';
     }
-    const vaultHits = notes.searchVault(notesDir(), query, 4, { history: true });
+    const vaultHits = notes.searchVault(notesDir(), query, 4, { history: true, journalDir: memoryJournalDir() });
     return vaultHits.length
       ? `Архив памяти\n${quick.quickSearchAnswer({ query, vaultHits })}`
       : `В архиве памяти ничего не нашлось по запросу «${query}».`;
+  });
+  registerMemoryPromotionIpc({
+    ipcMain,
+    isOverlaySender: (event) => event.sender === overlay?.webContents,
+    notesDir,
+    memoryJournalDir,
+    torState,
+    tor,
+    shouldSkipChatPersistence,
+    torBlockMsg: TOR_PERSIST_BLOCK_MSG,
+    randomUUID,
   });
   let verifiedNomadSource = null;
   ipcMain.handle('chat:send', async (_e, { id, messages, voice }) => {
