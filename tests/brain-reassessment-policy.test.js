@@ -434,3 +434,48 @@ test('8. CLARIFY, wantsMain/wantsLocal, double-commit idempotency, and stopHint 
   assert.equal(policy.stopHint(), STOP_HINT_TEXT);
   assert.equal(policy.stats().stop_hint_count, 2);
 });
+
+test('9. voice turns block cold escalation (none/voice_cold, off mode skips shadow_escalate), allow hot escalation & stop', () => {
+  const clock = DAY_TIME_MS;
+  assert.equal(DEFAULTS.voice_cold_escalation, false);
+  const policy = createReassessmentPolicy({ now: () => clock });
+  const optChannels = { reassessment: 0.72, reassessment_active: 1, stability: 0.90, stability_active: 0, circadian_quiet: 0 };
+  const overloadChannels = { ...optChannels, reassessment: 0.90 };
+  const features = { contradiction: 1, urgency: 0 };
+  const baseCtx = { mode: 'reassessment', brainsReady: true, isAuto: true };
+
+  // Voice + cold (mainActive: false) -> none/voice_cold, budget untouched
+  const voiceCold = policy.decide({ channels: optChannels, features, ctx: { ...baseCtx, voice: true, mainActive: false } });
+  assert.deepEqual({ action: voiceCold.action, reason: voiceCold.reason }, { action: 'none', reason: 'voice_cold' });
+  assert.equal(policy.commit(voiceCold), false);
+  assert.equal(policy.stats().budgetLeft, 2);
+  assert.equal(policy.stats().escalation_count, 0);
+
+  // Voice + cold with overload -> stop is still allowed
+  const voiceStop = policy.decide({ channels: overloadChannels, features, ctx: { ...baseCtx, voice: true, mainActive: false } });
+  assert.deepEqual({ action: voiceStop.action, reason: voiceStop.reason }, { action: 'stop', reason: 'overload' });
+  assert.equal(policy.stopHint(), STOP_HINT_TEXT);
+
+  // Voice + hot (mainActive: true) -> escalate
+  const voiceHot = policy.decide({ channels: optChannels, features, ctx: { ...baseCtx, voice: true, mainActive: true } });
+  assert.equal(voiceHot.action, 'escalate');
+  assert.equal(voiceHot.reason, 'reassessment_optimum');
+  assert.equal(policy.commit(voiceHot), true);
+  assert.equal(policy.stats().budgetLeft, 1);
+
+  // Text + cold -> escalate as before
+  const textCold = policy.decide({ channels: optChannels, features, ctx: { ...baseCtx, voice: false, mainActive: false } });
+  assert.equal(textCold.action, 'escalate');
+  assert.equal(textCold.reason, 'reassessment_optimum');
+
+  // Off mode + voice + cold -> none/voice_cold, does NOT increment shadow_escalate
+  const offPolicy = createReassessmentPolicy({ now: () => clock });
+  const offVoiceCold = offPolicy.decide({
+    channels: optChannels,
+    features,
+    ctx: { mode: 'off', brainsReady: true, isAuto: true, voice: true, mainActive: false },
+  });
+  assert.deepEqual({ action: offVoiceCold.action, reason: offVoiceCold.reason }, { action: 'none', reason: 'voice_cold' });
+  assert.equal(offPolicy.stats().shadow_trigger_episodes, 1);
+  assert.equal(offPolicy.stats().shadow_escalate, 0);
+});

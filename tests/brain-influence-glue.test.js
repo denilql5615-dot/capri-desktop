@@ -661,3 +661,58 @@ test('shadowHook preload readiness (null before cold load -> journal state after
     await failHook.close();
   }
 });
+
+test('planInfluence forwards env.voice into policy.decide ctx and blocks cold voice escalation', () => {
+  const clock = Date.UTC(2026, 10, 18, 12, 0, 0);
+  const hotHook = {
+    peekChannels: () => ({ reassessment: 0.72, reassessment_active: 1, stability: 0.9, circadian_quiet: 0 }),
+  };
+  const cfg = { brainShadow: true, brainInfluence: 'reassessment', provider: 'ollama' };
+  const said = 'нет, ты ошиблась, проверь ещё раз';
+
+  let seenVoice;
+  const spyPolicy = {
+    decide(arg) {
+      seenVoice = arg.ctx.voice;
+      return { action: 'none', reason: 'voice_cold', evc: 0.3, budgetLeft: 2 };
+    },
+  };
+  planInfluence({
+    cfg,
+    said,
+    messages: [{ role: 'user', content: said }],
+    hook: hotHook,
+    policy: spyPolicy,
+    env: { local: true, brainsReady: true, isAuto: true, mainActive: false, voice: true, now: clock },
+    tor,
+  });
+  assert.equal(seenVoice, true);
+
+  const policy = createReassessmentPolicy({ now: () => clock });
+  const coldVoice = planInfluence({
+    cfg,
+    said,
+    messages: [{ role: 'user', content: said }],
+    hook: hotHook,
+    policy,
+    env: { local: true, brainsReady: true, isAuto: true, mainActive: false, voice: true, now: clock },
+    tor,
+  });
+  assert.equal(coldVoice.main, false);
+  assert.equal(coldVoice.escalated, false);
+  assert.equal(coldVoice.decision?.reason, 'voice_cold');
+  assert.equal(policy.stats().escalation_count, 0);
+
+  const hotVoice = planInfluence({
+    cfg,
+    said,
+    messages: [{ role: 'user', content: said }],
+    hook: hotHook,
+    policy,
+    env: { local: true, brainsReady: true, isAuto: true, mainActive: true, voice: true, now: clock },
+    tor,
+  });
+  assert.equal(hotVoice.main, true);
+  assert.equal(hotVoice.escalated, true);
+  assert.equal(policy.stats().escalation_count, 1);
+});
