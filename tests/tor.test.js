@@ -41,9 +41,11 @@ test('chat: darknet words search onion sites (Ahmia) over Tor; an onion link is 
   assert.equal(torHow('что такое даркнет'), null); // a question about it, not a search in it
 });
 
-test('tor.wantsTor / withoutTor (main side) agree with the chat', () => {
+test('tor.wantsTor / withoutTor / onionLink (main side) agree with the chat and reject embedded query .onion', () => {
   assert.ok(tor.wantsDark('найди в даркнете'));
   assert.equal(tor.onionLink('глянь juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion/x'), 'http://juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion/x');
+  assert.equal(tor.onionLink('https://evil.example/?next=http://juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion/x'), null);
+  assert.equal(tor.onionLink('https://evil.example/path/juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion/x'), null);
   assert.ok(tor.wantsTor('через тор'));
   assert.ok(tor.wantsTor('открой abc.onion'));
   assert.ok(tor.wantsTor('поищи через онион'));
@@ -75,6 +77,13 @@ test('TOR profile prefs: everything through Tor with remote DNS, no direct fallb
     'user_pref("places.history.enabled", false);',
     'user_pref("privacy.sanitize.sanitizeOnShutdown", true);',
     'user_pref("dom.security.https_only_mode", true);',
+    'user_pref("browser.download.useDownloadDir", false);',
+    'user_pref("browser.download.manager.showWhenStarting", false);',
+    'user_pref("browser.download.start_downloads_in_tmp_dir", false);',
+    'user_pref("browser.helperApps.neverAsk.saveToDisk", "");',
+    'user_pref("pdfjs.disabled", true);',
+    'user_pref("webgl.disabled", true);',
+    'user_pref("javascript.options.wasm", false);',
   ]) assert.ok(p.includes(line), line);
 });
 

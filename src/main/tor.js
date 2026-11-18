@@ -20,12 +20,23 @@ const CHECK_URL = 'https://check.torproject.org/api/ip';
 // "в даркнете", "по дарквебу", "в говносетях", "сетевая помойка": onion sites, searched with Ahmia, over Tor
 const DARK_WORD = /(?<!\p{L})(?:дарк\s?веб\p{L}*|дарк\s?нет\p{L}*|darkweb|dark\s+web|darknet|говносет\p{L}*|сетев\p{L}*\s+помойк\p{L}*)(?!\p{L})/iu;
 const DARK_PHRASE = /(?<!\p{L})(?:в|во|по|на|через|in|on)?\s*(?:дарк\s?веб\p{L}*|дарк\s?нет\p{L}*|darkweb|dark\s+web|darknet|говносет\p{L}*|сетев\p{L}*\s+помойк\p{L}*)(?!\p{L})/giu;
-// a v3 onion address, with its path if given: read as it is
-const ONION_LINK = /(?:https?:\/\/)?[a-z2-7]{56}\.onion(?:\/[^\s"'<>]*)?/i;
+// a v3 onion address, with its path if given: read as it is (never extracted from a foreign URL's query/path)
+const URL_TOKEN = /https?:\/\/[^\s"'<>]+/gi;
+const V3_ONION_HOST = /^[a-z2-7]{56}\.onion$/i;
+const BARE_ONION = /(?:^|(?<=[\s"'<(]))([a-z2-7]{56}\.onion(?:\/[^\s"'<>)]*)?)/i;
 const wantsDark = (text) => DARK_WORD.test(String(text || ''));
 const onionLink = (text) => {
-  const m = String(text || '').match(ONION_LINK);
-  return m ? (/^https?:\/\//i.test(m[0]) ? m[0] : `http://${m[0]}`) : null;
+  const s = String(text || '');
+  for (const token of s.match(URL_TOKEN) || []) {
+    const trimmed = token.replace(/[),.;!?]+$/, '');
+    try {
+      const u = new URL(trimmed);
+      if (V3_ONION_HOST.test(u.hostname)) return trimmed;
+    } catch {}
+  }
+  const stripped = s.replace(URL_TOKEN, ' ');
+  const m = stripped.match(BARE_ONION);
+  return m ? `http://${m[1].replace(/[),.;!?]+$/, '')}` : null;
 };
 
 // "через тор", "по тору", "в торе", "tor", "onion", "онион": the request says Tor
@@ -116,6 +127,19 @@ function prefs(socksPort = 9050) {
     'privacy.clearOnShutdown_v2.cache': true,
     'browser.sessionstore.resume_from_crash': false,
     'browser.startup.page': 0,
+    // no downloads saved to disk, no PDF.js / WebGL / WASM attack surface
+    'browser.download.folderList': 2,
+    'browser.download.useDownloadDir': false,
+    'browser.download.always_ask_before_handling_new_types': true,
+    'browser.download.manager.showWhenStarting': false,
+    'browser.download.start_downloads_in_tmp_dir': false,
+    'browser.download.panel.shown': false,
+    'browser.download.policy.autoOpen': false,
+    'browser.helperApps.neverAsk.saveToDisk': '',
+    'browser.helperApps.neverAsk.openFile': '',
+    'pdfjs.disabled': true,
+    'webgl.disabled': true,
+    'javascript.options.wasm': false,
     // HTTPS only (onion addresses aren't upgraded)
     'dom.security.https_only_mode': true,
     // no calls home

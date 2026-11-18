@@ -40,13 +40,83 @@ function hasExplicitTorCommand(text, tor) {
  * Normalizes `web:search` flags and query so `{ dark: true }`, `{ onion }`, or Tor/darknet/.onion text
  * in the query always routes through Tor and never falls back to clearnet or the search log.
  */
+function escapePromptDelimiters(text) {
+  return String(text ?? '')
+    .replace(/<<</g, '\u2039\u2039\u2039')
+    .replace(/>>>/g, '\u203a\u203a\u203a');
+}
+
+function escapeHeaderField(text) {
+  return escapePromptDelimiters(text).replace(/[\r\n]+/g, ' ').trim();
+}
+
+const TOR_CLOUD_BLOCK_MSG = 'Запрос с Tor/onion/даркнет-контекстом не отправляется в облачные модели. Выберите локальную модель Ollama.';
+const TOR_CAPTURE_BLOCK_MSG = 'Захват и просмотр экрана отключены в Tor-карантине (до нового чистого чата и конца 10-минутного окна).';
+const TOR_PERSIST_BLOCK_MSG = 'В защищённом Tor-чате я не сохраняю заметки, память и задачи на диск и в Obsidian.';
+const TOR_MCP_DISABLED_MSG = 'Выдача Tor/darknet/.onion через MCP для облачных агентов временно отключена до запуска контейнерного изолятора. Локально в Капри поиск через Tor продолжает работать.';
+
+function isLocalOnlyModelAllowed({ cfg, model, llm, ollama, localOnly = false } = {}) {
+  if (!localOnly) return true;
+  if (!model) return false;
+  if (ollama?.isCloud?.(model)) return false;
+  return Boolean(llm?.isLocal?.(cfg?.provider, cfg, model));
+}
+
+function pickSafeFallbackModel({ cfg, chatModels, tried, ollama, llm, localOnly = false } = {}) {
+  const list = Array.isArray(chatModels) ? chatModels : [];
+  const isUnused = (m) => m && !(tried && tried.has(m));
+  if (localOnly) {
+    return list.find((m) => isUnused(m) && isLocalOnlyModelAllowed({ cfg, model: m, llm, ollama, localOnly: true })) || null;
+  }
+  return list.find((m) => isUnused(m) && !ollama?.isCloud?.(m)) || list.find(isUnused) || null;
+}
+
+async function pickTorSearchModel({ cfg, roles, brains, ollama, llm, chatModels, howto = false } = {}) {
+  if (roles) {
+    const picked = howto ? await brains.use('main') : brains.current();
+    return picked && !ollama?.isCloud?.(picked) && llm?.isLocal?.('ollama', cfg, picked) ? picked : null;
+  }
+  const installed = await ollama.models().catch(() => []);
+  const installedList = Array.isArray(installed) ? installed : [];
+  const candidates = [];
+  if (cfg?.provider === 'ollama' && cfg?.chatModel && (installedList.length === 0 || installedList.includes(cfg.chatModel))) {
+    candidates.push(cfg.chatModel);
+  }
+  candidates.push(...installedList);
+  if (installedList.length === 0 && cfg?.provider === 'ollama' && Array.isArray(chatModels)) {
+    candidates.push(...chatModels);
+  }
+  for (const m of candidates) {
+    if (m && !ollama?.isCloud?.(m) && !/:cloud$/i.test(m) && llm?.isLocal?.('ollama', cfg, m)) return m;
+  }
+  return null;
+}
+
+function guardChatRoute({ torState, text, tor } = {}) {
+  return Boolean(torState?.isQuarantined?.() || hasTorSignal(text, tor) || contextMentionsTor([{ role: 'user', content: text }], tor));
+}
+
+function guardWorkerChoice({ worker, torState, messages, tor } = {}) {
+  if (['claude', 'codex', 'gemini', 'computer'].includes(worker) && shouldSkipChatPersistence({ torState, messages, tor })) {
+    return null;
+  }
+  return worker;
+}
+
+function guardScreenCapture({ torState } = {}) {
+  if (torState?.isQuarantined?.()) {
+    return { ok: false, code: 'tor', error: TOR_CAPTURE_BLOCK_MSG };
+  }
+  return { ok: true };
+}
+
 function classifyWebSearch(query, how = {}, tor) {
   const opts = how && typeof how === 'object' ? how : {};
   const q = String(query || '').trim().slice(0, 300);
   const rawOnion = opts.onion ? String(opts.onion).trim() : '';
-  const detectedOnion = rawOnion ? (tor.onionLink(rawOnion) || rawOnion) : tor.onionLink(q);
+  const detectedOnion = rawOnion ? (tor.onionLink(rawOnion) || (isOnionUrl(rawOnion) ? rawOnion : null)) : tor.onionLink(q);
   const onion = detectedOnion || null;
-  const dark = Boolean(opts.dark) || Boolean(onion) || tor.wantsDark(q);
+  const dark = Boolean(opts.dark) || Boolean(onion) || isOnionUrl(rawOnion) || tor.wantsDark(q);
   const torRequested = Boolean(opts.tor) || dark || Boolean(rawOnion) || tor.wantsTor(q);
   const effectiveQuery = q || rawOnion.slice(0, 300);
   return { torRequested, dark, onion, query: effectiveQuery };
@@ -159,6 +229,7 @@ function createAgentWeb({
   notesDir,
   torState,
   onTorTouched,
+  allowTorMcp = false,
 }) {
   const touchTor = ({ extendCooldown = true } = {}) => {
     if (extendCooldown) torState?.touch({ inChat: true });
@@ -173,6 +244,7 @@ function createAgentWeb({
       let endSession = null;
       if (viaTor) {
         touchTor();
+        if (!allowTorMcp) throw new Error(TOR_MCP_DISABLED_MSG);
         endSession = torState?.enterSession({ inChat: true }) || null;
         try {
           await torReady(cfg);
@@ -241,11 +313,16 @@ function createAgentWeb({
     },
     async read({ url, node = 'main' } = {}) {
       const raw = String(url || '').trim();
-      const link = tor.onionLink(raw) || raw;
+      const isFullHttpUrl = /^https?:\/\//i.test(raw);
+      const extractedOnion = tor.onionLink(raw);
+      // Do not rip .onion from query/path of a foreign host URL; keep full URL as-is or refuse.
+      const link = isFullHttpUrl ? (isOnionUrl(raw) ? (extractedOnion || raw) : raw) : (extractedOnion || raw);
       const viaTor = node === 'tor' || node === 'dark';
+      const hasTorRef = hasTorSignal(raw, tor) || hasTorSignal(link, tor) || isOnionUrl(link);
       if (viaTor) {
         touchTor();
-      } else if (hasTorSignal(raw, tor) || hasTorSignal(link, tor) || isOnionUrl(link)) {
+        if (!allowTorMcp) throw new Error(TOR_MCP_DISABLED_MSG);
+      } else if (hasTorRef) {
         touchTor();
         throw new Error('URL про Tor/даркнет/.onion нельзя открывать через node "main": используй node "tor" или "dark".');
       }
@@ -261,10 +338,11 @@ function createAgentWeb({
         }
         s = await browser.openSession(needsTor ? torOpts(cfg) : browserOpts(cfg));
         const [p] = await s.readMany([link]);
+        const finalUrl = p?.url || link;
         return {
           node: needsTor ? (node === 'main' ? 'tor' : node) : node,
           browser: s.browser,
-          url: link,
+          url: finalUrl,
           title: p.title,
           blocked: p.blocked,
           text: p.text,
@@ -280,9 +358,21 @@ function createAgentWeb({
 
 module.exports = {
   TOR_COOLDOWN_MS,
+  TOR_CLOUD_BLOCK_MSG,
+  TOR_CAPTURE_BLOCK_MSG,
+  TOR_PERSIST_BLOCK_MSG,
+  TOR_MCP_DISABLED_MSG,
+  escapePromptDelimiters,
+  escapeHeaderField,
   hasTorSignal,
   isOnionUrl,
   hasExplicitTorCommand,
+  isLocalOnlyModelAllowed,
+  pickSafeFallbackModel,
+  pickTorSearchModel,
+  guardChatRoute,
+  guardWorkerChoice,
+  guardScreenCapture,
   classifyWebSearch,
   selectWorkerMessages,
   shouldSkipChatPersistence,

@@ -73,6 +73,7 @@ function makeHarness(overrides = {}) {
     browserOpts: () => ({ kind: 'main' }),
     notesDir: () => 'D:\\Obsidian\\C.A.P.R.I',
     torState: overrides.torState,
+    allowTorMcp: overrides.allowTorMcp,
     onTorTouched: () => { events.push(['torTouched']); },
   });
 
@@ -156,8 +157,18 @@ test('agentWeb.search with node=main refuses Tor, darknet, and .onion without br
   }
 });
 
-test('agentWeb.search with node=tor/dark calls torTouched before torReady, uses torOpts, and never logs', async () => {
-  const hTor = makeHarness();
+test('agentWeb (default allowTorMcp=false) refuses Tor/darknet/.onion over MCP for cloud agents', async () => {
+  const h = makeHarness();
+  await assert.rejects(() => h.agentWeb.search({ query: 'bitcoin', node: 'tor', read: 1 }), /временно отключена/i);
+  await assert.rejects(() => h.agentWeb.search({ query: 'bitcoin', node: 'dark', read: 1 }), /временно отключена/i);
+  await assert.rejects(() => h.agentWeb.read({ url: V3_ONION, node: 'dark' }), /временно отключена/i);
+  await assert.rejects(() => h.agentWeb.read({ url: 'https://example.org/', node: 'tor' }), /временно отключена/i);
+  assert.equal(h.events.some(([kind]) => kind === 'torReady' || kind === 'openSession'), false);
+  assert.equal(h.appendCalls.length, 0);
+});
+
+test('agentWeb.search with node=tor/dark (when allowTorMcp=true) calls torTouched before torReady, uses torOpts, and never logs', async () => {
+  const hTor = makeHarness({ allowTorMcp: true });
   const r1 = await hTor.agentWeb.search({ query: 'bitcoin', node: 'tor', read: 1 });
   assert.equal(r1.node, 'tor');
   assert.equal(hTor.appendCalls.length, 0);
@@ -169,7 +180,7 @@ test('agentWeb.search with node=tor/dark calls torTouched before torReady, uses 
   ]);
   assert.equal(hTor.getSessionClosed(), 1);
 
-  const hFail = makeHarness({ failTorReady: true });
+  const hFail = makeHarness({ failTorReady: true, allowTorMcp: true });
   await assert.rejects(() => hFail.agentWeb.search({ query: 'onion', node: 'dark' }), /tor down/);
   assert.deepEqual(hFail.events, [['torTouched'], ['torReady']]);
   assert.equal(hFail.appendCalls.length, 0);
@@ -193,11 +204,11 @@ test('agentWeb.read refuses Tor/darknet/.onion on node=main, and calls torTouche
     assert.equal(h.appendCalls.length, 0);
   }
 
-  const hInvalidTor = makeHarness();
+  const hInvalidTor = makeHarness({ allowTorMcp: true });
   await assert.rejects(() => hInvalidTor.agentWeb.read({ url: 'not-a-url', node: 'tor' }), /нужен адрес/);
   assert.deepEqual(hInvalidTor.events, [['torTouched']]);
 
-  const hOkTor = makeHarness();
+  const hOkTor = makeHarness({ allowTorMcp: true });
   const res = await hOkTor.agentWeb.read({ url: V3_ONION, node: 'dark' });
   assert.equal(res.node, 'dark');
   assert.deepEqual(hOkTor.events.slice(0, 4), [
@@ -206,6 +217,13 @@ test('agentWeb.read refuses Tor/darknet/.onion on node=main, and calls torTouche
     ['openSession', 'tor'],
     ['session.readMany', [V3_ONION]],
   ]);
+
+  // Embedded .onion in foreign query param must keep the full URL intact when opened via Tor node (not stripped to bare .onion)
+  const hQueryOnion = makeHarness({ allowTorMcp: true });
+  const wrapped = `https://evil.example/?next=${V3_ONION}`;
+  const res2 = await hQueryOnion.agentWeb.read({ url: wrapped, node: 'tor' });
+  assert.equal(res2.url, wrapped);
+  assert.deepEqual(hQueryOnion.events.find(([k]) => k === 'session.readMany'), ['session.readMany', [wrapped]]);
 });
 
 test('agentWeb.askGemini two-circuit filter: circuit (b) blocks commands/.onion/dark in clean session, allows bare Tor', async () => {
@@ -245,7 +263,7 @@ test('agentWeb.askGemini circuit (a): blocks ALL prompts while Tor is active, in
   let clock = 10_000_000;
   let browserOpen = false;
   const torState = createTorState({ now: () => clock, isBrowserActive: () => browserOpen });
-  const h = makeHarness({ torState });
+  const h = makeHarness({ torState, allowTorMcp: true });
 
   // After real Tor search, even a completely innocent prompt is refused
   await h.agentWeb.search({ query: 'bitcoin', node: 'tor', read: 0 });
@@ -304,4 +322,8 @@ test('capri-web MCP end-to-end propagates agentWeb main-node Tor refusal cleanly
   assert.match(res.content[0].text, /node "tor" или "dark"/i);
   assert.deepEqual(h.events, [['torTouched']]);
   assert.equal(h.appendCalls.length, 0);
+
+  const torBlocked = await client.callTool({ name: 'web_search', arguments: { query: 'news', node: 'tor' } });
+  assert.equal(torBlocked.isError, true);
+  assert.match(torBlocked.content[0].text, /временно отключена/i);
 });

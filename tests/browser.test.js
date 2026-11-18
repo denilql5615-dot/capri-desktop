@@ -309,3 +309,21 @@ test('candidates: your choice or default first, then the rest; the undrivable fa
   assert.match(browser.candidates('IronFox', { io, extra, defaultExe: null })[0].note, /IronFox/);
   assert.deepStrictEqual(browser.candidates('auto', { io: disk([]), extra: [], defaultExe: null }), []);
 });
+
+test('readRendered: rejects redirects to non-http schemes and reports final redirected URL', async () => {
+  const redirLaunch = (finalUrl) => async () => {
+    const page = {
+      goto: async () => {},
+      url: () => finalUrl,
+      title: async () => 'Redirected',
+      evaluate: async () => long,
+    };
+    return { pages: () => [page], newPage: async () => page, close: async () => {} };
+  };
+  const bad = await browser.readRendered('https://a.example/', { app, pick, ...fast, launch: redirLaunch('file:///etc/passwd') });
+  assert.deepStrictEqual(bad, { text: '', title: '', blocked: false });
+
+  const ok = await browser.readRendered('https://a.example/', { app, pick, ...fast, launch: redirLaunch('https://b.example/final') });
+  assert.strictEqual(ok.url, 'https://b.example/final');
+  assert.match(ok.text, /about the outage/);
+});

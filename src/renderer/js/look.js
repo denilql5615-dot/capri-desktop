@@ -165,7 +165,7 @@ export class Look {
       const snap = await this.host.lookSnap();
       if (!manual && !this.free()) return;
       if (!snap.ok) {
-        if (manual) this.panel.say({ kind: 'info', face: 'aside', line: fmt(t.failed, { error: snap.error }), hold: 6000 });
+        if (manual) this.panel.say({ kind: 'info', face: 'aside', line: snap.code === 'tor' ? snap.error : fmt(t.failed, { error: snap.error }), hold: 6000 });
         return;
       }
       this.lastFg = this.capri.windows.fg;
@@ -179,7 +179,8 @@ export class Look {
           this.panel.say({ kind: 'info', face: 'aside', line: fmt(t.noVision, { model: String(res.model || '…').replace(/:latest$/, '') }), hold: 9000 });
           if (this.auto) this.host.setConfig({ watchScreen: false });
         } else if (manual) {
-          this.panel.say({ kind: 'info', face: 'aside', line: res.code === 'noai' ? t.noAI : fmt(t.failed, { error: res.error || '…' }), hold: 7000 });
+          const line = res.code === 'tor' ? res.error : (res.code === 'noai' ? t.noAI : fmt(t.failed, { error: res.error || '…' }));
+          this.panel.say({ kind: 'info', face: 'aside', line, hold: 7000 });
         }
         return;
       }

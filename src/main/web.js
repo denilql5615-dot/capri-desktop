@@ -12,6 +12,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { escapePromptDelimiters, escapeHeaderField } = require('./tor-guard');
 
 const DEFAULT_URL = 'http://192.168.0.108:8888';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0';
@@ -195,7 +196,9 @@ async function answer(question, deps) {
   const read = order.filter((i) => pages[i].length > GOOD).slice(0, PAGES);
   const rest = order.filter((i) => !read.includes(i)).slice(0, Math.max(0, 5 - read.length));
   const sources = [...read, ...rest].map((i, k) => ({ n: k + 1, title: results[i].title, url: results[i].url, text: read.includes(i) ? pages[i] : results[i].snippet }));
-  const blocks = sources.map((s) => `<<<ИСТОЧНИК ${s.n}: ${s.title} (${s.url})\n${s.text}\n>>>`).join('\n\n');
+  const blocks = sources.map((s) => (
+    `<<<ИСТОЧНИК ${s.n}: ${escapeHeaderField(s.title)} (${escapeHeaderField(s.url)})\n${escapePromptDelimiters(s.text)}\n>>>`
+  )).join('\n\n');
   const said = await chat([
     { role: 'system', content: deps.rule ? `${SYSTEM}\n${deps.rule}` : SYSTEM },
     { role: 'user', content: `Вопрос: ${question}\n\n${blocks}` },

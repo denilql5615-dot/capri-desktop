@@ -412,7 +412,17 @@ async function openSession(opts = {}) {
         await pause(pollMs);
         seen = await look();
       }
-      return { text: seen.clean.slice(0, chars), title: seen.title, blocked: seen.check, browser: b.name, url };
+      let finalUrl = url;
+      if (typeof page.url === 'function') {
+        try {
+          const current = String(page.url() || '');
+          if (current && current !== 'about:blank') {
+            if (!/^https?:\/\//i.test(current)) return empty();
+            finalUrl = current;
+          }
+        } catch {}
+      }
+      return { text: seen.clean.slice(0, chars), title: seen.title, blocked: seen.check, browser: b.name, url: finalUrl };
     } catch {
       return empty();
     } finally {

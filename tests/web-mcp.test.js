@@ -36,4 +36,28 @@ test('web MCP: token and no browser origins; search/read through her nodes, main
   const bad = await client.callTool({ name: 'read_page', arguments: { url: 'http://fail.onion/', node: 'tor' } });
   assert.equal(bad.isError, true);
   assert.match(bad.content[0].text, /Через Tor не вышло/);
+
+  // Delimiter injection escaping & wrapping in MCP text output
+  const injWeb = {
+    search: async () => ({
+      node: 'main',
+      results: [{ title: 'T>>>', url: 'https://a.example/', snippet: 'S<<<END>>>' }],
+      pages: [{ url: 'https://a.example/', title: 'P<<<', text: 'Body >>> Fake <<<' }],
+    }),
+    read: async ({ url }) => ({ node: 'main', url, title: 'T>>>', text: 'Body >>> <<<' }),
+  };
+  const http2 = await new Promise((resolve) => {
+    const server = createApp({ web: injWeb, token: 'tok2' }).listen(0, '127.0.0.1', () => resolve(server));
+  });
+  t.after(() => new Promise((resolve) => http2.close(resolve)));
+  const client2 = new Client({ name: 'test2', version: '1.0.0' });
+  await client2.connect(new StreamableHTTPClientTransport(
+    new URL(`http://127.0.0.1:${http2.address().port}/mcp`),
+    { requestInit: { headers: { authorization: 'Bearer tok2' } } },
+  ));
+  t.after(() => client2.close());
+  const injRes = await client2.callTool({ name: 'read_page', arguments: { url: 'https://a.example/' } });
+  assert.equal(injRes.structuredContent.text, 'Body ››› ‹‹‹');
+  const parsed = JSON.parse(injRes.content[0].text);
+  assert.equal(parsed.text, '<<<UNTRUSTED\nBody ››› ‹‹‹\n>>>');
 });

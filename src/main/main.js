@@ -44,7 +44,21 @@ const phonepack = require('./phonepack');
 const web = require('./web');
 const capriBrowser = require('./browser');
 const tor = require('./tor');
-const { classifyWebSearch, selectWorkerMessages, shouldSkipChatPersistence, createTorState, createAgentWeb } = require('./tor-guard');
+const {
+  TOR_CLOUD_BLOCK_MSG,
+  TOR_PERSIST_BLOCK_MSG,
+  isLocalOnlyModelAllowed,
+  pickSafeFallbackModel,
+  pickTorSearchModel,
+  guardChatRoute,
+  guardWorkerChoice,
+  guardScreenCapture,
+  classifyWebSearch,
+  selectWorkerMessages,
+  shouldSkipChatPersistence,
+  createTorState,
+  createAgentWeb,
+} = require('./tor-guard');
 const gemini = require('./gemini');
 const agyApp = require('./agy-app');
 const kiwix = require('./kiwix');
@@ -717,6 +731,7 @@ async function quickAnswer(said) {
   try {
     const memo = quick.parseRememberCommand(said);
     if (memo) {
+      if (shouldSkipChatPersistence({ torState, messages: [{ role: 'user', content: said }], tor })) return TOR_PERSIST_BLOCK_MSG;
       const cfg = config.load();
       config.save({ memories: [...new Set([...(cfg.memories || []), memo])] });
       const title = notes.write(notesDir(), { title: memo.split(/\s+/).slice(0, 5).join(' '), type: 'о тебе', text: memo });
@@ -724,6 +739,7 @@ async function quickAnswer(said) {
     }
     const planCmd = quick.parseQuickPlanCommand(said);
     if (planCmd && localPlanner) {
+      if (shouldSkipChatPersistence({ torState, messages: [{ role: 'user', content: said }], tor })) return TOR_PERSIST_BLOCK_MSG;
       const entry = localPlanner.create(planCmd);
       try { notes.writePlanNote(notesDir(), entry); } catch {}
       if (planCmd.kind === 'reminder') {
@@ -1370,19 +1386,32 @@ async function applyPhone() {
       chat: async (messages, signal) => {
         const hasTor = messagesHaveTor(messages);
         if (hasTor) touchTor({ inChat: true });
+        const torSensitive = torState.isQuarantined() || hasTor;
         const said = messages.findLast((m) => m.role === 'user')?.content || '';
         const fast = await quickAnswer(said);
         if (fast) return { text: fast, brain: 'quick' };
         const cfg = config.load();
         if (!chatModels) await refreshModels();
         const pickedModel = pickModel(cfg);
-        if (hasTor && (cfg.provider !== 'ollama' || !pickedModel || !llm.isLocal(cfg.provider, cfg, pickedModel))) {
-          return { text: 'Запрос с Tor/onion/даркнет-контекстом не отправляется в облачные модели.', brain: 'local-only' };
+        if (torSensitive && !isLocalOnlyModelAllowed({ cfg, model: pickedModel, llm, ollama, localOnly: true })) {
+          return { text: TOR_CLOUD_BLOCK_MSG, brain: 'local-only' };
         }
         const { messages: enriched, numPredict } = await prepLocal(cfg, messages); // her brain picked first, then the model it means
-        const model = pickModel(cfg);
-        const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages: enriched, numPredict }, () => {}, signal);
-        return { text, brain: model || cfg.provider };
+        const torAfterPrep = torState.isQuarantined() || hasTor || messagesHaveTor(enriched);
+        let usedModel = pickModel(cfg);
+        const text = await chatWithFallback(
+          cfg,
+          { messages: enriched, numPredict },
+          () => {},
+          signal,
+          () => false,
+          (nextModel) => { usedModel = nextModel; },
+          {
+            localOnly: torAfterPrep,
+            onSuccess: ({ model: okModel }) => { usedModel = okModel; },
+          },
+        );
+        return { text, brain: usedModel || cfg.provider };
       },
       speak: (text) => (config.load().voice.tts ? speech.speak(text, config.load().voice) : Promise.resolve(null)),
       event: (kind) => PHONE_REACT[kind] && sendCommand('phone', { kind: PHONE_REACT[kind] }),
@@ -1749,12 +1778,22 @@ async function planPhoto(said, history, signal) {
   if (cfg.provider !== 'ollama') return photo.parsePlan('', said);
   if (!chatModels) await refreshModels();
   const model = pickModel(cfg);
+  const torSensitive = torState.isQuarantined() || messagesHaveTor([...(Array.isArray(history) ? history : []), { role: 'user', content: said }]);
+  if (torSensitive && !isLocalOnlyModelAllowed({ cfg, model, llm, ollama, localOnly: true })) {
+    return photo.parsePlan('', said);
+  }
   const answer = await ollama.jsonChat({ model, messages: photo.promptMessages(said, history), schema: photo.SCHEMA }, signal).catch(() => '');
   return photo.parsePlan(answer, said);
 }
 
 /** A picture for what you said: into her gallery; her line with [[photo:<file>]], which her chats draw. */
 async function photoTask(said, history = [], signal) {
+  const cfg = config.load();
+  if (!chatModels) await refreshModels();
+  const torSensitive = torState.isQuarantined() || messagesHaveTor([...(Array.isArray(history) ? history : []), { role: 'user', content: said }]);
+  if (torSensitive && !isLocalOnlyModelAllowed({ cfg, model: pickModel(cfg), llm, ollama, localOnly: true })) {
+    return TOR_CLOUD_BLOCK_MSG;
+  }
   if (!comfy.installed) return 'Не могу: ComfyUI на этом ПК не нашла. Поставь Comfy Desktop, и скину.';
   const plan = await planPhoto(said, history, signal);
   console.log(`[capri] photo (${plan.her ? 'her' : 'not her'}): ${plan.tags}`);
@@ -1762,7 +1801,9 @@ async function photoTask(said, history = [], signal) {
   const name = photo.galleryName();
   fs.mkdirSync(galleryDir(), { recursive: true });
   fs.writeFileSync(path.join(galleryDir(), name), png);
-  fs.writeFileSync(path.join(galleryDir(), photo.metaName(name)), JSON.stringify({ said, prompt, her: plan.her, at: Date.now() }, null, 2));
+  if (!torSensitive) {
+    fs.writeFileSync(path.join(galleryDir(), photo.metaName(name)), JSON.stringify({ said, prompt, her: plan.her, at: Date.now() }, null, 2));
+  }
   chatsWin?.webContents.send('gallery:changed');
   return `${plan.caption || 'Держи.'}\n[[photo:${name}]]`;
 }
@@ -1770,6 +1811,12 @@ async function photoTask(said, history = [], signal) {
 /** "Скинь видео": a still of her drawn, then brought to life (comfy.js animate); the clip into her gallery,
  * her line with [[photo:<file>.webm]], which her chats play. A few minutes: she says so first. */
 async function videoTask(said, history = [], signal) {
+  const cfg = config.load();
+  if (!chatModels) await refreshModels();
+  const torSensitive = torState.isQuarantined() || messagesHaveTor([...(Array.isArray(history) ? history : []), { role: 'user', content: said }]);
+  if (torSensitive && !isLocalOnlyModelAllowed({ cfg, model: pickModel(cfg), llm, ollama, localOnly: true })) {
+    return TOR_CLOUD_BLOCK_MSG;
+  }
   if (!comfy.installed) return 'Не могу: ComfyUI на этом ПК не нашла. Поставь Comfy Desktop, и скину.';
   const missing = comfy.videoMissing();
   if (missing?.length) return `Видео пока не могу: не докачаны модели (${missing.join(', ')}).`;
@@ -1779,12 +1826,16 @@ async function videoTask(said, history = [], signal) {
   const name = photo.galleryName(new Date(), Math.random(), 'webm');
   fs.mkdirSync(galleryDir(), { recursive: true });
   fs.writeFileSync(path.join(galleryDir(), name), webm);
-  fs.writeFileSync(path.join(galleryDir(), photo.metaName(name)), JSON.stringify({ said, prompt, her: true, video: true, at: Date.now() }, null, 2));
+  if (!torSensitive) {
+    fs.writeFileSync(path.join(galleryDir(), photo.metaName(name)), JSON.stringify({ said, prompt, her: true, video: true, at: Date.now() }, null, 2));
+  }
   chatsWin?.webContents.send('gallery:changed');
   return `${plan.caption || 'Держи.'}\n[[photo:${name}]]`;
 }
 
 async function screenPhotoTask(said = 'Скриншот экрана ПК') {
+  const cap = guardScreenCapture({ torState });
+  if (!cap.ok) return cap.error;
   const d = targetDisplay();
   const k = d.scaleFactor || 1;
   const fit = Math.min(1, 1440 / (d.bounds.width * k));
@@ -1860,7 +1911,12 @@ async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch,
   let model = pickModel(cfg);
   const tried = new Set();
   let busy = 0;
+  const isLocalOnly = () => Boolean(opts?.localOnly || torState.isQuarantined());
   for (;;) {
+    const localOnlyNow = isLocalOnly();
+    if (!isLocalOnlyModelAllowed({ cfg, model, llm, ollama, localOnly: localOnlyNow })) {
+      throw new Error(TOR_CLOUD_BLOCK_MSG);
+    }
     const attemptLocal = Boolean(model && llm.isLocal(cfg.provider, cfg, model));
     const messages = attemptLocal || !Array.isArray(baseMessages) || !baseMessages.some((m) => m?.brainHint)
       ? baseMessages
@@ -1881,7 +1937,7 @@ async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch,
       }
       try { opts?.onAttemptError?.({ model, local: attemptLocal, err }); } catch {}
       tried.add(model);
-      const next = chatModels?.find((m) => !tried.has(m) && !ollama.isCloud(m)) || chatModels?.find((m) => !tried.has(m));
+      const next = pickSafeFallbackModel({ cfg, chatModels, tried, ollama, llm, localOnly: isLocalOnly() });
       if (!next || tried.size >= 3) throw err;
       model = next;
       busy = 0;
@@ -1894,6 +1950,8 @@ async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch,
 // for her AI to look at, never written anywhere. 1280 px wide at most: enough to read, light to send.
 const snaps = new Map(); // id -> the picture, base64 JPEG
 async function snapScreen() {
+  const cap = guardScreenCapture({ torState });
+  if (!cap.ok) throw new Error(cap.error);
   const d = targetDisplay();
   const k = d.scaleFactor || 1;
   const fit = Math.min(1, 1280 / (d.bounds.width * k));
@@ -1909,6 +1967,8 @@ async function snapScreen() {
 async function sayAboutSnap({ id, persona, prompt, history = [] }) {
   const image = snaps.get(id);
   snaps.delete(id);
+  const cap = guardScreenCapture({ torState });
+  if (!cap.ok) return cap;
   if (!image) return { ok: false, error: 'the picture is gone' };
   const cfg = config.load();
   if (!chatModels?.length) await refreshModels();
@@ -1920,6 +1980,8 @@ async function sayAboutSnap({ id, persona, prompt, history = [] }) {
   if (!model || (cfg.provider === 'ollama' && !(await ollama.canSee(model)))) return { ok: false, code: 'novision', model: chatModel };
   const switched = cfg.provider === 'ollama' && model !== chatModel;
   if (switched && !(await ollama.unload(chatModel))) return { ok: false, error: `Не удалось освободить ${chatModel}.`, model };
+  const capBeforeChat = guardScreenCapture({ torState });
+  if (!capBeforeChat.ok) return capBeforeChat;
   const user = cfg.provider === 'ollama'
     ? { role: 'user', content: ollama.visionPrompt(prompt), images: [image] }
     : { role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${image}` } }] };
@@ -2037,7 +2099,10 @@ async function torSearch(q, cfg, how = {}) {
     const said = await web.answer(q, {
       rule: dark ? ONION_RULE : TOR_RULE,
       chat: async (messages, { howto } = {}) => {
-        const model = roles ? (howto ? await brains.use('main') : brains.current()) : cfg.chatModel;
+        const model = await pickTorSearchModel({ cfg, roles, brains, ollama, llm, chatModels, howto });
+        if (!model) {
+          throw new Error('Нет локальной модели Ollama для ответа по результатам Tor (облачные модели для Tor запрещены).');
+        }
         return ollama.chat({ model, messages, numPredict: howto ? 1200 : 500 }, () => {});
       },
       browserSearch: async (query) => (onion
@@ -2401,7 +2466,7 @@ function registerIpc() {
       let route = await routeOf(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-3, -1), abort.signal);
       abort.signal.throwIfAborted();
       // Tor-sensitive turns must never be sent to cloud workers even if an agent was named.
-      if (contextHasTor && ['claude', 'codex', 'gemini', 'computer'].includes(route.worker)) {
+      if (guardWorkerChoice({ worker: route.worker, torState, messages, tor }) !== route.worker) {
         route = { ...route, worker: null, computer: false };
       }
       const { worker } = route;
@@ -2448,6 +2513,9 @@ function registerIpc() {
       // the cloud chain (Claude → Codex → Antigravity) gave nothing: no internet, limits, all down. Her
       // main brain answers here instead, and says so.
       const cloudOrLocal = async () => {
+        if (torState.isQuarantined() || contextHasTor) {
+          throw new Error('В Tor-контексте облачные агенты недоступны.');
+        }
         const workerMessages = selectWorkerMessages(messages, torState.isChatTainted() || torState.inCooldown());
         try {
           return await workers.runWorker(worker, cfg, workerMessages, send, abort.signal, desktopOpts);
@@ -2458,7 +2526,9 @@ function registerIpc() {
           overlay?.webContents.send('chat:delta', { id, status: 'Облачные агенты не ответили — делаю сама, на основной модели…', tag: 'local' });
           const note = '(облако не ответило — отвечаю сама, локально)\n\n';
           send(note);
-          return note + await chatWithFallback(cfg, await prepLocal(cfg, messages, { main: true }), send, abort.signal, () => false);
+          return note + await chatWithFallback(cfg, await prepLocal(cfg, messages, { main: true }), send, abort.signal, () => false, null, {
+            localOnly: torState.isQuarantined() || contextHasTor,
+          });
         }
       };
       let text;
@@ -2468,12 +2538,10 @@ function registerIpc() {
       else if (worker === 'video') text = await videoTask(yourWords(messages), messages.filter((m) => m.role !== 'system').slice(-5, -1), abort.signal);
       else {
         const pickedModel = pickModel(cfg);
-        const cloudBlockedForTor = contextHasTor && (
-          cfg.provider !== 'ollama'
-          || (pickedModel ? !llm.isLocal(cfg.provider, cfg, pickedModel) : false)
-        );
+        const cloudBlockedForTor = (torState.isQuarantined() || contextHasTor)
+          && !isLocalOnlyModelAllowed({ cfg, model: pickedModel, llm, ollama, localOnly: true });
         if (cloudBlockedForTor) {
-          text = 'Запрос с Tor/onion/даркнет-контекстом не отправляется в облачные модели. Выберите локальную модель Ollama.';
+          text = TOR_CLOUD_BLOCK_MSG;
           send(text);
         } else {
         let shadowTurn = null;
@@ -2548,6 +2616,10 @@ function registerIpc() {
             ? { ...prepared, messages: [...prepared.messages, { role: 'system', content: influence.hint, brainHint: true }] }
             : prepared;
           // any switch to another model (possibly a cloud one) abandons the observation
+          if (torAfterPrep && !isLocalOnlyModelAllowed({ cfg, model: pickModel(cfg), llm, ollama, localOnly: true })) {
+            text = TOR_CLOUD_BLOCK_MSG;
+            send(text);
+          } else {
           text = await chatWithFallback(
             cfg,
             toSend,
@@ -2560,6 +2632,7 @@ function registerIpc() {
               try { brainChatGlue?.onModelSwitch(shadowTurn); } catch {}
             },
             {
+              localOnly: torAfterPrep,
               onSuccess: ({ model, local }) => {
                 answeredModel = model;
                 answeredLocal = Boolean(local);
@@ -2575,6 +2648,7 @@ function registerIpc() {
               },
             },
           );
+          }
           const canCommitMain = turnEscalated && answeredModel === brains.main && !torAfterPrep && !torState.isQuarantined();
           const canCommitHint = hintDelivered && answeredLocal && !torAfterPrep && !torState.isQuarantined();
           if (cfg.brainShadow === true && (canCommitMain || canCommitHint)) {
@@ -2599,7 +2673,7 @@ function registerIpc() {
         }
         }
       }
-      if (cfg.provider === 'claude' && !contextHasTor) saveMemory({ claude: llm.claudeMemory() });
+      if (cfg.provider === 'claude' && !shouldSkipChatPersistence({ torState, messages, tor })) saveMemory({ claude: llm.claudeMemory() });
       if (!shouldSkipChatPersistence({ torState, messages, tor })) {
         if (!worker) noteLater([...messages, { role: 'assistant', content: text }]);
         recentTurns = [{ role: 'user', content: yourWords(messages) }, { role: 'assistant', content: text }];
@@ -2616,10 +2690,12 @@ function registerIpc() {
   ipcMain.on('chat:stop', (_e, id) => chats.get(id)?.abort());
   // who'll answer this message: 'claude', 'codex', 'computer', 'photo', 'video', 'stop' or null (her chat model)
   ipcMain.handle('chat:route', async (_e, text, id) => {
+    if (guardChatRoute({ torState, text, tor })) return null;
     const abort = new AbortController();
     chats.set(id, abort);
     try {
-      return (await routeOf(text, recentTurns, abort.signal)).worker;
+      const worker = (await routeOf(text, recentTurns, abort.signal)).worker;
+      return guardChatRoute({ torState, text, tor }) ? null : worker;
     } finally {
       chats.delete(id);
     }
@@ -2656,6 +2732,8 @@ function registerIpc() {
   });
   // she looks at your screen (look.js): the picture first, then what her AI says about it
   ipcMain.handle('look:snap', async () => {
+    const cap = guardScreenCapture({ torState });
+    if (!cap.ok) return cap;
     try {
       const id = randomUUID();
       snaps.set(id, await snapScreen());
@@ -2689,9 +2767,13 @@ function registerIpc() {
     return { local: llm.isLocal(cfg.provider, cfg, model), provider, model };
   });
   ipcMain.handle('chat:memory', () => readMemory().history || []);
-  ipcMain.on('chat:remember', (_e, history) => Array.isArray(history) && saveMemory({ history }));
+  ipcMain.on('chat:remember', (_e, history) => {
+    if (!Array.isArray(history) || shouldSkipChatPersistence({ torState, messages: history, tor })) return;
+    saveMemory({ history });
+  });
   // every message, for her Chats window
   ipcMain.on('chat:log', (_e, message) => {
+    if (shouldSkipChatPersistence({ torState, messages: message ? [message] : [], tor })) return;
     chatLog.write(chatsFile(), chatLog.add(chatLog.read(chatsFile()), message));
     chatsWin?.webContents.send('chats:changed');
   });
