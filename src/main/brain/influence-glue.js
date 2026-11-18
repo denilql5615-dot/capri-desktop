@@ -148,6 +148,10 @@ function planInfluence({
       const hint = typeof policy.stopHint === 'function' ? (policy.stopHint({ consume: false }) || null) : null;
       return { main: false, hint, decision, escalated: false };
     }
+    if (decision.action === 'evidence') {
+      const hint = typeof policy.evidenceHint === 'function' ? (policy.evidenceHint({ consume: false }) || null) : null;
+      return { main: false, hint, decision, escalated: false };
+    }
     return { main: false, hint: null, decision, escalated: false };
   } catch {
     return createNeutral();
@@ -163,8 +167,13 @@ function commitInfluence(policy, plan, { escalated = plan?.escalated, hintDelive
     if (escalated && plan.decision?.action === 'escalate' && typeof policy.commit === 'function') {
       return Boolean(policy.commit(plan.decision));
     }
-    if (!error && hintDelivered && plan.hint && typeof policy.stopHint === 'function') {
-      return Boolean(policy.stopHint({ consume: true }));
+    if (!error && hintDelivered && plan.hint) {
+      if (plan.decision?.action === 'evidence' && typeof policy.evidenceHint === 'function') {
+        return Boolean(policy.evidenceHint({ consume: true, decision: plan.decision }));
+      }
+      if (typeof policy.stopHint === 'function') {
+        return Boolean(policy.stopHint({ consume: true }));
+      }
     }
   } catch {}
   return false;
