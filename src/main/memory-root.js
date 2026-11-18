@@ -321,7 +321,9 @@ function passesAnswerTypeGate(query, cardFactNorm, cardFullNorm = cardFactNorm) 
     }
   }
   if (new RegExp(`(?:по\\s+умолчанию|${wbL}default${wbR})`, 'iu').test(q)) {
-    if (!new RegExp(`(?:по\\s+умолчанию|${wbL}default${wbR})`, 'iu').test(f)) return false;
+    const describesDefault = new RegExp(`(?:по\\s+умолчанию|${wbL}default${wbR})`, 'iu').test(f);
+    const describesOmittedArguments = /без\s+(?:аргумент|параметр)\p{L}*|\bwithout\s+(?:any\s+)?(?:arguments|parameters)\b/iu.test(f);
+    if (!describesDefault && !describesOmittedArguments) return false;
   }
   if (/(?:сколько|за\s+сколько|через\s+сколько)\s+(?:\S+\s+){0,2}(?:минут\p{L}*|час\p{L}*|секунд\p{L}*|дн\p{L}*|суток)/iu.test(q)) {
     if (!new RegExp(`(?:\\d+(?:\\.\\d+)?|${wbL}(?:один|два|три|четыре|пять|десять)${wbR})\\s*(?:мин|мин\\.|минут\\p{L}*|ч|час\\p{L}*|сек|секунд\\p{L}*|дн\\p{L}*|суток|min|minutes?|hours?|hrs?|sec|seconds?|days?)${wbR}`, 'iu').test(f)) {

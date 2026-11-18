@@ -6,11 +6,38 @@ const fs = require('node:fs');
 const Module = require('node:module');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const { FAST, MAIN } = require('../src/main/brains');
 const tor = require('../src/main/tor');
 const { createTorState } = require('../src/main/tor-guard');
 const memoryRoot = require('../src/main/memory-root');
+
+test('chat overlay opens only the verified NOMAD source outside Tor quarantine', () => {
+  const main = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8');
+  const start = main.indexOf("ipcMain.handle('chats:open-link'");
+  const end = main.indexOf("ipcMain.on('chats:close'", start);
+  assert.ok(start >= 0 && end > start);
+
+  const overlay = { webContents: {} };
+  const chatsWin = { webContents: {} };
+  const verifiedNomadSource = 'http://127.0.0.1:8090/content/manual/topic';
+  let quarantined = false;
+  let open;
+  vm.runInNewContext(main.slice(start, end), {
+    ipcMain: { handle: (_channel, handler) => { open = handler; } },
+    overlay, chatsWin, verifiedNomadSource, URL,
+    torState: { isQuarantined: () => quarantined },
+    shell: { openExternal: (url) => url },
+  });
+
+  assert.equal(open({ sender: overlay.webContents }, verifiedNomadSource), verifiedNomadSource);
+  assert.throws(() => open({ sender: overlay.webContents }, 'https://example.com/'));
+  assert.throws(() => open({ sender: {} }, verifiedNomadSource));
+  quarantined = true;
+  assert.throws(() => open({ sender: overlay.webContents }, verifiedNomadSource));
+  assert.equal(open({ sender: chatsWin.webContents }, 'https://example.com/'), 'https://example.com/');
+});
 
 function loadConfigDefaults() {
   const cfgPath = require.resolve('../src/main/config');
@@ -29,6 +56,13 @@ function loadConfigDefaults() {
     delete require.cache[cfgPath];
   }
 }
+
+test('default-command questions can use a source that describes omitted arguments', () => {
+  const query = 'What exact subcommand is executed by default when running git stash with no parameters?';
+  const card = memoryRoot.getApprovedCards().find(({ id }) => id === 'root-001');
+  assert.equal(memoryRoot.selectCandidatesCpu([card], query)[0]?.id, card.id);
+  assert.equal(memoryRoot.passesAnswerTypeGate(query, 'git stash accepts options'), false);
+});
 
 function makeMockKiwix(articles = {}) {
   const catalogXml = [

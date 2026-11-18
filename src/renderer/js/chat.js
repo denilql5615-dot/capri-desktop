@@ -646,6 +646,12 @@ export class Chat {
       this.remember({ role: 'assistant', content: [answer, ...photos.map((p) => `[[photo:${p}]]`)].join('\n') });
     }
     this.panel.stream(answer, { done: true });
+    if (res.nomadSource) {
+      this.panel.setActions([{ id: 'nomad-source', label: 'Открыть источник' }], async () => {
+        try { await this.host.chatsOpenLink(res.nomadSource); }
+        catch { this.addLine(answer, 'Не удалось открыть источник NOMAD.'); }
+      });
+    }
     if (photos.length) this.panel.showPhoto(`capri://gallery/${photos[0]}`);
     this.onAnswer?.(answer);
     this.panel.setFace(mood(answer));

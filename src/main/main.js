@@ -2612,7 +2612,9 @@ function registerIpc() {
     if (!brainShadowHook || config.load().brainShadow !== true) return;
     try { brainShadowHook.verdict(v); } catch {}
   });
+  let verifiedNomadSource = null;
   ipcMain.handle('chat:send', async (_e, { id, messages, voice }) => {
+    verifiedNomadSource = null;
     const abort = new AbortController();
     chats.set(id, abort);
     const turnId = randomUUID();
@@ -2649,8 +2651,10 @@ function registerIpc() {
         });
         abort.signal.throwIfAborted();
         const text = rootHit.text || 'Сейчас поиск по проверенным карточкам NOMAD недоступен для этого режима чата.';
+        const nomadSource = rootHit.source && new URL(rootHit.source.link, rootHit.source.origin).href;
+        verifiedNomadSource = nomadSource || null;
         send(text);
-        return { ok: true, text };
+        return nomadSource ? { ok: true, text, nomadSource } : { ok: true, text };
       }
       // "включи / выключи ролевой режим": a mode of hers (brains.js), not a message to answer
       const rpTurn = brainsLib.rpCommand(yourWords(messages));
@@ -3240,7 +3244,9 @@ function registerIpc() {
   });
   ipcMain.on('chats:open', () => openChats());
   ipcMain.handle('chats:open-link', (event, value) => {
-    if (event.sender !== chatsWin?.webContents) throw new Error('Доступно только из Hub.');
+    const verifiedSource = event.sender === overlay?.webContents && verifiedNomadSource &&
+      value === verifiedNomadSource && !torState.isQuarantined();
+    if (event.sender !== chatsWin?.webContents && !verifiedSource) throw new Error('Доступно только из Hub.');
     const url = new URL(value);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Небезопасная ссылка.');
     return shell.openExternal(url.href);
