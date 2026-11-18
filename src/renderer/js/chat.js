@@ -541,6 +541,23 @@ export class Chat {
   async send(text, { voice = false } = {}) {
     if (this.turn || !this.open) return;
     if (!this.agent) {
+      const history = /^(?:капри,?\s+)?архив памяти\s*:\s*([\s\S]*)$/iu.exec(text);
+      if (history) {
+        const id = Date.now();
+        this.turn = id;
+        this.afterToken++;
+        this.afterPending = false;
+        this.verdictPending = false;
+        this.syncVerdict();
+        this.panel.setChatBusy(true);
+        this.panel.setActions([]);
+        this.panel.chatTurn({ quote: text, face: 'aside' });
+        let line;
+        try { line = await this.host.chatMemoryHistory(history[1]); }
+        catch { line = 'Не удалось прочитать архив памяти.'; }
+        if (this.turn === id) this.reply(text, line, { noLog: true });
+        return;
+      }
       const how = torHow(text);
       if (how) return this.sendTor(text, how);
     }

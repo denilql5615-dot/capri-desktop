@@ -104,3 +104,28 @@ test('searchVault excludes top-level pending_review quarantine folder', () => {
   assert.ok(found.every((n) => !n.file.toLowerCase().startsWith('pending_review')));
   fs.rmSync(vault, { recursive: true, force: true });
 });
+
+test('ordinary memory search and explicit history expose only their respective card statuses', (t) => {
+  const vault = tmp();
+  t.after(() => fs.rmSync(vault, { recursive: true, force: true }));
+  const capri = path.join(vault, 'Capri');
+  const entries = [
+    ['10_СтВол/Ствол.md', '"verified"'],
+    ['20_Крона/Крона.md', "'verified'"],
+    ['20_Крона/Непроверенная.md', 'candidate'],
+    ['10_СтВол/Без статуса.md', null],
+    ['20_Крона/Устаревшая.md', 'stale'],
+    ['90_Архив/Предыдущая.md', 'archived'],
+    ['90_Архив/Черновик.md', 'candidate'],
+    ['Pending_Review/Вложение/Карантин.md', 'archived'],
+    ['GENESIS/Обычная заметка.md', 'archived'],
+  ];
+  for (const [relative, status] of entries) {
+    const file = path.join(vault, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${status ? `---\nstatus: ${status}\n---\n` : ''}Тема контрольопала.\n`);
+  }
+  const titles = (options) => notes.searchVault(capri, 'контрольопала', 15, options).map(({ title }) => title).sort();
+  assert.deepEqual(titles(), ['Крона', 'Обычная заметка', 'Ствол']);
+  assert.deepEqual(titles({ history: true }), ['Предыдущая']);
+});

@@ -17,6 +17,8 @@ const MATCHED = 5; // and the ones that fit what you just said
 const VAULT_MATCHED = 3;
 const VAULT_TEXT = 360;
 const PENDING_REVIEW_DIR = 'pending_review';
+const MEMORY_ARCHIVE_DIR = '90_архив';
+const ACTIVE_MEMORY_DIRS = new Set(['10_ствол', '20_крона']);
 
 // Your Obsidian vault, from Obsidian's own list of them: the one opened last among those open (else any)
 function obsidianVault(appData) {
@@ -70,7 +72,7 @@ function list(dir) {
 
 // The rest of the Obsidian vault: only a few notes that match this message. Her own Capri/ notes are
 // still handled by list()/recall(), so their metadata and index keep their old meaning.
-function searchVault(dir, said, limit = VAULT_MATCHED) {
+function searchVault(dir, said, limit = VAULT_MATCHED, { history = false } = {}) {
   const words = stems(said);
   if (!words.size) return [];
   const root = path.basename(dir).toLowerCase() === 'capri' ? path.dirname(dir) : dir;
@@ -79,7 +81,12 @@ function searchVault(dir, said, limit = VAULT_MATCHED) {
     let entries = [];
     try { entries = fs.readdirSync(folder, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
-      if (entry.name === '.obsidian' || (folder === root && (entry.name === RAW_DIR || entry.name.toLowerCase() === PENDING_REVIEW_DIR))) continue; // raw talk and pending_review aren't knowledge
+      const entryName = entry.name.toLowerCase();
+      if (entryName === '.obsidian') continue;
+      if (folder === root) {
+        if (entryName === RAW_DIR.toLowerCase() || entryName === PENDING_REVIEW_DIR) continue;
+        if (history !== (entryName === MEMORY_ARCHIVE_DIR)) continue;
+      }
       const file = path.join(folder, entry.name);
       if (entry.isDirectory()) walk(file);
       else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) files.push(file);
@@ -87,8 +94,15 @@ function searchVault(dir, said, limit = VAULT_MATCHED) {
   };
   walk(root);
   return files.map((file) => {
-    let text = '';
-    try { text = parse(fs.readFileSync(file, 'utf8')).text; } catch { return null; }
+    let parsed;
+    try { parsed = parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+    const relative = path.relative(root, file);
+    const layer = relative.split(path.sep)[0].toLowerCase();
+    if (history || ACTIVE_MEMORY_DIRS.has(layer)) {
+      const requiredStatus = history ? 'archived' : 'verified';
+      if (![requiredStatus, `"${requiredStatus}"`, `'${requiredStatus}'`].includes(parsed.meta.status)) return null;
+    }
+    const { text } = parsed;
     const title = path.basename(file, path.extname(file));
     const titleWords = stems(title);
     const textWords = stems(text.slice(0, 4000));
@@ -96,7 +110,7 @@ function searchVault(dir, said, limit = VAULT_MATCHED) {
     for (const word of words) score += (titleWords.has(word) ? 3 : 0) + (textWords.has(word) ? 1 : 0);
     if (!score) return null;
     const excerpt = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 4).join(' ').slice(0, VAULT_TEXT);
-    return { title, text: excerpt, score, file: path.relative(root, file) };
+    return { title, text: excerpt, score, file: relative };
   }).filter(Boolean).sort((a, b) => b.score - a.score || a.file.localeCompare(b.file, 'ru')).slice(0, limit);
 }
 

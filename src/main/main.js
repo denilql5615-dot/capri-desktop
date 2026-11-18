@@ -2612,6 +2612,18 @@ function registerIpc() {
     if (!brainShadowHook || config.load().brainShadow !== true) return;
     try { brainShadowHook.verdict(v); } catch {}
   });
+  ipcMain.handle('chat:memory-history', (event, text) => {
+    if (event.sender !== overlay?.webContents) throw new Error('Доступно только из диалога Капри.');
+    const query = typeof text === 'string' ? text.trim() : '';
+    if (query.length < 2 || query.length > 120) return 'Укажи тему архива памяти (от 2 до 120 символов).';
+    if (shouldSkipChatPersistence({ torState, messages: [{ role: 'user', content: query }], tor })) {
+      return 'Архив памяти сейчас недоступен в этом диалоге.';
+    }
+    const vaultHits = notes.searchVault(notesDir(), query, 4, { history: true });
+    return vaultHits.length
+      ? `Архив памяти\n${quick.quickSearchAnswer({ query, vaultHits })}`
+      : `В архиве памяти ничего не нашлось по запросу «${query}».`;
+  });
   let verifiedNomadSource = null;
   ipcMain.handle('chat:send', async (_e, { id, messages, voice }) => {
     verifiedNomadSource = null;

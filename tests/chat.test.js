@@ -11,6 +11,28 @@ function moduleUrl(file) {
   return `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
 }
 
+test('explicit memory history replies locally without appending to chat history', async (t) => {
+  globalThis.matchMedia = () => ({ matches: false, addEventListener() {} });
+  t.after(() => { delete globalThis.matchMedia; });
+  const { Chat } = await import(moduleUrl(path.join(__dirname, '../src/renderer/js/chat.js')));
+  const rendered = [];
+  const chat = Object.assign(Object.create(Chat.prototype), {
+    open: true, turn: 0, afterToken: 0, syncVerdict() {},
+    panel: {
+      setChatBusy() {}, setActions() {}, chatTurn() {},
+      stream(text) { rendered.push(text); },
+    },
+    host: {
+      async chatMemoryHistory(query) { assert.equal(query, 'цвет панели'); return 'Архив: Индиго'; },
+      chatRoute() { assert.fail('History must stay out of model routing'); },
+    },
+    remember() { assert.fail('History must stay out of chat context'); },
+  });
+  await chat.send('Капри, архив памяти: цвет панели');
+  assert.deepEqual(rendered, ['Архив: Индиго']);
+  assert.equal(chat.turn, 0);
+});
+
 test('temporarily hiding chat does not abort a running task; explicit close does', async () => {
   globalThis.matchMedia = () => ({ matches: false, addEventListener() {} });
   const { Chat } = await import(moduleUrl(path.join(__dirname, '../src/renderer/js/chat.js')));
