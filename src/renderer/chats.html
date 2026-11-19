@@ -9,16 +9,25 @@
   <link rel="stylesheet" href="styles/capri.css">
   <link rel="stylesheet" href="styles/chats.css">
   <link rel="stylesheet" href="styles/arasaka.css">
-  <link rel="stylesheet" href="styles/hub-layout.css?v=5">
+  <link rel="stylesheet" href="styles/hub-layout.css?v=7">
 </head>
 <body>
   <div class="hud">
-    <header class="hud__bar">
-      <div class="hud__brand"><img class="hud__brand-icon" src="../../assets/icons/capri.png" alt="" width="28" height="28"><span class="hud__who">ARASAKA AI</span><span class="hud__tag">GENESIS HUB</span></div>
+    <aside class="hud__rail" aria-label="Навигация">
+      <div class="hud__rail-top">
+        <button class="panel__action hud__rail-toggle" type="button" aria-expanded="true" aria-label="Свернуть меню" title="Свернуть меню">☰</button>
+        <div class="hud__brand">
+          <img class="hud__brand-icon" src="../../assets/icons/capri.png" alt="" width="26" height="26">
+          <span class="hud__brand-text"><span class="hud__who">ARASAKA AI</span><span class="hud__tag">GENESIS HUB</span></span>
+        </div>
+      </div>
       <nav class="hud__tabs" aria-label="Разделы"></nav>
-      <h1 class="hud__title"></h1>
-    </header>
-    <div class="hud__plate" data-tab="chats">
+    </aside>
+    <div class="hud__main">
+      <header class="hud__bar">
+        <h1 class="hud__title"></h1>
+      </header>
+      <div class="hud__plate" data-tab="chats">
       <aside class="chats">
         <div class="chats__heading"><span>Разговоры</span><span class="hud__count"></span></div>
         <button class="panel__action is-primary hud__new" type="button"></button>
@@ -125,6 +134,7 @@
     </div>
     <div class="hud__plate hud__plate--one" data-tab="settings" hidden>
       <section class="settings"></section>
+    </div>
     </div>
   </div>
   <script type="module" src="js/chats-window.js"></script>

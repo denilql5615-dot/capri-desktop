@@ -27,6 +27,7 @@ const T = {
     done: 'Done', proton: 'To Proton', sent: 'Sent to Capri', obsidian: 'Obsidian', isDone: 'done',
     galleryNote: 'What she sent: ask her for a photo in chat, here or on the phone.', galleryEmpty: 'Nothing yet.',
     needAt: 'It needs a time.', needTitle: 'It needs a title.', failed: 'Didn’t work: ', main: 'Main', settingsNote: 'The same as her tray menu and her right-click menu.',
+    railCollapse: 'Collapse menu', railExpand: 'Expand menu',
   },
 };
 const lang = new URLSearchParams(location.search).get('lang') || 'en';
@@ -74,12 +75,34 @@ function select(name) {
   shown[name] = true;
 }
 
+const TAB_ICONS = { chats: '◌', agents: '◈', plans: '◷', gallery: '◫', settings: '⚙' };
 for (const name of TABS) {
-  const b = el('button', 'hud__tab', t.tabs[name]);
+  const b = el('button', 'hud__tab');
   b.type = 'button';
   b.dataset.tab = name;
+  b.title = t.tabs[name];
+  const icon = el('span', 'hud__tab-icon', TAB_ICONS[name] || '•');
+  icon.setAttribute('aria-hidden', 'true');
+  b.append(icon, el('span', 'hud__tab-label', t.tabs[name]));
   b.addEventListener('click', () => select(name));
   tabsEl.append(b);
+}
+const hudEl = document.querySelector('.hud');
+const railToggle = document.querySelector('.hud__rail-toggle');
+if (hudEl && railToggle) {
+  const applyRail = (collapsed) => {
+    hudEl.classList.toggle('is-rail-collapsed', collapsed);
+    railToggle.setAttribute('aria-expanded', String(!collapsed));
+    const label = collapsed ? t.railExpand : t.railCollapse;
+    railToggle.setAttribute('aria-label', label);
+    railToggle.title = label;
+  };
+  applyRail(localStorage.getItem('capri.hub.railCollapsed') === '1');
+  railToggle.addEventListener('click', () => {
+    const next = !hudEl.classList.contains('is-rail-collapsed');
+    localStorage.setItem('capri.hub.railCollapsed', next ? '1' : '0');
+    applyRail(next);
+  });
 }
 addEventListener('keydown', (e) => {
   if (e.ctrlKey && /^[12345]$/.test(e.key)) select(TABS[Number(e.key) - 1]);
