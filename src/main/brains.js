@@ -10,7 +10,7 @@
 // Roleplay is not a model: it's a prompt added to her chat (RP_PROMPT), never to workers, the router,
 // notes, tasks on the PC or anything that sounds like an emergency.
 
-const FAST = 'hf.co/llmfan46/gemma-4-E4B-it-uncensored-heretic-GGUF:Q4_K_M';
+const FAST = 'capri-e4b-stage9-v2:latest';
 const MAIN = 'hf.co/llmfan46/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-GGUF:Q4_0';
 const MAIN_IDLE_MS = 5 * 60 * 1000;
 const ANALYSIS_PREDICT = 2048;
