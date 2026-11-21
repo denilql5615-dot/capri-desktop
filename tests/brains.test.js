@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {
-  Brains, FAST, MAIN, RP_PROMPT, ANALYSIS_PREDICT, ANALYSIS_CHARS,
+  Brains, FAST, MAIN, VISION, RP_PROMPT, ANALYSIS_PREDICT, ANALYSIS_CHARS,
   wantsMain, wantsLocal, wantsFast, wantsAnalysis, analysisMode, isEmergency, rpCommand, withRp,
 } = require('../src/main/brains');
 
@@ -28,6 +28,23 @@ test('the fast brain answers by default; small things never swap', async () => {
   assert.deepEqual(calls, []);
 });
 
+test('phone vision releases the fast model and restores it after the vision model exits', async () => {
+  const calls = [];
+  const brains = new Brains({ ollama: {
+    loadedModels: async () => [FAST],
+    unload: async (model) => { calls.push(['unload', model]); return true; },
+    chat: async ({ model, messages, numCtx }) => {
+      assert.equal(brains.visionRunning, true);
+      calls.push(['chat', model, messages[0].images.length, numCtx]);
+      return 'red, blue';
+    },
+    warm: (model, keep) => calls.push(['warm', model, keep]),
+  } });
+  assert.equal(await brains.see([{ role: 'user', content: 'colors', images: ['red', 'blue'] }]), 'red, blue');
+  assert.equal(brains.visionRunning, false);
+  assert.deepEqual(calls, [['unload', FAST], ['chat', VISION, 2, 2048], ['unload', VISION], ['warm', FAST, -1]]);
+});
+
 test('the main brain: the fast one out first, then the main one stays for the idle window', async () => {
   const { brains, calls, tick } = fake();
   assert.equal(await brains.use('main'), MAIN);
@@ -36,6 +53,18 @@ test('the main brain: the fast one out first, then the main one stays for the id
   assert.equal(brains.current(), MAIN); // small things go to the main one while it's in: no swap back and forth
   assert.equal(await brains.use('main'), MAIN);
   assert.equal(calls.length, 1); // already in: nothing unloaded again
+});
+
+test('a failed text-model unload neither starts the other model nor lets vision enter the swap', async () => {
+  const { brains, calls } = fake();
+  let finishUnload;
+  brains.ollama.unload = () => new Promise((resolve) => { finishUnload = resolve; });
+  const switching = brains.use('main');
+  await assert.rejects(brains.see([]), /Vision|изображен|занят/i);
+  finishUnload(false);
+  await assert.rejects(switching, /не выгрузилась/);
+  assert.equal(brains.current(), FAST);
+  assert.deepStrictEqual(calls, []);
 });
 
 test('after the idle window the main one goes and the fast one comes back for good', async () => {

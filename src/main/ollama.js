@@ -101,7 +101,7 @@ async function freeModels() {
 function warm(model, keepAlive = '5m') {
   if (!model || isCloud(model) || /26b/i.test(model)) return;
   const numCtx = ctxFor(model);
-  fetch(`${base()}/api/generate`, {
+  return fetch(`${base()}/api/generate`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -255,7 +255,7 @@ function spokenModelKey(name) {
 }
 
 const HERETIC_26B = 'hf.co/llmfan46/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-GGUF:Q4_0';
-const HERETIC_E4B = 'hf.co/llmfan46/gemma-4-E4B-it-uncensored-heretic-GGUF:Q4_K_M';
+const HERETIC_E4B = 'capri-e4b-stage9-v2:latest';
 const SPOKEN_MODELS = {
   основная: HERETIC_26B,
   основную: HERETIC_26B,

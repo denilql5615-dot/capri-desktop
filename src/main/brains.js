@@ -10,8 +10,10 @@
 // Roleplay is not a model: it's a prompt added to her chat (RP_PROMPT), never to workers, the router,
 // notes, tasks on the PC or anything that sounds like an emergency.
 
-const FAST = 'hf.co/llmfan46/gemma-4-E4B-it-uncensored-heretic-GGUF:Q4_K_M';
+const FAST = 'capri-e4b-stage9-v2:latest';
 const MAIN = 'hf.co/llmfan46/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-GGUF:Q4_0';
+const VISION = 'hf.co/llmfan46/gemma-4-E4B-it-uncensored-heretic-GGUF:Q4_K_M';
+const VISION_BUSY = 'Локальная модель занята. Повтори запрос после её ответа.';
 const MAIN_IDLE_MS = 5 * 60 * 1000;
 const ANALYSIS_PREDICT = 2048;
 const ANALYSIS_CHARS = 4000;
@@ -84,6 +86,8 @@ class Brains {
     Object.assign(this, { ollama, fast, main, idleMs, now, setTimer, clearTimer });
     this.mainUntil = 0; // the main one is hers until then
     this.timer = null;
+    this.visionRunning = false;
+    this.transition = null;
   }
 
   /** Both models installed: the roles are on. One missing: her old single-model ways. */
@@ -109,13 +113,48 @@ class Brains {
     return this.mainActive() ? this.main : this.fast;
   }
 
+  async see(messages, signal) {
+    if (this.visionRunning || this.transition || this.mainActive()) throw new Error(VISION_BUSY);
+    this.visionRunning = true;
+    try {
+      const loaded = await this.ollama.loadedModels(signal);
+      if (!loaded || loaded.some((model) => model !== this.fast)) throw new Error(VISION_BUSY);
+      const restore = loaded.includes(this.fast);
+      if (restore && !(await this.ollama.unload(this.fast))) throw new Error(VISION_BUSY);
+      try {
+        return await this.ollama.chat({ model: VISION, messages, numCtx: 2048, numPredict: 500 }, () => {}, signal);
+      } finally {
+        const released = await this.ollama.unload(VISION);
+        if (restore && released) await this.ollama.warm(this.fast, -1);
+      }
+    } finally {
+      this.visionRunning = false;
+    }
+  }
+
   /** 'main': the fast one out, the main one hers for the next idle window. 'fast': whatever is in now. */
   async use(role) {
+    if (this.visionRunning) throw new Error(VISION_BUSY);
+    if (this.transition) {
+      await this.transition;
+      return this.use(role);
+    }
     if (role !== 'main') {
       if (this.mainActive()) this.touch();
       return this.current();
     }
-    if (!this.mainActive()) await Promise.resolve(this.ollama.unload(this.fast)).catch(() => {});
+    if (!this.mainActive()) {
+      this.transition = Promise.resolve().then(async () => {
+        if (!(await this.ollama.unload(this.fast))) throw new Error('Быстрая модель не выгрузилась. Переключение остановлено.');
+        this.touch();
+      });
+      try {
+        await this.transition;
+      } finally {
+        this.transition = null;
+      }
+      return this.main;
+    }
     this.touch();
     return this.main;
   }
@@ -129,12 +168,27 @@ class Brains {
 
   /** The main one out (idle, or "быстрая модель"), the fast one back in memory for good. */
   async release() {
+    if (this.visionRunning) return false;
+    if (this.transition) {
+      await this.transition;
+      return this.release();
+    }
     if (this.timer) this.clearTimer(this.timer);
     this.timer = null;
-    const was = this.mainUntil > 0;
-    this.mainUntil = 0;
-    if (was) await Promise.resolve(this.ollama.unload(this.main)).catch(() => {});
-    this.ollama.warm(this.fast, -1);
+    this.transition = Promise.resolve().then(async () => {
+      if (this.mainUntil > 0 && !(await this.ollama.unload(this.main))) {
+        this.touch();
+        return false;
+      }
+      this.mainUntil = 0;
+      await this.ollama.warm(this.fast, -1);
+      return true;
+    });
+    try {
+      return await this.transition;
+    } finally {
+      this.transition = null;
+    }
   }
 
   /** Everything was unloaded behind her back (ComfyUI, "освободи память"): no main one any more. */
@@ -145,4 +199,4 @@ class Brains {
   }
 }
 
-module.exports = { Brains, FAST, MAIN, LEGACY, RP_PROMPT, ANALYSIS_PREDICT, ANALYSIS_CHARS, wantsMain, wantsLocal, wantsFast, wantsAnalysis, analysisMode, isEmergency, rpCommand, withRp };
+module.exports = { Brains, FAST, MAIN, VISION, VISION_BUSY, LEGACY, RP_PROMPT, ANALYSIS_PREDICT, ANALYSIS_CHARS, wantsMain, wantsLocal, wantsFast, wantsAnalysis, analysisMode, isEmergency, rpCommand, withRp };

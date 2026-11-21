@@ -66,6 +66,8 @@ contextBridge.exposeInMainWorld('host', {
   closeChats: () => ipcRenderer.send('chats:close'),
   onChatsChanged: on('chats:changed'),
   chatsSend: (text) => ipcRenderer.send('chats:send', text),
+  chatsRunTool: (request) => ipcRenderer.invoke('chats:run-tool', request),
+  chatsStopTool: () => ipcRenderer.send('chats:stop-tool'),
   agentsList: () => ipcRenderer.invoke('agents:list'),
   agentsQuota: (request) => ipcRenderer.invoke('agents:quota', request),
   agentsQuotaSnapshot: (request) => ipcRenderer.invoke('agents:quota-snapshot', request),

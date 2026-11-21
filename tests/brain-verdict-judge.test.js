@@ -351,7 +351,7 @@ test('fresh /api/ps selector picks loaded 26B or E4B without cache or brains.cur
   const seenModels = [];
 
   const brains = new Brains({
-    ollama: { unload() {}, warm() {} },
+    ollama: { unload: async () => true, warm() {} },
     fast: FAST,
     main: MAIN,
     idleMs: 300000,

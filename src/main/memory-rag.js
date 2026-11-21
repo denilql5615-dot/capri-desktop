@@ -34,6 +34,15 @@ function normalizeLayer(layer) {
   return raw || 'regular';
 }
 
+function isCardAllowed(card, { vaultOnly = false, includeTor = false } = {}) {
+  const source = normalizeText(card?.source).trim();
+  const layer = normalizeLayer(card?.layer);
+  if (source === 'tor' && !includeTor) return false;
+  if (vaultOnly) return source === 'vault' || layer === 'vault' || card?.vault === true;
+  if (source === 'vault' || layer === 'vault' || card?.vault === true) return false;
+  return true;
+}
+
 function classifyShelf(payload = {}) {
   const rawLayer = normalizeText(payload.layer).trim();
   if (rawLayer === '10_ствол') return '10_ствол';
@@ -149,18 +158,28 @@ function computeLayerFactor(card, layer) {
   return 0.65;
 }
 
-function scoreCard(card, queryWords, nowMs = Date.now(), rawQuery = '') {
+function scoreCard(card, query, nowMs = Date.now(), rawQuery = '', opts = {}) {
   const layer = normalizeLayer(card.layer);
   const status = normalizeText(card.status).trim();
 
-  if (layer === 'pending_review' || layer === 'conflicted' || status === 'pending_review' || status === 'conflicted') {
+  if (
+    !isCardAllowed(card, opts) ||
+    layer === 'pending_review' ||
+    layer === 'conflicted' ||
+    layer === 'quarantined' ||
+    status === 'pending_review' ||
+    status === 'conflicted' ||
+    status === 'quarantined'
+  ) {
     return {
       score: 0,
       factors: { lexical: 0, freshness: 0, provenance: 0, layer: 0, dedupPenalty: 0 },
     };
   }
 
-  const lexical = computeLexical(card, queryWords, rawQuery);
+  const queryWords = query instanceof Set ? query : stems(query);
+  const effectiveRawQuery = rawQuery || (typeof query === 'string' ? query : '');
+  const lexical = computeLexical(card, queryWords, effectiveRawQuery);
   if (lexical === 0) {
     return {
       score: 0,
@@ -207,7 +226,7 @@ function getCardStemSignature(card) {
   return stems(`${card.title || ''} ${card.topic || ''} ${card.body || ''} ${card.text || ''}`);
 }
 
-function rankCards(cards, query, { limit = 3, nowMs = Date.now(), minScore = 0.08 } = {}) {
+function rankCards(cards, query, { limit = 3, nowMs = Date.now(), minScore = 0.12, vaultOnly = false, includeTor = false } = {}) {
   if (!Array.isArray(cards) || !cards.length) return [];
   const queryWords = query instanceof Set ? query : stems(query);
   if (!queryWords.size) return [];
@@ -216,8 +235,8 @@ function rankCards(cards, query, { limit = 3, nowMs = Date.now(), minScore = 0.0
   const candidates = [];
   for (const card of cards) {
     if (!card || typeof card !== 'object') continue;
-    const { score, factors } = scoreCard(card, queryWords, nowMs, rawQuery);
-    if (score >= minScore) {
+    const { score, factors } = scoreCard(card, queryWords, nowMs, rawQuery, { vaultOnly, includeTor });
+    if (score > 0 && score >= minScore) {
       candidates.push({
         card,
         baseScore: score,
@@ -287,4 +306,5 @@ module.exports = {
   scoreCard,
   rankCards,
   classifyShelf,
+  isCardAllowed,
 };
