@@ -132,6 +132,36 @@ class Brains {
     }
   }
 
+  async withAuxiliaryModel(model, run, signal) {
+    if (this.visionRunning || this.transition) throw new Error(VISION_BUSY);
+    this.visionRunning = true;
+    let restoreFast = false;
+    let roomReady = false;
+    let ready = false;
+    try {
+      const loaded = await this.ollama.loadedModels(signal);
+      if (!loaded || loaded.some((name) => !this.isRole(name) && name !== model)) {
+        throw new Error('В Ollama занята память другой моделью.');
+      }
+      for (const name of loaded.filter((name) => this.isRole(name))) {
+        if (!(await this.ollama.unload(name))) throw new Error('Не удалось освободить память Ollama.');
+        restoreFast = true;
+      }
+      roomReady = true;
+      this.forget();
+      signal?.throwIfAborted();
+      ready = true;
+      return await run();
+    } finally {
+      try {
+        const released = !ready || await this.ollama.unload(model);
+        if (roomReady && restoreFast && released) await this.ollama.warm(this.fast, -1);
+      } finally {
+        this.visionRunning = false;
+      }
+    }
+  }
+
   /** 'main': the fast one out, the main one hers for the next idle window. 'fast': whatever is in now. */
   async use(role) {
     if (this.visionRunning) throw new Error(VISION_BUSY);

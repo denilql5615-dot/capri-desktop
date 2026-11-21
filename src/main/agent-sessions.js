@@ -121,7 +121,7 @@ class AgentSessions {
     for (const abort of this.active.values()) abort.abort();
   }
 
-  async send(id, model, text, retry = false, fromQueue = false) {
+  async send(id, model, text, retry = false, fromQueue = false, includeReply = false) {
     const session = this.sessions.find((item) => item.id === id);
     if (!session || !Object.hasOwn(MODELS, session.agent) || !MODELS[session.agent].some(([key]) => key === model)) {
       throw new Error('Чат или модель недоступны.');
@@ -149,8 +149,9 @@ class AgentSessions {
       abort.signal.throwIfAborted();
       const content = typeof result === 'string' ? result : result.text;
       const artifacts = typeof result === 'object' ? result.artifacts : [];
+      if (typeof content !== 'string' || !content.trim()) throw new Error('Агент вернул пустой ответ.');
       commit([...messages, { role: 'assistant', content, model, ...(artifacts?.length && { artifacts }) }], false);
-      return { ok: true };
+      return includeReply ? { ok: true, text: content, model } : { ok: true };
     } catch (err) {
       return { ok: false, stopped: abort.signal.aborted, error: abort.signal.aborted ? '' : String(err.message).slice(0, 400) };
     } finally {

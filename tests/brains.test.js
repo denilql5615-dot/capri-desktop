@@ -45,6 +45,20 @@ test('phone vision releases the fast model and restores it after the vision mode
   assert.deepEqual(calls, [['unload', FAST], ['chat', VISION, 2, 2048], ['unload', VISION], ['warm', FAST, -1]]);
 });
 
+test('a requested Qwen runs alone and restores E4B when its inference fails', async () => {
+  const { brains, calls } = fake();
+  brains.ollama.loadedModels = async () => [MAIN];
+  const qwen = 'capri-qwen36-heretic:latest';
+  await assert.rejects(brains.withAuxiliaryModel(qwen, async () => {
+    assert.deepStrictEqual(calls, [['unload', MAIN]]);
+    assert.equal(brains.visionRunning, true);
+    throw new Error('synthetic inference failure');
+  }), /synthetic inference failure/);
+  assert.equal(brains.visionRunning, false);
+  assert.equal(brains.current(), FAST);
+  assert.deepStrictEqual(calls, [['unload', MAIN], ['unload', qwen], ['warm', FAST, -1]]);
+});
+
 test('the main brain: the fast one out first, then the main one stays for the idle window', async () => {
   const { brains, calls, tick } = fake();
   assert.equal(await brains.use('main'), MAIN);
