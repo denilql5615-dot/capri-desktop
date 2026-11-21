@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: capri://gallery; font-src 'self'; media-src 'self' capri: blob:; connect-src 'self' capri:">
-  <title>ARASAKA AI: GENESIS HUB</title>
+  <title>ALTAI:RE — Desktop Hub</title>
   <link rel="icon" href="../../assets/icons/capri.png">
   <link rel="stylesheet" href="styles/capri.css">
   <link rel="stylesheet" href="styles/chats.css">
-  <link rel="stylesheet" href="styles/arasaka.css">
-  <link rel="stylesheet" href="styles/hub-layout.css?v=7">
+  <link rel="stylesheet" href="styles/gemini-tokens.css">
+  <link rel="stylesheet" href="styles/hub-layout.css?v=8">
 </head>
 <body>
   <div class="hud">
@@ -18,7 +18,7 @@
         <button class="panel__action hud__rail-toggle" type="button" aria-expanded="true" aria-label="Свернуть меню" title="Свернуть меню">☰</button>
         <div class="hud__brand">
           <img class="hud__brand-icon" src="../../assets/icons/capri.png" alt="" width="26" height="26">
-          <span class="hud__brand-text"><span class="hud__who">ARASAKA AI</span><span class="hud__tag">GENESIS HUB</span></span>
+          <span class="hud__brand-text"><span class="hud__who">Альта</span><span class="hud__tag">ALTAI:RE</span></span>
         </div>
       </div>
       <nav class="hud__tabs" aria-label="Разделы"></nav>
@@ -41,6 +41,11 @@
           <span class="log__live" hidden></span>
           <button class="panel__action log__delete" type="button" hidden></button>
         </header>
+        <div class="log__welcome" hidden>
+          <span class="gem-sparkle log__welcome-mark" aria-hidden="true"></span>
+          <strong>Привет! С чего начнём?</strong>
+          <span>Спроси Capri о чём угодно или выбери разговор слева.</span>
+        </div>
         <ol class="log__lines"></ol>
         <div class="log__resume" hidden>
           <span class="log__resume-note"></span>
@@ -50,12 +55,85 @@
           <span class="log__ask-line"></span>
           <span class="log__ask-actions"></span>
         </div>
-        <form class="log__compose" autocomplete="off">
-          <button class="panel__action log__mic" type="button"></button>
+        <form class="log__compose gem-composer" autocomplete="off">
+          <input class="log__images" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
+          <button class="panel__action log__image-list" type="button" hidden></button>
           <input class="panel__input log__input" type="text" maxlength="500" spellcheck="false">
-          <button class="panel__action is-primary log__send" type="submit"></button>
+          <div class="gem-composer__bar">
+            <div class="gem-composer__left">
+              <div class="gem-menu-wrap">
+                <button class="panel__action gem-icon-btn gem-plus-btn" type="button" data-menu="chats-plus" aria-haspopup="menu" aria-expanded="false" aria-label="Быстрые действия" title="Быстрые действия">＋</button>
+                <div class="gem-popover gem-popover--plus" data-popover="chats-plus" role="menu" hidden>
+                  <div class="gem-popover__title">Действия</div>
+                  <button class="gem-popover__item" type="button" role="menuitem" data-plus-action="images">
+                    <span class="gem-popover__body"><strong>Прикрепить изображения</strong><small>Локальный анализ во временном чате</small></span>
+                  </button>
+                  <button class="gem-popover__item" type="button" role="menuitem" data-plus-action="search">
+                    <span class="gem-popover__body"><strong>Поиск в сети</strong><small>Источники через браузер MAIN</small></span>
+                  </button>
+                  <button class="gem-popover__item" type="button" role="menuitem" data-plus-action="pim">
+                    <span class="gem-popover__body"><strong>Почта и календарь</strong><small>Чтение без записи в историю чата</small></span>
+                  </button>
+                  <button class="gem-popover__item" type="button" role="menuitem" data-plus-action="new-chat">
+                    <span class="gem-popover__icon" aria-hidden="true">✦</span>
+                    <span class="gem-popover__body"><strong>Новый чат</strong><small>Начать разговор с чистого листа</small></span>
+                  </button>
+                  <button class="gem-popover__item" type="button" role="menuitem" data-plus-action="voice">
+                    <span class="gem-popover__icon" aria-hidden="true">🎤</span>
+                    <span class="gem-popover__body"><strong>Голосовой ввод</strong><small>Продиктовать сообщение Альте</small></span>
+                  </button>
+                  <button class="gem-popover__item" type="button" role="menuitemcheckbox" aria-checked="false" data-plus-action="temporary">
+                    <span class="gem-popover__body"><strong>Временный чат</strong><small>Без записи в историю и Obsidian</small></span>
+                    <span class="gem-popover__check" aria-hidden="true">✓</span>
+                  </button>
+                  <div class="gem-popover__divider"></div>
+                  <button class="gem-popover__item" type="button" role="menuitem" data-plus-action="open-agents">
+                    <span class="gem-popover__icon" aria-hidden="true">⚡</span>
+                    <span class="gem-popover__body"><strong>Перейти к агентам</strong><small>Файлы, шаблоны и внешние модели</small></span>
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="gem-composer__right">
+              <div class="gem-menu-wrap">
+                <button class="panel__action gem-model-btn" type="button" data-menu="chats-models" aria-haspopup="menu" aria-expanded="false">
+                  <span class="gem-model-btn__label">Чат</span>
+                  <span class="gem-model-btn__caret" aria-hidden="true">▾</span>
+                </button>
+                <div class="gem-popover gem-popover--models" data-popover="chats-models" role="menu" hidden>
+                  <div class="gem-popover__title">Выберите режим</div>
+                  <button class="gem-popover__item is-selected" type="button" role="menuitemradio" aria-checked="true" data-chat-mode="capri">
+                    <span class="gem-popover__body"><strong>Чат</strong><small>Ассистент Альта и память</small></span>
+                    <span class="gem-popover__check" aria-hidden="true">✓</span>
+                  </button>
+                  <button class="gem-popover__item" type="button" role="menuitemradio" aria-checked="false" data-chat-mode="task">
+                    <span class="gem-popover__body"><strong>Задача</strong><small>Локальная основная модель</small></span>
+                    <span class="gem-popover__check" aria-hidden="true">✓</span>
+                  </button>
+                  <button class="gem-popover__item" type="button" role="menuitemradio" aria-checked="false" data-chat-mode="research">
+                    <span class="gem-popover__body"><strong>Deep Research</strong><small>Исследование облачными агентами</small></span>
+                    <span class="gem-popover__check" aria-hidden="true">✓</span>
+                  </button>
+                  <button class="gem-popover__item" type="button" role="menuitemradio" aria-checked="false" data-chat-mode="private">
+                    <span class="gem-popover__body"><strong>Приват</strong><small>Локальная модель и память Vault</small></span>
+                    <span class="gem-popover__check" aria-hidden="true">✓</span>
+                  </button>
+                  <button class="gem-popover__item" type="button" role="menuitemradio" aria-checked="false" data-chat-mode="nsfw">
+                    <span class="gem-popover__body"><strong>18+</strong><small>Локальный ролевой режим</small></span>
+                    <span class="gem-popover__check" aria-hidden="true">✓</span>
+                  </button>
+                  <button class="gem-popover__item" type="button" role="menuitemradio" aria-checked="false" data-chat-mode="agents">
+                    <span class="gem-popover__body"><strong>Облако</strong><small>Выбрать агента и модель</small></span>
+                    <span class="gem-popover__check" aria-hidden="true">✓</span>
+                  </button>
+                </div>
+              </div>
+              <button class="panel__action gem-icon-btn log__mic" type="button"></button>
+              <button class="panel__action is-primary gem-send-btn log__send" type="submit"></button>
+            </div>
+          </div>
         </form>
-        <p class="log__hint" hidden></p>
+        <p class="log__hint" role="status" hidden></p>
       </main>
     </div>
     <div class="hud__plate" data-tab="agents" hidden>
@@ -91,21 +169,47 @@
           </details>
         </div>
         <div class="agents__welcome" hidden>
-          <span class="agents__welcome-mark" aria-hidden="true"></span>
-          <strong>Начни разговор</strong>
-          <span>Выбери чат слева или создай новый.</span>
+          <span class="gem-sparkle agents__welcome-mark" aria-hidden="true"></span>
+          <strong>Привет! С чего начнём?</strong>
+          <span>Выбери разговор слева или создай новый чат с агентом.</span>
         </div>
         <ol class="log__lines agents__lines" aria-label="Переписка"></ol>
         <p class="log__hint agents__status" role="status"></p>
-        <form class="log__compose agents__compose" autocomplete="off">
-          <div class="agents__presets" aria-label="Быстрые шаблоны"></div>
-          <textarea class="panel__input agents__input" maxlength="8000" rows="2" aria-label="Сообщение" placeholder="Написать агенту…"></textarea>
-          <div class="agents__actions">
-            <label class="agents__model-label">Модель <select class="panel__input agents__model"></select></label>
-            <button class="panel__action agents__attach" type="button" title="Прикрепить документ или изображение (PDF/DOCX/XLSX/PPTX/PNG)">📎</button>
-            <button class="panel__action agents__mic" type="button" title="Голосовой ввод">🎤</button>
-            <button class="panel__action agents__retry" type="button" hidden>Повторить</button>
-            <button class="panel__action is-primary agents__send" type="submit">Отправить</button>
+        <form class="log__compose agents__compose gem-composer" autocomplete="off">
+          <textarea class="panel__input agents__input" maxlength="8000" rows="2" aria-label="Сообщение" placeholder="Спросите агента…"></textarea>
+          <div class="agents__actions gem-composer__bar">
+            <div class="gem-composer__left">
+              <div class="gem-menu-wrap">
+                <button class="panel__action gem-icon-btn gem-plus-btn" type="button" data-menu="agents-plus" aria-haspopup="menu" aria-expanded="false" aria-label="Добавить файл или шаблон" title="Добавить файл или шаблон">＋</button>
+                <div class="gem-popover gem-popover--plus" data-popover="agents-plus" role="menu" hidden>
+                  <div class="gem-popover__title">Добавить</div>
+                  <button class="gem-popover__item" type="button" role="menuitem" data-plus-action="agents-attach">
+                    <span class="gem-popover__icon" aria-hidden="true">📎</span>
+                    <span class="gem-popover__body"><strong>Загрузить файл</strong><small>PDF, DOCX, XLSX, PPTX или изображение</small></span>
+                  </button>
+                  <div class="gem-popover__divider"></div>
+                  <div class="gem-popover__title">Быстрые шаблоны</div>
+                  <div class="agents__presets" aria-label="Быстрые шаблоны"></div>
+                </div>
+              </div>
+              <button class="panel__action gem-icon-btn agents__attach" type="button" title="Прикрепить документ или изображение (PDF/DOCX/XLSX/PPTX/PNG)">📎</button>
+            </div>
+            <div class="gem-composer__right">
+              <label class="agents__model-label" hidden>Модель <select class="panel__input agents__model"></select></label>
+              <div class="gem-menu-wrap">
+                <button class="panel__action gem-model-btn" type="button" data-menu="agents-models" aria-haspopup="menu" aria-expanded="false">
+                  <span class="gem-model-btn__label">Модель</span>
+                  <span class="gem-model-btn__caret" aria-hidden="true">▾</span>
+                </button>
+                <div class="gem-popover gem-popover--models" data-popover="agents-models" role="menu" hidden>
+                  <div class="gem-popover__title">Выберите модель</div>
+                  <div class="gem-model-list" data-model-list="agents"></div>
+                </div>
+              </div>
+              <button class="panel__action gem-icon-btn agents__mic" type="button" title="Голосовой ввод">🎤</button>
+              <button class="panel__action agents__retry" type="button" hidden>Повторить</button>
+              <button class="panel__action is-primary gem-send-btn agents__send" type="submit">Отправить</button>
+            </div>
           </div>
         </form>
       </main>

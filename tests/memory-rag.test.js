@@ -265,3 +265,38 @@ test('Интеграция с notes.writePendingCandidate и notes.searchVault',
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('Защита карантина: статус quarantined получает score = 0', () => {
+  const quarantinedCard = {
+    id: 'q_1',
+    layer: '10_ствол',
+    status: 'quarantined',
+    title: 'Протокол SQLite WAL',
+    body: 'Режим журналирования WAL ускоряет чтение',
+    source: 'local_nomad',
+    updated: '2026-11-18',
+  };
+  const scored = memoryRag.scoreCard(quarantinedCard, 'протокол sqlite wal', NOW_MS);
+  assert.equal(scored.score, 0);
+  const ranked = memoryRag.rankCards([quarantinedCard], 'протокол sqlite wal', { limit: 5, nowMs: NOW_MS, minScore: 0.01 });
+  assert.equal(ranked.length, 0);
+});
+
+test('scoreCard поддерживает строку query вторым аргументом с обратной совместимостью', () => {
+  const card = {
+    id: 's_1',
+    layer: '10_ствол',
+    status: 'verified',
+    title: 'Протокол SQLite WAL',
+    body: 'Режим журналирования WAL ускоряет чтение',
+    source: 'local_nomad',
+    link: 'nomad://sqlite/wal',
+    quote: 'WAL accelerates reads.',
+    updated: '2026-11-18',
+  };
+  const byString = memoryRag.scoreCard(card, 'протокол sqlite wal', NOW_MS);
+  const bySet = memoryRag.scoreCard(card, memoryRag.stems('протокол sqlite wal'), NOW_MS, 'протокол sqlite wal');
+  assert.ok(byString.score > 0.5);
+  assert.equal(byString.score, bySet.score);
+  assert.deepEqual(byString.factors, bySet.factors);
+});

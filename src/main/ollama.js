@@ -101,7 +101,7 @@ async function freeModels() {
 function warm(model, keepAlive = '5m') {
   if (!model || isCloud(model) || /26b/i.test(model)) return;
   const numCtx = ctxFor(model);
-  fetch(`${base()}/api/generate`, {
+  return fetch(`${base()}/api/generate`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({

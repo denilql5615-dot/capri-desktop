@@ -35,7 +35,7 @@ test('bridge: token, chat with the phone note, voice, events, control', async ()
   try {
     assert.strictEqual((await fetch(url('/ping'))).status, 401);
     assert.strictEqual((await post('/chat', { text: 'hi' }, 'wrong')).status, 401);
-    assert.deepStrictEqual(await (await fetch(url('/ping?token=k'))).json(), { ok: true, pose: '', sprites: '' });
+    assert.deepStrictEqual(await (await fetch(url('/ping?token=k'))).json(), { ok: true, pose: '', sprites: '', isolatedChat: true });
 
     const chat = await (await post('/chat', { text: 'привет', voice: true })).json();
     assert.strictEqual(chat.reply, 'йо');
@@ -48,6 +48,10 @@ test('bridge: token, chat with the phone note, voice, events, control', async ()
     await post('/chat', { text: 'а ты?' });
     assert.strictEqual(seen.messages.length, 4); // persona, the first exchange, this message
 
+    await post('/chat', { text: '[NO_MEMORY]', files: ['first', 'second'].map(data => ({ mime: 'image/png', data })) });
+    assert.equal(seen.messages.at(-1).content, 'Кратко опиши каждое прикреплённое изображение по порядку.');
+    assert.deepStrictEqual(seen.messages.at(-1).images, ['first', 'second']);
+
     await post('/event', { kind: 'pet' });
     await post('/event', { kind: 'rm -rf' });
     assert.deepStrictEqual(seen.events, ['pet']);
@@ -57,6 +61,237 @@ test('bridge: token, chat with the phone note, voice, events, control', async ()
   } finally {
     await bridge.stop();
   }
+});
+
+test('bridge: private and temporary chat do not cross the shared history or research boundary', async () => {
+  const calls = [];
+  const logged = [];
+  const bridge = new PhoneBridge({
+    token: () => 'test',
+    persona: () => 'test',
+    chat: async (rows, _signal, opts) => {
+      calls.push({ rows: rows.slice(1).map(row => row.content), localOnly: opts.localOnly });
+      return { text: 'answer', brain: 'stub' };
+    },
+    log: (row) => logged.push(row.said),
+    deepResearch: async () => assert.fail('isolated research reached the worker'),
+  });
+  const port = await bridge.start(0, '127.0.0.1');
+  const post = (path, body) => fetch(`http://127.0.0.1:${port}${path}`, {
+    method: 'POST', headers: { 'x-capri-token': 'test' }, body: JSON.stringify(body),
+  });
+  try {
+    await post('/chat', { text: 'public marker' });
+    await post('/chat', { text: 'private marker', mode: 'private', reset: true });
+    await post('/chat', { text: 'temporary marker', ephemeral: true });
+    await post('/chat', { text: 'next public turn' });
+    assert.deepStrictEqual(calls, [
+      { rows: ['public marker'], localOnly: false },
+      { rows: ['private marker'], localOnly: true },
+      { rows: ['temporary marker'], localOnly: true },
+      { rows: ['public marker', 'answer', 'next public turn'], localOnly: false },
+    ]);
+    assert.deepStrictEqual(logged, ['public marker', 'next public turn']);
+    assert.equal((await post('/deep-research', { query: 'private', mode: 'private' })).status, 403);
+    assert.equal((await post('/deep-research', { query: 'temporary', ephemeral: true })).status, 403);
+    assert.equal((await post('/deep-research', { query: 'invalid mode', mode: 'privtae' })).status, 400);
+    assert.equal((await post('/chat', { text: 'invalid flag', ephemeral: 'true' })).status, 400);
+    const result = await (await post('/chat', { text: '[DEEP_RESEARCH] temporary', ephemeral: true })).json();
+    assert.equal(result.brain, 'error');
+  } finally {
+    await bridge.stop();
+  }
+});
+
+test('bridge: an isolated desktop turn forwards cancellation without calling web or logging', async () => {
+  const abort = new AbortController();
+  const bridge = new PhoneBridge({
+    persona: () => 'test',
+    log: () => assert.fail('isolated turn was logged'),
+    webSearch: () => assert.fail('isolated turn reached the web'),
+    chat: async (rows, signal, { ephemeral, localOnly, source }) => {
+      assert.deepStrictEqual({ ephemeral, localOnly, source }, { ephemeral: true, localOnly: true, source: 'vault' });
+      assert.equal(rows.length, 2);
+      abort.abort();
+      signal.throwIfAborted();
+    },
+  });
+  const flags = { ephemeral: true, privateMode: true, deepResearch: false, skills: [] };
+  const web = await bridge.turn({ text: 'найди в сети: пример', ...flags }, false);
+  assert.equal(web.brain, 'error');
+  const cancelled = await bridge.turn({ text: 'isolated marker', ...flags }, false, abort.signal);
+  assert.equal(abort.signal.aborted, true);
+  assert.equal(cancelled.brain, 'error');
+  assert.deepStrictEqual(bridge.turns, []);
+});
+
+test('bridge: a desktop task with images keeps the attachments and forces the local route', async () => {
+  const bridge = new PhoneBridge({
+    persona: () => 'test',
+    log: () => assert.fail('a separate task was logged'),
+    chat: async (rows, _signal, opts) => {
+      assert.deepStrictEqual(rows.at(-1).images, ['first', 'second']);
+      assert.equal(opts.localOnly, true);
+      assert.equal(opts.requireVision, true);
+      assert.equal(opts.localMode, 'task');
+      return { text: 'vision answer', brain: 'vision' };
+    },
+  });
+  const result = await bridge.turn({
+    text: 'describe', images: ['first', 'second'], localOnly: true, localMode: 'task', requireVision: true, skills: [],
+  }, false);
+  assert.equal(result.reply, 'vision answer');
+  assert.deepStrictEqual(bridge.turns, []);
+});
+
+test('bridge: research saves the full synthesis artifact from completed agent history', async (t) => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'altair-research-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'report.md');
+  fs.writeFileSync(file, '# Full synthesis\n\nChecked facts.');
+  const histories = [];
+  let saved;
+  const bridge = new PhoneBridge({
+    agentsList: async () => ({ models: { codex: [['test']] } }),
+    agentCreate: async () => histories.push([]) - 1,
+    agentSend: async ({ id, text }) => {
+      histories[id].push({ role: 'user', content: text }, id === 0
+        ? { role: 'assistant', content: 'worker report' }
+        : { role: 'assistant', content: 'See report.md', artifacts: [{ run: 'fixture-run', name: 'report.md' }] });
+      return { ok: true };
+    },
+    agentHistory: async (id) => histories[id],
+    agentArtifact: async (locator) => {
+      assert.deepStrictEqual(locator, { id: 1, run: 'fixture-run', name: 'report.md' });
+      return file;
+    },
+    saveObsidianResearch: async (report) => { saved = report; return true; },
+  });
+  const result = await bridge.runDeepResearch('public fixture');
+  assert.deepStrictEqual(result.workers, ['codex']);
+  assert.match(histories[1][0].content, /report/);
+  assert.deepStrictEqual(saved, { query: 'public fixture', markdown: '# Full synthesis\n\nChecked facts.' });
+  assert.equal(result.reply, saved.markdown);
+  assert.equal(result.obsidianSaved, true);
+  await assert.rejects(new PhoneBridge({}).runDeepResearch('public fixture'), { status: 503 });
+});
+
+test('bridge: research completes with another worker when one reaches quota', async () => {
+  const calls = [];
+  const bridge = new PhoneBridge({
+    agentsList: async () => ({
+      models: { gemini: [['gemini-default']], codex: [['codex-default']] },
+    }),
+    agentCreate: async (agent) => agent,
+    agentSend: async ({ id, text }) => {
+      calls.push(id);
+      if (id === 'gemini') return { ok: false, error: 'quota reached' };
+      return { ok: true, text: text.startsWith('Тема') ? 'combined report' : 'backup report' };
+    },
+  });
+  const first = await bridge.runDeepResearch('public question');
+  assert.deepStrictEqual(first.workers, ['codex']);
+  assert.equal(first.reply, 'combined report');
+  await bridge.runDeepResearch('next public question');
+  assert.equal(calls.filter((id) => id === 'gemini').length, 1);
+});
+
+test('bridge: disconnecting a research client stops its worker and skips the final report', async () => {
+  const started = Promise.withResolvers();
+  const worker = Promise.withResolvers();
+  const stopped = Promise.withResolvers();
+  let sessions = 0;
+  let saved = 0;
+  const bridge = new PhoneBridge({
+    token: () => 'fixture',
+    agentsList: async () => ({ models: { codex: [['fixture']] } }),
+    agentCreate: async () => `fixture-${++sessions}`,
+    agentSend: async ({ id }) => { started.resolve(id); return worker.promise; },
+    agentStop: async (id) => { worker.resolve({ text: 'late answer' }); stopped.resolve(id); },
+    saveObsidianResearch: async () => { saved++; },
+  });
+  const port = await bridge.start(0, '127.0.0.1');
+  const abort = new AbortController();
+  try {
+    const pending = fetch(`http://127.0.0.1:${port}/deep-research`, {
+      method: 'POST', headers: { 'x-capri-token': 'fixture' }, body: JSON.stringify({ query: 'fixture' }),
+      signal: abort.signal,
+    }).catch(error => error);
+    assert.equal(await started.promise, 'fixture-1');
+    abort.abort();
+    assert.equal((await pending).name, 'AbortError');
+    assert.equal(await stopped.promise, 'fixture-1');
+    await new Promise(setImmediate);
+    assert.equal(sessions, 1);
+    assert.equal(saved, 0);
+  } finally {
+    abort.abort();
+    await bridge.stop();
+  }
+});
+
+test('bridge: Android read tools and scoped research stop use authenticated, separate calls', async () => {
+  const { randomUUID } = require('node:crypto');
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const bridge = new PhoneBridge({
+    token: () => 'fixture',
+    webSearch: async () => ({ results: [{ title: 'IANA', url: 'https://www.iana.org/' }] }),
+    readPim: async (text) => ({ reply: text }),
+    chat: () => assert.fail('read tool used the chat model'),
+    log: () => assert.fail('read tool was logged'),
+    deepResearch: async ({ signal }) => {
+      markStarted();
+      return new Promise((resolve, reject) =>
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    },
+  });
+  const port = await bridge.start(0, '127.0.0.1');
+  const post = (path, body, token = 'fixture') => fetch(`http://127.0.0.1:${port}${path}`, {
+    method: 'POST', headers: { 'x-capri-token': token }, body: JSON.stringify(body),
+  });
+  try {
+    assert.match((await (await post('/tool', { tool: 'search', text: 'IANA' })).json()).reply, /iana\.org/);
+    assert.deepStrictEqual(await (await post('/tool', { tool: 'pim', text: 'calendar' })).json(), { reply: 'calendar' });
+    assert.equal((await post('/tool', { tool: 'pim', text: 'calendar', mode: 'private' })).status, 403);
+    assert.equal((await post('/tool', { tool: 'pim', text: 'calendar' }, 'wrong')).status, 401);
+    const requestId = randomUUID();
+    const pending = post('/deep-research', { query: 'test', requestId });
+    await started;
+    const earlierStop = randomUUID();
+    assert.equal((await post('/deep-research/stop', { requestId }, 'wrong')).status, 401);
+    assert.equal((await post('/deep-research/stop', { requestId: earlierStop })).status, 200);
+    assert.deepStrictEqual(await (await post('/deep-research', { query: 'test', requestId: earlierStop })).json(), { stopped: true });
+    assert.equal((await post('/deep-research/stop', { requestId })).status, 200);
+    assert.deepStrictEqual(await (await pending).json(), { stopped: true });
+    assert.deepStrictEqual(bridge.turns, []);
+  } finally {
+    await bridge.stop();
+  }
+});
+
+test('bridge: explicit web search uses the adapter and reports unavailable sources honestly', async () => {
+  const calls = [];
+  const bridge = new PhoneBridge({
+    persona: () => 'test',
+    chat: async () => { calls.push('chat'); return { text: 'hello', brain: 'stub' }; },
+    externalBlocked: (query) => query === 'blocked fixture',
+    webSearch: async (query) => {
+      calls.push(query);
+      if (query === 'offline fixture') throw new Error('browser unavailable');
+      return { results: [{ title: 'Fixture', url: 'https://example.com/' }] };
+    },
+  });
+  const turn = (text, opts) => bridge.turn({ text, skills: [], ...opts }, false);
+  assert.equal((await turn('hello')).brain, 'stub');
+  assert.match((await turn('найди в сети: public fixture')).reply, /https:\/\/example\.com/);
+  assert.equal((await turn('найди в сети: private fixture', { privateMode: true })).brain, 'error');
+  assert.equal((await turn('найди в сети: blocked fixture')).brain, 'error');
+  assert.equal((await turn('найди в сети: offline fixture')).brain, 'error');
+  assert.deepStrictEqual(calls, ['chat', 'public fixture', 'offline fixture']);
 });
 
 test('bridge: her moves for the phone, once drawn; none yet, the phone keeps its ragdoll', async () => {

@@ -1,15 +1,14 @@
 'use strict';
 
-// The phone bridge: the Android client (denilql5615-dot/capri-android, Bridge.kt) reaches her over the home
-// network or Tailscale, with the wire contract GENESIS had, so the phone app works as it is:
-//   GET  /ping                 -> { ok, pose, sprites }
-//   POST /chat  { text, voice } -> { reply, brain, pose, audio? }   (audio = "/audio/<id>", fetched with ?token=)
-//   POST /event { kind }        -> { ok }                         (pet, poke, shake, back: she reacts on the PC)
-//   GET  /audio/<id>            -> her reply, said (mp3)
-//   GET  /sprites               -> { pack, version, poses }        (none: the phone keeps its own rig)
-//   GET  /control               -> the phone remote's state   POST /control { voice? } -> the same (whitelist)
-// Every request needs the token (X-Capri-Token header or ?token=). From the phone it's talk only: nothing runs
-// on the PC, Claude and Codex included. Her voice is kept in memory a few minutes, never on disk.
+// ALTAI:RE phone bridge (wire-compatible with Bridge.kt & GENESIS):
+//   GET  /ping                    -> { ok, pose, sprites }
+//   GET  /suggestions?mode=...    -> { mode, items: [{ title, prompt }], cachedAt } (E4B cached 45m)
+//   POST /chat { text, voice, ephemeral?, mode?, skills?, tool? } -> { reply, brain, pose, audio?, image? }
+//   POST /deep-research { query } -> { reply, workers, rector, obsidianPath? }
+//   POST /event { kind }          -> { ok }
+//   GET  /audio/<id>              -> mp3
+//   GET  /sprites                 -> { pack, version, poses }
+//   GET  /control / POST /control -> state
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');
@@ -19,11 +18,14 @@ const path = require('node:path');
 const { MAX_UPLOAD_BYTES } = require('./hub-artifacts');
 
 const MAX_BODY = 64 * 1024;
+const MAX_RESEARCH_REPORT_BYTES = 256 * 1024;
 const AUDIO_TTL_MS = 10 * 60 * 1000;
 const AUDIO_MAX = 20;
-const TURNS = 12; // her phone conversation: the last few exchanges
+const TURNS = 12;
+const SUGGESTIONS_TTL_MS = 45 * 60 * 1000; // 45 минут кэша подсказок от E4B
+const WORKER_COOLDOWN_MS = 30 * 60 * 1000; // 30 минут кулдауна для уставших воркеров Deep Research
+const RESEARCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-// "переключись на ролевую", "смени модель на основную", "use qwen3": the model asked for (listen.js has the same)
 function parseModelCommand(text) {
   const t = String(text || '').trim();
   const ru = /^(?:переключись|переключи|смени|поставь|выбери|используй|включи|перейди|давай)(?:\s+модель)?(?:\s+на)?(?:\s+модель)?\s+(.+)$/i.exec(t);
@@ -33,14 +35,12 @@ function parseModelCommand(text) {
 
 const newToken = () => crypto.randomBytes(18).toString('base64url');
 
-/** Constant-time token check (hashed first, so the length doesn't leak either). */
 function tokenMatches(got, want) {
   if (!want) return false;
   const h = (s) => crypto.createHash('sha256').update(String(s)).digest();
   return crypto.timingSafeEqual(h(got), h(want));
 }
 
-/** This PC's addresses for the phone: Tailscale (100.x) first, then the home network. */
 function addresses(port) {
   const ips = Object.values(os.networkInterfaces()).flat()
     .filter((i) => i && i.family === 'IPv4' && !i.internal)
@@ -50,10 +50,42 @@ function addresses(port) {
     .map((ip) => `http://${ip}:${port}`);
 }
 
-const PHONE_NOTE = 'Канал: телефон. С телефона ты только разговариваешь: ничего на компьютере не открываешь и не запускаешь, '
-  + 'Claude и Codex отсюда не зовёшь. Просят что-то сделать на ПК: скажи, что это можно за компьютером.';
+const PHONE_NOTE = 'Канал: телефон (ALTAI:RE). Соразмеряй ответ с запросом: бытовая реплика коротко, сложная задача с нужными деталями. '
+  + 'Ничего опасного на ПК самовольно не запускай без подтверждения.';
 
-// what the phone remote may switch: deliberately short, nothing that widens what she may do on this PC
+const SKILL_NOTES = {
+  'i-have-adhd': 'Режим i-have-adhd: сначала дай конкретный следующий шаг, потом нумерованные пункты, без длинных вступлений и отвлечений.',
+  'caveman': 'Режим caveman: отвечай максимально сжато, сразу с сути, без вежливых вступлений и итоговых повторов. Код, пути, команды и цифры оставляй дословно. Для предупреждений о необратимых действиях переходи на обычный ясный текст.',
+};
+
+const DEFAULT_SUGGESTIONS = {
+  chat: [
+    { title: 'Что горит по делам и календарю', prompt: 'Проверь мои ближайшие планы, календарь и важные заметки в памяти' },
+    { title: 'Продолжить последнюю тему из чатов', prompt: 'Вспомни о чём мы говорили в последний раз и предложи следующий шаг' },
+    { title: 'Быстрый разбор новой идеи', prompt: 'Разбери мою идею по полочкам: плюсы, риски и что проверить первым' },
+  ],
+  task: [
+    { title: 'Разобрать свежий дифф и тесты проекта', prompt: 'Посмотри последние изменения в репозитории и подскажи, где могут быть баги' },
+    { title: 'Собрать план закрытия задач по ALTA', prompt: 'Составь чёткий план действий на сегодня по приоритетам' },
+    { title: 'Проверить логи и память за неделю', prompt: 'Подними свежие записи из памяти и выдели главное' },
+  ],
+  cloud: [
+    { title: 'Архитектурное ревью текущего этапа', prompt: 'Проведи жёсткое архитектурное ревью моего текущего решения' },
+    { title: 'Проверить свежие релизы и бенчмарки', prompt: 'Найди свежие релизы и сравнения моделей по моей задаче' },
+    { title: 'Собрать ТЗ и промпт для агента', prompt: 'Помоги сформулировать точное ТЗ с критериями приёмки' },
+  ],
+  private: [
+    { title: 'Поиск по изолированному Vault', prompt: 'Найди в моём изолированном Vault заметки по теме' },
+    { title: 'Разобрать чувствительный вопрос локально', prompt: 'Разберём вопрос строго локально, без выхода в облако' },
+    { title: 'Свести личные заметки в один план', prompt: 'Собери мои локальные заметки в структурированный список' },
+  ],
+  nsfw: [
+    { title: 'Продолжить сцену с того же места', prompt: 'Продолжи нашу последнюю сцену, сохраняя характер и тон' },
+    { title: 'Задать новый сеттинг и правила', prompt: 'Давай зададим новый сеттинг и персонажей для сцены' },
+    { title: 'Свободный разговор без тормозов', prompt: 'Поболтаем свободно, без лишних ограничений' },
+  ],
+};
+
 const CONTROL_KEYS = { voice: 'boolean', router: 'boolean', worker: 'string' };
 function controlPatch(body) {
   if (!body || typeof body !== 'object') return null;
@@ -82,15 +114,49 @@ function mimeFor(name) {
   }
 }
 
+function parsePromptFlags(rawText, body = {}) {
+  if ((body.mode !== undefined && (typeof body.mode !== 'string' || !Object.hasOwn(DEFAULT_SUGGESTIONS, body.mode)))
+    || (body.ephemeral !== undefined && typeof body.ephemeral !== 'boolean')) {
+    throw Object.assign(new Error('Некорректный режим чата.'), { status: 400 });
+  }
+  let text = String(rawText || '');
+  const skills = new Set(Array.isArray(body.skills) ? body.skills : []);
+  let ephemeral = body.ephemeral === true;
+  let privateMode = body.mode === 'private';
+  let deepResearch = body.tool === 'deep_research';
+
+  const stripTag = (tag, onMatch) => {
+    if (text.includes(tag)) {
+      onMatch();
+      text = text.split(tag).join(' ').trim();
+    }
+  };
+  stripTag('[VAULT_LOCAL_ONLY]', () => { privateMode = true; });
+  stripTag('[NO_MEMORY]', () => { ephemeral = true; });
+  stripTag('[SKILL:i-have-adhd]', () => { skills.add('i-have-adhd'); });
+  stripTag('[SKILL:caveman]', () => { skills.add('caveman'); });
+  stripTag('[DEEP_RESEARCH]', () => { deepResearch = true; });
+
+  return {
+    text: text.trim(),
+    ephemeral,
+    privateMode,
+    deepResearch,
+    skills: [...skills],
+  };
+}
+
 class PhoneBridge {
-  // deps: { token(), chat(messages, signal) -> text, speak(text) -> Uint8Array|null, event(kind), persona() -> string,
-  //         control() -> state, applyControl(patch) -> state }
   constructor(deps) {
     this.d = deps;
     this.server = null;
     this.audio = new Map();
     this.turns = [];
-    this.queue = Promise.resolve(); // one phone turn at a time
+    this.suggestionsCache = new Map(); // mode -> { items, cachedAt }
+    this.workerCooldowns = new Map(); // workerId -> untilMs
+    this.researchRequests = new Map();
+    this.earlyResearchStops = new Map();
+    this.queue = Promise.resolve();
   }
 
   get running() {
@@ -155,14 +221,196 @@ class PhoneBridge {
     while (this.audio.size > AUDIO_MAX) this.audio.delete(this.audio.keys().next().value);
   }
 
+  async getSuggestions(mode = 'chat', force = false) {
+    const m = DEFAULT_SUGGESTIONS[mode] ? mode : 'chat';
+    const cached = this.suggestionsCache.get(m);
+    const now = Date.now();
+    if (!force && cached && (now - cached.cachedAt) < SUGGESTIONS_TTL_MS) {
+      return { mode: m, items: cached.items, cachedAt: cached.cachedAt, cached: true };
+    }
+
+    let items = null;
+    if (typeof this.d.suggestions === 'function') {
+      try {
+        const res = await this.d.suggestions(m);
+        if (Array.isArray(res) && res.length >= 3) items = res.slice(0, 3);
+      } catch {}
+    } else if (typeof this.d.chat === 'function') {
+      const abort = new AbortController();
+      const timer = setTimeout(() => abort.abort(), 12000);
+      try {
+        const prompt = `Сгенерируй ровно 3 короткие стартовые подсказки (до 6 слов в заголовке) для режима "${m}" ассистента ALTAI:RE. `
+          + 'Верни строго JSON-массив вида [{"title":"...","prompt":"..."}] без пояснений.';
+        const { text } = await this.d.chat([
+          { role: 'system', content: 'Ты генератор коротких UI-подсказок. Отвечай только валидным JSON-массивом.' },
+          { role: 'user', content: prompt },
+        ], abort.signal, { fastLocal: true, ephemeral: true });
+        const jsonMatch = /\[[\s\S]*\]/.exec(String(text || ''));
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          const valid = parsed.filter((x) => x && x.title && x.prompt).slice(0, 3);
+          if (valid.length === 3) items = valid;
+        }
+      } catch {} finally {
+        clearTimeout(timer);
+      }
+    }
+
+    const finalItems = items || DEFAULT_SUGGESTIONS[m];
+    const entry = { mode: m, items: finalItems, cachedAt: now, cached: false };
+    this.suggestionsCache.set(m, entry);
+    return entry;
+  }
+
+  async runDeepResearch(query, opts = {}) {
+    const { signal } = opts;
+    signal?.throwIfAborted();
+    const q = String(query || '').trim();
+    if (!q) throw new Error('empty query');
+    if (opts.privateMode || opts.ephemeral || opts.localOnly || this.d.externalBlocked?.(q)) {
+      throw Object.assign(new Error('Облачный Deep Research недоступен в этом режиме.'), { status: 403 });
+    }
+    if (typeof this.d.deepResearch === 'function') {
+      return await this.d.deepResearch({ query: q, ...opts });
+    }
+
+    const sendResearch = async (request, readReport = false) => {
+      signal?.throwIfAborted();
+      if (this.d.externalBlocked?.(q)) throw new Error('Облачный Deep Research остановлен.');
+      const stop = () => { void Promise.resolve().then(() => this.d.agentStop?.(request.id)).catch(() => {}); };
+      signal?.addEventListener('abort', stop, { once: true });
+      let response;
+      try {
+        response = await this.d.agentSend({ ...request, signal });
+      } finally {
+        signal?.removeEventListener('abort', stop);
+      }
+      signal?.throwIfAborted();
+      if (response?.ok === false) throw new Error(response.error || 'Воркер не ответил');
+      if (response?.text || response?.reply) return String(response.text || response.reply).trim();
+      if (!response?.ok) return '';
+      const history = await this.d.agentHistory?.(request.id);
+      const answer = history?.at(-1);
+      if (answer?.role !== 'assistant') return '';
+      if (readReport && this.d.agentArtifact) {
+        const markdown = answer.artifacts?.filter((item) => /\.md$/i.test(item.name));
+        if (markdown?.length === 1) {
+          try {
+            const file = await this.d.agentArtifact({ id: request.id, ...markdown[0] });
+            if (file && (await fs.promises.stat(file)).size <= MAX_RESEARCH_REPORT_BYTES) {
+              const report = (await fs.promises.readFile(file, 'utf8')).trim();
+              if (report) return report;
+            }
+          } catch { /* Keep the worker's message if its artifact is unavailable. */ }
+        }
+      }
+      return String(answer.content || '').trim();
+    };
+
+    // Встроенный оркестратор «Совет выживших» поверх живых облачных агентов (models: { claude, codex, gemini })
+    const now = Date.now();
+    const agentsRes = await this.d.agentsList?.().catch(() => ({}));
+    signal?.throwIfAborted();
+    const rawAgents = [];
+    if (Array.isArray(agentsRes?.agents)) {
+      rawAgents.push(...agentsRes.agents);
+    } else if (agentsRes?.models && typeof agentsRes.models === 'object') {
+      for (const id of ['claude', 'codex', 'gemini']) {
+        const list = agentsRes.models[id];
+        if (Array.isArray(list) && list.length) {
+          rawAgents.push({ id, defaultModel: Array.isArray(list[0]) ? list[0][0] : String(list[0] || '') });
+        }
+      }
+    }
+    const liveWorkers = rawAgents.filter((a) => {
+      const id = String(a?.id || a?.name || '');
+      if (!id) return false;
+      const until = this.workerCooldowns.get(id) || 0;
+      return now >= until;
+    });
+
+    if (!liveWorkers.length || typeof this.d.agentCreate !== 'function' || typeof this.d.agentSend !== 'function') {
+      throw Object.assign(new Error('Сейчас нет доступных облачных воркеров.'), { status: 503 });
+    }
+
+    // Параллельный опрос всех живых воркеров
+    const workerResults = await Promise.all(liveWorkers.map(async (w) => {
+      const id = String(w.id || w.name);
+      const model = String(w.defaultModel || w.model || '');
+      try {
+        const sid = await this.d.agentCreate(id);
+        const out = await sendResearch({
+          id: sid,
+          model,
+          text: `Deep Research (независимый доклад по теме, с источниками и проверкой фактов):\n${q}`,
+          retry: false,
+        });
+        if (!out) return null;
+        return { id, model, text: out };
+      } catch (error) {
+        if (/лимит|rate\s*limit|quota/i.test(error.message)) this.workerCooldowns.set(id, Date.now() + WORKER_COOLDOWN_MS);
+        return null;
+      }
+    }));
+
+    const okWorkers = workerResults.filter(Boolean);
+    signal?.throwIfAborted();
+    if (!okWorkers.length) {
+      throw Object.assign(new Error('Ни один облачный воркер не вернул доклад.'), { status: 503 });
+    }
+
+    // Иерархия Ректора: Astra -> Claude Opus -> Antigravity Neon -> Web Gemini Neon -> первый живой
+    const rectorPriority = ['astra', 'claude', 'antigravity', 'gemini'];
+    const rector = rectorPriority
+      .map((p) => okWorkers.find((w) => w.id.toLowerCase().includes(p)))
+      .find(Boolean) || okWorkers[0];
+
+    const synthesisPrompt = [
+      `Тема Deep Research: ${q}`,
+      '',
+      'Доклады совета агентов:',
+      ...okWorkers.map((w) => `### ${w.id}\n${w.text}`),
+      '',
+      'Верни полный проверенный отчёт прямо в ответе в Markdown. Выдели подтверждённые факты, расхождения и выводы.',
+    ].join('\n');
+
+    let finalReport = '';
+    try {
+      const sid = await this.d.agentCreate(rector.id);
+      finalReport = await sendResearch({ id: sid, model: rector.model, text: synthesisPrompt, retry: false }, true);
+    } catch {}
+    if (!finalReport) {
+      finalReport = okWorkers.map((w) => `## ${w.id}\n${w.text}`).join('\n\n');
+    }
+
+    // Попытка сохранить в Obsidian через deps, если подключено
+    signal?.throwIfAborted();
+    let obsidianSaved = false;
+    if (typeof this.d.saveObsidianResearch === 'function') {
+      obsidianSaved = await this.d.saveObsidianResearch({ query: q, markdown: finalReport }).catch(() => false);
+    }
+
+    return {
+      reply: finalReport,
+      brain: `deep_research:${rector.id}`,
+      workers: okWorkers.map((w) => w.id),
+      rector: rector.id,
+      obsidianSaved,
+    };
+  }
+
   async handle(req, res) {
     const url = new URL(req.url || '/', 'http://bridge');
     const got = String(req.headers['x-capri-token'] ?? url.searchParams.get('token') ?? '');
     if (!tokenMatches(got, this.d.token())) return this.send(res, 401, { error: 'bad token' });
     try {
-      // her moves as a pack of frames (main.js phonepack.js); none drawn yet: the phone keeps its ragdoll
       const pack = this.d.sprites?.() || null;
-      if (req.method === 'GET' && url.pathname === '/ping') return this.send(res, 200, { ok: true, pose: '', sprites: pack?.version || '' });
+      if (req.method === 'GET' && url.pathname === '/ping') return this.send(res, 200, { ok: true, pose: '', sprites: pack?.version || '', isolatedChat: true });
+      if (req.method === 'GET' && url.pathname === '/suggestions') {
+        const mode = url.searchParams.get('mode') || 'chat';
+        const force = url.searchParams.get('refresh') === 'true';
+        return this.send(res, 200, await this.getSuggestions(mode, force));
+      }
       if (req.method === 'GET' && url.pathname === '/sprites') {
         return this.send(res, 200, { pack: pack?.pack || 'capri_pc', version: pack?.version || '', poses: pack?.poses || [] });
       }
@@ -213,11 +461,92 @@ class PhoneBridge {
         if (/^[a-z_]{1,32}$/.test(kind)) this.d.event(kind);
         return this.send(res, 200, { ok: true });
       }
-      if (req.method === 'POST' && url.pathname === '/chat') {
+      if (req.method === 'POST' && url.pathname === '/tool') {
         const body = await this.readJson(req);
-        const text = String(body.text ?? '').replace(/\u0000/g, '').trim().slice(0, 4000);
-        if (!text) return this.send(res, 400, { error: 'empty' });
-        this.queue = this.queue.catch(() => {}).then(() => this.turn(text, body.voice === true));
+        if (!['search', 'pim'].includes(body.tool) || typeof body.text !== 'string' ||
+            !body.text.trim() || body.text.length > 4000) {
+          return this.send(res, 400, { error: 'Неверный инструмент или текст запроса.' });
+        }
+        const flags = parsePromptFlags(body.text, body);
+        if (!flags.text) return this.send(res, 400, { error: 'Введите запрос.' });
+        if (flags.ephemeral || flags.privateMode || flags.deepResearch || this.d.externalBlocked?.(flags.text)) {
+          return this.send(res, 403, { error: 'Инструмент недоступен для этого запроса.' });
+        }
+        if (body.tool === 'search') {
+          const result = await this.turn({ ...flags, text: `найди в сети: ${flags.text}` }, false);
+          return this.send(res, result.brain === 'error' ? 503 : 200, result.brain === 'error' ? { error: result.reply } : result);
+        }
+        if (!this.d.readPim) return this.send(res, 503, { error: 'Почта и календарь недоступны.' });
+        return this.send(res, 200, await this.d.readPim(flags.text));
+      }
+      if (req.method === 'POST' && url.pathname === '/deep-research/stop') {
+        const { requestId } = await this.readJson(req);
+        if (typeof requestId !== 'string' || !RESEARCH_ID.test(requestId)) {
+          return this.send(res, 400, { error: 'Неверный идентификатор исследования.' });
+        }
+        const active = this.researchRequests.get(requestId);
+        if (active) {
+          active.abort();
+        } else {
+          const now = Date.now();
+          for (const [id, expires] of this.earlyResearchStops) {
+            if (expires <= now) this.earlyResearchStops.delete(id);
+          }
+          if (this.earlyResearchStops.size >= 64) {
+            this.earlyResearchStops.delete(this.earlyResearchStops.keys().next().value);
+          }
+          this.earlyResearchStops.set(requestId, now + 15_000);
+        }
+        return this.send(res, 200, { ok: true });
+      }
+      if (req.method === 'POST' && url.pathname === '/deep-research') {
+        const body = await this.readJson(req);
+        const flags = parsePromptFlags(String(body.query ?? body.text ?? '').slice(0, 4000), body);
+        const { requestId } = body;
+        if (requestId !== undefined && (typeof requestId !== 'string' || !RESEARCH_ID.test(requestId))) {
+          return this.send(res, 400, { error: 'Неверный идентификатор исследования.' });
+        }
+        if (this.researchRequests.has(requestId)) return this.send(res, 409, { error: 'Исследование уже выполняется.' });
+        if (requestId) {
+          const expires = this.earlyResearchStops.get(requestId);
+          this.earlyResearchStops.delete(requestId);
+          if (expires > Date.now()) return this.send(res, 200, { stopped: true });
+        }
+        const abort = new AbortController();
+        if (requestId) this.researchRequests.set(requestId, abort);
+        const disconnect = () => { if (!res.writableEnded) abort.abort(); };
+        res.once('close', disconnect);
+        if (res.destroyed) disconnect();
+        try {
+          const result = await this.runDeepResearch(flags.text, { ...flags, signal: abort.signal });
+          if (!res.destroyed) return this.send(res, 200, abort.signal.aborted ? { stopped: true } : result);
+        } catch (error) {
+          if (!abort.signal.aborted) throw error;
+          if (!res.destroyed) return this.send(res, 200, { stopped: true });
+        } finally {
+          res.off('close', disconnect);
+          if (requestId) this.researchRequests.delete(requestId);
+        }
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/chat') {
+        const body = await this.readJson(req, MAX_BODY + Math.ceil(MAX_UPLOAD_BYTES / 3) * 4);
+        const rawText = String(body.text ?? '').replace(/\u0000/g, '').trim().slice(0, 4000);
+        const images = Array.isArray(body.files)
+          ? body.files.filter((f) => f && String(f.mime || '').startsWith('image/') && f.data).map((f) => String(f.data)).slice(0, 4)
+          : [];
+        if (!rawText && !images.length) return this.send(res, 400, { error: 'empty' });
+        const imagePrompt = images.length > 1
+          ? 'Кратко опиши каждое прикреплённое изображение по порядку.'
+          : 'Кратко опиши прикреплённое изображение.';
+        const flags = parsePromptFlags(rawText, body);
+        flags.images = images;
+        if (!flags.text && !images.length) return this.send(res, 400, { error: 'empty' });
+        if (!flags.text) flags.text = imagePrompt;
+        this.queue = this.queue.catch(() => {}).then(() => {
+          if (body.reset === true && !flags.ephemeral && !flags.privateMode) this.turns = [];
+          return this.turn(flags, body.voice === true);
+        });
         return this.send(res, 200, await this.queue);
       }
       if (req.method === 'GET' && url.pathname === '/agents') {
@@ -274,25 +603,23 @@ class PhoneBridge {
       return this.send(res, 404, { error: 'not found' });
     } catch (err) {
       const status = err.status || 400;
-      if (status >= 500) console.warn('[capri] phone bridge:', err.message);
+      if (status >= 500) console.warn('[altair] phone bridge:', err.message);
       if (!res.headersSent) this.send(res, status, { error: err.message || 'error' });
     }
   }
 
-  async media(text, kind) {
+  async media(text, kind, opts = {}) {
     try {
-      const said = await this.d.photo(text, kind, this.turns.slice(-4));
+      const said = await this.d.photo(text, kind, opts.ephemeral ? [] : this.turns.slice(-4));
       const m = /\[\[photo:([\w.-]+\.(?:png|webm))\]\]/.exec(said);
       const reply = said.replace(/\[\[photo:[^\]]*\]\]/g, '').trim() || 'Держи.';
-      this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
+      if (!opts.ephemeral) this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
       return { reply, brain: 'comfyui', image: m?.[1] || null };
     } catch (err) {
       return { reply: `Не вышло скинуть: ${err.message}`, brain: 'error' };
     }
   }
 
-  // "переключись на ролевую", "поставь основную": her chat model switched, here and on the PC alike. A
-  // phrase that names no model on this PC ("включи музыку") isn't one: null, she answers it as usual.
   async switchModel(text) {
     const wanted = parseModelCommand(text);
     if (!wanted || !this.d.switchModel) return null;
@@ -300,23 +627,55 @@ class PhoneBridge {
     return r?.ok ? { reply: `Переключилась на ${r.model}.`, brain: r.model } : null;
   }
 
-  async reply(text) {
+  async reply(flags, signal) {
+    const { text, ephemeral, privateMode, deepResearch, skills } = flags;
+    const isolated = ephemeral || privateMode || flags.localOnly === true;
     if (/^новый разговор/i.test(text)) {
-      this.turns = [];
-      return { reply: 'Начинаем с чистого листа.', brain: 'capri' };
+      if (!isolated) this.turns = [];
+      return { reply: 'Начинаем с чистого листа.', brain: 'altair' };
     }
+    if (deepResearch) {
+      try {
+        const res = await this.runDeepResearch(text, flags);
+        this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: res.reply });
+        return { reply: res.reply, brain: res.brain };
+      } catch (err) {
+        return { reply: `Deep Research не прошёл: ${err.message}`, brain: 'error' };
+      }
+    }
+
+    const sysParts = [this.d.persona(), PHONE_NOTE];
+    if (ephemeral) sysParts.push('Временный чат: не ссылайся на долговременную память и не сохраняй факты.');
+    if (privateMode) sysParts.push('Режим Приват (Vault): строго локальная обработка, данные и контекст только из Vault, выход в облако запрещён.');
+    for (const sk of skills) {
+      if (SKILL_NOTES[sk]) sysParts.push(SKILL_NOTES[sk]);
+    }
+
+    const historySlice = isolated ? [] : this.turns.slice(-TURNS * 2);
+    const userMsg = { role: 'user', content: text, ...(flags.images?.length ? { images: flags.images } : {}) };
     const messages = [
-      { role: 'system', content: `${this.d.persona()}\n${PHONE_NOTE}` },
-      ...this.turns.slice(-TURNS * 2),
-      { role: 'user', content: text },
+      { role: 'system', content: sysParts.filter(Boolean).join('\n') },
+      ...historySlice,
+      userMsg,
     ];
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(), 120000);
     try {
-      const { text: said, brain } = await this.d.chat(messages, abort.signal);
+      const opts = {
+        ephemeral,
+        localOnly: isolated,
+        source: privateMode ? 'vault' : undefined,
+        skills,
+        ...(flags.requireVision && { requireVision: true }),
+        ...(flags.localMode && { localMode: flags.localMode }),
+      };
+      const requestSignal = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
+      const { text: said, brain } = await this.d.chat(messages, requestSignal, opts);
       const reply = String(said || '').trim();
       if (!reply) return { reply: 'Модель промолчала. Спроси ещё раз, покороче.', brain };
-      this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
+      if (!isolated) {
+        this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
+      }
       return { reply, brain };
     } catch (err) {
       return { reply: `Не вышло ответить: ${err.message}`, brain: 'error' };
@@ -325,13 +684,31 @@ class PhoneBridge {
     }
   }
 
-  async turn(text, voice) {
-    // "скинь фото" from the phone: drawn on the PC (main.js photoTask), fetched like her voice (/gallery/<file>)
-    const media = this.d.photo && this.d.mediaKind?.(text);
-    const { reply, brain, image } = media ? await this.media(text, media)
-      : (await this.switchModel(text)) || await this.reply(text);
-    // kept like a talk on the PC: her hub's Chats (as a phone chat) and your vault (main.js)
-    if (brain !== 'error' && !/^новый разговор/i.test(text)) this.d.log?.({ said: text, answer: image ? `${reply}\n[[photo:${image}]]` : reply });
+  async turn(flags, voice, signal) {
+    const text = flags.text;
+    const isolated = flags.ephemeral || flags.privateMode || flags.localOnly === true;
+    const search = /^найди в сети:\s*([\s\S]+)$/i.exec(text)?.[1].trim();
+    if (search && !flags.deepResearch) {
+      if (isolated || this.d.externalBlocked?.(search)) {
+        return { reply: 'Обычный веб-поиск недоступен в этом режиме.', brain: 'error', pose: '' };
+      }
+      try {
+        const found = await this.d.webSearch?.(search);
+        if (!found) throw new Error('browser unavailable');
+        const links = (found.results || []).slice(0, 3).map((item) => `${item.title || item.url} — ${item.url}`);
+        return { reply: links.join('\n\n') || 'По этому запросу в браузере ничего не нашлось.', brain: 'web', pose: '' };
+      } catch {
+        return { reply: 'Браузерный поиск сейчас недоступен. Результатов нет.', brain: 'error', pose: '' };
+      }
+    }
+    const media = !isolated && !flags.deepResearch && this.d.photo && this.d.mediaKind?.(text);
+    const { reply, brain, image } = media ? await this.media(text, media, flags)
+      : (!isolated && !flags.deepResearch && await this.switchModel(text)) || await this.reply(flags, signal);
+
+    // Временные чаты (ephemeral) и приватный Vault (privateMode) не утекают в общий лог чатов
+    if (brain !== 'error' && !isolated && !/^новый разговор/i.test(text)) {
+      this.d.log?.({ said: text, answer: image ? `${reply}\n[[photo:${image}]]` : reply });
+    }
     const out = { reply, brain, pose: '', ...(image && { image: `/gallery/${image}` }) };
     if (voice && brain !== 'error') {
       const data = await this.d.speak(reply).catch(() => null);
@@ -346,4 +723,13 @@ class PhoneBridge {
   }
 }
 
-module.exports = { PhoneBridge, newToken, tokenMatches, addresses, controlPatch, parseModelCommand };
+module.exports = {
+  PhoneBridge,
+  newToken,
+  tokenMatches,
+  addresses,
+  controlPatch,
+  parseModelCommand,
+  parsePromptFlags,
+  DEFAULT_SUGGESTIONS,
+};

@@ -17,6 +17,7 @@ const T = {
     done: 'Готово', proton: 'В Proton', sent: 'Отправлено Капри', obsidian: 'Obsidian', isDone: 'сделано',
     galleryNote: 'Что она скинула: попроси в чате «скинь фото» — на ПК или с телефона.', galleryEmpty: 'Пока пусто.',
     needAt: 'Нужно время.', needTitle: 'Нужно название.', failed: 'Не вышло: ', main: 'Главное', settingsNote: 'То же, что в меню у трея и по правому клику на Капри.',
+    railCollapse: 'Свернуть меню', railExpand: 'Развернуть меню',
   },
   en: {
     tabs: { chats: 'Chats', agents: 'Agents', plans: 'Plans', gallery: 'Gallery', settings: 'Settings' },
@@ -107,6 +108,101 @@ if (hudEl && railToggle) {
 addEventListener('keydown', (e) => {
   if (e.ctrlKey && /^[12345]$/.test(e.key)) select(TABS[Number(e.key) - 1]);
 });
+
+// ---------------------------------------------------------------- gemini popovers (+ menu & model selector)
+
+function closeAllPopovers() {
+  for (const pop of document.querySelectorAll('.gem-popover')) pop.hidden = true;
+  for (const btn of document.querySelectorAll('[data-menu]')) btn.setAttribute('aria-expanded', 'false');
+}
+
+function syncAgentsModelMenu() {
+  const selectEl = document.querySelector('.agents__model');
+  const trigger = document.querySelector('[data-menu="agents-models"]');
+  const listEl = document.querySelector('[data-model-list="agents"]');
+  if (!selectEl || !trigger || !listEl) return;
+  const labelEl = trigger.querySelector('.gem-model-btn__label');
+  const selectedOpt = selectEl.selectedOptions[0] || selectEl.options[0];
+  if (labelEl) labelEl.textContent = selectedOpt ? selectedOpt.textContent : 'Модель';
+  trigger.disabled = selectEl.disabled || selectEl.options.length === 0;
+  listEl.replaceChildren(...Array.from(selectEl.options).map((opt) => {
+    const active = opt.value === selectEl.value;
+    const item = el('button', `gem-popover__item${active ? ' is-selected' : ''}`);
+    item.type = 'button';
+    item.setAttribute('role', 'menuitemradio');
+    item.setAttribute('aria-checked', String(active));
+    const body = el('span', 'gem-popover__body');
+    body.append(el('strong', '', opt.textContent));
+    const check = el('span', 'gem-popover__check', '✓');
+    check.setAttribute('aria-hidden', 'true');
+    item.append(body, check);
+    item.addEventListener('click', () => {
+      selectEl.value = opt.value;
+      selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+      syncAgentsModelMenu();
+      closeAllPopovers();
+    });
+    return item;
+  }));
+}
+
+for (const btn of document.querySelectorAll('[data-menu]')) {
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const name = btn.dataset.menu;
+    const pop = document.querySelector(`[data-popover="${name}"]`);
+    if (!pop) return;
+    const wasOpen = !pop.hidden;
+    closeAllPopovers();
+    if (!wasOpen) {
+      if (name === 'agents-models') syncAgentsModelMenu();
+      pop.hidden = false;
+      btn.setAttribute('aria-expanded', 'true');
+    }
+  });
+}
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.gem-menu-wrap')) return;
+  closeAllPopovers();
+});
+
+addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const openPop = document.querySelector('.gem-popover:not([hidden])');
+    if (openPop) {
+      e.stopImmediatePropagation();
+      closeAllPopovers();
+    }
+  }
+}, true);
+
+for (const item of document.querySelectorAll('[data-plus-action]')) {
+  item.addEventListener('click', () => {
+    const action = item.dataset.plusAction;
+    closeAllPopovers();
+    if (action === 'new-chat') document.querySelector('.hud__new')?.click();
+    if (action === 'voice') document.querySelector('.log__mic')?.click();
+    if (action === 'open-agents') select('agents');
+    if (action === 'agents-attach') document.querySelector('.agents__attach')?.click();
+  });
+}
+
+for (const item of document.querySelectorAll('[data-chat-mode]')) {
+  item.addEventListener('click', () => {
+    const mode = item.dataset.chatMode;
+    closeAllPopovers();
+    if (mode === 'agents') select('agents');
+  });
+}
+
+const agentsModelSelect = document.querySelector('.agents__model');
+if (agentsModelSelect) {
+  const observer = new MutationObserver(syncAgentsModelMenu);
+  observer.observe(agentsModelSelect, { childList: true, attributes: true, attributeFilter: ['disabled'] });
+  agentsModelSelect.addEventListener('change', syncAgentsModelMenu);
+  syncAgentsModelMenu();
+}
 
 // ---------------------------------------------------------------- plans
 

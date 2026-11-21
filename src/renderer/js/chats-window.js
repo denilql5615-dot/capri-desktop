@@ -15,6 +15,11 @@ const T = {
     resumeNote: 'Это старый чат: она его не помнит.', resume: 'Продолжить этот чат',
     newNote: 'Новый чат: она начнёт с чистого листа.', yes: 'Да', hour: 'На час', no: 'Нет', typing: 'печатает…',
     busy: 'Она ещё отвечает: подожди или нажми «Стоп».', closed: 'Не получилось открыть её чат: она занята чем-то важным. Попробуй ещё раз.',
+    researchPrompt: 'Введите тему исследования…', researching: 'Облачные агенты исследуют тему…',
+    stopping: 'Останавливаю исследование…', stopped: 'Исследование остановлено.',
+    chatMode: 'Чат', privateMode: 'Приват', taskMode: 'Задача', temporary: 'Временный чат', localWorking: 'Локальная модель отвечает…',
+    localStopping: 'Останавливаю ответ…', localStopped: 'Ответ остановлен.',
+    webTool: 'Поиск в сети', pimTool: 'Почта и календарь', checking: 'Запрашиваю данные…',
   },
   en: {
     title: 'Chats', search: 'Search chats…', empty: 'Nothing yet: write to her below.', none: 'Nothing found.',
@@ -24,6 +29,11 @@ const T = {
     resumeNote: 'An old chat: she doesn’t remember it.', resume: 'Continue this chat',
     newNote: 'A new chat: she starts with a clean slate.', yes: 'Yes', hour: 'For an hour', no: 'No', typing: 'typing…',
     busy: 'She’s still answering: wait, or press Stop.', closed: 'Couldn’t open her chat: she’s busy with something important. Try again.',
+    researchPrompt: 'Enter a research topic…', researching: 'Cloud agents are researching…',
+    stopping: 'Stopping research…', stopped: 'Research stopped.',
+    chatMode: 'Chat', privateMode: 'Private', taskMode: 'Task', temporary: 'Temporary chat', localWorking: 'Local model is answering…',
+    localStopping: 'Stopping reply…', localStopped: 'Reply stopped.',
+    webTool: 'Web search', pimTool: 'Mail and calendar', checking: 'Fetching results…',
   },
 };
 const lang = new URLSearchParams(location.search).get('lang') || 'en';
@@ -55,6 +65,29 @@ let live = null;      // the chat your next message goes into (null: a new one)
 let current = null;   // the one shown: a chat's id, or null for "new chat"
 let following = true; // showing the live chat: a new message there keeps it shown
 let busy = false;     // she's answering
+let chatMode = 'capri';
+let temporary = false;
+let toolBusy = false;
+let toolStopping = false;
+const drafts = new Map();
+const toolTurns = new Map();
+const modeItems = document.querySelectorAll('[data-chat-mode]:not([data-chat-mode="agents"])');
+const temporaryItem = $('[data-plus-action="temporary"]');
+const imageItem = $('[data-plus-action="images"]');
+const connectedItems = document.querySelectorAll('[data-plus-action="search"], [data-plus-action="pim"]');
+const imageInput = $('.log__images');
+const imageList = $('.log__image-list');
+let attachedImages = [];
+let imageSelection = 0;
+const toolKey = () => temporary ? `${chatMode}-temporary` : chatMode;
+const usesTool = () => chatMode !== 'capri' || temporary;
+const readOnlyTool = () => chatMode === 'search' || chatMode === 'pim';
+const connectedTool = () => chatMode === 'research' || readOnlyTool();
+const modeLabels = {
+  capri: t.chatMode, private: t.privateMode, task: t.taskMode, nsfw: '18+',
+  research: 'Deep Research', search: t.webTool, pim: t.pimTool,
+};
+const modeLabel = () => modeLabels[chatMode];
 let streamed = '';    // her answer as it comes
 let asking = null;    // her question before an action on your PC: { line, grantable }
 let sure = false;     // delete clicked once
@@ -128,7 +161,7 @@ function renderList() {
   $('.hud__count').textContent = chats.length ? String(chats.length) : '';
 }
 
-function line(role, content, at, q) {
+function line(role, content, at, q, isolated = false) {
   const item = el('li', `line ${role === 'user' ? 'is-you' : 'is-her'}`);
   const who = el('div', 'line__who');
   who.append(el('span', 'line__name', role === 'user' ? t.you : t.her), el('span', 'line__at', at ? time(at) : t.typing));
@@ -143,9 +176,10 @@ function line(role, content, at, q) {
   // a picture she sent ("скинь фото"): its mark becomes the picture under her words
   const photos = [...content.matchAll(PHOTO_MARK)].map((m) => m[1]);
   const text = el('p', 'line__text');
-  appendHubText(text, content.replace(PHOTO_MARK, '').trim(), (part) => marked(part, q));
+  if (isolated) text.append(marked(content, q));
+  else appendHubText(text, content.replace(PHOTO_MARK, '').trim(), (part) => marked(part, q));
   item.append(who, text);
-  for (const name of photos) {
+  for (const name of isolated ? [] : photos) {
     const clip = /\.webm$/i.test(name); // a clip she sent ("скинь видео"): looped, silent
     const img = el(clip ? 'video' : 'img', 'line__photo');
     img.src = `capri://gallery/${name}`;
@@ -159,12 +193,13 @@ function line(role, content, at, q) {
 const PHOTO_MARK = /\[\[photo:(\d{8}-\d{6}-[0-9a-f]{4}\.(?:png|webm))\]\]/g;
 
 function renderLog({ keepScroll = false } = {}) {
-  const chat = chats.find((c) => c.id === current);
+  const separate = usesTool();
+  const chat = separate ? null : chats.find((c) => c.id === current);
   const q = query();
   const atBottom = linesEl.scrollHeight - linesEl.scrollTop - linesEl.clientHeight < 40;
   $('.log__when').replaceChildren(...(chat
     ? [el('b', '', day(chat.started)), ` · ${time(chat.started)} – ${time(chat.updated)} · ${t.messages(chat.count)}`]
-    : [t.newNote]));
+    : [separate ? [modeLabel(), temporary ? t.temporary : ''].filter(Boolean).join(' · ') : t.newNote]));
   $('.log__live').hidden = !chat || chat.id !== live;
   delBtn.hidden = !chat;
   sure = false;
@@ -172,19 +207,49 @@ function renderLog({ keepScroll = false } = {}) {
   delBtn.classList.remove('is-danger');
   // an old chat: your message would go elsewhere, so it asks to continue this one first
   $('.log__resume').hidden = !chat || chat.id === live;
-  const lines = (chat?.messages || []).map((m) => line(m.role, m.content, m.at, q));
+  const turn = toolTurns.get(toolKey());
+  const messages = separate ? [turn?.question, turn?.answer].filter(Boolean) : chat?.messages || [];
+  const plainText = separate && !['research', 'search'].includes(chatMode);
+  const lines = messages.map((m) => line(m.role, m.content, m.at, q, plainText));
   // her answer coming, under the live chat (or the new one)
-  if (busy && streamed && (current === live || (!current && !live))) lines.push(line('assistant', streamed, null, ''));
+  if (!separate && busy && streamed && (current === live || (!current && !live))) lines.push(line('assistant', streamed, null, ''));
+  const isEmpty = lines.length === 0;
+  const logMain = linesEl.closest('.log');
+  if (logMain) logMain.classList.toggle('is-empty', isEmpty);
+  const welcomeEl = $('.log__welcome');
+  if (welcomeEl) welcomeEl.hidden = separate || !isEmpty;
   linesEl.replaceChildren(...lines);
   if (q) linesEl.querySelector('mark')?.scrollIntoView({ block: 'center' });
   else if (!keepScroll || atBottom) linesEl.scrollTop = linesEl.scrollHeight;
 }
 
 function renderControls() {
-  input.disabled = busy;
-  sendBtn.textContent = busy ? t.stop : t.send;
-  sendBtn.classList.toggle('is-danger', busy);
-  $('.log__ask').hidden = !asking;
+  const separate = usesTool();
+  const active = separate ? toolBusy : busy;
+  input.disabled = active;
+  input.placeholder = chatMode === 'research' ? t.researchPrompt : t.placeholder;
+  sendBtn.textContent = active ? (readOnlyTool() ? t.checking : t.stop) : t.send;
+  sendBtn.disabled = separate && (toolStopping || (readOnlyTool() && active));
+  sendBtn.classList.toggle('is-danger', active && !readOnlyTool());
+  $('.log__mic').disabled = separate;
+  $('.log__ask').hidden = separate || !asking;
+  for (const mode of modeItems) {
+    const selected = mode.dataset.chatMode === chatMode;
+    mode.classList.toggle('is-selected', selected);
+    mode.setAttribute('aria-checked', String(selected));
+    mode.disabled = toolBusy || (temporary && mode.dataset.chatMode === 'research');
+  }
+  temporaryItem.disabled = toolBusy || connectedTool();
+  imageItem.disabled = toolBusy || connectedTool();
+  for (const item of connectedItems) item.disabled = toolBusy || temporary || chatMode === 'private';
+  imageList.hidden = !attachedImages.length;
+  imageList.disabled = toolBusy;
+  imageList.textContent = attachedImages.map(({ name }) => name).join(', ') + ' ×';
+  imageList.title = lang === 'ru' ? 'Убрать изображения' : 'Remove images';
+  temporaryItem.classList.toggle('is-selected', temporary);
+  temporaryItem.setAttribute('aria-checked', String(temporary));
+  $('[data-menu="chats-models"] .gem-model-btn__label').textContent =
+    temporary && chatMode === 'capri' ? t.temporary : modeLabel();
   if (asking) {
     $('.log__ask-line').textContent = `${asking.line}?`;
     $('.log__ask-actions').replaceChildren(
@@ -201,6 +266,8 @@ function hint(text) {
 }
 
 function show(id) {
+  if (toolBusy) return;
+  setChatMode('capri', false);
   current = id;
   following = id === live;
   renderList();
@@ -223,8 +290,104 @@ async function load() {
   renderLog({ keepScroll: true });
 }
 
-$('.log__compose').addEventListener('submit', (e) => {
+function setChatMode(mode, nextTemporary) {
+  if (toolBusy || (['research', 'search', 'pim'].includes(mode) && nextTemporary) ||
+      (mode === chatMode && nextTemporary === temporary)) return;
+  if (usesTool() && chatMode !== 'research') toolTurns.delete(toolKey());
+  else drafts.set(toolKey(), input.value);
+  attachedImages = [];
+  imageSelection++;
+  chatMode = mode;
+  temporary = nextTemporary;
+  input.value = drafts.get(toolKey()) || '';
+  hint(null);
+  renderControls();
+  renderLog();
+  input.focus();
+}
+
+for (const mode of modeItems) {
+  mode.addEventListener('click', () => setChatMode(mode.dataset.chatMode, temporary));
+}
+temporaryItem.addEventListener('click', () => setChatMode(chatMode, !temporary));
+for (const item of connectedItems) item.addEventListener('click', () => setChatMode(item.dataset.plusAction, false));
+imageItem.addEventListener('click', () => imageInput.click());
+imageInput.addEventListener('change', async () => {
+  const files = Array.from(imageInput.files);
+  imageInput.value = '';
+  if (!files.length || toolBusy || connectedTool()) return;
+  if (files.length > 4 || files.some((file) =>
+    !['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 4 * 1024 * 1024)) {
+    hint(lang === 'ru' ? 'Выбери до четырёх PNG, JPEG или WebP, каждый до 4 МБ.' : 'Select up to four PNG, JPEG or WebP files of up to 4 MB each.');
+    return;
+  }
+  setChatMode(chatMode, true);
+  const selection = ++imageSelection;
+  try {
+    const images = await Promise.all(files.map((file) => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve({ name: file.name, data: String(reader.result).split(',')[1] });
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    })));
+    if (selection !== imageSelection || toolBusy) return;
+    attachedImages = images;
+    hint(null);
+    renderControls();
+    input.focus();
+  } catch {
+    if (selection === imageSelection) hint(lang === 'ru' ? 'Не удалось прочитать изображения.' : 'Could not read images.');
+  }
+});
+imageList.addEventListener('click', () => {
+  attachedImages = [];
+  imageSelection++;
+  renderControls();
+});
+
+$('.log__compose').addEventListener('submit', async (e) => {
   e.preventDefault();
+  if (usesTool()) {
+    const research = chatMode === 'research';
+    if (toolBusy) {
+      if (toolStopping || readOnlyTool()) return;
+      toolStopping = true;
+      hint(research ? t.stopping : t.localStopping);
+      renderControls();
+      host.chatsStopTool();
+      return;
+    }
+    const text = input.value.trim();
+    if (!text && !attachedImages.length) return;
+    const images = attachedImages.map(({ data }) => data);
+    const content = [text, attachedImages.map(({ name }) => name).join(', ')].filter(Boolean).join('\n');
+    attachedImages = [];
+    imageSelection++;
+    input.value = '';
+    const turn = { question: { role: 'user', content, at: Date.now() } };
+    toolTurns.set(toolKey(), turn);
+    toolBusy = true;
+    hint(research ? t.researching : readOnlyTool() ? t.checking : t.localWorking);
+    renderControls();
+    renderLog();
+    try {
+      const result = await host.chatsRunTool({ text, mode: chatMode, ephemeral: temporary, images });
+      if (result.stopped) hint(research ? t.stopped : t.localStopped);
+      else {
+        turn.answer = { role: 'assistant', content: result.reply, at: Date.now() };
+        hint(null);
+      }
+    } catch (err) {
+      hint(err.message);
+    } finally {
+      toolBusy = false;
+      toolStopping = false;
+      renderControls();
+      renderLog();
+      input.focus();
+    }
+    return;
+  }
   if (busy) return host.chatsStop();
   const text = input.value.trim();
   if (!text) return;
@@ -243,6 +406,19 @@ $('.log__resume-go').addEventListener('click', () => {
   host.chatsResume(current);
 });
 $('.hud__new').addEventListener('click', () => {
+  if (toolBusy) return;
+  if (usesTool() && chatMode !== 'research') {
+    toolTurns.delete(toolKey());
+    attachedImages = [];
+    imageSelection++;
+    input.value = '';
+    hint(null);
+    renderControls();
+    renderLog();
+    input.focus();
+    return;
+  }
+  setChatMode('capri', false);
   current = null;
   following = true;
   host.chatsNew();
@@ -279,7 +455,7 @@ host.onChatsState((state) => {
   const was = busy;
   busy = Boolean(state?.busy);
   asking = state?.asking || null;
-  if (state?.refused) hint(state.refused === 'busy' ? t.busy : t.closed);
+  if (!usesTool() && state?.refused) hint(state.refused === 'busy' ? t.busy : t.closed);
   if (was && !busy) streamed = '';
   renderControls();
   renderLog({ keepScroll: true });

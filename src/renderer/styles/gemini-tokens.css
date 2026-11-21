@@ -1,0 +1,58 @@
+/* Google Gemini Desktop 1:1 design tokens (from gemini-tokens-summary.json). Scoped to .hud shell; overlay .panel untouched. */
+
+:root {
+  --gem-bg: rgb(15, 15, 15);
+  --gem-surface: rgb(31, 31, 31);
+  --gem-surface-raised: #282a2c;
+  --gem-surface-hover: #2d2f31;
+  --gem-border: #333537;
+  --gem-border-subtle: rgba(227, 227, 227, 0.12);
+
+  --gem-text: rgb(227, 227, 227);
+  --gem-text-muted: #9aa0a6;
+  --gem-text-dim: #747775;
+
+  --gem-accent: #a8c7fa;
+  --gem-accent-hover: #c2e7ff;
+  --gem-accent-bg: rgba(168, 199, 250, 0.14);
+  --gem-on-accent: #062e6f;
+
+  --gem-danger: #f2b8b5;
+  --gem-on-danger: #601410;
+
+  --gem-font-sans: 'Google Sans Flex', 'Google Sans', 'Helvetica Neue', 'Segoe UI', system-ui, sans-serif;
+  --gem-font-mono: 'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace;
+  --gem-text-base: 16px;
+  --gem-text-input: 17px;
+
+  --gem-sidenav-w: 288px;
+  --gem-header-h: 40px;
+  --gem-radius-sm: 8px;
+  --gem-radius-md: 16px;
+  --gem-radius-lg: 24px;
+  --gem-radius-pill: 999px;
+
+  --mat-focus-indicator-border-width: 1px;
+  --mat-focus-indicator-border-color: #a8c7fa;
+  --mat-focus-indicator-display: block;
+  --mat-focus-indicator-fallback-border-style: none;
+  --lm-glow-body-base: rgba(0, 0, 0, 0);
+  --lm-glow-body-mid: rgba(0, 0, 0, 0);
+}
+
+body:has(> .hud) {
+  --ink: var(--gem-bg);
+  --ink-2: var(--gem-surface);
+  --paper: var(--gem-text);
+  --paper-2: #c4c7c5;
+  --paper-3: var(--gem-text-muted);
+  --line: var(--gem-border);
+  --yellow: var(--gem-accent);
+  --cyan: var(--gem-accent);
+  --red: var(--gem-danger);
+  --accent: var(--gem-accent);
+  --frame: var(--gem-border);
+  --echo: transparent;
+  --font-display: var(--gem-font-sans);
+  --font-mono: var(--gem-font-mono);
+}

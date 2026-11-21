@@ -130,6 +130,17 @@ test('ordinary memory search and explicit history expose only their respective c
   assert.deepEqual(titles({ history: true }), ['Предыдущая']);
 });
 
+test('private memory is available only through vaultOnly, and Tor notes stay excluded', (t) => {
+  const dir = tmp();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, 'Общее.md'), 'контрольрубин');
+  fs.writeFileSync(path.join(dir, 'Приват.md'), '---\nsource: "vault"\n---\nконтрольрубин приват');
+  fs.writeFileSync(path.join(dir, 'Исключено.md'), '---\nsource: tor\nvault: true\n---\nконтрольрубин исключено');
+  assert.deepStrictEqual(notes.list(dir).map(note => note.title), ['Общее']);
+  assert.deepStrictEqual(notes.searchVault(dir, 'контрольрубин').map(note => note.title), ['Общее']);
+  assert.deepStrictEqual(notes.searchVault(dir, 'контрольрубин', 4, { vaultOnly: true }).map(note => note.title), ['Приват']);
+});
+
 test('searchVault reconciles incomplete promotion journal before returning active or archive hits', (t) => {
   const { createVaultPromotionStore } = require('../src/main/memory-promotion');
   const vault = tmp();

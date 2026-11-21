@@ -57,6 +57,15 @@ function parse(source) {
   return { meta, text: (m ? source.slice(m[0].length) : source).trim() };
 }
 
+function unquote(value) {
+  const text = String(value || '').trim();
+  if (text.startsWith('"') && text.endsWith('"')) {
+    try { return String(JSON.parse(text)); } catch { return text.slice(1, -1); }
+  }
+  if (text.startsWith("'") && text.endsWith("'")) return text.slice(1, -1);
+  return text;
+}
+
 // All her notes: [{ title, type, text, updated }]
 function list(dir) {
   let names = [];
@@ -67,13 +76,14 @@ function list(dir) {
   }
   return names.map((name) => {
     const { meta, text } = parse(fs.readFileSync(path.join(dir, name), 'utf8'));
+    if (!memoryRag.isCardAllowed({ source: unquote(meta.source), layer: unquote(meta.layer), vault: unquote(meta.vault) === 'true' })) return null;
     return { title: name.slice(0, -3), type: meta['тип'] || 'о тебе', text, updated: meta['обновлено'] || '' };
-  }).filter((n) => n.text);
+  }).filter((n) => n?.text);
 }
 
 // The rest of the Obsidian vault: only a few notes that match this message. Her own Capri/ notes are
 // still handled by list()/recall(), so their metadata and index keep their old meaning.
-function searchVault(dir, said, limit = VAULT_MATCHED, { history = false, journalDir = null } = {}) {
+function searchVault(dir, said, limit = VAULT_MATCHED, { history = false, journalDir = null, vaultOnly = false } = {}) {
   const words = stems(said);
   if (!words.size) return [];
   const root = path.basename(dir).toLowerCase() === 'capri' ? path.dirname(dir) : dir;
@@ -97,14 +107,6 @@ function searchVault(dir, said, limit = VAULT_MATCHED, { history = false, journa
     }
   };
   walk(root);
-  const unquote = (v) => {
-    const s = String(v || '').trim();
-    if (s.startsWith('"') && s.endsWith('"')) {
-      try { return String(JSON.parse(s)); } catch { return s.slice(1, -1); }
-    }
-    if (s.startsWith("'") && s.endsWith("'")) return s.slice(1, -1);
-    return s;
-  };
   const candidates = files.map((file) => {
     let parsed;
     try { parsed = parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
@@ -128,13 +130,14 @@ function searchVault(dir, said, limit = VAULT_MATCHED, { history = false, journa
       status,
       topic: unquote(parsed.meta.topic),
       source: unquote(parsed.meta.source),
+      vault: unquote(parsed.meta.vault) === 'true',
       link: unquote(parsed.meta.link),
       quote: unquote(parsed.meta.quote),
       created: unquote(parsed.meta.created || parsed.meta['создано']),
       updated: unquote(parsed.meta.updated || parsed.meta['обновлено']),
     };
   }).filter(Boolean);
-  return memoryRag.rankCards(candidates, said, { limit }).map((item) => ({
+  return memoryRag.rankCards(candidates, said, { limit, vaultOnly }).map((item) => ({
     title: item.title,
     text: item.text,
     score: item.score,

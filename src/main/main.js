@@ -97,6 +97,8 @@ const OLLAMA_SITE = 'https://ollama.com';
 
 // Her two local brains (brains.js): the fast one always in, the main one when asked for or needed.
 const brainsLib = require('./brains');
+const harness = require('./harness');
+const harnessManager = harness.createHarnessManager();
 const brains = new brainsLib.Brains({ ollama });
 ollama.pin(brains.fast);
 ollama.setContextFor(brains.main, 16384);
@@ -466,7 +468,7 @@ function ensureAgentSessions() {
       if (model === brains.main) await brains.use('main');
       const rp = agent === 'faun' && !brainsLib.isEmergency(lastUser);
       return ollama.chat({ model, messages: [
-        { role: 'system', content: rp ? `Веди ролевую сцену на русском, следуя сеттингу пользователя. ${brainsLib.RP_PROMPT}` : `Ты Капри. Отвечай по-русски. ${hints}` },
+        { role: 'system', content: rp ? `Веди ролевую сцену на русском, следуя сеттингу пользователя. ${brainsLib.RP_PROMPT}` : `Ты Альта (ALTAI:RE). Отвечай по-русски, точно и без воды. ${hints}` },
         ...messages,
       ] }, delta, signal);
     }, (id, delta) => chatsWin?.webContents.send('agents:update', { id, delta }));
@@ -512,14 +514,14 @@ const notesDir = () => notes.dirOf({ notesDir: config.load().notesDir, appData: 
 
 // Her notes that fit your last message, put right by it for this answer: small local models mostly go by
 // the last thing they read (chat.js does the same with her mood), up in her persona they'd skip them
-function withNotes(messages) {
+function withNotes(messages, { vaultOnly = false } = {}) {
   const at = messages.map((m) => m.role).lastIndexOf('user');
   const said = messages[at]?.content;
   if (typeof said !== 'string') return messages;
   const dir = notesDir();
   const recalled = [
-    notes.prompt(notes.recall(notes.list(dir), said)),
-    notes.vaultPrompt(notes.searchVault(dir, said)),
+    vaultOnly ? '' : notes.prompt(notes.recall(notes.list(dir), said)),
+    notes.vaultPrompt(notes.searchVault(dir, said, undefined, { vaultOnly })),
   ].filter(Boolean).join('\n\n');
   if (!recalled) return messages;
   return messages.map((m, i) => (i === at ? { ...m, content: `${said}
@@ -639,7 +641,7 @@ async function calendarContext(service, said) {
 }
 
 // What's on Proton Calendar and in her planner for the days you asked about: { events, plans, from, to }
-async function calendarData(service, said) {
+async function calendarData(service, said, failOnError = false) {
   const [from, to] = pim.calendarRange(said);
   const events = [];
   for (const account of service?.listAccounts() || []) {
@@ -647,6 +649,7 @@ async function calendarData(service, said) {
     try {
       events.push(...await service.listEvents({ accountId: account.id, from: from.toISOString(), to: to.toISOString(), limit: pim.MAX_RESULTS }));
     } catch (err) {
+      if (failOnError) throw err;
       console.warn('[capri] calendar:', err.message);
     }
   }
@@ -705,11 +708,15 @@ async function switchSpokenModel(wanted) {
   return { ok: true, model };
 }
 
-async function recentMailList(service, said = '', max = 5) {
+async function recentMailList(service, said = '', max = 5, failOnError = false) {
   if (!service) return [];
   const found = [];
   for (const accountId of pim.mailAccountIds(said, service.listAccounts())) {
-    try { found.push(...await service.searchMail({ accountId, query: '', limit: max })); } catch {}
+    try {
+      found.push(...await service.searchMail({ accountId, query: '', limit: max }));
+    } catch (err) {
+      if (failOnError) throw err;
+    }
   }
   return found.sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, max);
 }
@@ -797,16 +804,21 @@ async function quickAnswer(said) {
       return quick.altaStatusAnswer({ planMarkdown, tasks });
     }
     if (quick.isQuickFreeMemory(said)) {
+      if (brains.visionRunning || brains.transition) return 'Модель сейчас переключается. Повтори выгрузку после завершения.';
       const beforeRam = await system.info('ram');
       brains.forget();
       const unloaded = await ollama.unloadAll().catch(() => []);
       if (unloaded.length) await new Promise((r) => setTimeout(r, 800));
-      const [afterRam, gpu] = await Promise.all([
+      const [afterRam, gpu, remaining] = await Promise.all([
         system.info('ram'),
         system.info('gpu').catch(() => null),
+        ollama.loadedModels(),
       ]);
       const freedMb = Math.max(0, Math.round(((beforeRam?.used || 0) - (afterRam?.used || 0)) / (1024 ** 2)));
-      const modelsLine = unloaded.length ? `Выгрузила из Ollama: ${unloaded.join(', ')}.` : 'В Ollama сейчас не было загруженных локальных моделей.';
+      const modelsLine = !remaining ? 'Не удалось проверить выгрузку в Ollama.'
+        : remaining.length ? `В Ollama ещё загружены: ${remaining.join(', ')}.`
+        : unloaded.length ? `Выгрузила из Ollama: ${unloaded.join(', ')}.`
+        : 'В Ollama сейчас нет загруженных локальных моделей.';
       const gpuLine = gpu?.totalMb ? ` VRAM: ${gpu.usedMb} / ${gpu.totalMb} МБ.` : '';
       const ramLine = afterRam?.total ? ` ОЗУ: ${Math.round((afterRam.used / (1024 ** 3)) * 10) / 10} / ${Math.round((afterRam.total / (1024 ** 3)) * 10) / 10} ГБ${freedMb > 20 ? ` (освобождено ~${freedMb} МБ)` : ''}.` : '';
       return `${modelsLine}${ramLine}${gpuLine}`;
@@ -869,6 +881,28 @@ async function withPim(messages, said) {
     return messages.map((message, index) => index === at ? { ...message, content: `${message.content}\n\n(${context})` } : message);
   } catch {
     return messages;
+  }
+}
+
+async function readPimTool(text) {
+  if (torState.isQuarantined() || messagesHaveTor([{ role: 'user', content: text }])) {
+    throw Object.assign(new Error('Почта и календарь недоступны в Tor-карантине.'), { status: 403 });
+  }
+  const service = pimService();
+  const mail = quick.isQuickMail(text);
+  if (!mail && !pim.isCalendarQuestion(text)) {
+    throw Object.assign(new Error('Спроси о последних письмах или событиях календаря.'), { status: 400 });
+  }
+  const accounts = service?.listAccounts() || [];
+  if (!accounts.some((account) => account.capabilities.includes(mail ? 'mail' : 'calendar'))) {
+    throw Object.assign(new Error(mail ? 'Почтовый аккаунт не подключён.' : 'Аккаунт календаря не подключён.'), { status: 503 });
+  }
+  try {
+    return { reply: mail
+      ? quick.mailAnswer(await recentMailList(service, text, 5, true))
+      : quick.scheduleAnswer(await calendarData(service, text, true)) };
+  } catch {
+    throw Object.assign(new Error(mail ? 'Не удалось прочитать почту.' : 'Не удалось прочитать календарь.'), { status: 503 });
   }
 }
 
@@ -1486,11 +1520,13 @@ const PHONE_REACT = { pet: 'pet', poke: 'poke', shake: 'shake', back: 'back' };
 function phonePersona() {
   const cfg = config.load();
   return [
-    'Ты Капри, конструкт личности из Project Capricorn (Cyberpunk: Edgerunners): цифровой призрак из многих разумов, иногда говоришь «мы».',
-    'Говоришь игриво, чуть дерзко, по-доброму; изредка сленг Найт-Сити (чум, прем, гонк). Коротко: одно-три предложения, без markdown и эмодзи.',
+    'Ты Альта (полное имя Альтаир, система ALTAI:RE — Autonomous Local Technical Artificial Intelligence: Revanced).',
+    'Характер: живой, технически подкованный напарник. Говоришь точно, по-человечески, с лёгкой иронией, без канцелярита и заискивания.',
+    'Приветствие, разговорную фразу и опечатку понимай в контексте беседы. Отвечай как собеседник, без оценок настроения или занятости пользователя.',
+    'Опирайся на слова пользователя и доступные данные. Если для задачи не хватает важной детали, задай один конкретный вопрос.',
     cfg.userName ? `Пользователя зовут ${cfg.userName}.` : '',
-    cfg.persona ? `Какой он хочет тебя видеть: ${cfg.persona}` : '',
-    cfg.memories?.length ? `Что он просил запомнить: ${cfg.memories.join('; ')}.` : '',
+    cfg.persona ? `Особые пожелания по стилю: ${cfg.persona}` : '',
+
     'Отвечай по-русски.',
   ].filter(Boolean).join('\n');
 }
@@ -1514,35 +1550,79 @@ async function applyPhone() {
     phoneBridge = new phone.PhoneBridge({
       token: phoneToken,
       persona: phonePersona,
-      chat: async (messages, signal) => {
+      externalBlocked: (query) => torState.isQuarantined() || hasSecret(query) || messagesHaveTor([{ role: 'user', content: query }]),
+      webSearch: (query) => agentWeb.search({ query, read: 0 }),
+      readPim: readPimTool,
+      chat: async (messages, signal, opts = {}) => {
+        if (brains.visionRunning) throw new Error(brainsLib.VISION_BUSY);
         const hasTor = messagesHaveTor(messages);
         if (hasTor) touchTor({ inChat: true });
-        const torSensitive = torState.isQuarantined() || hasTor;
-        const said = messages.findLast((m) => m.role === 'user')?.content || '';
-        const fast = await quickAnswer(said);
-        if (fast) return { text: fast, brain: 'quick' };
+        const torSensitive = torState.isQuarantined() || hasTor || opts.localOnly === true;
+        const user = messages.findLast((m) => m.role === 'user');
+        const said = user?.content || '';
+        const hasImages = Boolean(user?.images?.length);
+        if (!opts.fastLocal && !opts.localOnly && !hasImages) {
+          const fast = await quickAnswer(said);
+          if (fast) return { text: fast, brain: 'quick' };
+        }
         const cfg = config.load();
-        if (!chatModels) await refreshModels();
+        if (!chatModels && !opts.localOnly) await refreshModels();
+        if (opts.fastLocal) {
+          if (cfg.provider !== 'ollama' || !brains.ready(chatModels) || brains.mainActive() || brains.visionRunning) return { text: '' };
+          const text = await ollama.chat({ model: brains.fast, messages, numPredict: 320 }, () => {}, signal);
+          return { text, brain: brains.fast };
+        }
         const pickedModel = pickModel(cfg);
         if (torSensitive && !isLocalOnlyModelAllowed({ cfg, model: pickedModel, llm, ollama, localOnly: true })) {
-          return { text: TOR_CLOUD_BLOCK_MSG, brain: 'local-only' };
+          return { text: opts.localOnly ? 'Для этого режима нужна доступная локальная модель.' : TOR_CLOUD_BLOCK_MSG, brain: 'local-only' };
         }
-        const { messages: enriched, numPredict } = await prepLocal(cfg, messages); // her brain picked first, then the model it means
-        const torAfterPrep = torState.isQuarantined() || hasTor || messagesHaveTor(enriched);
+        if (hasImages && cfg.provider === 'ollama' && chatModels?.includes(brainsLib.VISION)
+          && (opts.requireVision || brains.isAuto(cfg.chatModel, chatModels))) {
+          if (chats.size) throw new Error(brainsLib.VISION_BUSY);
+          return { text: await brains.see(messages, signal), brain: brainsLib.VISION };
+        }
+        if (opts.requireVision) throw new Error('Локальная Vision-модель недоступна.');
+        let model;
+        if (opts.localMode === 'task') {
+          if (cfg.provider !== 'ollama' || !brains.ready(chatModels)) throw new Error('Локальная модель для задач недоступна.');
+          model = await brains.use('main');
+        }
+        if (opts.localMode === 'nsfw') messages = brainsLib.withRp(messages);
+        const prepared = (opts.ephemeral || torSensitive)
+          ? { messages: opts.source === 'vault' && !opts.ephemeral && !hasTor && !torState.isQuarantined()
+            ? withNotes(messages, { vaultOnly: true }) : messages, numPredict: opts.localOnly ? 1200 : undefined }
+          : await prepLocal(cfg, messages);
+        const torAfterPrep = torSensitive || messagesHaveTor(prepared.messages);
         let usedModel = pickModel(cfg);
         const text = await chatWithFallback(
           cfg,
-          { messages: enriched, numPredict },
+          prepared,
           () => {},
           signal,
           () => false,
           (nextModel) => { usedModel = nextModel; },
           {
             localOnly: torAfterPrep,
+            persistFallback: !opts.localOnly,
+            model,
             onSuccess: ({ model: okModel }) => { usedModel = okModel; },
           },
         );
         return { text, brain: usedModel || cfg.provider };
+      },
+      saveObsidianResearch: async ({ query, markdown }) => {
+        const dir = notesDir();
+        const vaultRoot = path.basename(dir).toLowerCase() === 'capri' ? path.dirname(dir) : dir;
+        const outDir = path.join(vaultRoot, 'Результаты');
+        await fs.promises.mkdir(outDir, { recursive: true });
+        const stamp = new Date().toISOString().slice(0, 10);
+        const slug = String(query || 'deep-research').replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ').trim().slice(0, 48) || 'deep-research';
+        let dest = path.join(outDir, `${stamp} — DeepResearch — ${slug}.md`);
+        for (let i = 2; fs.existsSync(dest); i++) {
+          dest = path.join(outDir, `${stamp} — DeepResearch — ${slug}-${i}.md`);
+        }
+        await fs.promises.writeFile(dest, `# Deep Research: ${query}\n\n${markdown}\n`, 'utf8');
+        return true;
       },
       speak: (text) => (config.load().voice.tts ? speech.speak(text, config.load().voice) : Promise.resolve(null)),
       event: (kind) => PHONE_REACT[kind] && sendCommand('phone', { kind: PHONE_REACT[kind] }),
@@ -1618,7 +1698,8 @@ async function applyPhone() {
       },
       agentCreate: async (agent) => ensureAgentSessions().create(agent),
       agentHistory: async (id) => ensureAgentSessions().history(id),
-      agentSend: async ({ id, model, text, retry, files, queue }) => {
+      agentSend: async ({ id, model, text, retry, files, queue, signal }) => {
+        signal?.throwIfAborted();
         const mgr = ensureAgentSessions();
         const session = mgr.sessions.find((item) => item.id === id);
         if (!session) throw new Error('Сессия не найдена.');
@@ -1630,6 +1711,7 @@ async function applyPhone() {
           }
         }
         const promptText = await withUploadedFiles(id, text, files);
+        signal?.throwIfAborted();
         if (queue === true && retry !== true) return mgr.enqueue(id, chosenModel, promptText);
         return mgr.send(id, chosenModel, promptText, retry === true);
       },
@@ -1761,6 +1843,7 @@ async function routeOf(text, context = [], signal) {
   const media = photo.kind(text); // "скинь фото" / "скинь видео": ComfyUI, whoever is her brain
   if (media) return { worker: media, route_path: 'pre_photo', fallback_reason: 'prefix_guard', router_latency_ms: 0, router_version: ROUTER_VERSION, router: null };
   if (brainsLib.rpCommand(text) !== null) return { worker: null, route_path: 'pre_rp', fallback_reason: 'prefix_guard', router_latency_ms: 0, router_version: ROUTER_VERSION, router: null }; // her roleplay mode on/off: hers
+  if (harness.parseHarnessCommand(text)) return { worker: null, route_path: 'pre_harness', fallback_reason: 'prefix_guard', router_latency_ms: 0, router_version: ROUTER_VERSION, router: null };
 
   if (cfg.provider === 'claude') return { worker: null, route_path: 'pre_named', fallback_reason: 'prefix_guard', router_latency_ms: 0, router_version: ROUTER_VERSION, router: null };
   const named = workers.route(text);
@@ -2032,25 +2115,26 @@ async function isMainBrainLoaded(signal, timeoutMs = 300) {
 
 async function prepLocal(cfg, messages, { main = false } = {}) {
   const said = yourWords(messages);
+  const hasImages = Array.isArray(messages) && messages.some((m) => Array.isArray(m?.images) && m.images.length > 0);
+  const shortTalk = String(said || '').trim().length < 15 && !hasImages;
   const rp = cfg.rp === true && !brainsLib.isEmergency(said);
   const rolesReady = cfg.provider === 'ollama' && brains.ready(chatModels);
   const auto = rolesReady && brains.isAuto(cfg.chatModel, chatModels);
   const torCtx = torState.isQuarantined() || messagesHaveTor(messages);
-  // a long document keeps its long answer even when the turn was sent to the 26B for another reason
   const analysis = brainsLib.analysisMode(cfg, { rolesReady, auto, tor: torCtx, text: said });
   if (auto) {
-    if (!main && brainsLib.wantsFast(said)) await brains.release();
-    else if (main || rp || analysis.active || brainsLib.wantsMain(said) || brainsLib.wantsLocal(said)) await brains.use('main');
+    if (!main && !hasImages && brainsLib.wantsFast(said)) await brains.release();
+    else if (main || rp || hasImages || analysis.active || brainsLib.wantsMain(said) || brainsLib.wantsLocal(said)) await brains.use('main');
     else await brains.use('fast');
   }
-  const enriched = await withPim(withNotes(messages), said);
+  const enriched = shortTalk ? messages : await withPim(withNotes(messages), said);
   return { messages: rp ? brainsLib.withRp(enriched) : enriched, numPredict: analysis.numPredict };
 }
 
 async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch, opts) {
   const baseMessages = Array.isArray(prepared) ? prepared : prepared.messages;
   const numPredict = Array.isArray(prepared) ? undefined : prepared.numPredict;
-  let model = pickModel(cfg);
+  let model = opts?.model || pickModel(cfg);
   const tried = new Set();
   let busy = 0;
   const isLocalOnly = () => Boolean(opts?.localOnly || torState.isQuarantined());
@@ -2065,7 +2149,7 @@ async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch,
       : require('./brain/influence-glue').stripBrainHints(baseMessages);
     try {
       const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict }, send, signal);
-      if (model !== pickModel(cfg)) updateConfig({ chatModel: model });
+      if (opts?.persistFallback !== false && model !== pickModel(cfg)) updateConfig({ chatModel: model });
       try { opts?.onSuccess?.({ model, local: attemptLocal, text }); } catch {}
       return text;
     } catch (err) {
@@ -2080,7 +2164,7 @@ async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch,
       try { opts?.onAttemptError?.({ model, local: attemptLocal, err }); } catch {}
       tried.add(model);
       const next = pickSafeFallbackModel({ cfg, chatModels, tried, ollama, llm, localOnly: isLocalOnly() });
-      if (!next || tried.size >= 3) throw err;
+      if (!next || opts?.model || tried.size >= 3) throw err;
       model = next;
       busy = 0;
       try { onSwitch?.(model); } catch {} // e.g. the brain shadow stops watching: the turn left its local model
@@ -2559,7 +2643,7 @@ function registerIpc() {
     if (!models) return { ok: false, error: chatError || 'offline', code: chatErrorCode, provider };
     if (!models.length) return { ok: false, error: 'nomodel', provider };
     const model = pickModel();
-    llm.warm(provider, model); // loading while you type your first message
+    if (!brains.visionRunning) llm.warm(provider, model); // loading while you type your first message
     const local = llm.isLocal(provider, cfg, model);
     return { ok: true, provider, model, agent: provider === 'claude', local, warmup: provider === 'ollama' && local };
   });
@@ -2683,6 +2767,7 @@ function registerIpc() {
   });
   let verifiedNomadSource = null;
   ipcMain.handle('chat:send', async (_e, { id, messages, voice }) => {
+    if (brains.visionRunning) return { ok: false, error: brainsLib.VISION_BUSY };
     verifiedNomadSource = null;
     const abort = new AbortController();
     chats.set(id, abort);
@@ -2726,6 +2811,16 @@ function registerIpc() {
         return nomadSource ? { ok: true, text, nomadSource } : { ok: true, text };
       }
       // "включи / выключи ролевой режим": a mode of hers (brains.js), not a message to answer
+      const harnessCmd = harness.parseHarnessCommand(yourWords(messages));
+      if (harnessCmd) {
+        if (cfg.brainShadow === true || brainShadowHook) {
+          try { getBrainChatGlue().onNonLocalTurn({ worker: null, harness: true }); } catch {}
+        }
+        const res = await harnessManager.run(harnessCmd);
+        const said = harness.formatHarnessAnswer(res);
+        send(said);
+        return { ok: true, text: said };
+      }
       const rpTurn = brainsLib.rpCommand(yourWords(messages));
       if (rpTurn !== null) {
         if (cfg.brainShadow === true || brainShadowHook) {
@@ -3217,6 +3312,7 @@ function registerIpc() {
   });
   ipcMain.handle('agents:free-vram', async (event) => {
     hubSessions(event);
+    if (chats.size || hubWork) return 'Сначала дождись завершения текущего запроса.';
     return quickAnswer('освободи память');
   });
   ipcMain.handle('agents:export-message', async (event, { id, text, format }) => {
@@ -3328,6 +3424,56 @@ function registerIpc() {
     if (said) sendCommand('remoteSend', { text: said });
   });
   ipcMain.on('chats:stop', () => sendCommand('stop'));
+  let hubWork = null;
+  ipcMain.handle('chats:run-tool', async ({ sender }, { text, mode, ephemeral, images = [] } = {}) => {
+    if (sender !== chatsWin?.webContents) throw new Error('Доступно только из Hub.');
+    if (!phoneBridge || hubWork) throw new Error('Запрос из Hub сейчас недоступен.');
+    const connectedTool = ['research', 'search', 'pim'].includes(mode);
+    if (typeof text !== 'string' || text.length > 500 ||
+        typeof ephemeral !== 'boolean' || !['capri', 'private', 'research', 'task', 'nsfw', 'search', 'pim'].includes(mode) ||
+        (mode === 'capri' && !ephemeral) || (connectedTool && ephemeral) ||
+        !Array.isArray(images) || images.length > 4 ||
+        (connectedTool && images.length) || (!text.trim() && !images.length) ||
+        images.some((image) => typeof image !== 'string' || image.length > 5_600_000 ||
+          !/^(?:iVBORw0KGgo|\/9j\/|UklGR)[A-Za-z0-9+/]*={0,2}$/.test(image))) {
+      throw new Error('Неверный режим или текст запроса.');
+    }
+    const abort = new AbortController();
+    const stop = () => abort.abort();
+    hubWork = abort;
+    sender.once('destroyed', stop);
+    try {
+      let result;
+      if (mode === 'research') {
+        result = await phoneBridge.runDeepResearch(text, { signal: abort.signal });
+      } else if (mode === 'search') {
+        result = await phoneBridge.turn({
+          text: `найди в сети: ${text.trim()}`, deepResearch: false, skills: [],
+        }, false);
+      } else if (mode === 'pim') {
+        result = await readPimTool(text);
+      } else {
+        result = await phoneBridge.turn({
+          text: text.trim() || (images.length > 1
+            ? 'Кратко опиши каждое прикреплённое изображение по порядку.'
+            : 'Кратко опиши прикреплённое изображение.'),
+          privateMode: mode === 'private', ephemeral, deepResearch: false, skills: [], images,
+          requireVision: images.length > 0,
+          localOnly: true, localMode: mode,
+        }, false, abort.signal);
+      }
+      return abort.signal.aborted ? { stopped: true } : result;
+    } catch (err) {
+      if (abort.signal.aborted) return { stopped: true };
+      throw err;
+    } finally {
+      sender.removeListener('destroyed', stop);
+      hubWork = null;
+    }
+  });
+  ipcMain.on('chats:stop-tool', ({ sender }) => {
+    if (sender === chatsWin?.webContents) hubWork?.abort();
+  });
   ipcMain.on('chats:answer', (_e, answer) => ['yes', 'hour', 'no'].includes(answer) && sendCommand('remoteAnswer', { answer }));
   ipcMain.on('chats:listen', () => sendCommand('listen'));
   ipcMain.on('chats:copy', (_e, text) => clipboard.writeText(String(text || '')));
@@ -3503,6 +3649,8 @@ function registerIpc() {
   ipcMain.handle('apps:media', (_e, action) => launch.media(action));
   // your PC itself, from her chat: settings, what's left, sound, snip, windows, theme, power
   ipcMain.handle('pc:do', (_e, req) => Promise.resolve(system.act(req, { display: targetDisplay() })).catch(() => null));
+  ipcMain.handle('harness:control', (_e, req) => harnessManager.run(req).catch((err) => ({ ok: false, error: err?.message || 'harness failed' })));
+  ipcMain.handle('harness:spec', () => harness.HARNESS_TOOL_SPEC);
   ipcMain.handle('apps:music', (_e, query) => launch.music(query).catch(() => false));
   ipcMain.handle('apps:site', (_e, address) => launch.site(address).catch(() => false));
   // typing to her: the overlay takes the keyboard while the chat is open, and gives it back after
