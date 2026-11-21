@@ -711,7 +711,7 @@ class PhoneBridge {
       userMsg,
     ];
     const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), 120000);
+    const timer = setTimeout(() => abort.abort(new Error('Модель не завершила ответ за 10 минут.')), 10 * 60 * 1000);
     try {
       const opts = {
         ephemeral,
@@ -721,6 +721,7 @@ class PhoneBridge {
         requestedModel: flags.requestedModel,
         useVault: flags.useVault !== false,
         mobile: true,
+        numPredict: -1,
         ...(flags.requireVision && { requireVision: true }),
         ...(flags.localMode && { localMode: flags.localMode }),
       };

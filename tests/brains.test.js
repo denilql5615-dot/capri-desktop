@@ -90,6 +90,20 @@ test('after the idle window the main one goes and the fast one comes back for go
   assert.deepEqual(calls.slice(1), [['unload', MAIN], ['warm', FAST, -1]]);
 });
 
+test('the idle timer cannot interrupt a long 26B reply', async () => {
+  const { brains, calls, tick, fire } = fake();
+  await brains.use('main');
+  await brains.runMain(async () => {
+    tick(2000);
+    await fire();
+    assert.equal(brains.mainActive(), true);
+    assert.deepStrictEqual(calls, [['unload', FAST]]);
+  });
+  tick(1001);
+  await fire();
+  assert.deepStrictEqual(calls, [['unload', FAST], ['unload', MAIN], ['warm', FAST, -1]]);
+});
+
 test('forget: everything unloaded elsewhere, no main one any more', async () => {
   const { brains } = fake();
   await brains.use('main');

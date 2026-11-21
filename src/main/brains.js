@@ -85,6 +85,7 @@ class Brains {
   constructor({ ollama, fast = FAST, main = MAIN, idleMs = MAIN_IDLE_MS, now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
     Object.assign(this, { ollama, fast, main, idleMs, now, setTimer, clearTimer });
     this.mainUntil = 0; // the main one is hers until then
+    this.mainRuns = 0;
     this.timer = null;
     this.visionRunning = false;
     this.transition = null;
@@ -105,7 +106,7 @@ class Brains {
   }
 
   mainActive() {
-    return this.now() < this.mainUntil;
+    return this.mainRuns > 0 || this.now() < this.mainUntil;
   }
 
   /** The model to ask now: the main one while it's hers, else the fast one (no swap for small things). */
@@ -113,7 +114,7 @@ class Brains {
     return this.mainActive() ? this.main : this.fast;
   }
 
-  async see(messages, signal) {
+  async see(messages, signal, numPredict = 500) {
     if (this.visionRunning || this.transition || this.mainActive()) throw new Error(VISION_BUSY);
     this.visionRunning = true;
     try {
@@ -122,7 +123,7 @@ class Brains {
       const restore = loaded.includes(this.fast);
       if (restore && !(await this.ollama.unload(this.fast))) throw new Error(VISION_BUSY);
       try {
-        return await this.ollama.chat({ model: VISION, messages, numCtx: 2048, numPredict: 500 }, () => {}, signal);
+        return await this.ollama.chat({ model: VISION, messages, numCtx: 2048, numPredict }, () => {}, signal);
       } finally {
         const released = await this.ollama.unload(VISION);
         if (restore && released) await this.ollama.warm(this.fast, -1);
@@ -133,7 +134,7 @@ class Brains {
   }
 
   async withAuxiliaryModel(model, run, signal) {
-    if (this.visionRunning || this.transition) throw new Error(VISION_BUSY);
+    if (this.visionRunning || this.transition || this.mainRuns) throw new Error(VISION_BUSY);
     this.visionRunning = true;
     let restoreFast = false;
     let roomReady = false;
@@ -196,9 +197,19 @@ class Brains {
     this.timer?.unref?.();
   }
 
+  async runMain(run) {
+    this.mainRuns++;
+    try {
+      return await run();
+    } finally {
+      this.mainRuns--;
+      if (this.mainUntil > 0) this.touch();
+    }
+  }
+
   /** The main one out (idle, or "быстрая модель"), the fast one back in memory for good. */
   async release() {
-    if (this.visionRunning) return false;
+    if (this.visionRunning || this.mainRuns) return false;
     if (this.transition) {
       await this.transition;
       return this.release();

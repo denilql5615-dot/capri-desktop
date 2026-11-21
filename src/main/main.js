@@ -1582,7 +1582,7 @@ async function applyPhone() {
         if (!requestedModel && hasImages && cfg.provider === 'ollama' && chatModels?.includes(brainsLib.VISION)
           && (opts.requireVision || brains.isAuto(cfg.chatModel, chatModels))) {
           if (chats.size) throw new Error(brainsLib.VISION_BUSY);
-          return { text: await brains.see(messages, signal), brain: brainsLib.VISION };
+          return { text: await brains.see(messages, signal, opts.numPredict), brain: brainsLib.VISION };
         }
         if (opts.requireVision) throw new Error('Локальная Vision-модель недоступна.');
         let model;
@@ -1615,17 +1615,18 @@ async function applyPhone() {
         if (opts.localMode === 'nsfw' && !brainsLib.isEmergency(said)) messages = brainsLib.withRp(messages);
         const prepared = (opts.ephemeral || torSensitive)
           ? { messages: opts.source === 'vault' && opts.useVault && !opts.ephemeral && !hasTor && !torState.isQuarantined()
-            ? withNotes(messages, { vaultOnly: true }) : messages, numPredict: opts.localOnly ? 1200 : undefined }
+            ? withNotes(messages, { vaultOnly: true }) : messages }
           : await prepLocal(cfg, messages, { explicitModel: requestedModel, mobile: opts.mobile, useVault: opts.useVault });
+        prepared.numPredict = opts.numPredict ?? prepared.numPredict;
         if (requestedModel && !brains.isRole(requestedModel)) {
           const text = await brains.withAuxiliaryModel(requestedModel, () => ollama.chat({
-            model: requestedModel, messages: prepared.messages, numCtx: 4096, numPredict: prepared.numPredict || 640, keepAlive: 0,
+            model: requestedModel, messages: prepared.messages, numCtx: 4096, numPredict: prepared.numPredict, keepAlive: 0,
           }, () => {}, signal), signal);
           return { text, brain: requestedModel };
         }
         const torAfterPrep = torSensitive || messagesHaveTor(prepared.messages);
         let usedModel = pickModel(cfg);
-        const text = await chatWithFallback(
+        const generate = () => chatWithFallback(
           cfg,
           prepared,
           () => {},
@@ -1640,6 +1641,7 @@ async function applyPhone() {
             onSuccess: ({ model: okModel }) => { usedModel = okModel; },
           },
         );
+        const text = (model || pickModel(cfg)) === brains.main ? await brains.runMain(generate) : await generate();
         return { text, brain: usedModel || cfg.provider };
       },
       saveObsidianResearch: async ({ query, markdown }) => {
@@ -2161,7 +2163,7 @@ async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = 
     else await brains.use('fast');
   }
   const enriched = shortTalk || !useVault ? messages : await withPim(withNotes(messages, { matchedOnly: mobile }), said);
-  return { messages: rp ? brainsLib.withRp(enriched) : enriched, numPredict: analysis.numPredict ?? (mobile ? 640 : undefined) };
+  return { messages: rp ? brainsLib.withRp(enriched) : enriched, numPredict: analysis.numPredict };
 }
 
 async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch, opts) {

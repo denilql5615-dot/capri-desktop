@@ -12,13 +12,14 @@ test('tokenMatches: only the right key, never an empty one', () => {
 
 test('mobile chat carries model and isolated context, and retries one PC turn', async () => {
   const calls = [];
+  const longReply = 'Развёрнутый ответ. '.repeat(2500) + 'Конечная строка.';
   const bridge = new PhoneBridge({
     token: () => 'k',
     persona: () => 'Персона.',
     log: () => assert.fail('client-owned chats must not fall into the legacy log'),
     chat: async (messages, _signal, options) => {
       calls.push({ messages, options });
-      return { text: 'готово', brain: options.requestedModel };
+      return { text: messages.at(-1).content === 'длинный ответ' ? longReply : 'готово', brain: options.requestedModel };
     },
   });
   const port = await bridge.start(0, '127.0.0.1');
@@ -36,6 +37,7 @@ test('mobile chat carries model and isolated context, and retries one PC turn', 
     ]);
     assert.strictEqual(calls.length, 1);
     assert.strictEqual(calls[0].messages.at(-2).content, 'контекст');
+    assert.strictEqual(calls[0].options.numPredict, -1);
     await post({ text: 'тайна', history: [], model: 'e4b', ephemeral: true, useVault: false });
     assert.strictEqual(calls[1].messages.length, 2);
     assert.strictEqual(calls[1].options.localOnly, true);
@@ -43,6 +45,7 @@ test('mobile chat carries model and isolated context, and retries one PC turn', 
     await post({ text: 'новый чат', history: [], model: 'e4b' });
     assert.strictEqual(calls[2].messages.length, 2);
     assert.strictEqual(calls[2].options.requestedModel, 'e4b');
+    assert.strictEqual((await post({ text: 'длинный ответ', history: [], model: 'e4b' })).reply, longReply);
   } finally {
     bridge.stop();
   }
