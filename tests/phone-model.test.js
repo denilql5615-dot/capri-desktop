@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { resolveRequestedModel } = require('../src/main/phone-model');
+const { isAuxiliaryModel, resolveRequestedModel } = require('../src/main/phone-model');
 
 const MODELS = Object.freeze({
   fast: 'gemma-4-heretic-e4b',
@@ -23,6 +23,9 @@ test('resolveRequestedModel maps e4b to fast and 26b to large', () => {
 test('resolveRequestedModel pins the Qwen choices to their Heretic installs', () => {
   assert.equal(resolveRequestedModel('qwen36', MODELS), 'capri-qwen36-heretic:latest');
   assert.equal(resolveRequestedModel('qwen38', MODELS), 'capri-qwen38-heretic:latest');
+  assert.equal(isAuxiliaryModel('capri-qwen38-heretic:latest'), true);
+  assert.equal(isAuxiliaryModel('hf.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v1-GGUF:Q4_K_M'), true);
+  assert.equal(isAuxiliaryModel(MODELS.fast), false);
 });
 
 test('resolveRequestedModel handles 26b -> e4b -> 26b transitions without hidden state', () => {

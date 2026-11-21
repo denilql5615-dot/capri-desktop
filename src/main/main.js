@@ -29,6 +29,7 @@ const desktop = require('./desktop');
 const agent = require('./agent');
 const chatLog = require('./chats');
 const { AgentSessions, MODELS: SESSION_MODELS } = require('./agent-sessions');
+const { isAuxiliaryModel, resolveRequestedModel } = require('./phone-model');
 const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
 const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('./hub-artifacts');
@@ -1561,7 +1562,7 @@ async function applyPhone() {
         const user = messages.findLast((m) => m.role === 'user');
         const said = user?.content || '';
         const hasImages = Boolean(user?.images?.length);
-        const requestedModel = require('./phone-model').resolveRequestedModel(opts.requestedModel, {
+        const requestedModel = resolveRequestedModel(opts.requestedModel, {
           fast: brains.fast, large: brains.main,
         });
         if (!requestedModel && !opts.fastLocal && !opts.localOnly && !hasImages) {
@@ -1798,7 +1799,8 @@ function pickModel(cfg = config.load()) {
   // both brains installed and nothing else picked by hand: the fast one, or the main one while it's in
   if (cfg.provider === 'ollama' && brains.ready(chatModels) && brains.isAuto(cfg.chatModel, chatModels)) return brains.current();
   if (chatModels.includes(cfg.chatModel)) return cfg.chatModel;
-  return chatModels.find((m) => !ollama.isCloud(m)) || chatModels[0];
+  const candidates = chatModels.filter((model) => !isAuxiliaryModel(model));
+  return candidates.find((m) => !ollama.isCloud(m)) || candidates[0] || null;
 }
 
 async function refreshModels() {
@@ -2198,7 +2200,8 @@ async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch,
       }
       try { opts?.onAttemptError?.({ model, local: attemptLocal, err }); } catch {}
       tried.add(model);
-      const next = pickSafeFallbackModel({ cfg, chatModels, tried, ollama, llm, localOnly: isLocalOnly() });
+      const fallbackModels = chatModels?.filter((entry) => !isAuxiliaryModel(entry));
+      const next = pickSafeFallbackModel({ cfg, chatModels: fallbackModels, tried, ollama, llm, localOnly: isLocalOnly() });
       if (!next || opts?.model || tried.size >= 3) throw err;
       model = next;
       busy = 0;
