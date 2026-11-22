@@ -36,23 +36,113 @@ const INSTANT_COMMAND_IDS = new Set([
   'clip', 'alta', 'agents', 'harness', 'nomad', 'web', 'tor', 'copy', 'export', 'insights', 'stop',
 ]);
 
-const CMD = (id, opts) => ({
-  id,
-  name: id,
-  slash: `/${id}`,
-  aliases: [],
-  section: 'commands',
-  kind: INSTANT_COMMAND_IDS.has(id) ? 'instant' : 'session',
-  icon: 'terminal',
-  description: '',
-  badge: null,
-  active: false,
-  chainable: false,
-  confirmRequired: false,
-  cloudOnly: false,
-  argsHint: '',
-  ...opts,
+const COMMAND_CATEGORIES = Object.freeze([
+  { id: 'chat', title: 'Чат и контекст' },
+  { id: 'memory', title: 'Память и заметки' },
+  { id: 'modes', title: 'Поиск и режимы' },
+  { id: 'system', title: 'Инструменты и диагностика' },
+  { id: 'agents', title: 'Агенты и планирование' },
+]);
+
+const COMMAND_CATEGORY_TITLE_MAP = new Map([
+  ...COMMAND_CATEGORIES.map((c) => [c.id, c.title]),
+  ['skills-system', 'Система и мастерская'],
+]);
+
+const COMMAND_CATEGORY_BY_ID = Object.freeze({
+  compact: 'chat',
+  autocompact: 'chat',
+  new: 'chat',
+  clear: 'chat',
+  context: 'chat',
+  model: 'chat',
+  effort: 'chat',
+  temp: 'chat',
+  stop: 'chat',
+  retry: 'chat',
+  fork: 'chat',
+  recap: 'chat',
+  btw: 'chat',
+  focus: 'chat',
+  'output-style': 'chat',
+  advisor: 'chat',
+  copy: 'chat',
+  export: 'chat',
+  pin: 'chat',
+  rename: 'chat',
+  archive: 'chat',
+  delete: 'chat',
+  resume: 'chat',
+  remember: 'memory',
+  save: 'memory',
+  memory: 'memory',
+  find: 'memory',
+  learn: 'memory',
+  nomad: 'memory',
+  alta: 'memory',
+  web: 'modes',
+  tor: 'modes',
+  deep: 'modes',
+  council: 'modes',
+  'plan-mode': 'modes',
+  'grill-me': 'modes',
+  review: 'modes',
+  ultrareview: 'modes',
+  verify: 'modes',
+  simplify: 'modes',
+  goal: 'modes',
+  draw: 'modes',
+  pet: 'modes',
+  status: 'system',
+  usage: 'system',
+  quota: 'system',
+  free: 'system',
+  doctor: 'system',
+  storage: 'system',
+  permissions: 'system',
+  tools: 'system',
+  mcp: 'system',
+  skills: 'system',
+  'reload-skills': 'system',
+  insights: 'system',
+  help: 'system',
+  today: 'agents',
+  plan: 'agents',
+  remind: 'agents',
+  mail: 'agents',
+  clip: 'agents',
+  schedule: 'agents',
+  loop: 'agents',
+  tasks: 'agents',
+  subtask: 'agents',
+  agents: 'agents',
+  harness: 'agents',
 });
+
+const CMD = (id, opts) => {
+  const isSkill = opts?.section === 'skills';
+  const category = opts?.category || (isSkill ? 'system' : (COMMAND_CATEGORY_BY_ID[id] || 'system'));
+  const categoryTitle = opts?.categoryTitle || (isSkill ? 'Система и мастерская' : (COMMAND_CATEGORY_TITLE_MAP.get(category) || 'Инструменты и диагностика'));
+  return {
+    id,
+    name: id,
+    slash: `/${id}`,
+    aliases: [],
+    section: 'commands',
+    kind: INSTANT_COMMAND_IDS.has(id) ? 'instant' : 'session',
+    icon: 'terminal',
+    category,
+    categoryTitle,
+    description: '',
+    badge: null,
+    active: false,
+    chainable: false,
+    confirmRequired: false,
+    cloudOnly: false,
+    argsHint: '',
+    ...opts,
+  };
+};
 
 // Single source of truth for all 65 built-in commands:
 // 28 Core + 6 Antigravity + 11 Codex + 19 Claude + 1 Gemini (genesis-techlead-reviewer) = 65.
@@ -427,6 +517,8 @@ function scanSkillsOnDisk(roots = defaultSkillRoots()) {
         section: 'skills',
         kind: 'skill',
         icon: 'sparkles',
+        category: parsed.category || 'system',
+        categoryTitle: 'Система и мастерская',
         description: String(parsed.description || `Навык ${id}`).replace(/\s+/g, ' ').trim().slice(0, 180),
         badge: null,
         active: false,
@@ -436,6 +528,18 @@ function scanSkillsOnDisk(roots = defaultSkillRoots()) {
         argsHint: '[запрос]',
         skillPath: skillFile,
         promptBody: parsed.body.slice(0, 1200),
+        tokens: estimateTokens(parsed.body || raw),
+        alwaysOnTokens: 0,
+        enabled: true,
+        alwaysOn: false,
+        canPinAlways: false,
+        quickSlot: null,
+        pausedInMode: false,
+        pauseReason: null,
+        isPack: false,
+        subCount: 0,
+        isCustom: false,
+        stageNote: null,
       });
     }
   }
@@ -697,7 +801,7 @@ async function compactHistory({
   };
 }
 
-function buildChainPrompt({ chain, remainder, state, mode }) {
+function buildChainPrompt({ chain, remainder, state, mode, skipSkillHints = false }) {
   const skills = [];
   const hints = [];
   const actions = [];
@@ -714,12 +818,14 @@ function buildChainPrompt({ chain, remainder, state, mode }) {
     if (item.id === 'review' || item.id === 'ultrareview' || item.id === 'genesis-techlead-reviewer') review = true;
     if (item.id === 'draw') draw = true;
     if (item.kind === 'skill') skills.push(item.id);
-    if (PROMPT_INSTRUCTIONS[item.id]) {
-      hints.push(PROMPT_INSTRUCTIONS[item.id]);
-    } else if (item.promptBody) {
-      hints.push(`Навык /${item.id}: ${item.promptBody.slice(0, 600)}`);
-    } else if (item.description) {
-      hints.push(`Команда /${item.id}: ${item.description}`);
+    if (!(skipSkillHints && item.kind === 'skill' && item.id !== 'genesis-techlead-reviewer')) {
+      if (PROMPT_INSTRUCTIONS[item.id]) {
+        hints.push(PROMPT_INSTRUCTIONS[item.id]);
+      } else if (item.promptBody) {
+        hints.push(`Навык /${item.id}: ${item.promptBody.slice(0, 600)}`);
+      } else if (item.description) {
+        hints.push(`Команда /${item.id}: ${item.description}`);
+      }
     }
     actions.push(item.id);
   }
@@ -769,6 +875,7 @@ function buildChainPrompt({ chain, remainder, state, mode }) {
 class SlashCommandEngine {
   constructor(opts = {}) {
     this.skillRoots = opts.skillRoots || defaultSkillRoots();
+    this.skillsEngine = opts.skillsEngine || opts.deps?.skillsEngine || null;
     this.getConfig = typeof opts.getConfig === 'function' ? opts.getConfig : () => ({});
     this.saveConfig = typeof opts.saveConfig === 'function' ? opts.saveConfig : () => {};
     this.deps = opts.deps || {};
@@ -777,6 +884,9 @@ class SlashCommandEngine {
   }
 
   getSkills(force = false) {
+    if (this.skillsEngine) {
+      return force ? this.skillsEngine.reload() : this.skillsEngine.getSkills(false);
+    }
     if (!this.skillCache || force) {
       this.skillCache = scanSkillsOnDisk(this.skillRoots);
     }
@@ -784,6 +894,9 @@ class SlashCommandEngine {
   }
 
   reloadSkills() {
+    if (this.skillsEngine) {
+      return this.skillsEngine.reload();
+    }
     this.skillCache = scanSkillsOnDisk(this.skillRoots);
     return this.skillCache;
   }
@@ -828,6 +941,8 @@ class SlashCommandEngine {
         section: item.section,
         kind: item.kind,
         icon: item.icon,
+        category: item.category || (item.section === 'skills' ? 'system' : 'system'),
+        categoryTitle: item.categoryTitle || (item.section === 'skills' ? 'Система и мастерская' : 'Инструменты и диагностика'),
         description: item.description,
         badge: item.badge || null,
         active: Boolean(item.active),
@@ -836,6 +951,20 @@ class SlashCommandEngine {
         cloudOnly: Boolean(item.cloudOnly),
         argsHint: item.argsHint || '',
       };
+      if (item.section === 'skills') {
+        copy.enabled = item.enabled !== undefined ? Boolean(item.enabled) : true;
+        copy.alwaysOn = Boolean(item.alwaysOn);
+        copy.canPinAlways = Boolean(item.canPinAlways);
+        copy.quickSlot = item.quickSlot ?? null;
+        copy.pausedInMode = Boolean(item.pausedInMode);
+        copy.pauseReason = item.pauseReason || null;
+        copy.isPack = Boolean(item.isPack);
+        copy.subCount = Number(item.subCount) || 0;
+        copy.isCustom = Boolean(item.isCustom);
+        copy.stageNote = item.stageNote || null;
+        copy.tokens = Number(item.tokens) || estimateTokens(item.promptBody || item.description || '');
+        copy.alwaysOnTokens = Number(item.alwaysOnTokens) || 0;
+      }
       if (copy.id === 'compact' && pctNum !== null) copy.badge = `${pctNum}%`;
       if (copy.id === 'plan-mode') copy.active = state.planMode;
       if (copy.id === 'focus') copy.active = state.focus;
@@ -853,7 +982,43 @@ class SlashCommandEngine {
 
     const allow = (item) => !(isolated && item.cloudOnly);
     const commandItems = reg.items.filter((i) => i.section === 'commands' && allow(i)).map(decorate);
-    const skillItems = reg.items.filter((i) => i.section === 'skills' && allow(i)).map(decorate);
+    const commandCategories = COMMAND_CATEGORIES
+      .map((cat) => ({
+        id: cat.id,
+        title: cat.title,
+        items: commandItems.filter((item) => item.category === cat.id),
+      }))
+      .filter((cat) => cat.items.length > 0);
+
+    let skillItems;
+    let skillCategories = null;
+    let skillBudget = null;
+    let quickToggles = null;
+
+    if (this.skillsEngine) {
+      const catalog = this.skillsEngine.listSkills({ mode, ephemeral });
+      const engineItems = catalog.items.map((item) => ({ ...item }));
+      const hasTechlead = engineItems.some((i) => i.id === 'genesis-techlead-reviewer');
+      if (!hasTechlead) {
+        const builtinTechlead = reg.items.find((i) => i.id === 'genesis-techlead-reviewer');
+        if (builtinTechlead) {
+          engineItems.push(decorate(builtinTechlead));
+        }
+      }
+      skillItems = engineItems;
+      skillCategories = catalog.categories.map((cat) => ({
+        id: cat.id,
+        title: cat.title,
+        items: cat.id === 'system' && !hasTechlead
+          ? skillItems.filter((i) => i.category === 'system')
+          : cat.items,
+      }));
+      skillBudget = catalog.budget;
+      quickToggles = catalog.quickToggles;
+    } else {
+      skillItems = reg.items.filter((i) => i.section === 'skills' && allow(i)).map(decorate);
+    }
+
     const pluginItems = DRAFT_PLUGINS.filter(allow).map((i) => ({ ...i }));
     const connectorItems = DRAFT_CONNECTORS.filter(allow).map((i) => ({ ...i }));
     const styleItems = DRAFT_STYLES.filter(allow).map((i) => ({ ...i }));
@@ -864,8 +1029,16 @@ class SlashCommandEngine {
       agent: agent || null,
       state,
       sections: [
-        { id: 'commands', title: 'Команды', allLabel: 'Все команды', items: commandItems },
-        { id: 'skills', title: 'Навыки', allLabel: 'Все навыки', items: skillItems },
+        { id: 'commands', title: 'Команды', allLabel: 'Все команды', categories: commandCategories, items: commandItems },
+        {
+          id: 'skills',
+          title: 'Навыки',
+          allLabel: 'Все навыки',
+          items: skillItems,
+          ...(skillCategories && { categories: skillCategories }),
+          ...(skillBudget && { budget: skillBudget }),
+          ...(quickToggles && { quickToggles }),
+        },
         { id: 'plugins', title: 'Плагины', allLabel: 'Все плагины', stage: '2.3', items: pluginItems },
         { id: 'connectors', title: 'Коннекторы', allLabel: 'Все коннекторы', stage: '2.4', items: connectorItems },
         { id: 'styles', title: 'Стили', allLabel: 'Посмотреть все стили', stage: '2.7', items: styleItems },
@@ -907,6 +1080,17 @@ class SlashCommandEngine {
       return { handled: true, instant: true, error: msg, reply: msg };
     }
 
+    // Enforce non-destructive mode auto-pause on skills when skillsEngine is active.
+    if (this.skillsEngine && parsed.chain.some((c) => c.kind === 'skill')) {
+      const catalog = this.skillsEngine.listSkills({ mode, ephemeral });
+      const byId = new Map(catalog.items.map((i) => [i.id, i]));
+      const paused = parsed.chain.map((c) => byId.get(c.id)).find((item) => item?.pausedInMode);
+      if (paused) {
+        const msg = `Навык ${paused.slash} недоступен в этом режиме (${paused.pauseReason || 'пауза'}).`;
+        return { handled: true, instant: true, error: msg, reply: msg };
+      }
+    }
+
     const state = this.getState(sessionId);
     const primary = parsed.primary;
     const args = parsed.remainder;
@@ -921,13 +1105,31 @@ class SlashCommandEngine {
           reply: 'Укажи вопрос после /btw, например: /btw почему падает сборка?',
         };
       }
-      const built = buildChainPrompt({ chain: parsed.chain, remainder: args, state, mode });
+      const built = buildChainPrompt({
+        chain: parsed.chain,
+        remainder: args,
+        state,
+        mode,
+        skipSkillHints: Boolean(this.skillsEngine),
+      });
+      let skillPromptBlock = '';
+      if (this.skillsEngine && built.skills.length > 0) {
+        const skillCtx = this.skillsEngine.buildPromptContext({
+          mode,
+          ephemeral,
+          explicitSkills: built.skills,
+          userText: built.text,
+          isCloud: mode === 'agent',
+        });
+        skillPromptBlock = skillCtx.explicitText || '';
+      }
+      const combinedHint = [built.systemHint, skillPromptBlock].filter(Boolean).join('\n\n');
       const promptRewriteStr = built.btw
         ? built.text
         : built.deepResearch
           ? `[DEEP_RESEARCH] ${built.text}`
-          : built.systemHint
-            ? `[Указания режима:\n${built.systemHint}]\n\n${built.text}`
+          : combinedHint
+            ? `[Указания режима:\n${combinedHint}]\n\n${built.text}`
             : built.text;
       if (primary.id === 'btw' && typeof this.deps.answerBtw === 'function') {
         try {
@@ -991,7 +1193,9 @@ class SlashCommandEngine {
       }
 
       case 'skills': {
-        const skills = this.getSkills(false);
+        const skills = this.skillsEngine
+          ? this.skillsEngine.listSkills({ mode, ephemeral }).items
+          : this.getSkills(false);
         const lines = skills.length
           ? [`Загружено навыков: ${skills.length}`, ...skills.slice(0, 15).map((s) => `${s.slash} — ${s.description}`)]
           : ['Локальные навыки SKILL.md не найдены.'];
@@ -1005,7 +1209,7 @@ class SlashCommandEngine {
           instant: true,
           action: 'reload-skills',
           count: refreshed.length,
-          reply: `Каталог навыков обновлён: найдено ${refreshed.length} SKILL.md.`,
+          reply: `Каталог навыков обновлён: найдено ${refreshed.length} навыков.`,
         };
       }
 
@@ -1425,6 +1629,7 @@ class SlashCommandEngine {
 
 module.exports = {
   BUILTIN_COMMANDS,
+  COMMAND_CATEGORIES,
   DRAFT_PLUGINS,
   DRAFT_CONNECTORS,
   DRAFT_STYLES,

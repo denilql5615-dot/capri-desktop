@@ -189,6 +189,14 @@ const ICON_PATHS = {
   close: [
     ['path', { d: 'M6 6l12 12M18 6L6 18' }],
   ],
+  'chevron-down': [
+    ['path', { d: 'M6 9l6 6 6-6' }],
+  ],
+  layers: [
+    ['path', { d: 'M12 3l9 4.5-9 4.5-9-4.5L12 3z' }],
+    ['path', { d: 'M3 12l9 4.5 9-4.5' }],
+    ['path', { d: 'M3 16.5l9 4.5 9-4.5' }],
+  ],
   terminal: [
     ['path', { d: 'M7 19l10-14' }],
   ],
@@ -322,15 +330,41 @@ export function createProgressRingSvg(pct, size = 16) {
   return svg;
 }
 
-// ---------------------------------------------------------------- fallback catalog
+// ---------------------------------------------------------------- categories & fallback catalog
+
+export const COMMAND_CATEGORIES = [
+  { id: 'chat', title: 'Чат и контекст' },
+  { id: 'memory', title: 'Память и заметки' },
+  { id: 'modes', title: 'Поиск и режимы' },
+  { id: 'system', title: 'Инструменты и диагностика' },
+  { id: 'agents', title: 'Агенты и планирование' },
+];
+
+export const SKILL_CATEGORIES = [
+  { id: 'style', title: 'Стиль и мышление' },
+  { id: 'memory', title: 'Память и Obsidian' },
+  { id: 'docs', title: 'Документы и исследования' },
+  { id: 'creative', title: 'Дизайн, маркетинг и геймдев' },
+  { id: 'system', title: 'Система и мастерская' },
+];
+
+const COMMAND_CATEGORY_TITLES = Object.fromEntries(COMMAND_CATEGORIES.map((c) => [c.id, c.title]));
+const SKILL_CATEGORY_TITLES = Object.fromEntries(SKILL_CATEGORIES.map((c) => [c.id, c.title]));
 
 function item(name, description, opts = {}) {
+  const section = opts.section || 'commands';
+  const category = opts.category || (section === 'skills' ? 'style' : 'chat');
+  const categoryTitle = opts.categoryTitle
+    || (section === 'skills' ? SKILL_CATEGORY_TITLES[category] : COMMAND_CATEGORY_TITLES[category])
+    || '';
   return {
-    id: opts.id || `${opts.section || 'commands'}:${name}`,
-    name,
-    slash: `/${name}`,
+    id: opts.id || (section === 'skills' ? name : `${section}:${name}`),
+    name: opts.displayName || name,
+    slash: opts.slash || `/${name}`,
     aliases: opts.aliases || [],
-    section: opts.section || 'commands',
+    section,
+    category,
+    categoryTitle,
     kind: opts.kind || (INSTANT_COMMANDS.has(name) ? 'instant' : 'session'),
     icon: opts.icon || name,
     description,
@@ -340,6 +374,20 @@ function item(name, description, opts = {}) {
     confirmRequired: Boolean(opts.confirmRequired),
     cloudOnly: opts.cloudOnly ?? CLOUD_ONLY_FALLBACK.has(name),
     argsHint: opts.argsHint || '',
+    ...(section === 'skills' ? {
+      enabled: opts.enabled !== false,
+      alwaysOn: Boolean(opts.alwaysOn),
+      canPinAlways: Boolean(opts.canPinAlways),
+      quickSlot: Boolean(opts.quickSlot),
+      pausedInMode: Boolean(opts.pausedInMode),
+      pauseReason: opts.pauseReason || '',
+      isPack: Boolean(opts.isPack),
+      subCount: Number.isFinite(opts.subCount) ? opts.subCount : 0,
+      isCustom: Boolean(opts.isCustom),
+      stageNote: opts.stageNote || '',
+      tokens: Number.isFinite(opts.tokens) ? opts.tokens : 240,
+      alwaysOnTokens: Number.isFinite(opts.alwaysOnTokens) ? opts.alwaysOnTokens : 240,
+    } : {}),
   };
 }
 
@@ -349,46 +397,46 @@ export const FALLBACK_SECTIONS = [
     title: 'Команды',
     allLabel: 'Все команды',
     items: [
-      item('compact', 'Сжать раннюю часть разговора в конспект', { kind: 'session', argsHint: '[фокус]' }),
-      item('status', 'Состояние локального мозга, очереди и памяти'),
-      item('usage', 'Остаток квот и лимиты моделей', { aliases: ['quota'] }),
-      item('context', 'Заполнение контекстного окна'),
-      item('new', 'Начать новый чистый разговор', { aliases: ['clear'], kind: 'session' }),
-      item('btw', 'Быстрый вопрос в стороне без записи в историю', { kind: 'prompt', argsHint: '<вопрос>' }),
-      item('stop', 'Остановить текущий ответ'),
-      item('retry', 'Повторить последний запрос', { kind: 'session' }),
-      item('model', 'Переключить активную модель или режим', { kind: 'session', argsHint: '[имя]' }),
-      item('effort', 'Уровень глубины рассуждения (low/medium/high/xhigh)', { kind: 'session', argsHint: '[уровень]' }),
-      item('focus', 'Режим фокуса без боковых панелей', { kind: 'session' }),
-      item('plan-mode', 'Сначала план, потом выполнение', { kind: 'session' }),
-      item('deep', 'Глубокое исследование темы', { kind: 'prompt', cloudOnly: true, argsHint: '<тема>', chainable: true }),
-      item('council', 'Спросить совет моделей', { kind: 'prompt', cloudOnly: true, argsHint: '<вопрос>', chainable: true }),
-      item('review', 'Проверка и ревью решения или кода', { kind: 'prompt', argsHint: '[цель]', chainable: true }),
-      item('grill-me', 'Уточняющие вопросы по плану и решениям', { kind: 'prompt', argsHint: '[тема]', chainable: true }),
-      item('fork', 'Создать ответвление текущего разговора', { kind: 'session' }),
-      item('rename', 'Переименовать текущий разговор', { kind: 'session', argsHint: '<название>' }),
-      item('pin', 'Закрепить или открепить разговор', { kind: 'session' }),
-      item('archive', 'Убрать разговор в архив', { kind: 'session' }),
-      item('delete', 'Удалить текущий разговор с подтверждением', { kind: 'session', confirmRequired: true }),
-      item('copy', 'Скопировать последний ответ в буфер'),
-      item('export', 'Сохранить разговор в файл или Obsidian'),
-      item('remember', 'Запомнить факт в локальную память', { kind: 'session', argsHint: '<факт>' }),
-      item('save', 'Сохранить результат в заметку Obsidian', { kind: 'session', argsHint: '[заголовок]' }),
-      item('today', 'Сводка планов на сегодня'),
-      item('mail', 'Проверить входящую почту Proton'),
-      item('nomad', 'Поиск по локальной базе знаний Kiwix'),
-      item('web', 'Поиск в интернете через браузер Капри', { cloudOnly: true, argsHint: '<запрос>' }),
-      item('tor', 'Поиск через изолированный узел Tor', { argsHint: '<запрос>' }),
-      item('free', 'Выгрузить модели из VRAM'),
-      item('tasks', 'Активные и фоновые задачи'),
-      item('tools', 'Список доступных инструментов'),
-      item('mcp', 'Статус MCP-подключений'),
-      item('skills', 'Список установленных навыков'),
-      item('doctor', 'Быстрая диагностика систем Капри'),
-      item('storage', 'Использование диска и базы'),
-      item('output-style', 'Стиль ответа (default/concise/detailed/technical/bullets)', { kind: 'session', argsHint: '[стиль]' }),
-      item('autocompact', 'Автосжатие контекста по порогу', { kind: 'session', argsHint: '[on|off|%]' }),
-      item('help', 'Справка по командам и навыкам', { aliases: ['find'] }),
+      item('compact', 'Сжать раннюю часть разговора в конспект', { kind: 'session', category: 'chat', argsHint: '[фокус]' }),
+      item('autocompact', 'Автосжатие контекста по порогу', { kind: 'session', category: 'chat', argsHint: '[on|off|%]' }),
+      item('new', 'Начать новый чистый разговор', { aliases: ['clear'], kind: 'session', category: 'chat' }),
+      item('context', 'Заполнение контекстного окна', { category: 'chat' }),
+      item('model', 'Переключить активную модель или режим', { kind: 'session', category: 'chat', argsHint: '[имя]' }),
+      item('effort', 'Уровень глубины рассуждения (low/medium/high/xhigh)', { kind: 'session', category: 'chat', argsHint: '[уровень]' }),
+      item('stop', 'Остановить текущий ответ', { category: 'chat' }),
+      item('retry', 'Повторить последний запрос', { kind: 'session', category: 'chat' }),
+      item('fork', 'Создать ответвление текущего разговора', { kind: 'session', category: 'chat' }),
+      item('btw', 'Быстрый вопрос в стороне без записи в историю', { kind: 'prompt', category: 'chat', argsHint: '<вопрос>' }),
+      item('focus', 'Режим фокуса без боковых панелей', { kind: 'session', category: 'chat' }),
+      item('output-style', 'Стиль ответа (default/concise/detailed/technical/bullets)', { kind: 'session', category: 'chat', argsHint: '[стиль]' }),
+      item('copy', 'Скопировать последний ответ в буфер', { category: 'chat' }),
+      item('export', 'Сохранить разговор в файл или Obsidian', { category: 'chat' }),
+      item('pin', 'Закрепить или открепить разговор', { kind: 'session', category: 'chat' }),
+      item('rename', 'Переименовать текущий разговор', { kind: 'session', category: 'chat', argsHint: '<название>' }),
+      item('archive', 'Убрать разговор в архив', { kind: 'session', category: 'chat' }),
+      item('delete', 'Удалить текущий разговор с подтверждением', { kind: 'session', category: 'chat', confirmRequired: true }),
+      item('remember', 'Запомнить факт в локальную память', { kind: 'session', category: 'memory', argsHint: '<факт>' }),
+      item('save', 'Сохранить результат в заметку Obsidian', { kind: 'session', category: 'memory', argsHint: '[заголовок]' }),
+      item('nomad', 'Поиск по локальной базе знаний Kiwix', { category: 'memory' }),
+      item('web', 'Поиск в интернете через браузер Капри', { cloudOnly: true, category: 'modes', argsHint: '<запрос>' }),
+      item('tor', 'Поиск через изолированный узел Tor', { category: 'modes', argsHint: '<запрос>' }),
+      item('deep', 'Глубокое исследование темы', { kind: 'prompt', cloudOnly: true, category: 'modes', argsHint: '<тема>', chainable: true }),
+      item('council', 'Спросить совет моделей', { kind: 'prompt', cloudOnly: true, category: 'modes', argsHint: '<вопрос>', chainable: true }),
+      item('plan-mode', 'Сначала план, потом выполнение', { kind: 'session', category: 'modes' }),
+      item('grill-me', 'Уточняющие вопросы по плану и решениям', { kind: 'prompt', category: 'modes', argsHint: '[тема]', chainable: true }),
+      item('review', 'Проверка и ревью решения или кода', { kind: 'prompt', category: 'modes', argsHint: '[цель]', chainable: true }),
+      item('status', 'Состояние локального мозга, очереди и памяти', { category: 'system' }),
+      item('usage', 'Остаток квот и лимиты моделей', { aliases: ['quota'], category: 'system' }),
+      item('free', 'Выгрузить модели из VRAM', { category: 'system' }),
+      item('tools', 'Список доступных инструментов', { category: 'system' }),
+      item('mcp', 'Статус MCP-подключений', { category: 'system' }),
+      item('skills', 'Список установленных навыков', { category: 'system' }),
+      item('doctor', 'Быстрая диагностика систем Капри', { category: 'system' }),
+      item('storage', 'Использование диска и базы', { category: 'system' }),
+      item('help', 'Справка по командам и навыкам', { aliases: ['find'], category: 'system' }),
+      item('today', 'Сводка планов на сегодня', { category: 'agents' }),
+      item('mail', 'Проверить входящую почту Proton', { category: 'agents' }),
+      item('tasks', 'Активные и фоновые задачи', { category: 'agents' }),
     ],
   },
   {
@@ -396,11 +444,19 @@ export const FALLBACK_SECTIONS = [
     title: 'Навыки',
     allLabel: 'Все навыки',
     items: [
-      item('second-brain', 'Проверка идеи по логике и фактам без поддакивания', { section: 'skills', kind: 'skill', icon: 'sparkles', chainable: true }),
-      item('russian-editor', 'Живой русский текст без нейросетевых штампов', { section: 'skills', kind: 'skill', icon: 'edit', chainable: true }),
-      item('think', 'Глубокий 10-шаговый разбор сложного решения', { section: 'skills', kind: 'skill', icon: 'sparkles', chainable: true }),
-      item('i-have-adhd', 'Краткий шаг за шагом, сначала следующее действие', { section: 'skills', kind: 'skill', icon: 'list', chainable: true }),
-      item('genesis-techlead-reviewer', 'Строгое ревью архитектуры и кода техлидом', { section: 'skills', kind: 'skill', icon: 'check', chainable: true }),
+      item('second-brain', 'Проверка идеи по логике и фактам без поддакивания', { section: 'skills', category: 'style', kind: 'skill', icon: 'sparkles', chainable: true, alwaysOn: true, canPinAlways: true, quickSlot: true, tokens: 260, alwaysOnTokens: 260 }),
+      item('i-have-adhd', 'Краткий шаг за шагом, сначала следующее действие', { section: 'skills', category: 'style', kind: 'skill', icon: 'list', chainable: true, canPinAlways: true, quickSlot: true, tokens: 220, alwaysOnTokens: 220 }),
+      item('caveman', 'Предельно кратко: ответ первым, без воды, все факты на месте', { section: 'skills', category: 'style', kind: 'skill', icon: 'compact', chainable: true, canPinAlways: true, quickSlot: true, tokens: 210, alwaysOnTokens: 210 }),
+      item('russian-editor', 'Живой русский текст без нейросетевых штампов', { section: 'skills', category: 'style', kind: 'skill', icon: 'edit', chainable: true, canPinAlways: true, tokens: 280, alwaysOnTokens: 280 }),
+      item('think', 'Глубокий 10-шаговый разбор сложного решения', { section: 'skills', category: 'style', kind: 'skill', icon: 'sparkles', chainable: true, canPinAlways: true, tokens: 320, alwaysOnTokens: 320 }),
+      item('obsidian-markdown', 'Синтаксис и оформление заметок Obsidian', { section: 'skills', category: 'memory', kind: 'skill', icon: 'book', chainable: true, tokens: 420 }),
+      item('wiki', 'Работа с базой знаний и структурой Obsidian Vault', { section: 'skills', category: 'memory', kind: 'skill', icon: 'book', chainable: true, tokens: 480 }),
+      item('research-method', 'Глубокий многоисточниковый разбор и синтез отчёта', { section: 'skills', category: 'docs', kind: 'skill', icon: 'search', chainable: true, tokens: 520 }),
+      item('unslop-gemini', 'Строгий anti-slop UI по эталону Google Gemini', { section: 'skills', category: 'creative', kind: 'skill', icon: 'palette', chainable: true, tokens: 460 }),
+      item('impeccable-ui', 'Пакет приёмов UI-полировки и визуальной проверки', { section: 'skills', category: 'creative', kind: 'skill', icon: 'layers', chainable: true, isPack: true, subCount: 20, tokens: 380 }),
+      item('marketingskills', 'Фреймворки позиционирования, питчей и страниц продуктов', { section: 'skills', category: 'creative', kind: 'skill', icon: 'layers', chainable: true, isPack: true, subCount: 26, tokens: 410 }),
+      item('game-studios-reference', 'Справочник и практики геймдизайна и баланса', { section: 'skills', category: 'creative', kind: 'skill', icon: 'layers', chainable: true, isPack: true, subCount: 12, tokens: 390 }),
+      item('agent-desktop', 'Автоматизация окон Windows через одобренные команды', { section: 'skills', category: 'system', kind: 'skill', icon: 'wrench', chainable: true, stageNote: 'Этап 2.5 (памятка)', tokens: 160 }),
     ],
   },
   {
@@ -446,7 +502,7 @@ const CATALOG_HERO = {
   },
   skills: {
     title: 'Навыки',
-    subtitle: 'Подключаемые инструкции, которые можно комбинировать в одном сообщении.',
+    subtitle: 'Подключаемые инструкции: включай на постоянку или вызывай через / в одном сообщении.',
   },
   plugins: {
     title: 'Плагины',
@@ -472,7 +528,7 @@ function buildFallbackCatalog(ctx) {
   const sections = FALLBACK_SECTIONS.map((sec) => ({
     ...sec,
     items: sec.items
-      .filter((it) => !(isolated && it.cloudOnly))
+      .filter((it) => !(isolated && sec.id !== 'skills' && it.cloudOnly))
       .map((it) => {
         if (it.name === 'compact' && pct !== null) {
           return { ...it, badge: `${pct}%` };
@@ -481,6 +537,87 @@ function buildFallbackCatalog(ctx) {
       }),
   }));
   return { sections, state: {} };
+}
+
+function groupByCategories(items, canonicalList) {
+  const order = new Map();
+  canonicalList.forEach((c, idx) => order.set(c.id, idx));
+  const titleById = new Map(canonicalList.map((c) => [c.id, c.title]));
+  const buckets = new Map();
+
+  for (const it of items || []) {
+    const id = it.category || 'other';
+    const title = it.categoryTitle || titleById.get(id) || 'Прочее';
+    if (!buckets.has(id)) {
+      buckets.set(id, { id, title, items: [] });
+    }
+    buckets.get(id).items.push(it);
+  }
+
+  return Array.from(buckets.values()).sort((a, b) => {
+    const ai = order.has(a.id) ? order.get(a.id) : 999;
+    const bi = order.has(b.id) ? order.get(b.id) : 999;
+    if (ai !== bi) return ai - bi;
+    return a.title.localeCompare(b.title, 'ru');
+  });
+}
+
+function normalizeSkillsResponse(res, fallbackItems = []) {
+  const items = Array.isArray(res?.items)
+    ? res.items
+    : (Array.isArray(res?.categories) ? res.categories.flatMap((c) => c.items || []) : fallbackItems);
+  const categories = Array.isArray(res?.categories) && res.categories.length
+    ? res.categories
+    : groupByCategories(items, SKILL_CATEGORIES);
+  const alwaysOnTokens = Number.isFinite(res?.budget?.alwaysOnTokens)
+    ? res.budget.alwaysOnTokens
+    : items.filter((s) => s.enabled !== false && s.alwaysOn && !s.pausedInMode)
+      .reduce((acc, s) => acc + (Number(s.alwaysOnTokens || s.tokens) || 240), 0);
+  const indexTokens = Number.isFinite(res?.budget?.indexTokens)
+    ? res.budget.indexTokens
+    : items.filter((s) => s.enabled !== false && !s.pausedInMode).length * 14;
+  const totalAutoTokens = Number.isFinite(res?.budget?.totalAutoTokens)
+    ? res.budget.totalAutoTokens
+    : (alwaysOnTokens + indexTokens);
+  const softLimitTokens = Number.isFinite(res?.budget?.softLimitTokens) ? res.budget.softLimitTokens : 4000;
+  const pinnedIds = Array.isArray(res?.budget?.pinnedIds)
+    ? res.budget.pinnedIds
+    : items.filter((s) => s.enabled !== false && s.alwaysOn && !s.pausedInMode).map((s) => s.id);
+  const budget = {
+    alwaysOnTokens,
+    indexTokens,
+    totalAutoTokens,
+    softLimitTokens,
+    overSoftLimit: typeof res?.budget?.overSoftLimit === 'boolean'
+      ? res.budget.overSoftLimit
+      : totalAutoTokens > softLimitTokens,
+    pinnedIds,
+  };
+  const quickToggles = Array.isArray(res?.quickToggles)
+    ? res.quickToggles
+    : ['i-have-adhd', 'caveman', 'second-brain'];
+  return { categories, items, budget, quickToggles };
+}
+
+async function fetchSkills(ctx, fallbackItems = []) {
+  const host = window.host;
+  if (typeof host?.skillsList === 'function') {
+    try {
+      const res = await host.skillsList({
+        mode: ctx?.mode || 'capri',
+        ephemeral: Boolean(ctx?.ephemeral),
+      });
+      if (res && (Array.isArray(res.categories) || Array.isArray(res.items))) {
+        return normalizeSkillsResponse(res, fallbackItems);
+      }
+    } catch {
+      // fall back cleanly
+    }
+  }
+  const base = fallbackItems.length
+    ? fallbackItems
+    : (FALLBACK_SECTIONS.find((s) => s.id === 'skills')?.items || []);
+  return normalizeSkillsResponse({ items: base }, base);
 }
 
 async function fetchCatalog(ctx) {
@@ -537,15 +674,20 @@ export function extractActiveSlashToken(value, caretPos) {
 
 function scoreItem(it, query) {
   if (!query) return 10;
+  const id = (it.id || '').toLowerCase();
   const name = (it.name || '').toLowerCase();
+  const title = (it.title || '').toLowerCase();
   const slash = (it.slash || `/${name}`).toLowerCase();
   const aliases = (it.aliases || []).map((a) => String(a).toLowerCase());
   const desc = (it.description || '').toLowerCase();
+  const cat = (it.category || '').toLowerCase();
+  const catTitle = (it.categoryTitle || '').toLowerCase();
 
-  if (name === query || slash === `/${query}` || aliases.includes(query)) return 100;
-  if (name.startsWith(query) || aliases.some((a) => a.startsWith(query))) return 80;
-  if (name.includes(query) || aliases.some((a) => a.includes(query))) return 50;
+  if (name === query || id === query || slash === `/${query}` || aliases.includes(query)) return 100;
+  if (name.startsWith(query) || id.startsWith(query) || title.startsWith(query) || aliases.some((a) => a.startsWith(query))) return 80;
+  if (name.includes(query) || id.includes(query) || title.includes(query) || slash.includes(query) || aliases.some((a) => a.includes(query))) return 50;
   if (desc.includes(query)) return 25;
+  if (cat.includes(query) || catTitle.includes(query)) return 15;
   return 0;
 }
 
@@ -684,15 +826,17 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
   }
 
   function buildItemRow(it, sectionId, ctxPct) {
+    const isSkill = sectionId === 'skills' || it.kind === 'skill';
+    const isPaused = Boolean(it.pausedInMode);
     const row = document.createElement('button');
     row.type = 'button';
-    row.className = `slash-menu__row${it.kind === 'draft' ? ' is-draft' : ''}`;
+    row.className = `slash-menu__row${it.kind === 'draft' ? ' is-draft' : ''}${isPaused ? ' is-paused' : ''}`;
     row.setAttribute('role', 'option');
     row.setAttribute('aria-selected', 'false');
 
     const iconWrap = document.createElement('span');
     iconWrap.className = 'slash-menu__icon';
-    iconWrap.appendChild(createIconSvg(it.icon || it.name, 18));
+    iconWrap.appendChild(createIconSvg(it.icon || (it.isPack ? 'layers' : (isSkill ? 'sparkles' : it.name)), 18));
 
     const main = document.createElement('span');
     main.className = 'slash-menu__main';
@@ -721,30 +865,69 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
     const right = document.createElement('span');
     right.className = 'slash-menu__right';
 
-    if (it.active) {
-      const dot = document.createElement('span');
-      dot.className = 'slash-menu__dot';
-      dot.title = 'Активно';
-      right.appendChild(dot);
+    if (isPaused) {
+      const pausedBadge = document.createElement('span');
+      pausedBadge.className = 'slash-menu__badge slash-menu__badge--paused';
+      pausedBadge.textContent = 'Пауза';
+      if (it.pauseReason) pausedBadge.title = it.pauseReason;
+      right.appendChild(pausedBadge);
     }
 
-    const isCompact = it.name === 'compact';
-    const livePct = isCompact ? parsePctFromBadge(it.badge, ctxPct) : null;
-    if (isCompact && livePct !== null) {
-      const badge = document.createElement('span');
-      badge.className = 'slash-menu__badge';
-      const ring = document.createElement('span');
-      ring.className = 'slash-menu__ring';
-      ring.appendChild(createProgressRingSvg(livePct, 16));
-      const pctText = document.createElement('span');
-      pctText.textContent = `${livePct}%`;
-      badge.append(ring, pctText);
-      right.appendChild(badge);
-    } else if (it.badge) {
-      const badge = document.createElement('span');
-      badge.className = 'slash-menu__badge';
-      badge.textContent = String(it.badge);
-      right.appendChild(badge);
+    if (isSkill) {
+      if (it.isPack && it.subCount) {
+        const packBadge = document.createElement('span');
+        packBadge.className = 'slash-menu__badge slash-menu__badge--meta';
+        packBadge.textContent = `Пак · ${it.subCount}`;
+        right.appendChild(packBadge);
+      } else if (it.alwaysOn) {
+        const alwaysBadge = document.createElement('span');
+        alwaysBadge.className = 'slash-menu__badge slash-menu__badge--always';
+        if (!isPaused) {
+          const dot = document.createElement('span');
+          dot.className = 'slash-menu__dot slash-menu__dot--green';
+          alwaysBadge.appendChild(dot);
+        }
+        const lbl = document.createElement('span');
+        lbl.textContent = 'Всегда';
+        alwaysBadge.appendChild(lbl);
+        right.appendChild(alwaysBadge);
+      } else if (it.stageNote) {
+        const stageBadge = document.createElement('span');
+        stageBadge.className = 'slash-menu__badge slash-menu__badge--meta';
+        stageBadge.textContent = String(it.stageNote);
+        right.appendChild(stageBadge);
+      } else if (Number.isFinite(it.tokens) && it.tokens > 0) {
+        const tokBadge = document.createElement('span');
+        tokBadge.className = 'slash-menu__badge slash-menu__badge--meta';
+        tokBadge.textContent = `~${it.tokens} ток`;
+        right.appendChild(tokBadge);
+      }
+    } else {
+      if (it.active) {
+        const dot = document.createElement('span');
+        dot.className = 'slash-menu__dot';
+        dot.title = 'Активно';
+        right.appendChild(dot);
+      }
+
+      const isCompact = it.name === 'compact';
+      const livePct = isCompact ? parsePctFromBadge(it.badge, ctxPct) : null;
+      if (isCompact && livePct !== null) {
+        const badge = document.createElement('span');
+        badge.className = 'slash-menu__badge';
+        const ring = document.createElement('span');
+        ring.className = 'slash-menu__ring';
+        ring.appendChild(createProgressRingSvg(livePct, 16));
+        const pctText = document.createElement('span');
+        pctText.textContent = `${livePct}%`;
+        badge.append(ring, pctText);
+        right.appendChild(badge);
+      } else if (it.badge) {
+        const badge = document.createElement('span');
+        badge.className = 'slash-menu__badge';
+        badge.textContent = String(it.badge);
+        right.appendChild(badge);
+      }
     }
 
     if (right.childNodes.length) row.appendChild(right);
@@ -820,6 +1003,9 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
 
     for (const sec of data.sections || []) {
       let items = Array.isArray(sec.items) ? sec.items : [];
+      if (sec.id === 'skills') {
+        items = items.filter((it) => it.enabled !== false);
+      }
       if (isChained) {
         items = items.filter((it) => it.chainable || it.kind === 'skill' || it.kind === 'prompt');
       }
@@ -949,11 +1135,16 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
     close();
   }
 
+  function onSkillsChangedEvent() {
+    ensureCatalog(true);
+  }
+
   input.addEventListener('input', onInputEvent);
   input.addEventListener('keyup', onKeyUp);
   input.addEventListener('click', onClickInput);
   input.addEventListener('keydown', onKeyDown, true);
   window.addEventListener('keydown', onWindowKeyDown, true);
+  window.addEventListener('capri:skills-changed', onSkillsChangedEvent);
   document.addEventListener('mousedown', onDocMouseDown);
 
   return {
@@ -967,17 +1158,41 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
       input.removeEventListener('click', onClickInput);
       input.removeEventListener('keydown', onKeyDown, true);
       window.removeEventListener('keydown', onWindowKeyDown, true);
+      window.removeEventListener('capri:skills-changed', onSkillsChangedEvent);
       document.removeEventListener('mousedown', onDocMouseDown);
       menu.remove();
     },
   };
 }
 
-// ---------------------------------------------------------------- Draft Catalog Modal
+// ---------------------------------------------------------------- Catalog Modal (Commands, Skills, Draft Sections)
 
 let activeModalCleanup = null;
 
-export async function openCatalogModal({ initialTab = 'commands', getContext, onRunCommand } = {}) {
+function createToggleSwitch(checked, { label, disabled = false, onToggle }) {
+  const sw = document.createElement('button');
+  sw.type = 'button';
+  sw.className = `slash-switch${checked ? ' is-on' : ''}`;
+  sw.setAttribute('role', 'switch');
+  sw.setAttribute('aria-checked', String(Boolean(checked)));
+  if (label) sw.setAttribute('aria-label', label);
+  sw.disabled = Boolean(disabled);
+
+  const thumb = document.createElement('span');
+  thumb.className = 'slash-switch__thumb';
+  thumb.setAttribute('aria-hidden', 'true');
+  sw.appendChild(thumb);
+
+  if (typeof onToggle === 'function') {
+    sw.addEventListener('click', (e) => {
+      e.stopPropagation();
+      onToggle(e);
+    });
+  }
+  return sw;
+}
+
+export async function openCatalogModal({ initialTab = 'commands', getContext, onRunCommand, onSkillsChanged } = {}) {
   if (activeModalCleanup) {
     activeModalCleanup();
     activeModalCleanup = null;
@@ -986,8 +1201,36 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
   const ctx = getContext?.() || {};
   const ctxPct = Number.isFinite(ctx.pct) ? Math.round(ctx.pct) : null;
   let catalog = buildFallbackCatalog(ctx);
+  let skillsData = normalizeSkillsResponse({
+    items: catalog.sections.find((s) => s.id === 'skills')?.items || [],
+  });
   let activeTab = initialTab || 'commands';
   let searchQuery = '';
+  let noticeText = '';
+  let activeForm = null; // null | 'create' | 'install'
+  let formBusy = false;
+  let formError = '';
+  let reloadingSkills = false;
+  const pendingToggles = new Set();
+  const collapsedGroups = new Set();
+
+  const createDraft = {
+    name: '',
+    slug: '',
+    category: 'system',
+    description: '',
+    body: '',
+    alwaysOn: false,
+  };
+  const installDraft = {
+    sourceType: 'path', // 'path' | 'markdown'
+    sourcePath: '',
+    markdown: '',
+    slug: '',
+    category: 'system',
+    preview: null,
+    previewMessage: '',
+  };
 
   const backdrop = document.createElement('div');
   backdrop.className = 'slash-catalog-backdrop';
@@ -1018,7 +1261,7 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
   const searchInput = document.createElement('input');
   searchInput.type = 'search';
   searchInput.className = 'slash-catalog__search';
-  searchInput.placeholder = 'Поиск по командам, навыкам и коннекторам…';
+  searchInput.placeholder = 'Поиск по командам, навыкам и категориям…';
   searchInput.setAttribute('aria-label', 'Поиск по каталогу');
   searchWrap.appendChild(searchInput);
 
@@ -1037,7 +1280,24 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
   backdrop.appendChild(modal);
   document.body.appendChild(backdrop);
 
-  let noticeText = '';
+  function syncSkillsIntoCatalog() {
+    const sections = catalog.sections || [];
+    const skillSec = sections.find((s) => s.id === 'skills');
+    if (skillSec && Array.isArray(skillsData?.items)) {
+      skillSec.items = skillsData.items;
+    }
+  }
+
+  function emitSkillsChanged(nextData) {
+    skillsData = normalizeSkillsResponse(nextData, skillsData.items);
+    syncSkillsIntoCatalog();
+    try {
+      onSkillsChanged?.(skillsData);
+    } catch {
+      // ignore listener errors
+    }
+    window.dispatchEvent(new CustomEvent('capri:skills-changed', { detail: skillsData }));
+  }
 
   function cleanup() {
     window.removeEventListener('keydown', onEscape, true);
@@ -1049,6 +1309,13 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopImmediatePropagation();
+      if (activeForm) {
+        activeForm = null;
+        formError = '';
+        installDraft.preview = null;
+        renderModal();
+        return;
+      }
       cleanup();
     }
   }
@@ -1076,12 +1343,19 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
       label.textContent = sec.title;
       const count = document.createElement('span');
       count.className = 'slash-catalog__tab-count';
-      count.textContent = String((sec.items || []).length);
+      const itemCount = sec.id === 'skills'
+        ? (skillsData.items || []).length
+        : (sec.items || []).length;
+      count.textContent = String(itemCount);
 
       btn.append(label, count);
       btn.addEventListener('click', () => {
         activeTab = sec.id;
         noticeText = '';
+        if (sec.id !== 'skills') {
+          activeForm = null;
+          formError = '';
+        }
         renderModal();
       });
       return btn;
@@ -1171,6 +1445,745 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
     return row;
   }
 
+  async function handleSkillToggle(skill, patch) {
+    const id = skill.id || skill.name;
+    if (!id || pendingToggles.has(id)) return;
+    pendingToggles.add(id);
+
+    const host = window.host;
+    if (typeof host?.skillsToggle === 'function') {
+      try {
+        const res = await host.skillsToggle({ id, ...patch });
+        if (res && res.ok !== false) {
+          if (Array.isArray(res.categories) || Array.isArray(res.items)) {
+            emitSkillsChanged(res);
+          } else {
+            const refreshed = await fetchSkills(ctx, skillsData.items);
+            emitSkillsChanged(refreshed);
+          }
+          noticeText = '';
+        } else {
+          noticeText = res?.error || 'Не удалось обновить состояние навыка.';
+        }
+      } catch (err) {
+        noticeText = err?.message || 'Не удалось обновить состояние навыка.';
+      }
+    } else {
+      // Local fallback update when backend IPC is unavailable
+      const nextItems = (skillsData.items || []).map((s) => {
+        if ((s.id || s.name) !== id) return s;
+        return {
+          ...s,
+          ...(typeof patch.enabled === 'boolean' ? { enabled: patch.enabled } : {}),
+          ...(typeof patch.alwaysOn === 'boolean' ? { alwaysOn: patch.alwaysOn } : {}),
+        };
+      });
+      emitSkillsChanged({ items: nextItems });
+    }
+
+    pendingToggles.delete(id);
+    if (document.body.contains(backdrop)) renderModal();
+  }
+
+  function buildSkillRow(it) {
+    const id = it.id || it.name;
+    const enabled = it.enabled !== false;
+    const alwaysOn = Boolean(it.alwaysOn);
+    const paused = Boolean(it.pausedInMode);
+    const busy = pendingToggles.has(id);
+
+    const row = document.createElement('div');
+    row.className = `slash-catalog__item slash-catalog__skill-row${enabled ? '' : ' is-disabled'}`;
+
+    const hit = document.createElement('button');
+    hit.type = 'button';
+    hit.className = 'slash-catalog__skill-hit';
+    hit.disabled = !enabled;
+    hit.title = enabled ? `Вставить ${it.slash || `/${id}`}` : 'Навык выключен';
+
+    const avatar = document.createElement('span');
+    avatar.className = 'slash-catalog__avatar';
+    avatar.appendChild(createIconSvg(it.icon || (it.isPack ? 'layers' : 'sparkles'), 18));
+
+    const main = document.createElement('span');
+    main.className = 'slash-catalog__item-main';
+
+    const topLine = document.createElement('span');
+    topLine.className = 'slash-catalog__item-top';
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'slash-catalog__item-name';
+    nameEl.textContent = it.name || id;
+    topLine.appendChild(nameEl);
+
+    const slashEl = document.createElement('span');
+    slashEl.className = 'slash-catalog__item-slash';
+    slashEl.textContent = it.slash || `/${id}`;
+    topLine.appendChild(slashEl);
+
+    if (it.isPack && it.subCount) {
+      const packChip = document.createElement('span');
+      packChip.className = 'slash-skill-chip';
+      packChip.textContent = `Пак · ${it.subCount}`;
+      topLine.appendChild(packChip);
+    }
+    if (it.stageNote) {
+      const stageChip = document.createElement('span');
+      stageChip.className = 'slash-skill-chip';
+      stageChip.textContent = String(it.stageNote);
+      topLine.appendChild(stageChip);
+    }
+    if (it.isCustom) {
+      const customChip = document.createElement('span');
+      customChip.className = 'slash-skill-chip';
+      customChip.textContent = 'Свой';
+      topLine.appendChild(customChip);
+    }
+
+    const descEl = document.createElement('span');
+    descEl.className = 'slash-catalog__item-desc';
+    descEl.textContent = it.description || '';
+
+    main.append(topLine, descEl);
+
+    if (paused) {
+      const metaRow = document.createElement('span');
+      metaRow.className = 'slash-catalog__meta-row';
+      const pauseChip = document.createElement('span');
+      pauseChip.className = 'slash-skill-chip slash-skill-chip--paused';
+      pauseChip.textContent = 'Пауза в этом режиме';
+      if (it.pauseReason) pauseChip.title = it.pauseReason;
+      metaRow.appendChild(pauseChip);
+      main.appendChild(metaRow);
+    }
+
+    hit.append(avatar, main);
+    hit.addEventListener('click', () => {
+      if (!enabled) return;
+      cleanup();
+      onRunCommand?.({ ...it, kind: 'skill', slash: it.slash || `/${id}` });
+    });
+
+    const right = document.createElement('span');
+    right.className = 'slash-catalog__item-right';
+
+    if (it.canPinAlways) {
+      const pinBtn = document.createElement('button');
+      pinBtn.type = 'button';
+      pinBtn.className = `slash-skill-pin${alwaysOn ? ' is-pinned' : ''}`;
+      pinBtn.setAttribute('aria-pressed', String(alwaysOn));
+      pinBtn.disabled = busy;
+      pinBtn.title = alwaysOn
+        ? 'Убрать из автоматического промпта'
+        : 'Добавлять автоматически в каждое сообщение';
+
+      const dot = document.createElement('span');
+      dot.className = 'slash-skill-pin__dot';
+      dot.setAttribute('aria-hidden', 'true');
+
+      const lbl = document.createElement('span');
+      lbl.textContent = 'Всегда';
+
+      pinBtn.append(dot, lbl);
+      const tokWeight = Number(it.alwaysOnTokens || it.tokens);
+      if (Number.isFinite(tokWeight) && tokWeight > 0) {
+        const tok = document.createElement('span');
+        tok.className = 'slash-skill-pin__tokens';
+        tok.textContent = `~${tokWeight} ток`;
+        pinBtn.appendChild(tok);
+      }
+
+      pinBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const nextAlways = !alwaysOn;
+        handleSkillToggle(it, {
+          enabled: nextAlways ? true : enabled,
+          alwaysOn: nextAlways,
+        });
+      });
+      right.appendChild(pinBtn);
+    }
+
+    const sw = createToggleSwitch(enabled, {
+      label: `${enabled ? 'Выключить' : 'Включить'} навык ${it.name || id}`,
+      disabled: busy,
+      onToggle: () => {
+        handleSkillToggle(it, { enabled: !enabled });
+      },
+    });
+    right.appendChild(sw);
+
+    row.append(hit, right);
+    return row;
+  }
+
+  function buildBudgetBar() {
+    const b = skillsData.budget || {};
+    const alwaysTok = Number.isFinite(b.alwaysOnTokens) ? Math.round(b.alwaysOnTokens) : 0;
+    const indexTok = Number.isFinite(b.indexTokens) ? Math.round(b.indexTokens) : 0;
+    const totalTok = Number.isFinite(b.totalAutoTokens) ? Math.round(b.totalAutoTokens) : (alwaysTok + indexTok);
+    const limitTok = Number.isFinite(b.softLimitTokens) ? Math.round(b.softLimitTokens) : 4000;
+    const over = Boolean(b.overSoftLimit);
+
+    const strip = document.createElement('div');
+    strip.className = `slash-budget${over ? ' is-over-limit' : ''}`;
+
+    const main = document.createElement('span');
+    main.className = 'slash-budget__main';
+
+    const dot = document.createElement('span');
+    dot.className = 'slash-budget__dot';
+    dot.setAttribute('aria-hidden', 'true');
+
+    const text = document.createElement('span');
+    text.textContent = `Авто в промпте: ~${alwaysTok} ток · Индекс: ~${indexTok} ток`;
+
+    main.append(dot, text);
+
+    const meta = document.createElement('span');
+    meta.className = 'slash-budget__meta';
+    meta.textContent = over
+      ? `Выше мягкого лимита (~${totalTok} / ${limitTok} ток)`
+      : `Всего ~${totalTok} / ${limitTok} ток`;
+
+    strip.append(main, meta);
+    return strip;
+  }
+
+  function buildCreateSkillForm() {
+    const form = document.createElement('form');
+    form.className = 'slash-skill-form';
+    form.autocomplete = 'off';
+
+    const head = document.createElement('div');
+    head.className = 'slash-skill-form__head';
+    const title = document.createElement('h3');
+    title.className = 'slash-skill-form__title';
+    title.textContent = 'Создать навык';
+    const closeFormBtn = document.createElement('button');
+    closeFormBtn.type = 'button';
+    closeFormBtn.className = 'slash-catalog__action-btn slash-catalog__action-btn--icon';
+    closeFormBtn.setAttribute('aria-label', 'Закрыть форму');
+    closeFormBtn.appendChild(createIconSvg('close', 16));
+    closeFormBtn.addEventListener('click', () => {
+      activeForm = null;
+      formError = '';
+      renderModal();
+    });
+    head.append(title, closeFormBtn);
+    form.appendChild(head);
+
+    if (formError) {
+      const err = document.createElement('p');
+      err.className = 'slash-skill-form__error';
+      err.textContent = formError;
+      form.appendChild(err);
+    }
+
+    const grid = document.createElement('div');
+    grid.className = 'slash-skill-form__grid';
+
+    // Name
+    const nameField = document.createElement('label');
+    nameField.className = 'slash-skill-form__field';
+    const nameLbl = document.createElement('span');
+    nameLbl.className = 'slash-skill-form__label';
+    nameLbl.textContent = 'Название';
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'slash-skill-form__input';
+    nameInput.placeholder = 'Например, Редактор питчей';
+    nameInput.value = createDraft.name;
+    nameInput.required = true;
+    nameInput.addEventListener('input', () => { createDraft.name = nameInput.value; });
+    nameField.append(nameLbl, nameInput);
+
+    // Slug (optional)
+    const slugField = document.createElement('label');
+    slugField.className = 'slash-skill-form__field';
+    const slugLbl = document.createElement('span');
+    slugLbl.className = 'slash-skill-form__label';
+    slugLbl.textContent = 'Команда /slug (необязательно)';
+    const slugInput = document.createElement('input');
+    slugInput.type = 'text';
+    slugInput.className = 'slash-skill-form__input';
+    slugInput.placeholder = 'pitch-editor';
+    slugInput.value = createDraft.slug;
+    slugInput.addEventListener('input', () => { createDraft.slug = slugInput.value; });
+    slugField.append(slugLbl, slugInput);
+
+    // Category
+    const catField = document.createElement('label');
+    catField.className = 'slash-skill-form__field';
+    const catLbl = document.createElement('span');
+    catLbl.className = 'slash-skill-form__label';
+    catLbl.textContent = 'Категория';
+    const catSelect = document.createElement('select');
+    catSelect.className = 'slash-skill-form__select';
+    for (const c of SKILL_CATEGORIES) {
+      const opt = document.createElement('option');
+      opt.value = c.id;
+      opt.textContent = c.title;
+      catSelect.appendChild(opt);
+    }
+    catSelect.value = createDraft.category || 'system';
+    catSelect.addEventListener('change', () => { createDraft.category = catSelect.value; });
+    catField.append(catLbl, catSelect);
+
+    // Description
+    const descField = document.createElement('label');
+    descField.className = 'slash-skill-form__field';
+    const descLbl = document.createElement('span');
+    descLbl.className = 'slash-skill-form__label';
+    descLbl.textContent = 'Краткое описание';
+    const descInput = document.createElement('input');
+    descInput.type = 'text';
+    descInput.className = 'slash-skill-form__input';
+    descInput.placeholder = 'В одну строку: когда и зачем применять навык';
+    descInput.value = createDraft.description;
+    descInput.required = true;
+    descInput.addEventListener('input', () => { createDraft.description = descInput.value; });
+    descField.append(descLbl, descInput);
+
+    // Body
+    const bodyField = document.createElement('label');
+    bodyField.className = 'slash-skill-form__field slash-skill-form__field--full';
+    const bodyLbl = document.createElement('span');
+    bodyLbl.className = 'slash-skill-form__label';
+    bodyLbl.textContent = 'Инструкция навыка (Markdown)';
+    const bodyArea = document.createElement('textarea');
+    bodyArea.className = 'slash-skill-form__textarea';
+    bodyArea.rows = 5;
+    bodyArea.placeholder = 'Опиши правила, шаги и ограничения для модели…';
+    bodyArea.value = createDraft.body;
+    bodyArea.required = true;
+    bodyArea.addEventListener('input', () => { createDraft.body = bodyArea.value; });
+    bodyField.append(bodyLbl, bodyArea);
+
+    grid.append(nameField, slugField, catField, descField, bodyField);
+    form.appendChild(grid);
+
+    // alwaysOn row
+    const checkRow = document.createElement('div');
+    checkRow.className = 'slash-skill-form__check-row';
+    const checkCopy = document.createElement('span');
+    checkCopy.className = 'slash-skill-form__check-copy';
+    const checkStrong = document.createElement('strong');
+    checkStrong.textContent = 'Всегда в промпте';
+    const checkSmall = document.createElement('small');
+    checkSmall.textContent = 'Подключать автоматически в каждом сообщении (для лёгких навыков)';
+    checkCopy.append(checkStrong, checkSmall);
+    const alwaysSwitch = createToggleSwitch(createDraft.alwaysOn, {
+      label: 'Всегда в промпте',
+      disabled: formBusy,
+      onToggle: () => {
+        createDraft.alwaysOn = !createDraft.alwaysOn;
+        alwaysSwitch.classList.toggle('is-on', createDraft.alwaysOn);
+        alwaysSwitch.setAttribute('aria-checked', String(createDraft.alwaysOn));
+      },
+    });
+    checkRow.append(checkCopy, alwaysSwitch);
+    form.appendChild(checkRow);
+
+    const actions = document.createElement('div');
+    actions.className = 'slash-skill-form__actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'slash-catalog__action-btn';
+    cancelBtn.textContent = 'Отмена';
+    cancelBtn.disabled = formBusy;
+    cancelBtn.addEventListener('click', () => {
+      activeForm = null;
+      formError = '';
+      renderModal();
+    });
+
+    const submitBtn = document.createElement('button');
+    submitBtn.type = 'submit';
+    submitBtn.className = 'slash-catalog__action-btn slash-catalog__action-btn--primary';
+    submitBtn.textContent = formBusy ? 'Сохраняю…' : 'Сохранить навык';
+    submitBtn.disabled = formBusy;
+
+    actions.append(cancelBtn, submitBtn);
+    form.appendChild(actions);
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (formBusy) return;
+      const name = createDraft.name.trim();
+      const description = createDraft.description.trim();
+      const bodyText = createDraft.body.trim();
+      if (!name || !description || !bodyText) {
+        formError = 'Заполни название, краткое описание и текст инструкции.';
+        renderModal();
+        return;
+      }
+      if (typeof window.host?.skillsCreate !== 'function') {
+        formError = 'Создание навыков недоступно в текущем режиме.';
+        renderModal();
+        return;
+      }
+      formBusy = true;
+      formError = '';
+      renderModal();
+      try {
+        const res = await window.host.skillsCreate({
+          name,
+          slug: createDraft.slug.trim() || undefined,
+          category: createDraft.category || 'system',
+          description,
+          body: bodyText,
+          alwaysOn: Boolean(createDraft.alwaysOn),
+        });
+        if (!res || res.ok === false) {
+          formError = res?.error || 'Не удалось создать навык.';
+        } else {
+          if (Array.isArray(res.categories) || Array.isArray(res.items)) {
+            emitSkillsChanged(res);
+          } else {
+            const refreshed = await fetchSkills(ctx, skillsData.items);
+            emitSkillsChanged(refreshed);
+          }
+          const createdSlash = res.skill?.slash || (res.skill?.id ? `/${res.skill.id}` : '');
+          noticeText = `Навык «${res.skill?.name || name}» создан${createdSlash ? ` (${createdSlash})` : ''}.`;
+          activeForm = null;
+          createDraft.name = '';
+          createDraft.slug = '';
+          createDraft.description = '';
+          createDraft.body = '';
+          createDraft.alwaysOn = false;
+        }
+      } catch (err) {
+        formError = err?.message || 'Ошибка при создании навыка.';
+      } finally {
+        formBusy = false;
+        if (document.body.contains(backdrop)) renderModal();
+      }
+    });
+
+    return form;
+  }
+
+  function buildInstallSkillForm() {
+    const form = document.createElement('form');
+    form.className = 'slash-skill-form';
+    form.autocomplete = 'off';
+
+    const head = document.createElement('div');
+    head.className = 'slash-skill-form__head';
+    const title = document.createElement('h3');
+    title.className = 'slash-skill-form__title';
+    title.textContent = 'Установить навык';
+    const closeFormBtn = document.createElement('button');
+    closeFormBtn.type = 'button';
+    closeFormBtn.className = 'slash-catalog__action-btn slash-catalog__action-btn--icon';
+    closeFormBtn.setAttribute('aria-label', 'Закрыть форму');
+    closeFormBtn.appendChild(createIconSvg('close', 16));
+    closeFormBtn.addEventListener('click', () => {
+      activeForm = null;
+      formError = '';
+      installDraft.preview = null;
+      renderModal();
+    });
+    head.append(title, closeFormBtn);
+    form.appendChild(head);
+
+    if (formError) {
+      const err = document.createElement('p');
+      err.className = 'slash-skill-form__error';
+      err.textContent = formError;
+      form.appendChild(err);
+    }
+
+    const modeTabs = document.createElement('div');
+    modeTabs.className = 'slash-skill-form__tabs';
+    for (const [key, label] of [['path', 'Локальный файл'], ['markdown', 'Вставить Markdown']]) {
+      const tabBtn = document.createElement('button');
+      tabBtn.type = 'button';
+      tabBtn.className = `slash-skill-form__tab${installDraft.sourceType === key ? ' is-active' : ''}`;
+      tabBtn.textContent = label;
+      tabBtn.disabled = formBusy;
+      tabBtn.addEventListener('click', () => {
+        installDraft.sourceType = key;
+        installDraft.preview = null;
+        formError = '';
+        renderModal();
+      });
+      modeTabs.appendChild(tabBtn);
+    }
+    form.appendChild(modeTabs);
+
+    const grid = document.createElement('div');
+    grid.className = 'slash-skill-form__grid';
+
+    if (installDraft.sourceType === 'path') {
+      const pathField = document.createElement('label');
+      pathField.className = 'slash-skill-form__field slash-skill-form__field--full';
+      const pathLbl = document.createElement('span');
+      pathLbl.className = 'slash-skill-form__label';
+      pathLbl.textContent = 'Путь к файлу SKILL.md на ПК';
+      const pathInput = document.createElement('input');
+      pathInput.type = 'text';
+      pathInput.className = 'slash-skill-form__input';
+      pathInput.placeholder = 'D:\\path\\to\\skill\\SKILL.md';
+      pathInput.value = installDraft.sourcePath;
+      pathInput.addEventListener('input', () => {
+        installDraft.sourcePath = pathInput.value;
+        installDraft.preview = null;
+      });
+      pathField.append(pathLbl, pathInput);
+      grid.appendChild(pathField);
+    } else {
+      const mdField = document.createElement('label');
+      mdField.className = 'slash-skill-form__field slash-skill-form__field--full';
+      const mdLbl = document.createElement('span');
+      mdLbl.className = 'slash-skill-form__label';
+      mdLbl.textContent = 'Содержимое SKILL.md (с YAML frontmatter или обычным Markdown)';
+      const mdArea = document.createElement('textarea');
+      mdArea.className = 'slash-skill-form__textarea';
+      mdArea.rows = 6;
+      mdArea.placeholder = '---\nname: my-skill\ndescription: Краткое описание\n---\n\nИнструкции…';
+      mdArea.value = installDraft.markdown;
+      mdArea.addEventListener('input', () => {
+        installDraft.markdown = mdArea.value;
+        installDraft.preview = null;
+      });
+      mdField.append(mdLbl, mdArea);
+      grid.appendChild(mdField);
+    }
+
+    const slugField = document.createElement('label');
+    slugField.className = 'slash-skill-form__field';
+    const slugLbl = document.createElement('span');
+    slugLbl.className = 'slash-skill-form__label';
+    slugLbl.textContent = 'Команда /slug (необязательно)';
+    const slugInput = document.createElement('input');
+    slugInput.type = 'text';
+    slugInput.className = 'slash-skill-form__input';
+    slugInput.placeholder = 'Определяется автоматически';
+    slugInput.value = installDraft.slug;
+    slugInput.addEventListener('input', () => {
+      installDraft.slug = slugInput.value;
+      installDraft.preview = null;
+    });
+    slugField.append(slugLbl, slugInput);
+
+    const catField = document.createElement('label');
+    catField.className = 'slash-skill-form__field';
+    const catLbl = document.createElement('span');
+    catLbl.className = 'slash-skill-form__label';
+    catLbl.textContent = 'Категория';
+    const catSelect = document.createElement('select');
+    catSelect.className = 'slash-skill-form__select';
+    for (const c of SKILL_CATEGORIES) {
+      const opt = document.createElement('option');
+      opt.value = c.id;
+      opt.textContent = c.title;
+      catSelect.appendChild(opt);
+    }
+    catSelect.value = installDraft.category || 'system';
+    catSelect.addEventListener('change', () => { installDraft.category = catSelect.value; });
+    catField.append(catLbl, catSelect);
+
+    grid.append(slugField, catField);
+    form.appendChild(grid);
+
+    if (installDraft.preview) {
+      const pv = installDraft.preview;
+      const previewBox = document.createElement('div');
+      previewBox.className = 'slash-skill-form__preview';
+
+      const pvTitle = document.createElement('div');
+      pvTitle.className = 'slash-skill-form__preview-title';
+      const pvName = document.createElement('span');
+      pvName.textContent = pv.name || pv.slug || 'Навык';
+      pvTitle.appendChild(pvName);
+      if (pv.slug) {
+        const pvSlug = document.createElement('span');
+        pvSlug.className = 'slash-catalog__item-slash';
+        pvSlug.textContent = `/${pv.slug}`;
+        pvTitle.appendChild(pvSlug);
+      }
+
+      const pvDesc = document.createElement('p');
+      pvDesc.className = 'slash-skill-form__preview-desc';
+      pvDesc.textContent = pv.description || installDraft.previewMessage || 'Готово к установке.';
+
+      const pvMeta = document.createElement('div');
+      pvMeta.className = 'slash-skill-form__preview-meta';
+      const parts = [];
+      if (Number.isFinite(pv.tokens)) parts.push(`Размер: ~${pv.tokens} ток`);
+      if (pv.source) parts.push(`Источник: ${pv.source}`);
+      if (installDraft.previewMessage && pv.description) parts.push(installDraft.previewMessage);
+      pvMeta.textContent = parts.join(' · ');
+
+      previewBox.append(pvTitle, pvDesc);
+      if (pvMeta.textContent) previewBox.appendChild(pvMeta);
+      form.appendChild(previewBox);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'slash-skill-form__actions';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'slash-catalog__action-btn';
+    cancelBtn.textContent = installDraft.preview ? 'Сбросить' : 'Отмена';
+    cancelBtn.disabled = formBusy;
+    cancelBtn.addEventListener('click', () => {
+      if (installDraft.preview) {
+        installDraft.preview = null;
+        installDraft.previewMessage = '';
+        formError = '';
+        renderModal();
+        return;
+      }
+      activeForm = null;
+      formError = '';
+      renderModal();
+    });
+
+    const submitBtn = document.createElement('button');
+    submitBtn.type = 'submit';
+    submitBtn.className = 'slash-catalog__action-btn slash-catalog__action-btn--primary';
+    if (installDraft.preview) {
+      submitBtn.textContent = formBusy ? 'Устанавливаю…' : 'Подтвердить установку';
+    } else {
+      submitBtn.textContent = formBusy ? 'Проверяю…' : 'Проверить навык';
+    }
+    submitBtn.disabled = formBusy;
+
+    actions.append(cancelBtn, submitBtn);
+    form.appendChild(actions);
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (formBusy) return;
+      const isPath = installDraft.sourceType === 'path';
+      const sourcePath = isPath ? installDraft.sourcePath.trim() : '';
+      const markdown = !isPath ? installDraft.markdown.trim() : '';
+      if (isPath && !sourcePath) {
+        formError = 'Укажи путь к файлу SKILL.md.';
+        renderModal();
+        return;
+      }
+      if (!isPath && !markdown) {
+        formError = 'Вставь содержимое Markdown для навыка.';
+        renderModal();
+        return;
+      }
+      if (typeof window.host?.skillsInstall !== 'function') {
+        formError = 'Установка навыков недоступна в текущем режиме.';
+        renderModal();
+        return;
+      }
+
+      const confirm = Boolean(installDraft.preview);
+      formBusy = true;
+      formError = '';
+      renderModal();
+      try {
+        const res = await window.host.skillsInstall({
+          ...(sourcePath ? { sourcePath } : {}),
+          ...(markdown ? { markdown } : {}),
+          slug: (confirm && installDraft.preview?.slug) ? installDraft.preview.slug : (installDraft.slug.trim() || undefined),
+          category: installDraft.category || 'system',
+          confirm,
+        });
+        if (!confirm && res?.confirmRequired) {
+          installDraft.preview = res.preview || { slug: installDraft.slug.trim(), name: installDraft.slug.trim() || 'Навык' };
+          installDraft.previewMessage = res.message || '';
+        } else if (!res || res.ok === false) {
+          formError = res?.error || res?.message || 'Не удалось установить навык.';
+        } else {
+          if (Array.isArray(res.categories) || Array.isArray(res.items)) {
+            emitSkillsChanged(res);
+          } else {
+            const refreshed = await fetchSkills(ctx, skillsData.items);
+            emitSkillsChanged(refreshed);
+          }
+          const installedName = res.skill?.name || res.skill?.id || installDraft.preview?.name || 'Навык';
+          noticeText = `Навык «${installedName}» установлен.`;
+          activeForm = null;
+          installDraft.sourcePath = '';
+          installDraft.markdown = '';
+          installDraft.slug = '';
+          installDraft.preview = null;
+          installDraft.previewMessage = '';
+        }
+      } catch (err) {
+        formError = err?.message || 'Ошибка при установке навыка.';
+      } finally {
+        formBusy = false;
+        if (document.body.contains(backdrop)) renderModal();
+      }
+    });
+
+    return form;
+  }
+
+  function buildCollapsibleGroup(groupKey, titleText, items, renderItem, forceExpanded) {
+    const isCollapsed = !forceExpanded && collapsedGroups.has(groupKey);
+    const group = document.createElement('section');
+    group.className = `slash-catalog__group${isCollapsed ? ' is-collapsed' : ''}`;
+
+    const head = document.createElement('div');
+    head.className = 'slash-catalog__group-head';
+
+    const toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    toggleBtn.className = 'slash-catalog__group-toggle';
+    toggleBtn.setAttribute('aria-expanded', String(!isCollapsed));
+
+    const titleSpan = document.createElement('span');
+    titleSpan.textContent = `${titleText} (${items.length})`;
+
+    const chev = document.createElement('span');
+    chev.className = 'slash-catalog__group-chevron';
+    chev.appendChild(createIconSvg('chevron-down', 16));
+
+    toggleBtn.append(titleSpan, chev);
+    toggleBtn.addEventListener('click', () => {
+      if (collapsedGroups.has(groupKey)) collapsedGroups.delete(groupKey);
+      else collapsedGroups.add(groupKey);
+      const nowCollapsed = collapsedGroups.has(groupKey);
+      group.classList.toggle('is-collapsed', nowCollapsed);
+      toggleBtn.setAttribute('aria-expanded', String(!nowCollapsed));
+    });
+
+    head.appendChild(toggleBtn);
+
+    const list = document.createElement('div');
+    list.className = 'slash-catalog__list';
+    for (const it of items) list.appendChild(renderItem(it));
+
+    group.append(head, list);
+    return group;
+  }
+
+  async function handleReloadSkills() {
+    if (reloadingSkills) return;
+    reloadingSkills = true;
+    renderModal();
+    try {
+      const res = typeof window.host?.skillsReload === 'function'
+        ? await window.host.skillsReload()
+        : await fetchSkills(ctx, skillsData.items);
+      if (res && (Array.isArray(res.categories) || Array.isArray(res.items))) {
+        emitSkillsChanged(res);
+      } else {
+        const refreshed = await fetchSkills(ctx, skillsData.items);
+        emitSkillsChanged(refreshed);
+      }
+      noticeText = `Список навыков обновлён (${skillsData.items.length}).`;
+    } catch (err) {
+      noticeText = err?.message || 'Не удалось обновить список навыков.';
+    } finally {
+      reloadingSkills = false;
+      if (document.body.contains(backdrop)) renderModal();
+    }
+  }
+
   function renderModal() {
     renderTabs();
     const sections = catalog.sections || [];
@@ -1184,14 +2197,71 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
 
     const hero = document.createElement('div');
     hero.className = 'slash-catalog__hero';
-    const h2 = document.createElement('h2');
-    h2.className = 'slash-catalog__title';
-    h2.textContent = heroInfo.title;
-    const sub = document.createElement('p');
-    sub.className = 'slash-catalog__subtitle';
-    sub.textContent = heroInfo.subtitle;
-    hero.append(h2, sub);
+
+    if (sec.id === 'skills') {
+      const heroRow = document.createElement('div');
+      heroRow.className = 'slash-catalog__hero-row';
+
+      const copy = document.createElement('div');
+      copy.className = 'slash-catalog__hero-copy';
+      const h2 = document.createElement('h2');
+      h2.className = 'slash-catalog__title';
+      h2.textContent = heroInfo.title;
+      const sub = document.createElement('p');
+      sub.className = 'slash-catalog__subtitle';
+      sub.textContent = heroInfo.subtitle;
+      copy.append(h2, sub);
+
+      const actions = document.createElement('div');
+      actions.className = 'slash-catalog__hero-actions';
+
+      const createBtn = document.createElement('button');
+      createBtn.type = 'button';
+      createBtn.className = `slash-catalog__action-btn${activeForm === 'create' ? ' is-active' : ''}`;
+      createBtn.append(createIconSvg('plus', 16), document.createTextNode('Создать навык'));
+      createBtn.addEventListener('click', () => {
+        activeForm = activeForm === 'create' ? null : 'create';
+        formError = '';
+        renderModal();
+      });
+
+      const installBtn = document.createElement('button');
+      installBtn.type = 'button';
+      installBtn.className = `slash-catalog__action-btn${activeForm === 'install' ? ' is-active' : ''}`;
+      installBtn.append(createIconSvg('download', 16), document.createTextNode('Установить'));
+      installBtn.addEventListener('click', () => {
+        activeForm = activeForm === 'install' ? null : 'install';
+        formError = '';
+        installDraft.preview = null;
+        renderModal();
+      });
+
+      const reloadBtn = document.createElement('button');
+      reloadBtn.type = 'button';
+      reloadBtn.className = 'slash-catalog__action-btn slash-catalog__action-btn--icon';
+      reloadBtn.setAttribute('aria-label', 'Обновить список навыков');
+      reloadBtn.title = 'Обновить список навыков';
+      reloadBtn.disabled = reloadingSkills;
+      reloadBtn.appendChild(createIconSvg('refresh', 16));
+      reloadBtn.addEventListener('click', handleReloadSkills);
+
+      actions.append(createBtn, installBtn, reloadBtn);
+      heroRow.append(copy, actions);
+      hero.appendChild(heroRow);
+    } else {
+      const h2 = document.createElement('h2');
+      h2.className = 'slash-catalog__title';
+      h2.textContent = heroInfo.title;
+      const sub = document.createElement('p');
+      sub.className = 'slash-catalog__subtitle';
+      sub.textContent = heroInfo.subtitle;
+      hero.append(h2, sub);
+    }
     frag.appendChild(hero);
+
+    if (sec.id === 'skills') {
+      frag.appendChild(buildBudgetBar());
+    }
 
     if (noticeText) {
       const notice = document.createElement('p');
@@ -1200,6 +2270,70 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
       frag.appendChild(notice);
     }
 
+    if (sec.id === 'skills' && activeForm === 'create') {
+      frag.appendChild(buildCreateSkillForm());
+    } else if (sec.id === 'skills' && activeForm === 'install') {
+      frag.appendChild(buildInstallSkillForm());
+    }
+
+    if (sec.id === 'skills') {
+      const cats = Array.isArray(skillsData.categories) && skillsData.categories.length
+        ? skillsData.categories
+        : groupByCategories(skillsData.items || [], SKILL_CATEGORIES);
+      let renderedCount = 0;
+      for (const cat of cats) {
+        let items = Array.isArray(cat.items) ? cat.items : [];
+        if (q) {
+          const catMatch = (cat.title || '').toLowerCase().includes(q) || (cat.id || '').toLowerCase().includes(q);
+          items = items
+            .map((it) => ({ it, score: catMatch ? Math.max(15, scoreItem(it, q)) : scoreItem(it, q) }))
+            .filter((x) => x.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .map((x) => x.it);
+        }
+        if (!items.length) continue;
+        renderedCount += items.length;
+        frag.appendChild(
+          buildCollapsibleGroup(`skills:${cat.id}`, cat.title, items, buildSkillRow, Boolean(q)),
+        );
+      }
+      if (!renderedCount) {
+        const empty = document.createElement('div');
+        empty.className = 'slash-catalog__empty';
+        empty.textContent = q ? 'По запросу навыки не нашлись.' : 'Навыков пока нет.';
+        frag.appendChild(empty);
+      }
+      body.replaceChildren(frag);
+      return;
+    }
+
+    if (sec.id === 'commands') {
+      let items = Array.isArray(sec.items) ? sec.items : [];
+      if (q) {
+        items = items
+          .map((it) => ({ it, score: scoreItem(it, q) }))
+          .filter((x) => x.score > 0)
+          .sort((a, b) => b.score - a.score)
+          .map((x) => x.it);
+      }
+      const groups = groupByCategories(items, COMMAND_CATEGORIES);
+      if (groups.length) {
+        for (const g of groups) {
+          frag.appendChild(
+            buildCollapsibleGroup(`commands:${g.id}`, g.title, g.items, (it) => buildCatalogItem(it, sec.stage), Boolean(q)),
+          );
+        }
+      } else {
+        const empty = document.createElement('div');
+        empty.className = 'slash-catalog__empty';
+        empty.textContent = q ? 'По запросу команды не нашлись.' : 'В этом разделе пока пусто.';
+        frag.appendChild(empty);
+      }
+      body.replaceChildren(frag);
+      return;
+    }
+
+    // Draft / future sections (plugins, connectors, styles)
     let items = Array.isArray(sec.items) ? sec.items : [];
     if (q) {
       items = items
@@ -1262,9 +2396,14 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
   renderModal();
   searchInput.focus();
 
-  const liveData = await fetchCatalog(ctx);
+  const [liveCatalog, liveSkills] = await Promise.all([
+    fetchCatalog(ctx),
+    fetchSkills(ctx, catalog.sections.find((s) => s.id === 'skills')?.items || []),
+  ]);
   if (document.body.contains(backdrop)) {
-    catalog = liveData;
+    catalog = liveCatalog;
+    skillsData = liveSkills;
+    syncSkillsIntoCatalog();
     renderModal();
   }
 }
@@ -1289,7 +2428,118 @@ export function openActiveCatalog(initialTab = 'commands') {
     initialTab,
     getContext: target.getContext,
     onRunCommand: target.onRunCommand,
+    onSkillsChanged: target.onSkillsChanged,
   });
+}
+
+// ---------------------------------------------------------------- 2-way '+' menu quick-skill sync
+
+export function bindQuickSkillToggles({ root, triggerBtn, getContext, onChanged } = {}) {
+  const buttons = root ? Array.from(root.querySelectorAll('[data-quick-skill]')) : [];
+  if (!buttons.length) {
+    return { sync: async () => {}, applyData: () => {} };
+  }
+
+  const pending = new Set();
+
+  function applyData(skillsData) {
+    if (!skillsData) return;
+    const list = Array.isArray(skillsData.items)
+      ? skillsData.items
+      : (Array.isArray(skillsData.categories) ? skillsData.categories.flatMap((c) => c.items || []) : []);
+    if (!list.length) return;
+    const byId = new Map(list.map((s) => [s.id || s.name, s]));
+
+    for (const btn of buttons) {
+      const id = btn.dataset.quickSkill;
+      const skill = byId.get(id);
+      if (!skill) continue;
+      const active = Boolean(skill.enabled !== false && skill.alwaysOn);
+      const paused = Boolean(skill.pausedInMode);
+      btn.setAttribute('aria-checked', String(active));
+      btn.classList.toggle('is-skill-on', active);
+      btn.classList.toggle('is-skill-paused', paused);
+      const sw = btn.querySelector('.slash-switch');
+      if (sw) sw.classList.toggle('is-on', active);
+      const pausedEl = btn.querySelector('.gem-skill-toggle__paused');
+      if (pausedEl) {
+        pausedEl.hidden = !paused;
+        if (skill.pauseReason) pausedEl.title = skill.pauseReason;
+      }
+    }
+  }
+
+  async function sync() {
+    const ctx = getContext?.() || {};
+    const data = await fetchSkills(ctx);
+    applyData(data);
+    return data;
+  }
+
+  for (const btn of buttons) {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.quickSkill;
+      if (!id || pending.has(id)) return;
+      const prevOn = btn.getAttribute('aria-checked') === 'true';
+      const nextOn = !prevOn;
+
+      pending.add(id);
+      btn.setAttribute('aria-checked', String(nextOn));
+      btn.classList.toggle('is-skill-on', nextOn);
+      btn.querySelector('.slash-switch')?.classList.toggle('is-on', nextOn);
+
+      const host = window.host;
+      if (typeof host?.skillsToggle === 'function') {
+        try {
+          const res = await host.skillsToggle({
+            id,
+            ...(nextOn ? { enabled: true } : {}),
+            alwaysOn: nextOn,
+          });
+          if (res && res.ok !== false) {
+            const normalized = (Array.isArray(res.categories) || Array.isArray(res.items))
+              ? normalizeSkillsResponse(res)
+              : await sync();
+            applyData(normalized);
+            window.dispatchEvent(new CustomEvent('capri:skills-changed', { detail: normalized }));
+            onChanged?.(normalized);
+          } else {
+            btn.setAttribute('aria-checked', String(prevOn));
+            btn.classList.toggle('is-skill-on', prevOn);
+            btn.querySelector('.slash-switch')?.classList.toggle('is-on', prevOn);
+          }
+        } catch {
+          btn.setAttribute('aria-checked', String(prevOn));
+          btn.classList.toggle('is-skill-on', prevOn);
+          btn.querySelector('.slash-switch')?.classList.toggle('is-on', prevOn);
+        }
+      } else {
+        window.dispatchEvent(new CustomEvent('capri:skills-changed', { detail: null }));
+        onChanged?.(null);
+      }
+
+      pending.delete(id);
+    });
+  }
+
+  if (triggerBtn) {
+    triggerBtn.addEventListener('click', () => {
+      sync();
+    });
+  }
+
+  window.addEventListener('capri:skills-changed', (e) => {
+    if (e.detail && (Array.isArray(e.detail.items) || Array.isArray(e.detail.categories))) {
+      applyData(e.detail);
+    } else {
+      sync();
+    }
+  });
+
+  sync();
+
+  return { sync, applyData };
 }
 
 // ---------------------------------------------------------------- shared UI cards & helpers

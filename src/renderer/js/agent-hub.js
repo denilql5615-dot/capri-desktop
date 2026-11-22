@@ -3,6 +3,7 @@ import {
   attachSlashMenu,
   openCatalogModal,
   registerCatalogTarget,
+  bindQuickSkillToggles,
   isInstantSlashCommand,
   parseLeadingSlash,
   ensureSlashDock,
@@ -35,6 +36,7 @@ let quotaRevision = 0;
 let agentSlashState = {};
 const sessionContextPct = new Map();
 let agentSlashMenu = null;
+let agentQuickSkills = null;
 const agentLogEl = document.querySelector('[data-tab="agents"] .log');
 const agentComposeEl = $('compose');
 const agentMetaEl = $('meta');
@@ -389,6 +391,7 @@ async function executeAgentSlashCommand(rawText, { confirm = false } = {}) {
         initialTab: cmdName === 'skills' ? 'skills' : 'commands',
         getContext: getAgentSlashContext,
         onRunCommand: handleAgentCatalogSelect,
+        onSkillsChanged: handleAgentSkillsChanged,
       });
       return true;
     }
@@ -442,6 +445,7 @@ async function executeAgentSlashCommand(rawText, { confirm = false } = {}) {
       initialTab: act.tab || result.tab || 'commands',
       getContext: getAgentSlashContext,
       onRunCommand: handleAgentCatalogSelect,
+      onSkillsChanged: handleAgentSkillsChanged,
     });
     return true;
   }
@@ -560,7 +564,10 @@ async function executeAgentSlashCommand(rawText, { confirm = false } = {}) {
         $('status').textContent = result.reply;
       }
     }
-    if (cmdName === 'reload-skills') agentSlashMenu?.refresh();
+    if (cmdName === 'reload-skills') {
+      agentSlashMenu?.refresh();
+      agentQuickSkills?.sync();
+    }
     return true;
   }
 
@@ -627,6 +634,12 @@ async function send(retry = false) {
   await sendAgentText(text, { retry });
 }
 
+function handleAgentSkillsChanged(data) {
+  if (data) agentQuickSkills?.applyData(data);
+  else agentQuickSkills?.sync();
+  agentSlashMenu?.refresh();
+}
+
 agentSlashMenu = attachSlashMenu({
   input: $('input'),
   container: agentComposeEl,
@@ -648,6 +661,7 @@ agentSlashMenu = attachSlashMenu({
       initialTab: tabId,
       getContext: getAgentSlashContext,
       onRunCommand: handleAgentCatalogSelect,
+      onSkillsChanged: handleAgentSkillsChanged,
     });
   },
 });
@@ -655,6 +669,16 @@ agentSlashMenu = attachSlashMenu({
 registerCatalogTarget('agents', {
   getContext: getAgentSlashContext,
   onRunCommand: handleAgentCatalogSelect,
+  onSkillsChanged: handleAgentSkillsChanged,
+});
+
+agentQuickSkills = bindQuickSkillToggles({
+  root: document.querySelector('[data-popover="agents-plus"]'),
+  triggerBtn: document.querySelector('[data-menu="agents-plus"]'),
+  getContext: getAgentSlashContext,
+  onChanged: () => {
+    agentSlashMenu?.refresh();
+  },
 });
 
 $('new').onclick = newChat;

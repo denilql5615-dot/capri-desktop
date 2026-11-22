@@ -438,10 +438,11 @@ function resolveSessionAgent(session, rawAgent) {
 }
 
 class AgentSessions {
-  constructor(file, run, notify) {
+  constructor(file, run, notify, opts = {}) {
     this.file = file;
     this.run = run;
     this.notify = notify;
+    this.skillsEngine = opts?.skillsEngine || null;
     this.active = new Map();
     this.draining = false;
     try {
@@ -665,6 +666,9 @@ class AgentSessions {
           model,
           effort: resolved.effort,
           text: text.trim(),
+          ...(Array.isArray(opts?.skills) && opts.skills.length && { skills: opts.skills }),
+          ...(opts?.mode && { mode: opts.mode }),
+          ...(opts?.ephemeral === true && { ephemeral: true }),
           ...(opts?.useVault === false && { useVault: false }),
         },
         queueCancelled: undefined,
@@ -692,6 +696,9 @@ class AgentSessions {
         await this.send(next.id, next.queued.model, next.queued.text, false, true, false, {
           effort: next.queued.effort,
           agent: next.queued.agent,
+          skills: next.queued.skills,
+          mode: next.queued.mode,
+          ephemeral: next.queued.ephemeral,
           useVault: next.queued.useVault !== false,
         });
       }
@@ -735,7 +742,15 @@ class AgentSessions {
       && (prevAssistant.actualModel === resolved.actualModel || prevAssistant.model === model),
     );
     const isBtw = opts?.btw === true;
-    const messages = retry ? baseMessages : [...baseMessages, { role: 'user', content: text.trim() }];
+    const explicitSkills = new Set(Array.isArray(opts?.skills) ? opts.skills.map((s) => String(s).toLowerCase()) : []);
+    let cleanUserText = retry ? '' : text.trim();
+    if (cleanUserText) {
+      cleanUserText = cleanUserText.replace(/\[SKILL:([a-z0-9][a-z0-9_-]{0,40})\]/gi, (_m, slug) => {
+        explicitSkills.add(String(slug).toLowerCase());
+        return ' ';
+      }).replace(/\s{2,}/g, ' ').trim();
+    }
+    const messages = retry ? baseMessages : [...baseMessages, { role: 'user', content: cleanUserText || text.trim() }];
     const abort = new AbortController();
     const commit = (rows, pending, extra = {}) => this.save(this.sessions.map((item) => item.id === id
       ? {
@@ -772,6 +787,8 @@ class AgentSessions {
         privateMode: opts?.privateMode,
         localOnly: opts?.localOnly,
         mode: opts?.mode,
+        skills: [...explicitSkills],
+        skillsEngine: this.skillsEngine,
         btw: isBtw,
         useVault: opts?.useVault !== false,
       });

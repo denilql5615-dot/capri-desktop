@@ -10,6 +10,7 @@ import {
   openCatalogModal,
   openActiveCatalog,
   registerCatalogTarget,
+  bindQuickSkillToggles,
   isInstantSlashCommand,
   parseLeadingSlash,
   ensureSlashDock,
@@ -108,6 +109,7 @@ let sure = false;     // delete clicked once
 let slashState = {};
 let contextPct = null;
 let slashMenu = null;
+let quickSkills = null;
 const composeEl = $('.log__compose');
 const logMainEl = linesEl.closest('.log');
 const slashDock = ensureSlashDock(logMainEl, composeEl);
@@ -368,6 +370,7 @@ function setChatMode(mode, nextTemporary) {
   input.value = drafts.get(toolKey()) || '';
   hint(null);
   slashMenu?.refresh();
+  quickSkills?.sync();
   renderControls();
   renderLog();
   input.focus();
@@ -641,6 +644,7 @@ async function executeSlashCommand(rawText, { confirm = false } = {}) {
       initialTab: act.tab || result.tab || 'commands',
       getContext: getChatsSlashContext,
       onRunCommand: handleCatalogSelect,
+      onSkillsChanged: handleChatsSkillsChanged,
     });
     return true;
   }
@@ -773,7 +777,10 @@ async function executeSlashCommand(rawText, { confirm = false } = {}) {
         hint(result.reply);
       }
     }
-    if (cmdName === 'reload-skills') slashMenu?.refresh();
+    if (cmdName === 'reload-skills') {
+      slashMenu?.refresh();
+      quickSkills?.sync();
+    }
     return true;
   }
 
@@ -804,6 +811,12 @@ function handleCatalogSelect(it) {
   executeSlashCommand(slash);
 }
 
+function handleChatsSkillsChanged(data) {
+  if (data) quickSkills?.applyData(data);
+  else quickSkills?.sync();
+  slashMenu?.refresh();
+}
+
 slashMenu = attachSlashMenu({
   input,
   container: composeEl,
@@ -822,6 +835,7 @@ slashMenu = attachSlashMenu({
       initialTab: tabId,
       getContext: getChatsSlashContext,
       onRunCommand: handleCatalogSelect,
+      onSkillsChanged: handleChatsSkillsChanged,
     });
   },
 });
@@ -829,6 +843,16 @@ slashMenu = attachSlashMenu({
 registerCatalogTarget('chats', {
   getContext: getChatsSlashContext,
   onRunCommand: handleCatalogSelect,
+  onSkillsChanged: handleChatsSkillsChanged,
+});
+
+quickSkills = bindQuickSkillToggles({
+  root: $('[data-popover="chats-plus"]'),
+  triggerBtn: $('[data-menu="chats-plus"]'),
+  getContext: getChatsSlashContext,
+  onChanged: () => {
+    slashMenu?.refresh();
+  },
 });
 
 const catalogBtn = document.querySelector('.hud__catalog-btn');

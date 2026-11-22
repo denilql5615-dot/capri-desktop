@@ -173,6 +173,34 @@
   opacity: 0.78;
 }
 
+.slash-menu__row.is-paused {
+  opacity: 0.66;
+}
+
+.slash-menu__badge--paused {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #8E918F;
+  font-weight: 400;
+}
+
+.slash-menu__badge--always {
+  background: #282A2C;
+  border-color: rgba(129, 201, 149, 0.28);
+  color: #C4C7C5;
+}
+
+.slash-menu__badge--meta {
+  background: #1E1F20;
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #8E918F;
+  font-weight: 400;
+}
+
+.slash-menu__dot--green {
+  background: #81C995;
+}
+
 .slash-menu__icon {
   width: 20px;
   height: 20px;
@@ -775,4 +803,557 @@
   text-align: center;
   color: #8E918F;
   font-size: 14px;
+}
+
+/* ---------- Skills Tab Header, Actions & Token Budget Strip ---------- */
+.slash-catalog__hero-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.slash-catalog__hero-copy {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.slash-catalog__hero-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.slash-catalog__action-btn {
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #1E1F20;
+  color: #E3E3E3;
+  font: 500 13px/1 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  text-transform: none;
+  letter-spacing: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.slash-catalog__action-btn:hover:not(:disabled) {
+  background: #282A2C;
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.slash-catalog__action-btn.is-active,
+.slash-catalog__action-btn--primary {
+  background: #282A2C;
+  border-color: rgba(255, 255, 255, 0.14);
+  color: #E3E3E3;
+}
+
+.slash-catalog__action-btn--primary:hover:not(:disabled) {
+  background: #333639;
+}
+
+.slash-catalog__action-btn--icon {
+  width: 36px;
+  padding: 0;
+  color: #C4C7C5;
+}
+
+.slash-catalog__action-btn--icon:hover:not(:disabled) {
+  color: #E3E3E3;
+}
+
+.slash-catalog__action-btn:disabled {
+  opacity: 0.48;
+  cursor: default;
+}
+
+.slash-budget {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #1E1F20;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #C4C7C5;
+  font: 400 13px/1.35 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+}
+
+.slash-budget__main {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.slash-budget__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #81C995;
+  flex: none;
+}
+
+.slash-budget__meta {
+  color: #8E918F;
+  font-size: 12px;
+}
+
+.slash-budget.is-over-limit {
+  border-color: rgba(245, 199, 126, 0.32);
+  background: #23201B;
+  color: #F5C77E;
+}
+
+.slash-budget.is-over-limit .slash-budget__dot {
+  background: #F5C77E;
+}
+
+.slash-budget.is-over-limit .slash-budget__meta {
+  color: #E5B971;
+}
+
+/* ---------- Collapsible Semantic Category Group Headers ---------- */
+.slash-catalog__group-toggle {
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #8E918F;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+  font: 500 13px/1.3 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  text-transform: none;
+  letter-spacing: 0;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.slash-catalog__group-toggle:hover {
+  background: #1E1F20;
+  color: #C4C7C5;
+}
+
+.slash-catalog__group-chevron {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #8E918F;
+  transition: transform 140ms ease;
+}
+
+.slash-catalog__group.is-collapsed .slash-catalog__group-chevron {
+  transform: rotate(-90deg);
+}
+
+.slash-catalog__group.is-collapsed .slash-catalog__list {
+  display: none;
+}
+
+/* ---------- Skill Rows with Controls ---------- */
+.slash-catalog__skill-row {
+  cursor: default;
+  padding: 8px 12px;
+  gap: 12px;
+}
+
+.slash-catalog__skill-row.is-disabled .slash-catalog__skill-hit {
+  opacity: 0.56;
+}
+
+.slash-catalog__skill-hit {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.slash-catalog__skill-hit:disabled {
+  cursor: default;
+}
+
+.slash-catalog__meta-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.slash-skill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #282A2C;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #8E918F;
+  font: 400 11px/1 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  white-space: nowrap;
+}
+
+.slash-skill-chip--paused {
+  background: #1E1F20;
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #C4C7C5;
+}
+
+.slash-skill-pin {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: transparent;
+  color: #8E918F;
+  font: 500 12px/1 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.slash-skill-pin:hover:not(:disabled) {
+  background: #282A2C;
+  color: #E3E3E3;
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.slash-skill-pin.is-pinned {
+  background: #282A2C;
+  border-color: rgba(129, 201, 149, 0.38);
+  color: #E3E3E3;
+}
+
+.slash-skill-pin__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #5F6368;
+  flex: none;
+  transition: background-color 140ms ease;
+}
+
+.slash-skill-pin.is-pinned .slash-skill-pin__dot {
+  background: #81C995;
+}
+
+.slash-skill-pin__tokens {
+  color: #8E918F;
+  font-weight: 400;
+  font-size: 11px;
+}
+
+.slash-skill-pin:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ---------- Clean Gemini Dark Toggle Switch ---------- */
+.slash-switch {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  padding: 0;
+  flex: none;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #3C4043;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.slash-switch__thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #C4C7C5;
+  transform: translateX(2px);
+  transition: transform 150ms ease, background-color 150ms ease;
+}
+
+.slash-switch.is-on {
+  background: rgba(129, 201, 149, 0.24);
+  border-color: rgba(129, 201, 149, 0.52);
+}
+
+.slash-switch.is-on .slash-switch__thumb {
+  background: #81C995;
+  transform: translateX(18px);
+}
+
+.slash-switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---------- Inline Create / Install Skill Forms ---------- */
+.slash-skill-form {
+  margin: 0 0 20px;
+  padding: 16px;
+  border-radius: 16px;
+  background: #1E1F20;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.slash-skill-form__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.slash-skill-form__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 500;
+  color: #E3E3E3;
+}
+
+.slash-skill-form__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.slash-skill-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.slash-skill-form__field--full {
+  grid-column: 1 / -1;
+}
+
+.slash-skill-form__label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #C4C7C5;
+}
+
+.slash-skill-form__input,
+.slash-skill-form__select,
+.slash-skill-form__textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #131314;
+  color: #E3E3E3;
+  font: 400 13.5px/1.4 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  outline: none;
+  transition: border-color 140ms ease;
+}
+
+.slash-skill-form__textarea {
+  resize: vertical;
+  min-height: 96px;
+  font-family: var(--gem-font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+}
+
+.slash-skill-form__input:focus,
+.slash-skill-form__select:focus,
+.slash-skill-form__textarea:focus {
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.slash-skill-form__input::placeholder,
+.slash-skill-form__textarea::placeholder {
+  color: #8E918F;
+}
+
+.slash-skill-form__check-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: #131314;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.slash-skill-form__check-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.slash-skill-form__check-copy strong {
+  font-size: 13px;
+  font-weight: 500;
+  color: #E3E3E3;
+}
+
+.slash-skill-form__check-copy small {
+  font-size: 12px;
+  font-weight: 400;
+  color: #8E918F;
+}
+
+.slash-skill-form__tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  background: #131314;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  align-self: flex-start;
+}
+
+.slash-skill-form__tab {
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #8E918F;
+  font: 500 12px/1 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.slash-skill-form__tab.is-active {
+  background: #282A2C;
+  color: #E3E3E3;
+}
+
+.slash-skill-form__preview {
+  padding: 12px;
+  border-radius: 12px;
+  background: #131314;
+  border: 1px solid rgba(129, 201, 149, 0.28);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.slash-skill-form__preview-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 14px;
+  font-weight: 500;
+  color: #E3E3E3;
+}
+
+.slash-skill-form__preview-desc {
+  margin: 0;
+  font-size: 13px;
+  color: #C4C7C5;
+}
+
+.slash-skill-form__preview-meta {
+  font-size: 12px;
+  color: #8E918F;
+}
+
+.slash-skill-form__error {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(242, 184, 181, 0.1);
+  border: 1px solid rgba(242, 184, 181, 0.28);
+  color: #F2B8B5;
+  font-size: 13px;
+}
+
+.slash-skill-form__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ---------- + Menu Quick Skill Toggles (2-Way Synced) ---------- */
+.hud .gem-popover--plus {
+  max-height: min(74vh, 540px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #3C4043 transparent;
+}
+
+.hud .gem-popover__item.gem-skill-toggle {
+  gap: 10px;
+}
+
+.hud .gem-popover__icon--svg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  color: #C4C7C5;
+}
+
+.hud .gem-popover__item.gem-skill-toggle.is-skill-on .gem-popover__icon--svg {
+  color: #81C995;
+}
+
+.hud .gem-popover__item.gem-skill-toggle.is-skill-paused {
+  opacity: 0.72;
+}
+
+.gem-skill-toggle__right {
+  flex: none;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gem-skill-toggle__paused {
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #282A2C;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #8E918F;
+  font: 400 11px/1 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  display: inline-flex;
+  align-items: center;
+}
+
+.gem-skill-toggle__paused[hidden] {
+  display: none !important;
 }

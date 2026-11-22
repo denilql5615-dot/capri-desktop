@@ -37,6 +37,7 @@ const {
   buildChainPrompt,
   isIsolatedMode,
 } = require('./slash-commands');
+const { SkillsEngine } = require('./skills-engine');
 const SUGGESTIONS_TTL_MS = 45 * 60 * 1000; // 45 минут кэша подсказок от E4B
 const WORKER_COOLDOWN_MS = 30 * 60 * 1000; // 30 минут кулдауна для уставших воркеров Deep Research
 const RESEARCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -386,9 +387,11 @@ function parsePromptFlags(rawText, body = {}) {
   };
   stripTag('[VAULT_LOCAL_ONLY]', () => { privateMode = true; });
   stripTag('[NO_MEMORY]', () => { ephemeral = true; });
-  stripTag('[SKILL:i-have-adhd]', () => { skills.add('i-have-adhd'); });
-  stripTag('[SKILL:caveman]', () => { skills.add('caveman'); });
   stripTag('[DEEP_RESEARCH]', () => { deepResearch = true; });
+  text = text.replace(/\[SKILL:([a-z0-9][a-z0-9_-]{0,40})\]/gi, (_match, slug) => {
+    skills.add(String(slug).toLowerCase());
+    return ' ';
+  }).replace(/\s{2,}/g, ' ').trim();
 
   return {
     text: text.trim(),
@@ -419,12 +422,25 @@ class PhoneBridge {
     this.queue = Promise.resolve();
     this.chatRequests = new Map();
     this._fallbackSlash = null;
+    this._fallbackSkills = null;
+  }
+
+  skillsEngine() {
+    if (this.d.skillsEngine) return this.d.skillsEngine;
+    if (this.d.slashEngine?.skillsEngine) return this.d.slashEngine.skillsEngine;
+    if (!this._fallbackSkills) {
+      this._fallbackSkills = new SkillsEngine();
+    }
+    return this._fallbackSkills;
   }
 
   slashEngine() {
     if (this.d.slashEngine) return this.d.slashEngine;
     if (!this._fallbackSlash) {
-      this._fallbackSlash = new SlashCommandEngine({ deps: this.buildSlashDeps() });
+      this._fallbackSlash = new SlashCommandEngine({
+        deps: this.buildSlashDeps(),
+        skillsEngine: this.skillsEngine(),
+      });
     }
     return this._fallbackSlash;
   }
@@ -890,9 +906,62 @@ class PhoneBridge {
           modelSelection: true,
           chatRecovery: true,
           slashCommands: true,
+          skillsEngine: true,
           privateVaultSave: Boolean(this.d.savePrivateChat),
           contextLimits,
         });
+      }
+      if (req.method === 'GET' && url.pathname === '/skills') {
+        const mode = url.searchParams.get('mode') || 'chat';
+        const epRaw = url.searchParams.get('ephemeral');
+        const ephemeral = epRaw === 'true' || epRaw === '1';
+        return this.send(res, 200, this.skillsEngine().listSkills({ mode, ephemeral }));
+      }
+      if (req.method === 'POST' && url.pathname === '/skills/toggle') {
+        const body = await this.readJson(req);
+        const result = this.skillsEngine().toggleSkill({
+          id: body.id,
+          enabled: body.enabled,
+          alwaysOn: body.alwaysOn,
+          mode: body.mode || 'chat',
+          ephemeral: body.ephemeral === true,
+        });
+        return this.send(res, result.ok ? 200 : 400, result);
+      }
+      if (req.method === 'POST' && url.pathname === '/skills/create') {
+        const body = await this.readJson(req, MAX_BODY * 4);
+        const result = this.skillsEngine().createSkill({
+          name: body.name,
+          slug: body.slug,
+          category: body.category,
+          description: body.description,
+          body: body.body,
+          alwaysOn: body.alwaysOn,
+          mode: body.mode || 'chat',
+          ephemeral: body.ephemeral === true,
+        });
+        return this.send(res, result.ok ? 200 : 400, result);
+      }
+      if (req.method === 'POST' && url.pathname === '/skills/install') {
+        const body = await this.readJson(req, MAX_BODY * 8);
+        const result = this.skillsEngine().installSkill({
+          sourcePath: body.sourcePath,
+          markdown: body.markdown,
+          slug: body.slug,
+          category: body.category,
+          confirm: body.confirm === true,
+          mode: body.mode || 'chat',
+          ephemeral: body.ephemeral === true,
+        });
+        return this.send(res, (result.ok || result.confirmRequired) ? 200 : 400, result);
+      }
+      if (req.method === 'POST' && url.pathname === '/skills/reload') {
+        const body = await this.readJson(req).catch(() => ({}));
+        this.skillsEngine().reload();
+        return this.send(res, 200, this.skillsEngine().listSkills({
+          mode: body.mode || 'chat',
+          ephemeral: body.ephemeral === true,
+        }));
       }
       if (req.method === 'GET' && url.pathname === '/commands') {
         const mode = url.searchParams.get('mode') || 'chat';
@@ -1129,6 +1198,7 @@ class PhoneBridge {
               remainder: parsedSlash.remainder,
               state: this.slashEngine().getState(),
               mode: body.mode || 'chat',
+              skipSkillHints: Boolean(this.skillsEngine()),
             });
             for (const sk of built.skills) {
               if (!flags.skills.includes(sk)) flags.skills.push(sk);
@@ -1267,6 +1337,7 @@ class PhoneBridge {
               remainder: parsedSlash.remainder,
               state: this.slashEngine().getState(body.id),
               mode: 'agent',
+              skipSkillHints: Boolean(this.skillsEngine()),
             });
             const finalPrompt = built.systemHint
               ? `[Указания режима:\n${built.systemHint}]\n\n${built.text}`
@@ -1274,6 +1345,7 @@ class PhoneBridge {
             sendPayload = {
               ...sendPayload,
               text: finalPrompt,
+              ...(built.skills.length && { skills: built.skills }),
               ...(built.btw && { btw: true }),
             };
           }
@@ -1364,13 +1436,19 @@ class PhoneBridge {
     baseSysParts.push('Поддерживай тему текущего диалога. Не упоминай личные факты, числа, расписание и технические детали из памяти без прямой связи с вопросом. Если данных не хватает, скажи об этом.');
     if (ephemeral) baseSysParts.push('Временный чат: не ссылайся на долговременную память и не сохраняй факты.');
     if (privateMode) baseSysParts.push('Режим Приват (Vault): строго локальная обработка, данные и контекст только из Vault, выход в облако запрещён.');
-    const skillParts = [];
-    for (const sk of skills) {
-      if (SKILL_NOTES[sk]) skillParts.push(SKILL_NOTES[sk]);
-    }
-    if (flags.slashSystemHint) skillParts.push(flags.slashSystemHint);
+    const skillMode = flags.localMode || (privateMode ? 'private' : 'chat');
+    const skillCtx = this.skillsEngine().buildPromptContext({
+      mode: skillMode,
+      ephemeral: Boolean(ephemeral),
+      explicitSkills: flags.skills,
+      userText: text,
+      isCloud: false,
+    });
+    const missingFallback = (Array.isArray(flags.skills) ? flags.skills : [])
+      .filter((sk) => !skillCtx.activeSkillIds.includes(sk) && !skillCtx.pausedSkillIds.includes(sk) && SKILL_NOTES[sk])
+      .map((sk) => SKILL_NOTES[sk]);
     const baseSystemPrompt = baseSysParts.filter(Boolean).join('\n');
-    const skillsText = skillParts.join('\n');
+    const skillsText = [skillCtx.text, ...missingFallback, flags.slashSystemHint].filter(Boolean).join('\n\n');
     const sysContent = [baseSystemPrompt, skillsText].filter(Boolean).join('\n');
 
     const historySlice = flags.history ?? (isolated ? [] : this.turns.slice(-TURNS * 2));

@@ -32,6 +32,7 @@ const { AgentSessions, MODELS: SESSION_MODELS, CATALOG: SESSION_CATALOG, isAllow
 const { isAuxiliaryModel, mobileAutoOverride, resolveRequestedModel } = require('./phone-model');
 const { LOCAL_CONTEXT_DEFAULTS, getContextLimits, buildContextStats, resolveContextLimit } = require('./context-stats');
 const { SlashCommandEngine, compactHistory, isIsolatedMode } = require('./slash-commands');
+const { SkillsEngine } = require('./skills-engine');
 const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
 const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('./hub-artifacts');
@@ -452,10 +453,20 @@ function ensureAgentSessions() {
       const cfg = config.load();
       const lastUser = messages.findLast((m) => m.role === 'user')?.content || '';
       const hints = workers.skillHints(lastUser);
+      const isRp = agent === 'faun' && !brainsLib.isEmergency(lastUser);
+      const isCloudAgent = ['claude', 'codex', 'gemini', 'gemini-web'].includes(agent);
+      const skillsCtx = (meta?.skillsEngine || ensureSkillsEngine()).buildPromptContext({
+        mode: isRp ? 'nsfw' : (meta?.mode || 'agent'),
+        ephemeral: Boolean(meta?.ephemeral),
+        explicitSkills: Array.isArray(meta?.skills) ? meta.skills : [],
+        userText: lastUser,
+        isCloud: isCloudAgent,
+      });
+      const combinedHints = isRp ? '' : [skillsCtx.text, hints].filter(Boolean).join('\n\n');
       if (meta?.ephemeral || meta?.privateMode || meta?.localOnly || meta?.mode === 'private' || meta?.mode === 'nsfw') {
         throw new Error('Облачные модели недоступны в этом режиме.');
       }
-      if (['claude', 'codex', 'gemini', 'gemini-web'].includes(agent)) {
+      if (isCloudAgent) {
         if (torState.isQuarantined() || messagesHaveTor(messages)) {
           throw new Error(TOR_CLOUD_BLOCK_MSG);
         }
@@ -490,7 +501,7 @@ function ensureAgentSessions() {
         const cwd = workers.workDir(cfg);
         const prompt = existingChatId
           ? cloudLastUser
-          : workers.codexBrief([{ role: 'system', content: hints }, ...cloudMessages], cwd);
+          : workers.codexBrief([{ role: 'system', content: combinedHints }, ...cloudMessages], cwd);
         const res = await agentWeb.askGemini({ prompt, chat: existingChatId, model: webModel, task: true });
         signal?.throwIfAborted();
         const text = String(res?.answer || '').trim();
@@ -502,7 +513,7 @@ function ensureAgentSessions() {
           provider: 'gemini-web',
           maxTokens: resolveContextLimit(expectedActual, 'gemini-web', { ctxFor: ollama.ctxFor }),
           systemPrompt: '',
-          skillsText: hints,
+          skillsText: combinedHints,
           memoryText,
           toolsText: existingChatId ? '' : workers.folderNote(cwd),
           messages: [...baseHistory, { role: 'assistant', content: text }],
@@ -528,7 +539,7 @@ function ensureAgentSessions() {
           `Если текущая задача требует файл и твои инструменты это поддерживают, создай каталог "${destination}" и положи туда только готовые файлы непосредственно, без подпапок (для Word пиши NAME.docx.md, для PDF — NAME.pdf.md, для PNG-схемы — NAME.png.svg, они автоматически сконвертируются).`,
           'Если у тебя нет нужного инструмента, скажи об этом. Не выдавай ссылку или описание за созданный файл.',
         ].join('\n');
-        const instruction = [baseInstruction, hints].filter(Boolean).join('\n');
+        const instruction = [baseInstruction, combinedHints].filter(Boolean).join('\n');
         let usage = null;
         let text = await run(cfg, [{ role: 'system', content: instruction }, ...cloudMessages], delta, signal, {
           model,
@@ -560,7 +571,7 @@ function ensureAgentSessions() {
           provider: agent,
           maxTokens: usage?.maxTokens || resolveContextLimit(actualModel, agent, { ctxFor: ollama.ctxFor }),
           systemPrompt: baseInstruction,
-          skillsText: hints,
+          skillsText: combinedHints,
           memoryText,
           toolsText: workers.folderNote(workers.workDir(cfg)),
           messages: [...baseHistory, { role: 'assistant', content: text }],
@@ -583,7 +594,7 @@ function ensureAgentSessions() {
       const generate = () => ollama.chat({
         model,
         messages: [
-          { role: 'system', content: rp ? localSystem : `${localSystem} ${hints}`.trim() },
+          { role: 'system', content: rp ? localSystem : `${localSystem} ${combinedHints}`.trim() },
           ...cloudMessages,
         ],
         onUsage: (u) => { usage = u; },
@@ -594,7 +605,7 @@ function ensureAgentSessions() {
         provider: 'ollama',
         maxTokens: usage?.numCtx || resolveContextLimit(model, 'ollama', { ctxFor: ollama.ctxFor }),
         systemPrompt: localSystem,
-        skillsText: rp ? '' : hints,
+        skillsText: rp ? '' : combinedHints,
         memoryText,
         toolsText: '',
         messages: [...baseHistory, { role: 'assistant', content: text }],
@@ -602,7 +613,7 @@ function ensureAgentSessions() {
         actualEvalTokens: usage?.evalTokens,
       });
       return { text, artifacts: [], actualModel: model, context };
-    }, (id, delta) => chatsWin?.webContents.send('agents:update', { id, delta }));
+    }, (id, delta) => chatsWin?.webContents.send('agents:update', { id, delta }), { skillsEngine: ensureSkillsEngine() });
   return agentSessions;
 }
 
@@ -1835,6 +1846,17 @@ function phoneControl() {
 }
 
 let slashEngine = null;
+let skillsEngine = null;
+
+function ensureSkillsEngine() {
+  if (skillsEngine) return skillsEngine;
+  skillsEngine = new SkillsEngine({
+    userDataDir: app.getPath('userData'),
+    getConfig: () => config.load(),
+    saveConfig: (patch) => config.save(patch),
+  });
+  return skillsEngine;
+}
 
 async function compactDesktopChat({ mode = 'chat', ephemeral = false, agent = null, sessionId = null, history, focus = '', model = '' } = {}) {
   if (sessionId && agent && !isIsolatedMode({ mode, ephemeral })) {
@@ -1893,6 +1915,7 @@ async function compactDesktopChat({ mode = 'chat', ephemeral = false, agent = nu
 function ensureSlashEngine() {
   if (slashEngine) return slashEngine;
   slashEngine = new SlashCommandEngine({
+    skillsEngine: ensureSkillsEngine(),
     getConfig: () => config.load(),
     saveConfig: (patch) => config.save(patch),
     deps: {
@@ -2155,6 +2178,7 @@ async function applyPhone() {
     phoneBridge = new phone.PhoneBridge({
       token: phoneToken,
       persona: phonePersona,
+      skillsEngine: ensureSkillsEngine(),
       slashEngine: ensureSlashEngine(),
       contextLimits: () => getContextLimits({ ctxFor: ollama.ctxFor }),
       savePrivateChat: (id, messages, options) => {
@@ -2796,7 +2820,7 @@ async function isMainBrainLoaded(signal, timeoutMs = 300) {
   }
 }
 
-async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = false, useVault = true } = {}) {
+async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = false, useVault = true, skills = [] } = {}) {
   const said = yourWords(messages);
   const hasImages = Array.isArray(messages) && messages.some((m) => Array.isArray(m?.images) && m.images.length > 0);
   const shortTalk = !hasImages && notes.isSmallTalk(said);
@@ -2816,7 +2840,42 @@ async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = 
   const memoryText = skipNotes ? '' : lastUserSuffix(messages, withMemory);
   const enriched = skipNotes ? messages : await withPim(withMemory, said);
   const toolsText = skipNotes ? '' : lastUserSuffix(withMemory, enriched);
-  return { messages: rp ? brainsLib.withRp(enriched) : enriched, numPredict: analysis.numPredict, memoryText, toolsText };
+  let finalMessages = rp ? brainsLib.withRp(enriched) : enriched;
+  let skillsText = '';
+  if (!mobile) {
+    const explicitSkills = new Set(Array.isArray(skills) ? skills : []);
+    const lastUserIdx = finalMessages.map((m) => m?.role).lastIndexOf('user');
+    let cleanSaid = said;
+    if (lastUserIdx >= 0 && typeof finalMessages[lastUserIdx]?.content === 'string') {
+      const stripped = finalMessages[lastUserIdx].content.replace(/\[SKILL:([a-z0-9][a-z0-9_-]{0,40})\]/gi, (_m, slug) => {
+        explicitSkills.add(String(slug).toLowerCase());
+        return ' ';
+      }).replace(/\s{2,}/g, ' ').trim();
+      if (stripped !== finalMessages[lastUserIdx].content) {
+        finalMessages = finalMessages.map((m, idx) => (idx === lastUserIdx ? { ...m, content: stripped || m.content } : m));
+        cleanSaid = stripped || said;
+      }
+    }
+    const skillCtx = ensureSkillsEngine().buildPromptContext({
+      mode: torCtx ? 'tor' : (rp ? 'nsfw' : 'chat'),
+      ephemeral: false,
+      explicitSkills: [...explicitSkills],
+      userText: cleanSaid,
+      isCloud: cfg.provider !== 'ollama',
+    });
+    skillsText = skillCtx.text;
+    if (skillsText) {
+      const firstSysIdx = finalMessages.findIndex((m) => m?.role === 'system');
+      if (firstSysIdx >= 0) {
+        finalMessages = finalMessages.map((m, idx) => (idx === firstSysIdx
+          ? { ...m, content: `${m.content}\n\n${skillsText}` }
+          : m));
+      } else {
+        finalMessages = [{ role: 'system', content: skillsText }, ...finalMessages];
+      }
+    }
+  }
+  return { messages: finalMessages, numPredict: analysis.numPredict, memoryText, toolsText, skillsText };
 }
 
 async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch, opts) {
@@ -3585,7 +3644,16 @@ function registerIpc() {
         if (torState.isQuarantined() || contextHasTor) {
           throw new Error('В Tor-контексте облачные агенты недоступны.');
         }
-        const workerMessages = selectWorkerMessages(messages, torState.isChatTainted() || torState.inCooldown());
+        const baseWorkerMessages = selectWorkerMessages(messages, torState.isChatTainted() || torState.inCooldown());
+        const skillCtx = ensureSkillsEngine().buildPromptContext({
+          mode: 'chat',
+          ephemeral: false,
+          userText: yourWords(baseWorkerMessages),
+          isCloud: true,
+        });
+        const workerMessages = skillCtx.text
+          ? [{ role: 'system', content: skillCtx.text }, ...baseWorkerMessages]
+          : baseWorkerMessages;
         try {
           return await workers.runWorker(worker, cfg, workerMessages, send, abort.signal, desktopOpts);
         } catch (err) {
@@ -3997,6 +4065,14 @@ function registerIpc() {
   });
   ipcMain.handle('commands:list', (_e, params = {}) => ensureSlashEngine().listCommands(params || {}));
   ipcMain.handle('commands:run', (_e, payload = {}) => ensureSlashEngine().run(payload || {}));
+  ipcMain.handle('skills:list', (_e, params = {}) => ensureSkillsEngine().listSkills(params || {}));
+  ipcMain.handle('skills:toggle', (_e, payload = {}) => ensureSkillsEngine().toggleSkill(payload || {}));
+  ipcMain.handle('skills:create', (_e, payload = {}) => ensureSkillsEngine().createSkill(payload || {}));
+  ipcMain.handle('skills:install', (_e, payload = {}) => ensureSkillsEngine().installSkill(payload || {}));
+  ipcMain.handle('skills:reload', (_e, params = {}) => {
+    ensureSkillsEngine().reload();
+    return ensureSkillsEngine().listSkills(params || {});
+  });
   ipcMain.handle('chat:compact', (_e, payload = {}) => compactDesktopChat(payload || {}));
   ipcMain.handle('agents:compact', (event, { id, focus } = {}) => hubSessions(event).compact(id, { focus }));
   ipcMain.handle('agents:list', (event) => ({ sessions: hubSessions(event).summaries(), models: SESSION_MODELS }));
@@ -4017,10 +4093,10 @@ function registerIpc() {
   });
   ipcMain.handle('agents:history', (event, id) => hubSessions(event).history(id));
   ipcMain.handle('agents:create', (event, agent) => hubSessions(event).create(agent));
-  ipcMain.handle('agents:send', async (event, { id, agent, model, effort, text, retry, files, history }) => {
+  ipcMain.handle('agents:send', async (event, { id, agent, model, effort, text, retry, files, history, skills }) => {
     const sessions = hubSessions(event);
     const promptText = retry === true ? text : await withUploadedFiles(id, text, files);
-    return sessions.send(id, model, promptText, retry === true, false, false, { effort, agent, history });
+    return sessions.send(id, model, promptText, retry === true, false, false, { effort, agent, history, skills });
   });
   ipcMain.handle('agents:pick-file', async (event) => {
     hubSessions(event);
@@ -4184,11 +4260,15 @@ function registerIpc() {
       } else if (mode === 'pim') {
         result = await readPimTool(text);
       } else {
+        const parsedFlags = phone.parsePromptFlags(text.trim(), {
+          mode: mode === 'capri' ? 'chat' : mode,
+          ephemeral,
+        });
         result = await phoneBridge.turn({
-          text: text.trim() || (images.length > 1
+          text: parsedFlags.text || (images.length > 1
             ? 'Кратко опиши каждое прикреплённое изображение по порядку.'
             : 'Кратко опиши прикреплённое изображение.'),
-          privateMode: mode === 'private', ephemeral, deepResearch: false, skills: [], images,
+          privateMode: mode === 'private', ephemeral, deepResearch: false, skills: parsedFlags.skills, images,
           requireVision: images.length > 0,
           localOnly: true, localMode: mode,
         }, false, abort.signal);
