@@ -74,6 +74,48 @@ function remove(store, id, now = Date.now()) {
   return store;
 }
 
+function rename(store, id, title) {
+  const chat = store.chats.find((item) => item.id === id);
+  if (!chat) return null;
+  const clean = String(title || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  if (clean) chat.customTitle = clean;
+  else delete chat.customTitle;
+  return chat;
+}
+
+function setPinned(store, id, pinned) {
+  const chat = store.chats.find((item) => item.id === id);
+  if (!chat) return null;
+  if (pinned) chat.pinned = true;
+  else delete chat.pinned;
+  return chat;
+}
+
+function setArchived(store, id, archived) {
+  const chat = store.chats.find((item) => item.id === id);
+  if (!chat) return null;
+  if (archived) chat.archived = true;
+  else delete chat.archived;
+  return chat;
+}
+
+function fork(store, id, now = Date.now()) {
+  const source = store.chats.find((item) => item.id === id);
+  if (!source) return null;
+  const forked = {
+    id: `${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+    started: now,
+    updated: now,
+    messages: (source.messages || []).map((m) => ({ ...m })),
+    ...(source.via && { via: source.via }),
+    ...(source.customTitle && { customTitle: `${source.customTitle} (копия)`.slice(0, 120) }),
+  };
+  store.chats.push(forked);
+  if (!forked.via) delete store.fresh;
+  store.chats = store.chats.slice(-MAX_CHATS);
+  return forked;
+}
+
 // The chat your next message goes into, if it's still going (null: the next one starts a new chat)
 function current(store, now = Date.now()) {
   const last = store.chats.findLast((chat) => !chat.via); // the PC's: phone chats go on by themselves
@@ -88,16 +130,20 @@ function list(store, now = Date.now()) {
 function listed(store) {
   return store.chats.slice().reverse().map((chat) => {
     const first = chat.messages.find((m) => m.role === 'user') || chat.messages[0];
+    const autoTitle = `${chat.via === 'phone' ? 'Телефон · ' : ''}${String(first?.content || '…').replace(/\s+/g, ' ').slice(0, 80)}`;
     return {
       id: chat.id,
       started: chat.started,
       updated: chat.updated,
       count: chat.messages.length,
-      title: `${chat.via === 'phone' ? 'Телефон · ' : ''}${String(first?.content || '…').replace(/\s+/g, ' ').slice(0, 80)}`,
+      title: chat.customTitle || autoTitle,
+      ...(chat.customTitle && { customTitle: chat.customTitle }),
+      pinned: Boolean(chat.pinned),
+      archived: Boolean(chat.archived),
       messages: chat.messages,
       ...(chat.via && { via: chat.via }),
     };
   });
 }
 
-module.exports = { GAP_MS, read, write, add, cut, resume, remove, current, list };
+module.exports = { GAP_MS, read, write, add, cut, resume, remove, rename, setPinned, setArchived, fork, current, list };

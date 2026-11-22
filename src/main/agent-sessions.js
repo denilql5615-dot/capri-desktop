@@ -6,6 +6,7 @@ const path = require('node:path');
 const { fingerprint } = require('./agent-import');
 const { FAST, MAIN } = require('./brains');
 const { buildContextStats } = require('./context-stats');
+const { compactHistory } = require('./slash-commands');
 
 const MODELS = {
   claude: [
@@ -464,13 +465,16 @@ class AgentSessions {
   }
 
   summaries() {
-    return this.sessions.map(({ id, agent, model, updated, messages, pending, queued, queueCancelled }) => ({
+    return this.sessions.map(({ id, agent, model, updated, messages, pending, queued, queueCancelled, customTitle, pinned, archived }) => ({
       id, agent, model, updated, busy: this.active.has(id),
       queued: Boolean(queued),
       queueCancelled: Boolean(queueCancelled),
-      title: messages.find((message) => message.role === 'user')?.content.slice(0, 72),
+      pinned: Boolean(pinned),
+      archived: Boolean(archived),
+      ...(customTitle && { customTitle }),
+      title: customTitle || messages.find((message) => message.role === 'user')?.content.slice(0, 72),
       canRetry: pending === true && messages.at(-1)?.role === 'user',
-    })).sort((a, b) => b.updated - a.updated);
+    })).sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.updated - a.updated);
   }
 
   history(id) {
@@ -482,6 +486,140 @@ class AgentSessions {
     const session = { id: randomUUID(), agent, model: MODELS[agent][0][0], updated: Date.now(), messages: [] };
     this.save([session, ...this.sessions]);
     return session.id;
+  }
+
+  rename(id, title) {
+    const session = this.sessions.find((item) => item.id === id);
+    if (!session) throw new Error('Сессия не найдена.');
+    const clean = String(title || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+    this.save(this.sessions.map((item) => {
+      if (item.id !== id) return item;
+      const copy = { ...item };
+      if (clean) copy.customTitle = clean;
+      else delete copy.customTitle;
+      return copy;
+    }));
+    this.notify(id);
+    return { ok: true, id, customTitle: clean || null };
+  }
+
+  setPinned(id, pinned) {
+    const session = this.sessions.find((item) => item.id === id);
+    if (!session) throw new Error('Сессия не найдена.');
+    const next = pinned === undefined ? !session.pinned : Boolean(pinned);
+    this.save(this.sessions.map((item) => {
+      if (item.id !== id) return item;
+      const copy = { ...item };
+      if (next) copy.pinned = true;
+      else delete copy.pinned;
+      return copy;
+    }));
+    this.notify(id);
+    return { ok: true, id, pinned: next };
+  }
+
+  setArchived(id, archived) {
+    const session = this.sessions.find((item) => item.id === id);
+    if (!session) throw new Error('Сессия не найдена.');
+    const next = archived === undefined ? !session.archived : Boolean(archived);
+    this.save(this.sessions.map((item) => {
+      if (item.id !== id) return item;
+      const copy = { ...item };
+      if (next) copy.archived = true;
+      else delete copy.archived;
+      return copy;
+    }));
+    this.notify(id);
+    return { ok: true, id, archived: next };
+  }
+
+  fork(id) {
+    const source = this.sessions.find((item) => item.id === id);
+    if (!source) throw new Error('Сессия не найдена.');
+    const forked = {
+      id: randomUUID(),
+      agent: source.agent,
+      model: source.model,
+      ...(source.effort && { effort: source.effort }),
+      ...(source.customTitle && { customTitle: `${source.customTitle} (копия)`.slice(0, 120) }),
+      updated: Date.now(),
+      messages: (source.messages || []).map((m) => ({ ...m })),
+    };
+    this.save([forked, ...this.sessions]);
+    this.notify(forked.id);
+    return { ok: true, id: forked.id, agent: forked.agent, model: forked.model, count: forked.messages.length };
+  }
+
+  remove(id) {
+    const session = this.sessions.find((item) => item.id === id);
+    if (!session) throw new Error('Сессия не найдена.');
+    if (this.active.has(id)) this.stop(id);
+    this.save(this.sessions.filter((item) => item.id !== id));
+    this.notify(id);
+    return { ok: true, id };
+  }
+
+  async compact(id, opts = {}) {
+    assertNotIsolatedCloudOpts(opts);
+    const session = this.sessions.find((item) => item.id === id);
+    if (!session) throw new Error('Сессия не найдена.');
+    if (this.active.has(id)) throw new Error('Дождись завершения ответа в этом чате.');
+    const resolved = resolveModelMeta(session.agent, session.model, session.effort);
+    const abort = new AbortController();
+    const summarizer = opts.summarizer || (typeof this.run === 'function' && opts.useModel !== false
+      ? async ({ older, focus }) => {
+        const transcript = older.map((m) => `${m.role === 'user' ? 'Пользователь' : 'Ассистент'}: ${m.content}`).join('\n\n').slice(0, 18000);
+        const prompt = [
+          'Сожми предыдущие реплики диалога в плотный структурированный конспект на русском языке для продолжения работы.',
+          focus ? `Особый фокус: ${focus}.` : '',
+          'Формат: начни с "[Конспект предыдущей части разговора]", далее 4–8 коротких пунктов с ключевыми фактами, решениями, путями файлов, командами и незакрытыми вопросами. Без воды.',
+          '',
+          transcript,
+        ].filter(Boolean).join('\n');
+        const timer = setTimeout(() => abort.abort(), 30_000);
+        try {
+          const out = await this.run(session.agent, resolved.effectiveModel, [{ role: 'user', content: prompt }], abort.signal, () => {}, {
+            effort: 'low',
+            actualModel: resolved.actualModel,
+            requestedModel: session.model,
+            session,
+            sessionId: id,
+            sameProviderContiguous: false,
+            hydratedFromHistory: false,
+            useVault: false,
+          });
+          return typeof out === 'string' ? out : out?.text || '';
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      : null);
+
+    const result = await compactHistory({
+      history: session.messages,
+      keepTurns: opts.keepTurns,
+      focus: opts.focus || '',
+      mode: 'agent',
+      ephemeral: false,
+      model: resolved.actualModel,
+      provider: session.agent,
+      summarizer,
+      signal: abort.signal,
+    });
+
+    if (result.droppedCount > 0) {
+      this.save(this.sessions.map((item) => item.id === id
+        ? {
+          ...item,
+          messages: result.history,
+          pending: false,
+          webChatId: undefined,
+          updated: Date.now(),
+        }
+        : item));
+      this.notify(id);
+    }
+    return result;
   }
 
   import(agent, transcripts) {
@@ -596,6 +734,7 @@ class AgentSessions {
       && (prevAssistant.provider || session.agent) === targetAgent
       && (prevAssistant.actualModel === resolved.actualModel || prevAssistant.model === model),
     );
+    const isBtw = opts?.btw === true;
     const messages = retry ? baseMessages : [...baseMessages, { role: 'user', content: text.trim() }];
     const abort = new AbortController();
     const commit = (rows, pending, extra = {}) => this.save(this.sessions.map((item) => item.id === id
@@ -610,7 +749,9 @@ class AgentSessions {
         queued: undefined,
         updated: Date.now(),
       } : item));
-    commit(messages, true, (!sameProviderContiguous || targetAgent !== 'gemini-web') ? { webChatId: undefined } : {});
+    if (!isBtw) {
+      commit(messages, true, (!sameProviderContiguous || targetAgent !== 'gemini-web') ? { webChatId: undefined } : {});
+    }
     const currentSession = this.sessions.find((item) => item.id === id) || session;
     this.active.set(id, abort);
     this.notify(id);
@@ -631,6 +772,7 @@ class AgentSessions {
         privateMode: opts?.privateMode,
         localOnly: opts?.localOnly,
         mode: opts?.mode,
+        btw: isBtw,
         useVault: opts?.useVault !== false,
       });
       abort.signal.throwIfAborted();
@@ -647,28 +789,31 @@ class AgentSessions {
           provider: targetAgent,
           messages: [...context, { role: 'assistant', content }],
         }) : undefined);
-      commit(
-        [...messages, {
-          role: 'assistant',
-          content,
-          provider: targetAgent,
-          model,
-          actualModel,
-          ...(finalEffort && { effort: finalEffort }),
-          ...(fallback && { fallback }),
-          ...(webChatId && { webChatId }),
-          ...(artifacts?.length && { artifacts }),
-        }],
-        false,
-        webChatId ? { webChatId } : { webChatId: undefined },
-      );
-      return includeReply
+      if (!isBtw) {
+        commit(
+          [...messages, {
+            role: 'assistant',
+            content,
+            provider: targetAgent,
+            model,
+            actualModel,
+            ...(finalEffort && { effort: finalEffort }),
+            ...(fallback && { fallback }),
+            ...(webChatId && { webChatId }),
+            ...(artifacts?.length && { artifacts }),
+          }],
+          false,
+          webChatId ? { webChatId } : { webChatId: undefined },
+        );
+      }
+      return (includeReply || isBtw)
         ? {
           ok: true,
           text: content,
           provider: targetAgent,
           model,
           actualModel,
+          ...(isBtw && { btw: true }),
           ...(finalEffort && { effort: finalEffort }),
           ...(fallback && { fallback }),
           ...(contextStats && { context: contextStats }),

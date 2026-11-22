@@ -31,6 +31,7 @@ const chatLog = require('./chats');
 const { AgentSessions, MODELS: SESSION_MODELS, CATALOG: SESSION_CATALOG, isAllowedModel } = require('./agent-sessions');
 const { isAuxiliaryModel, mobileAutoOverride, resolveRequestedModel } = require('./phone-model');
 const { LOCAL_CONTEXT_DEFAULTS, getContextLimits, buildContextStats, resolveContextLimit } = require('./context-stats');
+const { SlashCommandEngine, compactHistory, isIsolatedMode } = require('./slash-commands');
 const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
 const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('./hub-artifacts');
@@ -1833,12 +1834,328 @@ function phoneControl() {
   };
 }
 
+let slashEngine = null;
+
+async function compactDesktopChat({ mode = 'chat', ephemeral = false, agent = null, sessionId = null, history, focus = '', model = '' } = {}) {
+  if (sessionId && agent && !isIsolatedMode({ mode, ephemeral })) {
+    return ensureAgentSessions().compact(sessionId, { focus });
+  }
+  const isolated = isIsolatedMode({ mode, ephemeral }) || torState.isQuarantined();
+  const baseHistory = Array.isArray(history) ? history : (isolated ? [] : (readMemory().history || []));
+  const cfg = config.load();
+  const activeModel = model || pickModel(cfg) || brains.fast || 'auto';
+  const summarizer = (cfg.provider === 'ollama' && brains.ready(chatModels) && !brains.visionRunning && !brains.mainActive() && !brains.auxiliary)
+    ? async ({ older, focus: f, signal }) => {
+      const transcript = older.map((m) => `${m.role === 'user' ? 'Пользователь' : 'Ассистент'}: ${m.content}`).join('\n\n').slice(0, 12000);
+      const prompt = [
+        'Сожми предыдущие реплики диалога в плотный структурированный конспект на русском языке.',
+        f ? `Фокус: ${f}.` : '',
+        'Начни со строки "[Конспект предыдущей части разговора]", далее 3-7 коротких пунктов с фактами, решениями и следующими шагами.',
+        '',
+        transcript,
+      ].filter(Boolean).join('\n');
+      const abort = new AbortController();
+      const timer = setTimeout(() => abort.abort(), 12000);
+      try {
+        const reqSig = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
+        const text = await ollama.chat({
+          model: brains.fast,
+          messages: [
+            { role: 'system', content: 'Ты сжимаешь историю диалога в короткий конспект. Только факты из текста.' },
+            { role: 'user', content: prompt },
+          ],
+          numPredict: 400,
+        }, () => {}, reqSig);
+        return String(text || '').trim();
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    : null;
+
+  const result = await compactHistory({
+    history: baseHistory,
+    focus,
+    mode,
+    ephemeral,
+    model: activeModel,
+    provider: 'ollama',
+    summarizer,
+  });
+  if (history === undefined && !isolated && result.droppedCount > 0) {
+    saveMemory({ history: result.history });
+    if (phoneBridge) phoneBridge.turns = result.history.slice();
+    sendCommand('memory');
+  }
+  return result;
+}
+
+function ensureSlashEngine() {
+  if (slashEngine) return slashEngine;
+  slashEngine = new SlashCommandEngine({
+    getConfig: () => config.load(),
+    saveConfig: (patch) => config.save(patch),
+    deps: {
+      statusText: () => quickAnswer('статус пк'),
+      freeVramText: () => quickAnswer('освободи память'),
+      altaText: () => quickAnswer('что по альта'),
+      agentsText: () => quick.agentsStatusAnswer(ensureAgentSessions().summaries()),
+      tasksText: () => {
+        const plans = localPlanner ? localPlanner.list({ status: 'open' }) : [];
+        const busy = ensureAgentSessions().summaries().filter((s) => s.busy || s.queued);
+        const lines = [];
+        if (busy.length) lines.push('Активные задачи Хаба:', ...busy.map((s) => `• ${s.agent}: ${s.title || s.id}`));
+        if (plans.length) lines.push('Планировщик:', ...plans.slice(0, 8).map((p) => `• [${p.kind}] ${p.title}`));
+        return lines.length ? lines.join('\n') : 'Активных задач нет.';
+      },
+      contextStats: ({ mode, ephemeral, agent, sessionId, model, history }) => {
+        const isolated = isIsolatedMode({ mode, ephemeral });
+        let rows = Array.isArray(history) ? history : null;
+        if (!rows && sessionId && !isolated) rows = ensureAgentSessions().history(sessionId);
+        if (!rows) rows = isolated ? [] : (readMemory().history || []);
+        const resolvedModel = model || (agent ? '' : pickModel(config.load())) || 'auto';
+        return buildContextStats({
+          model: resolvedModel,
+          provider: agent || 'ollama',
+          messages: rows,
+          ctxFor: ollama.ctxFor,
+        });
+      },
+      usageText: async ({ mode, ephemeral, agent, sessionId, model, history }) => {
+        const isolated = isIsolatedMode({ mode, ephemeral });
+        const rows = Array.isArray(history) ? history : (sessionId && !isolated ? ensureAgentSessions().history(sessionId) : (isolated ? [] : (readMemory().history || [])));
+        const stats = buildContextStats({ model: model || pickModel(config.load()) || 'auto', provider: agent || 'ollama', messages: rows, ctxFor: ollama.ctxFor });
+        const lines = [`Контекст (${stats.model || 'auto'}): ${stats.usedTokens} / ${stats.maxTokens} (${stats.percent}%).`];
+        if (!isolated) {
+          for (const prov of ['claude', 'codex', 'gemini']) {
+            try {
+              const q = await hubQuota(prov, '', false);
+              if (q?.windows?.length) {
+                lines.push(`${prov}: ${q.windows.map((w) => `${Math.round(w.remaining)}% (${w.minutes >= 1440 ? 'нед' : '5ч'})`).join(' · ')}`);
+              }
+            } catch {}
+          }
+        }
+        return lines.join('\n');
+      },
+      mcpText: ({ isolated }) => {
+        const cfg = config.load();
+        return [
+          `capri-pim: порт ${cfg.pimMcpPort || 47824} (${isolated ? 'заблокирован изоляцией' : 'активен'})`,
+          `capri-web: порт ${cfg.webMcpPort || 47825} (${cfg.webMcp !== false ? 'включён' : 'выключен'}, узлы tor/dark закрыты облаку при карантине: ${torState.isQuarantined() ? 'да' : 'нет'})`,
+        ].join('\n');
+      },
+      doctorText: async () => {
+        const cfg = config.load();
+        const [loaded, kiwixOk, torUp] = await Promise.all([
+          ollama.loadedModels().catch(() => null),
+          kiwix.catalog(cfg.kiwixUrl).then((r) => Boolean(r?.length)).catch(() => false),
+          tor.portOpen(cfg.torSocksPort || 9050).catch(() => false),
+        ]);
+        return [
+          `Ollama: ${loaded ? `доступна (загружено: ${loaded.join(', ') || 'нет'})` : 'не отвечает'}`,
+          `NOMAD / Kiwix: ${kiwixOk ? 'доступен' : 'не отвечает'}`,
+          `Tor SOCKS (${cfg.torSocksPort || 9050}): ${torUp ? 'поднят' : 'не запущен'} · изолятор: ${cfg.torIsolator || 'off'}`,
+          `Tor-карантин чата: ${torState.isQuarantined() ? 'активен' : 'чисто'}`,
+          `Телефонный мост: ${phoneBridge?.running ? 'слушает' : 'выключен'}`,
+        ].join('\n');
+      },
+      storageText: () => {
+        const lines = [];
+        for (const drive of ['C:', 'D:']) {
+          try {
+            const s = fs.statfsSync(`${drive}\\`);
+            const freeGb = Math.round(((s.bavail * s.bsize) / (1024 ** 3)) * 10) / 10;
+            const totalGb = Math.round(((s.blocks * s.bsize) / (1024 ** 3)) * 10) / 10;
+            lines.push(`Диск ${drive} свободно ${freeGb} / ${totalGb} ГБ`);
+          } catch {}
+        }
+        const cfg = config.load();
+        lines.push(`userData: ${app.getPath('userData')}`);
+        lines.push(`Приватный Vault: ${cfg.privateVaultDir || privateVaultCrypto.DEFAULT_PRIVATE_VAULT_DIR}`);
+        lines.push(`Tor-сейф: ${cfg.torSafeDir || 'D:\\Capri\\tor-safe'} (${cfg.torSafe || 'off'})`);
+        return lines.join('\n');
+      },
+      memoryText: (query, { mode, ephemeral }) => {
+        if (isIsolatedMode({ mode, ephemeral }) && mode !== 'private') return 'В изолированном режиме память отключена.';
+        if (query && mode !== 'private') return quickAnswer(`найди в обсидиане ${query}`);
+        const mem = readMemory();
+        const pendingDir = path.join(path.basename(notesDir()).toLowerCase() === 'capri' ? path.dirname(notesDir()) : notesDir(), notes.PENDING_REVIEW_DIR);
+        let pendingCount = 0;
+        try { pendingCount = fs.readdirSync(pendingDir).filter((f) => f.endsWith('.md')).length; } catch {}
+        return `Сообщений в текущей памяти: ${(mem.history || []).length} · Карточек в pending_review: ${pendingCount}.`;
+      },
+      todayText: async ({ isolated }) => {
+        if (isolated || torState.isQuarantined()) {
+          const plans = localPlanner ? localPlanner.list({ status: 'open' }) : [];
+          return plans.length
+            ? `Локальные задачи:\n${plans.slice(0, 8).map((p) => `• ${p.title}`).join('\n')}`
+            : 'Открытых локальных задач нет (внешний календарь скрыт изоляцией).';
+        }
+        return (await quickAnswer('что у меня сегодня')) || 'На сегодня дел нет.';
+      },
+      mailText: async (q) => (await readPimTool(q || 'покажи свежие письма')).reply,
+      clipText: async (text) => {
+        if (text) {
+          await clipboard.writeText(text);
+          return `Скопировала в буфер обмена ПК: «${text.slice(0, 120)}».`;
+        }
+        const cur = String((await clipboard.readText()) || '').trim();
+        return cur ? `В буфере обмена ПК сейчас:\n${cur.slice(0, 1500)}` : 'Буфер обмена ПК сейчас пуст.';
+      },
+      setClipboard: async (text) => clipboard.writeText(String(text || '')),
+      harnessText: async (args) => {
+        const cmd = harness.parseHarnessCommand(`/harness ${args || 'status'}`) || { action: 'status' };
+        const res = await harnessManager.run(cmd);
+        return harness.formatHarnessAnswer(res);
+      },
+      webText: async (q) => {
+        const found = await agentWeb.search({ query: q, read: 0 });
+        const links = (found?.results || []).slice(0, 5).map((item) => `${item.title || item.url} — ${item.url}`);
+        return links.join('\n') || 'По этому запросу ничего не нашлось.';
+      },
+      torText: async (q) => {
+        const found = await agentWeb.search({ query: q, tor: true, read: 0 });
+        const links = (found?.results || []).slice(0, 5).map((item) => `${item.title || item.url} — ${item.url}`);
+        return links.join('\n') || 'Через Tor ничего не нашлось.';
+      },
+      nomadText: async (q) => {
+        const hits = await kiwix.search(config.load().kiwixUrl, q, 5).catch(() => []);
+        if (!hits?.length) return 'В библиотеке NOMAD/Kiwix по этому запросу ничего не нашлось.';
+        return hits.map((h) => `• ${h.title || h.path}${h.book ? ` (${h.book})` : ''}`).join('\n');
+      },
+      insightsText: () => {
+        const store = chatLog.read(chatsFile());
+        const sessions = ensureAgentSessions().summaries();
+        const msgCount = (store.chats || []).reduce((sum, c) => sum + (c.messages?.length || 0), 0);
+        return `Чатов Капри: ${(store.chats || []).length} (сообщений: ${msgCount}) · Сессий агентов: ${sessions.length}.`;
+      },
+      remember: (memo) => quickAnswer(`запомни: ${memo}`),
+      saveNote: async (topic, history) => {
+        const rows = Array.isArray(history) && history.length ? history : (readMemory().history || []);
+        if (!rows.length && !topic) return 'История пуста — нечего сохранять.';
+        const snippet = rows.slice(-6).map((m) => `${m.role === 'user' ? 'Я' : 'Капри'}: ${m.content}`).join('\n');
+        const memo = topic ? `${topic}\n${snippet}` : snippet;
+        return quickAnswer(`запомни: ${memo.slice(0, 950)}`);
+      },
+      createPlan: (text) => quickAnswer(`добавь задачу: ${text}`),
+      createReminder: (text) => quickAnswer(`напомни ${text}`),
+      switchModel: (wanted) => switchSpokenModel(wanted),
+      setPet: (visible) => {
+        updateConfig({ visible: Boolean(visible) });
+        if (visible) overlay?.show();
+        else overlay?.hide();
+      },
+      newChat: ({ mode, ephemeral, sessionId }) => {
+        if (sessionId) return;
+        if (!isIsolatedMode({ mode, ephemeral })) forgetChats();
+      },
+      stop: ({ sessionId }) => {
+        if (sessionId) ensureAgentSessions().stop(sessionId);
+        for (const abort of chats.values()) abort.abort();
+        sendCommand('stop');
+      },
+      compact: (opts) => compactDesktopChat(opts),
+      forkSession: ({ sessionId, chatId }) => {
+        if (sessionId) return ensureAgentSessions().fork(sessionId);
+        const store = chatLog.read(chatsFile());
+        const targetId = chatId || chatLog.current(store) || store.chats.at(-1)?.id;
+        const forked = targetId ? chatLog.fork(store, targetId) : null;
+        if (forked) {
+          chatLog.write(chatsFile(), store);
+          chatsWin?.webContents.send('chats:changed');
+          return { ok: true, id: forked.id };
+        }
+        return null;
+      },
+      renameSession: ({ sessionId, chatId, title }) => {
+        if (sessionId) return ensureAgentSessions().rename(sessionId, title);
+        const store = chatLog.read(chatsFile());
+        const targetId = chatId || chatLog.current(store) || store.chats.at(-1)?.id;
+        const renamed = targetId ? chatLog.rename(store, targetId, title) : null;
+        if (renamed) {
+          chatLog.write(chatsFile(), store);
+          chatsWin?.webContents.send('chats:changed');
+        }
+        return { ok: Boolean(renamed) };
+      },
+      pinSession: ({ sessionId, chatId, pinned }) => {
+        if (sessionId) return ensureAgentSessions().setPinned(sessionId, pinned);
+        const store = chatLog.read(chatsFile());
+        const targetId = chatId || chatLog.current(store) || store.chats.at(-1)?.id;
+        const existing = store.chats.find((c) => c.id === targetId);
+        const next = pinned === undefined ? !existing?.pinned : Boolean(pinned);
+        const updated = targetId ? chatLog.setPinned(store, targetId, next) : null;
+        if (updated) {
+          chatLog.write(chatsFile(), store);
+          chatsWin?.webContents.send('chats:changed');
+        }
+        return { pinned: Boolean(updated?.pinned) };
+      },
+      archiveSession: ({ sessionId, chatId, archived }) => {
+        if (sessionId) return ensureAgentSessions().setArchived(sessionId, archived);
+        const store = chatLog.read(chatsFile());
+        const targetId = chatId || chatLog.current(store) || store.chats.at(-1)?.id;
+        const existing = store.chats.find((c) => c.id === targetId);
+        const next = archived === undefined ? !existing?.archived : Boolean(archived);
+        const updated = targetId ? chatLog.setArchived(store, targetId, next) : null;
+        if (updated) {
+          chatLog.write(chatsFile(), store);
+          chatsWin?.webContents.send('chats:changed');
+        }
+        return { archived: Boolean(updated?.archived) };
+      },
+      deleteSession: ({ sessionId, chatId }) => {
+        if (sessionId) return ensureAgentSessions().remove(sessionId);
+        const store = chatLog.read(chatsFile());
+        const targetId = chatId || chatLog.current(store) || store.chats.at(-1)?.id;
+        if (targetId) {
+          chatLog.write(chatsFile(), chatLog.remove(store, targetId));
+          chatsWin?.webContents.send('chats:changed');
+        }
+        return { ok: true };
+      },
+      answerBtw: async ({ text, systemHint, mode, ephemeral, agent, sessionId, model, history }) => {
+        const isolated = isIsolatedMode({ mode, ephemeral }) || torState.isQuarantined();
+        if (sessionId && agent && !isolated) {
+          const mgr = ensureAgentSessions();
+          const s = mgr.sessions.find((x) => x.id === sessionId);
+          const enriched = systemHint ? `[Указания режима: ${systemHint}]\n\n${text}` : text;
+          const res = await mgr.send(sessionId, model || s?.model || '', enriched, false, false, true, {
+            agent,
+            btw: true,
+            history,
+          });
+          return { reply: res?.text || '', context: res?.context, error: res?.error };
+        }
+        const cfg = config.load();
+        const baseHistory = Array.isArray(history) ? history : (isolated ? [] : (readMemory().history || []).slice(-12));
+        const sys = [phonePersona({ isolated, ephemeral, privateMode: mode === 'private', localMode: mode, useVault: false }), systemHint].filter(Boolean).join('\n');
+        const msgs = [
+          ...(sys ? [{ role: 'system', content: sys }] : []),
+          ...baseHistory,
+          { role: 'user', content: text },
+        ];
+        const chosen = resolveRequestedModel(model, { fast: brains.fast, large: brains.main }) || pickModel(cfg) || brains.fast;
+        const abort = new AbortController();
+        const reply = await chatWithFallback(cfg, { messages: msgs, memoryText: '', toolsText: '' }, () => {}, abort.signal, () => false, null, {
+          localOnly: isolated,
+          model: chosen,
+        });
+        return { reply: String(reply || '').trim() };
+      },
+    },
+  });
+  return slashEngine;
+}
+
 async function applyPhone() {
   const { phone: p } = config.load();
   if (!phoneBridge) {
     phoneBridge = new phone.PhoneBridge({
       token: phoneToken,
       persona: phonePersona,
+      slashEngine: ensureSlashEngine(),
       contextLimits: () => getContextLimits({ ctxFor: ollama.ctxFor }),
       savePrivateChat: (id, messages, options) => {
         if (torState.isQuarantined() || (Array.isArray(messages) && messagesHaveTor(messages.filter(row => row && typeof row.content === 'string')))) {
@@ -2078,6 +2395,7 @@ async function applyPhone() {
         return mgr.send(id, chosenModel, promptText, retry === true, false, true, sendOpts);
       },
       agentStop: async (id) => ensureAgentSessions().stop(id),
+      agentCompact: async ({ id, focus }) => ensureAgentSessions().compact(id, { focus }),
       agentQuota: async ({ agent, model, refresh }) => hubQuota(agent, model, refresh === true),
       agentArtifact: async ({ id, run, name }) => {
         const history = ensureAgentSessions().history(id);
@@ -3641,6 +3959,46 @@ function registerIpc() {
     chatsWin?.webContents.send('chats:changed');
   });
   ipcMain.handle('chats:list', () => chatLog.list(chatLog.read(chatsFile())));
+  ipcMain.handle('chats:rename', (_e, { id, title } = {}) => {
+    const store = chatLog.read(chatsFile());
+    const chat = chatLog.rename(store, id, title);
+    if (!chat) return { ok: false };
+    chatLog.write(chatsFile(), store);
+    chatsWin?.webContents.send('chats:changed');
+    return { ok: true, id: chat.id, customTitle: chat.customTitle || null };
+  });
+  ipcMain.handle('chats:pin', (_e, { id, pinned } = {}) => {
+    const store = chatLog.read(chatsFile());
+    const existing = store.chats.find((c) => c.id === id);
+    if (!existing) return { ok: false };
+    const next = pinned === undefined ? !existing.pinned : Boolean(pinned);
+    chatLog.setPinned(store, id, next);
+    chatLog.write(chatsFile(), store);
+    chatsWin?.webContents.send('chats:changed');
+    return { ok: true, id, pinned: next };
+  });
+  ipcMain.handle('chats:archive', (_e, { id, archived } = {}) => {
+    const store = chatLog.read(chatsFile());
+    const existing = store.chats.find((c) => c.id === id);
+    if (!existing) return { ok: false };
+    const next = archived === undefined ? !existing.archived : Boolean(archived);
+    chatLog.setArchived(store, id, next);
+    chatLog.write(chatsFile(), store);
+    chatsWin?.webContents.send('chats:changed');
+    return { ok: true, id, archived: next };
+  });
+  ipcMain.handle('chats:fork', (_e, id) => {
+    const store = chatLog.read(chatsFile());
+    const forked = chatLog.fork(store, id);
+    if (!forked) return { ok: false };
+    chatLog.write(chatsFile(), store);
+    chatsWin?.webContents.send('chats:changed');
+    return { ok: true, id: forked.id };
+  });
+  ipcMain.handle('commands:list', (_e, params = {}) => ensureSlashEngine().listCommands(params || {}));
+  ipcMain.handle('commands:run', (_e, payload = {}) => ensureSlashEngine().run(payload || {}));
+  ipcMain.handle('chat:compact', (_e, payload = {}) => compactDesktopChat(payload || {}));
+  ipcMain.handle('agents:compact', (event, { id, focus } = {}) => hubSessions(event).compact(id, { focus }));
   ipcMain.handle('agents:list', (event) => ({ sessions: hubSessions(event).summaries(), models: SESSION_MODELS }));
   ipcMain.handle('agents:quota', (event, { agent, model, refresh }) => {
     hubSessions(event);

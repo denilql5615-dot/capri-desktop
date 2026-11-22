@@ -30,6 +30,13 @@ const CHAT_STOPPED = { reply: 'Запрос остановлен.', brain: 'stop
 const CHAT_ABORTED = { ...CHAT_STOPPED, brain: 'error' };
 const { PHONE_MODEL_KEYS } = require('./phone-model');
 const { getContextLimits, buildContextStats } = require('./context-stats');
+const {
+  SlashCommandEngine,
+  parseSlashInput,
+  compactHistory,
+  buildChainPrompt,
+  isIsolatedMode,
+} = require('./slash-commands');
 const SUGGESTIONS_TTL_MS = 45 * 60 * 1000; // 45 минут кэша подсказок от E4B
 const WORKER_COOLDOWN_MS = 30 * 60 * 1000; // 30 минут кулдауна для уставших воркеров Deep Research
 const RESEARCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -359,7 +366,8 @@ function mimeFor(name) {
 }
 
 function parsePromptFlags(rawText, body = {}) {
-  if ((body.mode !== undefined && (typeof body.mode !== 'string' || !Object.hasOwn(DEFAULT_SUGGESTIONS, body.mode)))
+  const validMode = Object.hasOwn(DEFAULT_SUGGESTIONS, body.mode) || body.mode === 'tor';
+  if ((body.mode !== undefined && (typeof body.mode !== 'string' || !validMode))
     || (body.ephemeral !== undefined && typeof body.ephemeral !== 'boolean')
     || (body.useVault !== undefined && typeof body.useVault !== 'boolean')) {
     throw Object.assign(new Error('Некорректный режим чата.'), { status: 400 });
@@ -389,6 +397,7 @@ function parsePromptFlags(rawText, body = {}) {
     deepResearch,
     skills: [...skills],
     ...(body.mode === 'nsfw' && { localMode: 'nsfw', localOnly: true }),
+    ...(body.mode === 'tor' && { localMode: 'tor', localOnly: true }),
     ...(body.mode === 'task' && { localMode: 'task' }),
     ...(body.useVault === false && { useVault: false }),
   };
@@ -409,6 +418,174 @@ class PhoneBridge {
     this.earlyResearchStops = new Map();
     this.queue = Promise.resolve();
     this.chatRequests = new Map();
+    this._fallbackSlash = null;
+  }
+
+  slashEngine() {
+    if (this.d.slashEngine) return this.d.slashEngine;
+    if (!this._fallbackSlash) {
+      this._fallbackSlash = new SlashCommandEngine({ deps: this.buildSlashDeps() });
+    }
+    return this._fallbackSlash;
+  }
+
+  buildSlashDeps() {
+    return {
+      statusText: async () => {
+        const s = await this.d.status?.();
+        if (!s) return 'Статус ПК недоступен.';
+        return `ОЗУ: ${s.ramUsedGb ?? '?'} / ${s.ramTotalGb ?? '?'} ГБ · VRAM: ${s.vramUsedMb ?? '?'} / ${s.vramTotalMb ?? '?'} МБ · Диск D: ${s.diskDFreeGb ?? '?'} ГБ · Активных агентов: ${s.busyAgents ?? 0}.`;
+      },
+      freeVramText: async () => {
+        const r = await this.d.freeVram?.();
+        return r?.text || 'Память освобождена.';
+      },
+      contextStats: ({ mode, ephemeral, agent, sessionId, model, history }) => {
+        const isolated = isIsolatedMode({ mode, ephemeral });
+        const rows = Array.isArray(history) ? history : (isolated ? [] : this.turns);
+        return buildContextStats({
+          model: model || 'auto',
+          provider: agent || 'ollama',
+          messages: rows,
+        });
+      },
+      usageText: async ({ mode, ephemeral, agent, model, history }) => {
+        const isolated = isIsolatedMode({ mode, ephemeral });
+        const rows = Array.isArray(history) ? history : (isolated ? [] : this.turns);
+        const ctx = buildContextStats({ model: model || 'auto', provider: agent || 'ollama', messages: rows });
+        const lines = [`Контекст (${ctx.model || 'auto'}): ${ctx.usedTokens}/${ctx.maxTokens} (${ctx.percent}%).`];
+        if (!isolated && typeof this.d.agentQuota === 'function') {
+          for (const prov of ['claude', 'codex', 'gemini']) {
+            try {
+              const q = await this.d.agentQuota({ agent: prov, model: '', refresh: false });
+              if (q?.windows?.length) {
+                lines.push(`${prov}: ${q.windows.map((w) => `${Math.round(w.remaining)}%`).join(' / ')}`);
+              }
+            } catch {}
+          }
+        }
+        return lines.join('\n');
+      },
+      agentsText: async () => {
+        const list = await this.d.agentSessions?.('');
+        if (!Array.isArray(list) || !list.length) return 'Сессий агентов пока нет.';
+        return list.slice(0, 8).map((s) => `• ${s.agent}${s.model ? ` (${s.model})` : ''}: ${s.busy ? 'работает' : 'ожидание'} — ${s.title || 'без названия'}`).join('\n');
+      },
+      clipText: async (text) => {
+        if (text) {
+          await this.d.setClipboard?.(text);
+          return `Скопировано в буфер: «${text.slice(0, 120)}».`;
+        }
+        const cur = String((await this.d.getClipboard?.()) || '').trim();
+        return cur ? `Буфер обмена:\n${cur.slice(0, 1500)}` : 'Буфер обмена пуст.';
+      },
+      setClipboard: (text) => this.d.setClipboard?.(text),
+      webText: async (query) => {
+        const found = await this.d.webSearch?.(query);
+        const links = (found?.results || []).slice(0, 5).map((item) => `${item.title || item.url} — ${item.url}`);
+        return links.join('\n') || 'В сети ничего не найдено.';
+      },
+      mailText: async (query) => {
+        const res = await this.d.readPim?.(query || 'покажи свежие письма');
+        return res?.reply || 'Почта недоступна.';
+      },
+      todayText: async ({ isolated }) => {
+        if (isolated) return 'Календарь Proton недоступен в изолированном режиме.';
+        const res = await this.d.readPim?.('что у меня сегодня');
+        return res?.reply || 'Расписание недоступно.';
+      },
+      switchModel: (wanted) => this.d.switchModel?.(wanted),
+      newChat: ({ mode, ephemeral }) => {
+        if (!isIsolatedMode({ mode, ephemeral })) this.turns = [];
+      },
+      stop: async ({ sessionId, requestId }) => {
+        if (requestId && this.chatRequests.has(requestId)) {
+          const entry = this.chatRequests.get(requestId);
+          entry.state = 'stopped';
+          entry.abort?.abort();
+        }
+        for (const entry of this.chatRequests.values()) {
+          if (entry.state === 'queued' || entry.state === 'running') {
+            entry.state = 'stopped';
+            entry.abort?.abort();
+          }
+        }
+        if (sessionId && typeof this.d.agentStop === 'function') {
+          await this.d.agentStop(sessionId).catch(() => {});
+        }
+      },
+      compact: (opts) => this.compactChat(opts),
+      answerBtw: async ({ text, systemHint, skills, mode, ephemeral, agent, sessionId, model, history }) => {
+        const isolated = isIsolatedMode({ mode, ephemeral });
+        if (sessionId && agent && !isolated && typeof this.d.agentSend === 'function') {
+          const enriched = systemHint ? `[Системные указания: ${systemHint}]\n\n${text}` : text;
+          const res = await this.d.agentSend({ id: sessionId, agent, model, text: enriched, btw: true, history });
+          return { reply: res?.text || res?.reply || '', context: res?.context, error: res?.error };
+        }
+        if (typeof this.d.chat !== 'function') return { reply: 'Чат недоступен.' };
+        const baseHistory = Array.isArray(history) ? history : (isolated ? [] : this.turns.slice(-TURNS * 2));
+        const sys = [this.d.persona?.({ isolated, ephemeral, privateMode: mode === 'private', localMode: mode, useVault: !isolated }) || '', systemHint].filter(Boolean).join('\n');
+        const out = await this.d.chat([
+          ...(sys ? [{ role: 'system', content: sys }] : []),
+          ...baseHistory,
+          { role: 'user', content: text },
+        ], new AbortController().signal, {
+          ephemeral: true,
+          localOnly: isolated,
+          skills: skills || [],
+          requestedModel: model || undefined,
+          useVault: false,
+          mobile: true,
+        });
+        return { reply: String(out?.text || '').trim(), context: out?.context };
+      },
+    };
+  }
+
+  async compactChat({ mode = 'chat', ephemeral = false, history, focus = '', model = '' } = {}) {
+    const isolated = isIsolatedMode({ mode, ephemeral });
+    const baseHistory = Array.isArray(history) ? history : (isolated ? [] : this.turns);
+    if (!Array.isArray(baseHistory)) {
+      throw Object.assign(new Error('Некорректная история разговора.'), { status: 400 });
+    }
+    const summarizer = typeof this.d.chat === 'function'
+      ? async ({ older, focus: f, signal }) => {
+        const transcript = older.map((m) => `${m.role === 'user' ? 'Пользователь' : 'Ассистент'}: ${m.content}`).join('\n\n').slice(0, 12000);
+        const prompt = [
+          'Сожми предыдущие реплики диалога в плотный структурированный конспект на русском языке.',
+          f ? `Фокус: ${f}.` : '',
+          'Начни со строки "[Конспект предыдущей части разговора]", далее 3-7 коротких пунктов с фактами, решениями и следующими шагами.',
+          '',
+          transcript,
+        ].filter(Boolean).join('\n');
+        const abort = new AbortController();
+        const timer = setTimeout(() => abort.abort(), 12000);
+        try {
+          const reqSig = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
+          const res = await this.d.chat([
+            { role: 'system', content: 'Ты сжимаешь историю диалога в короткий конспект. Только факты из текста.' },
+            { role: 'user', content: prompt },
+          ], reqSig, { fastLocal: true, localOnly: true, ephemeral: true, useVault: false });
+          return String(res?.text || '').trim();
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      : null;
+
+    const result = await compactHistory({
+      history: baseHistory,
+      focus,
+      mode,
+      ephemeral,
+      model: model || 'auto',
+      provider: 'ollama',
+      summarizer,
+    });
+    if (history === undefined && !isolated && result.droppedCount > 0) {
+      this.turns = result.history;
+    }
+    return result;
   }
 
   get running() {
@@ -712,9 +889,58 @@ class PhoneBridge {
           isolatedChat: true,
           modelSelection: true,
           chatRecovery: true,
+          slashCommands: true,
           privateVaultSave: Boolean(this.d.savePrivateChat),
           contextLimits,
         });
+      }
+      if (req.method === 'GET' && url.pathname === '/commands') {
+        const mode = url.searchParams.get('mode') || 'chat';
+        const ephemeral = url.searchParams.get('ephemeral') === 'true';
+        const agent = url.searchParams.get('agent') || null;
+        const pct = url.searchParams.get('pct') ?? url.searchParams.get('contextPct');
+        const sessionId = url.searchParams.get('sessionId') || null;
+        return this.send(res, 200, this.slashEngine().listCommands({ mode, ephemeral, agent, pct, sessionId }));
+      }
+      if (req.method === 'POST' && url.pathname === '/commands/run') {
+        const body = await this.readJson(req, MAX_BODY * 4);
+        const mode = String(body.mode || 'chat');
+        const ephemeral = body.ephemeral === true;
+        if (this.d.externalBlocked?.(String(body.text || '')) && !isIsolatedMode({ mode, ephemeral })) {
+          // Enforce Tor/secret guard if text triggers external block and calls cloudOnly command.
+          const parsed = parseSlashInput(body.text, this.slashEngine().registry());
+          if (parsed.chain.some((c) => c.cloudOnly)) {
+            const msg = 'Команда недоступна в режиме Tor-изоляции или при наличии секретов.';
+            return this.send(res, 403, { handled: true, instant: true, error: msg, reply: msg });
+          }
+        }
+        const result = await this.slashEngine().run(body);
+        if (result?.error && isIsolatedMode({ mode, ephemeral }) && /недоступна в изолированном режиме/i.test(result.error)) {
+          return this.send(res, 403, result);
+        }
+        return this.send(res, 200, result);
+      }
+      if (req.method === 'POST' && url.pathname === '/chat/compact') {
+        const body = await this.readJson(req, MAX_BODY * 8);
+        if (body.history !== undefined) {
+          if (!Array.isArray(body.history) || body.history.length > 120 || body.history.some((row) =>
+            !row || !['user', 'assistant', 'system'].includes(row.role) || typeof row.content !== 'string' || row.content.length > 24000)) {
+            return this.send(res, 400, { ok: false, error: 'Некорректная история разговора.' });
+          }
+        }
+        const result = await this.compactChat(body);
+        return this.send(res, 200, result);
+      }
+      if (req.method === 'POST' && url.pathname === '/agents/compact') {
+        const body = await this.readJson(req);
+        if (typeof body.id !== 'string' || !body.id.trim()) {
+          return this.send(res, 400, { ok: false, error: 'Укажи идентификатор сессии.' });
+        }
+        if (typeof this.d.agentCompact !== 'function') {
+          return this.send(res, 503, { ok: false, error: 'Сжатие сессий агентов недоступно.' });
+        }
+        const result = await this.d.agentCompact({ id: body.id.trim(), focus: String(body.focus || '').trim() });
+        return this.send(res, 200, result);
       }
       if (req.method === 'GET' && url.pathname === '/suggestions') {
         const mode = url.searchParams.get('mode') || 'chat';
@@ -890,6 +1116,31 @@ class PhoneBridge {
           return this.send(res, 400, { error: 'Выбранная модель недоступна на ПК.' });
         }
         flags.requestedModel = body.model;
+        if (flags.text.startsWith('/')) {
+          const parsedSlash = parseSlashInput(flags.text, this.slashEngine().registry());
+          if (parsedSlash.chain.length > 0) {
+            const isolatedMode = flags.ephemeral || flags.privateMode || flags.localOnly;
+            const blockedCloud = isolatedMode ? parsedSlash.chain.find((c) => c.cloudOnly) : null;
+            if (blockedCloud) {
+              return this.send(res, 403, { error: `Команда ${blockedCloud.slash} недоступна в изолированном режиме.` });
+            }
+            const built = buildChainPrompt({
+              chain: parsedSlash.chain,
+              remainder: parsedSlash.remainder,
+              state: this.slashEngine().getState(),
+              mode: body.mode || 'chat',
+            });
+            for (const sk of built.skills) {
+              if (!flags.skills.includes(sk)) flags.skills.push(sk);
+            }
+            if (built.systemHint) flags.slashSystemHint = built.systemHint;
+            if (built.btw) flags.btw = true;
+            if (built.deepResearch) flags.deepResearch = true;
+            if (built.draw) flags.forceDraw = true;
+            flags.text = built.text;
+          }
+        }
+        if (body.btw === true) flags.btw = true;
         if (body.history !== undefined) {
           if (!Array.isArray(body.history) || body.history.length > TURNS * 2 || body.history.some((row) =>
             !row || !['user', 'assistant'].includes(row.role) || typeof row.content !== 'string' || row.content.length > 4000)) {
@@ -1007,7 +1258,27 @@ class PhoneBridge {
             || (Array.isArray(body.history) && body.history.some((row) => this.d.externalBlocked?.(String(row?.content || ''))))) {
           return this.send(res, 403, { ok: false, error: 'Облачные модели недоступны для этого запроса.' });
         }
-        const result = await this.d.agentSend?.({ ...body, useVault: body.useVault !== false });
+        let sendPayload = { ...body, useVault: body.useVault !== false };
+        if (rawText.trim().startsWith('/')) {
+          const parsedSlash = parseSlashInput(rawText, this.slashEngine().registry());
+          if (parsedSlash.chain.length > 0) {
+            const built = buildChainPrompt({
+              chain: parsedSlash.chain,
+              remainder: parsedSlash.remainder,
+              state: this.slashEngine().getState(body.id),
+              mode: 'agent',
+            });
+            const finalPrompt = built.systemHint
+              ? `[Указания режима:\n${built.systemHint}]\n\n${built.text}`
+              : built.text;
+            sendPayload = {
+              ...sendPayload,
+              text: finalPrompt,
+              ...(built.btw && { btw: true }),
+            };
+          }
+        }
+        const result = await this.d.agentSend?.(sendPayload);
         return this.send(res, 200, result || { ok: false });
       }
       if (req.method === 'POST' && url.pathname === '/agents/stop') {
@@ -1097,6 +1368,7 @@ class PhoneBridge {
     for (const sk of skills) {
       if (SKILL_NOTES[sk]) skillParts.push(SKILL_NOTES[sk]);
     }
+    if (flags.slashSystemHint) skillParts.push(flags.slashSystemHint);
     const baseSystemPrompt = baseSysParts.filter(Boolean).join('\n');
     const skillsText = skillParts.join('\n');
     const sysContent = [baseSystemPrompt, skillsText].filter(Boolean).join('\n');
@@ -1112,12 +1384,12 @@ class PhoneBridge {
     const timer = setTimeout(() => abort.abort(new Error('Модель не завершила ответ за 10 минут.')), 10 * 60 * 1000);
     try {
       const opts = {
-        ephemeral,
+        ephemeral: ephemeral || flags.btw === true,
         localOnly: isolated,
         source: privateMode ? 'vault' : undefined,
         skills,
         requestedModel: flags.requestedModel,
-        useVault: flags.useVault !== false,
+        useVault: flags.btw === true ? false : flags.useVault !== false,
         mobile: true,
         numPredict: -1,
         contextParts: { systemPrompt: baseSystemPrompt, skillsText },
@@ -1129,7 +1401,7 @@ class PhoneBridge {
       requestSignal.throwIfAborted();
       const reply = String(said || '').trim();
       if (!reply) return { reply: 'Модель промолчала. Спроси ещё раз, покороче.', brain };
-      if (!isolated && flags.history === undefined) {
+      if (!isolated && flags.btw !== true && flags.history === undefined) {
         this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
       }
       const contextStats = context || buildContextStats({
@@ -1139,7 +1411,7 @@ class PhoneBridge {
         skillsText,
         messages: [...historySlice, userMsg, { role: 'assistant', content: reply }],
       });
-      return { reply, brain, context: contextStats };
+      return { reply, brain, context: contextStats, ...(flags.btw === true && { btw: true }) };
     } catch (err) {
       return { reply: `Не вышло ответить: ${err.message}`, brain: 'error' };
     } finally {
@@ -1151,6 +1423,7 @@ class PhoneBridge {
     if (signal?.aborted) return CHAT_ABORTED;
     const text = flags.text;
     const isolated = flags.ephemeral || flags.privateMode || flags.localOnly === true;
+    const isBtw = flags.btw === true;
     const search = /^найди в сети:\s*([\s\S]+)$/i.exec(text)?.[1].trim();
     if (search && !flags.deepResearch) {
       if (isolated || this.d.externalBlocked?.(search)) {
@@ -1165,17 +1438,17 @@ class PhoneBridge {
         return { reply: 'Браузерный поиск сейчас недоступен. Результатов нет.', brain: 'error', pose: '' };
       }
     }
-    const media = !isolated && !flags.deepResearch && this.d.photo && this.d.mediaKind?.(text);
+    const media = !isolated && !isBtw && !flags.deepResearch && this.d.photo && (flags.forceDraw ? 'photo' : this.d.mediaKind?.(text));
     const { reply, brain, image, context } = media ? await this.media(text, media, flags)
-      : (!isolated && !flags.deepResearch && (!flags.requestedModel || flags.requestedModel === 'auto') && await this.switchModel(text))
+      : (!isolated && !isBtw && !flags.deepResearch && (!flags.requestedModel || flags.requestedModel === 'auto') && await this.switchModel(text))
         || await this.reply(flags, signal);
     if (signal?.aborted) return CHAT_ABORTED;
 
-    // Временные чаты (ephemeral), приватный Vault (privateMode), 18+ (localOnly) и useVault: false не утекают в общий лог чатов
-    if (brain !== 'error' && !isolated && flags.useVault !== false && !/^новый разговор/i.test(text)) {
+    // Временные чаты (ephemeral), приватный Vault (privateMode), 18+ (localOnly), btw и useVault: false не утекают в общий лог чатов
+    if (brain !== 'error' && !isolated && !isBtw && flags.useVault !== false && !/^новый разговор/i.test(text)) {
       this.d.log?.({ said: text, answer: image ? `${reply}\n[[photo:${image}]]` : reply });
     }
-    const out = { reply, brain, pose: '', ...(image && { image: `/gallery/${image}` }), ...(context && { context }) };
+    const out = { reply, brain, pose: '', ...(isBtw && { btw: true }), ...(image && { image: `/gallery/${image}` }), ...(context && { context }) };
     if (voice && brain !== 'error') {
       const data = await this.d.speak(reply).catch(() => null);
       if (signal?.aborted) return CHAT_ABORTED;
@@ -1186,7 +1459,7 @@ class PhoneBridge {
         out.audio = `/audio/${id}`;
       }
     }
-    if (flags.privateChatId && brain !== 'error' && !signal?.aborted) {
+    if (flags.privateChatId && !isBtw && brain !== 'error' && !signal?.aborted) {
       try {
         await this.d.savePrivateChat(flags.privateChatId, [
           { role: 'user', content: flags.privateUserText ?? text },

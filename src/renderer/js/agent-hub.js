@@ -1,4 +1,17 @@
 import { appendHubText } from './hub-links.js';
+import {
+  attachSlashMenu,
+  openCatalogModal,
+  registerCatalogTarget,
+  isInstantSlashCommand,
+  parseLeadingSlash,
+  ensureSlashDock,
+  showSlashCard,
+  showSlashConfirm,
+  normalizeSlashAction,
+  extractContextPct,
+  renderSlashStatePills,
+} from './slash-menu.js';
 
 const host = window.host;
 const labels = { claude: 'Claude', codex: 'Codex', gemini: 'Antigravity', gemma: 'Gemma', faun: 'RP' };
@@ -19,7 +32,53 @@ let historyId;
 let history = [];
 let historyRevision = 0;
 let quotaRevision = 0;
+let agentSlashState = {};
+const sessionContextPct = new Map();
+let agentSlashMenu = null;
+const agentLogEl = document.querySelector('[data-tab="agents"] .log');
+const agentComposeEl = $('compose');
+const agentMetaEl = $('meta');
+const agentSlashDock = ensureSlashDock(agentLogEl, agentComposeEl);
 const quotaLabels = { claude: 'Claude', codex: 'Codex', 'agy-argon': 'Argon', 'agy-gemini': 'Gemini Flash / Pro', 'agy-third-party': 'Claude / GPT в Antigravity' };
+
+function estimateAgentContextPct() {
+  const id = current()?.id;
+  if (id && sessionContextPct.has(id)) return sessionContextPct.get(id);
+  const rows = historyId === id ? history : [];
+  if (!rows.length) return 0;
+  const chars = rows.reduce((acc, m) => acc + String(m.content || '').length, 0);
+  const windowTokens = ['gemma', 'faun'].includes(agent) ? 16384 : 128000;
+  return Math.min(100, Math.round((chars / 4 / windowTokens) * 100));
+}
+
+function lastAgentAssistantReply() {
+  const id = current()?.id;
+  const rows = historyId === id ? history : [];
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].role === 'assistant' && rows[i].content) return rows[i].content;
+  }
+  return '';
+}
+
+function applyAgentSlashState(nextState) {
+  if (!nextState || typeof nextState !== 'object') return;
+  agentSlashState = { ...agentSlashState, ...nextState };
+  const hud = document.querySelector('.hud');
+  if (hud && typeof agentSlashState.focus === 'boolean') {
+    hud.classList.toggle('is-slash-focus', agentSlashState.focus);
+  }
+  renderSlashStatePills(agentMetaEl, agentSlashState);
+}
+
+function updateAgentSendButton() {
+  const session = current();
+  const id = session?.id;
+  const busy = Boolean(session?.busy || submitting.has(id));
+  const instantReady = busy && isInstantSlashCommand($('input').value);
+  $('send').textContent = (busy && !instantReady) ? 'Стоп' : 'Отправить';
+  $('send').classList.toggle('is-danger', Boolean(busy && !instantReady));
+  $('send').disabled = !session;
+}
 
 async function loadQuota(refresh = false) {
   const ticket = ++quotaRevision;
@@ -107,15 +166,14 @@ function render() {
   $('local').hidden = !['claude', 'codex'].includes(agent);
   $('history-tools').hidden = $('import').hidden;
   $('input').value = drafts.get(id) || '';
-  $('input').disabled = !session || busy;
+  // Keep input enabled while busy so instant slash commands (/status, /usage, /stop, ...) run immediately.
+  $('input').disabled = !session;
   if ($('attach')) {
     const att = attachments.get(id);
     $('attach').textContent = att ? `📎 ${att.name.slice(0, 18)}` : '📎';
     $('attach').disabled = !session || busy;
   }
-  $('send').textContent = busy ? 'Стоп' : 'Отправить';
-  $('send').classList.toggle('is-danger', Boolean(busy));
-  $('send').disabled = !session;
+  updateAgentSendButton();
   $('retry').hidden = !session || busy || !session.canRetry;
   $('status').textContent = status.get(id) || '';
   renderLines();
@@ -224,17 +282,60 @@ async function newChat() {
   }
 }
 
-async function send(retry = false) {
-  const session = current();
-  if (!session) return;
-  const { id, busy } = session;
-  if (busy || submitting.has(id)) {
-    await host.agentsStop(id).catch((err) => { $('status').textContent = err.message; });
+function getAgentSlashContext() {
+  return {
+    mode: 'agent',
+    ephemeral: false,
+    agent,
+    sessionId: current()?.id || null,
+    model: $('model')?.value || '',
+    pct: estimateAgentContextPct(),
+  };
+}
+
+async function runAgentCompact(sessionId, focus = '', preCompacted = null) {
+  let res = preCompacted;
+  if (!res && typeof host.agentsCompact === 'function') {
+    $('status').textContent = 'Сжимаю контекст…';
+    try {
+      res = await host.agentsCompact({ id: sessionId, focus });
+    } catch (err) {
+      $('status').textContent = err.message || 'Не удалось сжать контекст.';
+      return;
+    }
+  }
+  if (!res || res.error) {
+    $('status').textContent = res?.error || 'Сжатие контекста недоступно.';
     return;
   }
+  const pct = extractContextPct(res.context);
+  if (pct !== null) sessionContextPct.set(sessionId, pct);
+  if (Array.isArray(res.history) && current()?.id === sessionId) {
+    historyId = sessionId;
+    history = res.history;
+    renderLines();
+  } else {
+    await loadHistory();
+  }
+  const stats = Number.isFinite(res.droppedCount)
+    ? `Сжато сообщений: ${res.droppedCount}, оставлено: ${res.keptCount ?? ''}`.trim()
+    : 'Контекст обновлён';
+  $('status').textContent = '';
+  showSlashCard(agentSlashDock, {
+    title: '/compact',
+    meta: pct !== null ? `${stats} · ${pct}%` : stats,
+    icon: 'compact',
+    text: res.summary || 'Ранняя часть разговора свёрнута в конспект.',
+    formatBody: (node, txt) => appendHubText(node, txt),
+  });
+  agentSlashMenu?.refresh();
+}
+
+async function sendAgentText(text, { retry = false } = {}) {
+  const session = current();
+  if (!session) return;
+  const { id } = session;
   const att = attachments.get(id);
-  const text = $('input').value.trim() || (att ? `Разбери файл ${att.name}` : '');
-  if (!retry && !text) return;
   const model = $('model').value;
   const files = !retry && att ? [att] : undefined;
   submitting.add(id);
@@ -255,9 +356,310 @@ async function send(retry = false) {
   }
 }
 
+async function executeAgentSlashCommand(rawText, { confirm = false } = {}) {
+  const parsed = parseLeadingSlash(rawText);
+  if (!parsed) return false;
+  const cmdName = parsed.cmd;
+  const isInstant = isInstantSlashCommand(rawText);
+  const session = current();
+  const id = session?.id || null;
+  const model = $('model')?.value || '';
+
+  if (typeof host.commandsRun !== 'function') {
+    if (cmdName === 'stop' && id) {
+      await host.agentsStop(id).catch((err) => { $('status').textContent = err.message; });
+      return true;
+    }
+    if (cmdName === 'new' || cmdName === 'clear') { await newChat(); return true; }
+    if (cmdName === 'focus') { applyAgentSlashState({ focus: !agentSlashState.focus }); return true; }
+    if (cmdName === 'copy') {
+      const reply = lastAgentAssistantReply();
+      if (reply) {
+        host.chatsCopy?.(reply);
+        $('status').textContent = 'Скопировано.';
+      }
+      return true;
+    }
+    if (cmdName === 'compact' && id) {
+      await runAgentCompact(id, parsed.rest, null);
+      return true;
+    }
+    if (cmdName === 'help' || cmdName === 'skills') {
+      openCatalogModal({
+        initialTab: cmdName === 'skills' ? 'skills' : 'commands',
+        getContext: getAgentSlashContext,
+        onRunCommand: handleAgentCatalogSelect,
+      });
+      return true;
+    }
+    return false;
+  }
+
+  const rows = historyId === id ? history.map((m) => ({ role: m.role, content: m.content })) : [];
+  let result;
+  try {
+    result = await host.commandsRun({
+      text: rawText,
+      mode: 'agent',
+      ephemeral: false,
+      agent,
+      sessionId: id,
+      model,
+      history: rows,
+      confirm,
+    });
+  } catch (err) {
+    $('status').textContent = err.message || 'Не удалось выполнить команду.';
+    return true;
+  }
+
+  if (!result) return false;
+  if (result.error) {
+    $('status').textContent = result.error;
+    return true;
+  }
+
+  if (result.state) applyAgentSlashState(result.state);
+  const nextPct = extractContextPct(result.context);
+  if (nextPct !== null && id) sessionContextPct.set(id, nextPct);
+
+  if (result.confirmRequired) {
+    showSlashConfirm(agentSlashDock, {
+      text: result.reply || 'Удалить текущий разговор агента навсегда?',
+      confirmLabel: 'Удалить',
+      cancelLabel: 'Отмена',
+      onConfirm: () => { executeAgentSlashCommand(rawText, { confirm: true }); },
+      onCancel: () => { $('status').textContent = 'Удаление отменено.'; },
+    });
+    return true;
+  }
+
+  const act = normalizeSlashAction(result.action);
+  const actType = act?.type || '';
+
+  if (actType === 'open-catalog') {
+    openCatalogModal({
+      initialTab: act.tab || result.tab || 'commands',
+      getContext: getAgentSlashContext,
+      onRunCommand: handleAgentCatalogSelect,
+    });
+    return true;
+  }
+
+  if (actType === 'stop') {
+    if (id) await host.agentsStop(id).catch((err) => { $('status').textContent = err.message; });
+    if (result.reply) $('status').textContent = result.reply;
+    return true;
+  }
+
+  if (actType === 'new' || actType === 'clear') {
+    await newChat();
+    if (result.reply) $('status').textContent = result.reply;
+    return true;
+  }
+
+  if (actType === 'retry') {
+    const busy = Boolean(session?.busy || submitting.has(id));
+    if (!busy && id) await send(true);
+    return true;
+  }
+
+  if (actType === 'copy') {
+    const toCopy = act.text || lastAgentAssistantReply() || result.reply || '';
+    if (toCopy) {
+      host.chatsCopy?.(toCopy);
+      $('status').textContent = result.reply || 'Скопировано.';
+    } else {
+      $('status').textContent = 'Нечего копировать.';
+    }
+    return true;
+  }
+
+  if ((actType === 'compact' || result.compacted) && id) {
+    await runAgentCompact(id, act?.focus || parsed.rest, result.compacted || null);
+    return true;
+  }
+
+  if (actType === 'focus') {
+    const nextFocus = typeof act.value === 'boolean' ? act.value : (typeof result.state?.focus === 'boolean' ? result.state.focus : !agentSlashState.focus);
+    applyAgentSlashState({ focus: nextFocus });
+    if (result.reply) $('status').textContent = result.reply;
+    return true;
+  }
+
+  if (['plan-mode', 'effort', 'temp', 'output-style', 'advisor', 'autocompact', 'pet'].includes(actType)) {
+    if (result.reply) $('status').textContent = result.reply;
+    agentSlashMenu?.refresh();
+    return true;
+  }
+
+  if (actType === 'model') {
+    const targetModel = act.model || act.value || '';
+    if (targetModel) {
+      const sel = $('model');
+      const opt = Array.from(sel.options).find((o) =>
+        o.value === targetModel || o.value.toLowerCase().includes(targetModel.toLowerCase()) ||
+        o.textContent.toLowerCase().includes(targetModel.toLowerCase()));
+      if (opt) {
+        sel.value = opt.value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }
+    if (result.reply) $('status').textContent = result.reply;
+    agentSlashMenu?.refresh();
+    return true;
+  }
+
+  if (['rename', 'pin', 'archive', 'delete', 'fork'].includes(actType)) {
+    const targetId = act.sessionId || act.id;
+    if (actType === 'fork' && targetId) selected.set(agent, targetId);
+    if (actType === 'delete' && id === selected.get(agent)) selected.delete(agent);
+    await loadAgentHub();
+    if (result.reply) $('status').textContent = result.reply;
+    return true;
+  }
+
+  if (actType === 'btw' || cmdName === 'btw') {
+    showSlashCard(agentSlashDock, {
+      title: '/btw',
+      meta: 'В стороне · без записи в историю',
+      icon: 'message',
+      text: result.reply || 'Запрос в стороне выполнен.',
+      formatBody: (node, txt) => appendHubText(node, txt),
+    });
+    return true;
+  }
+
+  if (result.promptRewrite) {
+    const rewriteText = typeof result.promptRewrite === 'string'
+      ? result.promptRewrite
+      : (result.promptRewrite.text || result.promptRewrite.prompt || '');
+    if (rewriteText) {
+      const busy = Boolean(session?.busy || submitting.has(id));
+      if (busy) {
+        $('status').textContent = 'Агент ещё отвечает. Мгновенные команды работают сразу.';
+        return true;
+      }
+      await sendAgentText(rewriteText);
+      return true;
+    }
+  }
+
+  if (result.handled) {
+    if (result.reply) {
+      if (isInstant || result.instant || result.reply.includes('\n') || result.reply.length > 100) {
+        showSlashCard(agentSlashDock, {
+          title: `/${cmdName}`,
+          meta: nextPct !== null ? `Контекст: ${nextPct}%` : '',
+          icon: cmdName,
+          text: result.reply,
+          formatBody: (node, txt) => appendHubText(node, txt),
+        });
+        $('status').textContent = '';
+      } else {
+        $('status').textContent = result.reply;
+      }
+    }
+    if (cmdName === 'reload-skills') agentSlashMenu?.refresh();
+    return true;
+  }
+
+  return false;
+}
+
+function handleAgentCatalogSelect(it) {
+  const slash = it.slash || `/${it.name}`;
+  const needsArgs = it.kind === 'skill' || it.kind === 'prompt' || (it.argsHint && String(it.argsHint).trim().startsWith('<'));
+  const inputEl = $('input');
+  const id = current()?.id;
+  if (needsArgs) {
+    const prev = inputEl.value.trim();
+    inputEl.value = prev ? `${slash} ${prev}` : `${slash} `;
+    if (id) drafts.set(id, inputEl.value);
+    inputEl.focus();
+    updateAgentSendButton();
+    return;
+  }
+  inputEl.value = '';
+  if (id) drafts.delete(id);
+  updateAgentSendButton();
+  executeAgentSlashCommand(slash);
+}
+
+async function send(retry = false) {
+  const session = current();
+  if (!session) return;
+  const { id, busy } = session;
+  const isBusy = Boolean(busy || submitting.has(id));
+  const rawInput = $('input').value.trim();
+
+  // CRITICAL: Instant slash commands execute immediately without stopping or waiting for busy streams!
+  if (!retry && rawInput && isInstantSlashCommand(rawInput)) {
+    $('input').value = '';
+    drafts.delete(id);
+    agentSlashMenu?.close();
+    updateAgentSendButton();
+    await executeAgentSlashCommand(rawInput);
+    return;
+  }
+
+  if (isBusy) {
+    if (!rawInput) {
+      await host.agentsStop(id).catch((err) => { $('status').textContent = err.message; });
+      return;
+    }
+    $('status').textContent = 'Агент ещё отвечает. Мгновенные команды (/status, /usage, /stop) работают сразу.';
+    return;
+  }
+
+  if (!retry && rawInput.startsWith('/')) {
+    $('input').value = '';
+    drafts.delete(id);
+    agentSlashMenu?.close();
+    updateAgentSendButton();
+    const handled = await executeAgentSlashCommand(rawInput);
+    if (handled) return;
+  }
+
+  const att = attachments.get(id);
+  const text = rawInput || (att ? `Разбери файл ${att.name}` : '');
+  if (!retry && !text) return;
+  await sendAgentText(text, { retry });
+}
+
+agentSlashMenu = attachSlashMenu({
+  input: $('input'),
+  container: agentComposeEl,
+  getContext: getAgentSlashContext,
+  onSelectItem: (it, { runImmediately }) => {
+    const id = current()?.id;
+    if (id) drafts.set(id, $('input').value);
+    updateAgentSendButton();
+    if (runImmediately) {
+      const cmdText = $('input').value.trim() || it.slash || `/${it.name}`;
+      $('input').value = '';
+      if (id) drafts.delete(id);
+      updateAgentSendButton();
+      executeAgentSlashCommand(cmdText);
+    }
+  },
+  onOpenCatalog: (tabId) => {
+    openCatalogModal({
+      initialTab: tabId,
+      getContext: getAgentSlashContext,
+      onRunCommand: handleAgentCatalogSelect,
+    });
+  },
+});
+
+registerCatalogTarget('agents', {
+  getContext: getAgentSlashContext,
+  onRunCommand: handleAgentCatalogSelect,
+});
+
 $('new').onclick = newChat;
 $('providers').replaceChildren(...Object.entries(labels).map(([key, label]) => {
-  const provider = button(label, () => { agent = key; $('quota-edit').open = false; render(); loadHistory(); loadQuota(); }, key === agent);
+  const provider = button(label, () => { agent = key; $('quota-edit').open = false; render(); loadHistory(); loadQuota(); agentSlashMenu?.refresh(); }, key === agent);
   provider.dataset.agent = key;
   return provider;
 }));
@@ -280,6 +682,7 @@ $('model').onchange = () => {
   picked.set(current()?.id, $('model').value);
   $('quota-edit').open = false;
   loadQuota();
+  agentSlashMenu?.refresh();
 };
 $('quota-refresh').onclick = () => loadQuota(true);
 $('quota-form').onsubmit = async (event) => {
@@ -296,7 +699,19 @@ $('quota-form').onsubmit = async (event) => {
     $('status').textContent = err.message;
   }
 };
-$('input').oninput = () => drafts.set(current()?.id, $('input').value);
+$('input').oninput = () => {
+  drafts.set(current()?.id, $('input').value);
+  updateAgentSendButton();
+};
+$('input').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !event.shiftKey && !agentSlashMenu?.isOpen()) {
+    const val = $('input').value.trim();
+    if (val.startsWith('/') && !val.includes('\n')) {
+      event.preventDefault();
+      send();
+    }
+  }
+});
 $('compose').onsubmit = (event) => { event.preventDefault(); send(); };
 $('retry').onclick = () => send(true);
 

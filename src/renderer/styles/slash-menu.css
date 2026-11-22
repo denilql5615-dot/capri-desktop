@@ -1,0 +1,778 @@
+/* Gemini Dark Slash Command Autocomplete, Draft Catalog Modal, and Slash Cards.
+ * Strictly follows unslop-gemini tokens: #131314 bg, #1E1F20 surface, #282A2C elevated/active pill,
+ * #E3E3E3 primary, #C4C7C5 secondary, #8E918F muted, rgba(255,255,255,0.08) hairlines, 4px grid. */
+
+.hud .gem-composer {
+  position: relative;
+}
+
+/* ---------- Header "Команды и навыки" button ---------- */
+.hud .panel__action.hud__catalog-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #1E1F20;
+  color: #C4C7C5;
+  font: 500 13px/1.2 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  text-transform: none;
+  letter-spacing: 0;
+  -webkit-app-region: no-drag;
+  transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+.hud .panel__action.hud__catalog-btn:hover:not(:disabled) {
+  background: #282A2C;
+  color: #E3E3E3;
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.hud__catalog-btn svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: currentColor;
+}
+
+/* ---------- Focus mode (/focus) ---------- */
+.hud.is-slash-focus {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.hud.is-slash-focus .hud__rail {
+  display: none;
+}
+
+.hud.is-slash-focus .hud__plate[data-tab='chats'],
+.hud.is-slash-focus .hud__plate[data-tab='agents'] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.hud.is-slash-focus .chats,
+.hud.is-slash-focus .agents__providers {
+  display: none;
+}
+
+/* ---------- Subtle slash state pills in meta header ---------- */
+.slash-state-pills {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.slash-state-pills:empty {
+  display: none;
+}
+
+.slash-state-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #1E1F20;
+  color: #C4C7C5;
+  font: 500 12px/1 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* ---------- Floating Slash Autocomplete Card ---------- */
+.slash-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 40;
+  max-height: 360px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px;
+  border-radius: 20px;
+  background: #1E1F20;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.48);
+  color: #E3E3E3;
+  font-family: var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  scrollbar-width: thin;
+  scrollbar-color: #3C4043 transparent;
+}
+
+.slash-menu[hidden] {
+  display: none !important;
+}
+
+.slash-menu::-webkit-scrollbar {
+  width: 6px;
+}
+
+.slash-menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.slash-menu::-webkit-scrollbar-thumb {
+  background: #3C4043;
+  border-radius: 999px;
+}
+
+.slash-menu__section + .slash-menu__section {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.slash-menu__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px 6px;
+  color: #8E918F;
+  font: 500 12px/1.3 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.slash-menu__section-stage {
+  color: #8E918F;
+  font-weight: 400;
+  font-size: 11px;
+}
+
+.slash-menu__row {
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: #E3E3E3;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  cursor: pointer;
+  font: 400 14px/1.3 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  text-transform: none;
+  letter-spacing: 0;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.slash-menu__row:hover,
+.slash-menu__row.is-active {
+  background: #282A2C;
+  color: #E3E3E3;
+}
+
+.slash-menu__row.is-draft {
+  opacity: 0.78;
+}
+
+.slash-menu__icon {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #C4C7C5;
+}
+
+.slash-menu__row.is-active .slash-menu__icon,
+.slash-menu__row:hover .slash-menu__icon {
+  color: #E3E3E3;
+}
+
+.slash-menu__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.slash-menu__title {
+  flex: none;
+  font-size: 14px;
+  font-weight: 500;
+  color: #E3E3E3;
+  white-space: nowrap;
+}
+
+.slash-menu__args {
+  flex: none;
+  font-size: 12px;
+  font-weight: 400;
+  color: #8E918F;
+  white-space: nowrap;
+}
+
+.slash-menu__desc {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 400;
+  color: #8E918F;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-menu__right {
+  flex: none;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.slash-menu__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #282A2C;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #C4C7C5;
+  font: 500 12px/1 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  white-space: nowrap;
+}
+
+.slash-menu__row.is-active .slash-menu__badge,
+.slash-menu__row:hover .slash-menu__badge {
+  background: #1E1F20;
+}
+
+.slash-menu__ring {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.slash-menu__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #A8C7FA;
+  flex: none;
+}
+
+.slash-menu__all-row {
+  width: 100%;
+  min-height: 36px;
+  margin-top: 2px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: #C4C7C5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  cursor: pointer;
+  font: 500 13px/1.3 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  text-transform: none;
+  letter-spacing: 0;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.slash-menu__all-row:hover,
+.slash-menu__all-row.is-active {
+  background: #282A2C;
+  color: #E3E3E3;
+}
+
+.slash-menu__all-count {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 400;
+  color: #8E918F;
+}
+
+.slash-menu__empty {
+  padding: 16px 12px;
+  color: #8E918F;
+  font-size: 13px;
+  text-align: center;
+}
+
+.slash-menu__chain-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: #8E918F;
+  font-size: 12px;
+}
+
+/* ---------- Inline Instant / BTW Output Card & Confirm Banner ---------- */
+.slash-dock {
+  width: min(100%, var(--hub-stream, 760px));
+  margin: 8px auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.slash-dock:empty {
+  display: none;
+}
+
+.slash-card {
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: #1E1F20;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #E3E3E3;
+  font-family: var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+}
+
+.slash-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.slash-card__icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: #C4C7C5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.slash-card__title {
+  font-size: 13px;
+  font-weight: 500;
+  color: #E3E3E3;
+}
+
+.slash-card__meta {
+  font-size: 12px;
+  font-weight: 400;
+  color: #8E918F;
+}
+
+.slash-card__actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.slash-card__btn {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: transparent;
+  color: #C4C7C5;
+  font: 500 12px/1 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.slash-card__btn:hover {
+  background: #282A2C;
+  color: #E3E3E3;
+}
+
+.slash-card__btn--icon {
+  width: 28px;
+  padding: 0;
+  border-color: transparent;
+}
+
+.slash-card__body {
+  margin: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #C4C7C5;
+  font: 400 13.5px/1.55 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  scrollbar-width: thin;
+  scrollbar-color: #3C4043 transparent;
+}
+
+.slash-card__body a {
+  color: #A8C7FA;
+  text-decoration: underline;
+}
+
+.slash-confirm {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: #1E1F20;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #E3E3E3;
+  font: 400 14px/1.4 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+}
+
+.slash-confirm__text {
+  flex: 1;
+  min-width: 180px;
+  color: #E3E3E3;
+}
+
+.slash-confirm__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* ---------- Full-Screen / Centered Draft Catalog Modal ---------- */
+.slash-catalog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  background: rgba(0, 0, 0, 0.68);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  font-family: var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+}
+
+.slash-catalog-backdrop[hidden] {
+  display: none !important;
+}
+
+.slash-catalog {
+  width: min(880px, 100%);
+  height: min(720px, 100%);
+  max-height: 100%;
+  background: #131314;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 24px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.64);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: #E3E3E3;
+}
+
+.slash-catalog__top {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 24px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.slash-catalog__bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.slash-catalog__close {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #C4C7C5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.slash-catalog__close:hover {
+  background: #282A2C;
+  color: #E3E3E3;
+}
+
+.slash-catalog__search-wrap {
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: #1E1F20;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #8E918F;
+  transition: border-color 140ms ease;
+}
+
+.slash-catalog__search-wrap:focus-within {
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.slash-catalog__search {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: #E3E3E3;
+  font: 400 14px/1.3 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  outline: none;
+}
+
+.slash-catalog__search::placeholder {
+  color: #8E918F;
+}
+
+.slash-catalog__tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+
+.slash-catalog__tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.slash-catalog__tab {
+  flex: none;
+  height: 36px;
+  padding: 0 16px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: #C4C7C5;
+  font: 500 14px/1 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.slash-catalog__tab:hover {
+  background: #1E1F20;
+  color: #E3E3E3;
+}
+
+.slash-catalog__tab.is-active {
+  background: #282A2C;
+  color: #E3E3E3;
+}
+
+.slash-catalog__tab-count {
+  font-size: 12px;
+  font-weight: 400;
+  color: #8E918F;
+}
+
+.slash-catalog__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 24px 24px;
+  scrollbar-width: thin;
+  scrollbar-color: #3C4043 transparent;
+}
+
+.slash-catalog__body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.slash-catalog__body::-webkit-scrollbar-thumb {
+  background: #3C4043;
+  border-radius: 999px;
+}
+
+.slash-catalog__hero {
+  margin-bottom: 20px;
+}
+
+.slash-catalog__title {
+  margin: 0 0 4px;
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1.25;
+  color: #E3E3E3;
+  letter-spacing: -0.01em;
+}
+
+.slash-catalog__subtitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.45;
+  color: #8E918F;
+}
+
+.slash-catalog__notice {
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #1E1F20;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #C4C7C5;
+  font-size: 13px;
+}
+
+.slash-catalog__notice[hidden] {
+  display: none !important;
+}
+
+.slash-catalog__group + .slash-catalog__group {
+  margin-top: 24px;
+}
+
+.slash-catalog__group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  padding: 0 4px;
+}
+
+.slash-catalog__group-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: #C4C7C5;
+}
+
+.slash-catalog__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.slash-catalog__item {
+  width: 100%;
+  min-height: 56px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 16px;
+  background: transparent;
+  color: #E3E3E3;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.slash-catalog__item:hover {
+  background: #1E1F20;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.slash-catalog__item.is-draft {
+  opacity: 0.82;
+}
+
+.slash-catalog__avatar {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 999px;
+  background: #282A2C;
+  color: #E3E3E3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.slash-catalog__item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.slash-catalog__item-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.slash-catalog__item-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: #E3E3E3;
+  white-space: nowrap;
+}
+
+.slash-catalog__item-slash {
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: #1E1F20;
+  color: #8E918F;
+  font: 400 12px/1.2 var(--gem-font-mono, ui-monospace, monospace);
+  white-space: nowrap;
+}
+
+.slash-catalog__item-desc {
+  font-size: 13px;
+  font-weight: 400;
+  color: #8E918F;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-catalog__item-right {
+  flex: none;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.slash-catalog__stage {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: #1E1F20;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #8E918F;
+  font-size: 12px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+}
+
+.slash-catalog__empty {
+  padding: 36px 16px;
+  text-align: center;
+  color: #8E918F;
+  font-size: 14px;
+}

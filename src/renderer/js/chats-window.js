@@ -5,6 +5,20 @@
 // text, never as markup: it can hold anything, a page's text she read out included.
 
 import { appendHubText } from './hub-links.js';
+import {
+  attachSlashMenu,
+  openCatalogModal,
+  openActiveCatalog,
+  registerCatalogTarget,
+  isInstantSlashCommand,
+  parseLeadingSlash,
+  ensureSlashDock,
+  showSlashCard,
+  showSlashConfirm,
+  normalizeSlashAction,
+  extractContextPct,
+  renderSlashStatePills,
+} from './slash-menu.js';
 
 const T = {
   ru: {
@@ -91,6 +105,56 @@ const modeLabel = () => modeLabels[chatMode];
 let streamed = '';    // her answer as it comes
 let asking = null;    // her question before an action on your PC: { line, grantable }
 let sure = false;     // delete clicked once
+let slashState = {};
+let contextPct = null;
+let slashMenu = null;
+const composeEl = $('.log__compose');
+const logMainEl = linesEl.closest('.log');
+const slashDock = ensureSlashDock(logMainEl, composeEl);
+const logMetaEl = $('.log__meta');
+
+function currentHistory() {
+  if (usesTool()) {
+    const turn = toolTurns.get(toolKey());
+    return [turn?.question, turn?.answer].filter(Boolean).map((m) => ({ role: m.role, content: m.content }));
+  }
+  const chat = chats.find((c) => c.id === current);
+  return (chat?.messages || []).map((m) => ({ role: m.role, content: m.content }));
+}
+
+function estimateContextPct() {
+  if (Number.isFinite(contextPct)) return contextPct;
+  const hist = currentHistory();
+  if (!hist.length) return 0;
+  const chars = hist.reduce((acc, m) => acc + String(m.content || '').length, 0);
+  return Math.min(100, Math.round((chars / 4 / 16384) * 100));
+}
+
+function lastAssistantReply() {
+  const hist = currentHistory();
+  for (let i = hist.length - 1; i >= 0; i--) {
+    if (hist[i].role === 'assistant' && hist[i].content) return hist[i].content;
+  }
+  return '';
+}
+
+function lastUserMessage() {
+  const hist = currentHistory();
+  for (let i = hist.length - 1; i >= 0; i--) {
+    if (hist[i].role === 'user' && hist[i].content) return hist[i].content;
+  }
+  return '';
+}
+
+function applySlashState(nextState) {
+  if (!nextState || typeof nextState !== 'object') return;
+  slashState = { ...slashState, ...nextState };
+  const hud = document.querySelector('.hud');
+  if (hud && typeof slashState.focus === 'boolean') {
+    hud.classList.toggle('is-slash-focus', slashState.focus);
+  }
+  renderSlashStatePills(logMetaEl, slashState);
+}
 
 const time = (at) => new Date(at).toLocaleTimeString(lang, { hour: '2-digit', minute: '2-digit' });
 function day(at) {
@@ -226,11 +290,13 @@ function renderLog({ keepScroll = false } = {}) {
 function renderControls() {
   const separate = usesTool();
   const active = separate ? toolBusy : busy;
-  input.disabled = active;
+  const instantReady = active && isInstantSlashCommand(input.value);
+  // Keep input enabled while active so instant slash commands (/status, /usage, /stop, ...) work immediately.
+  input.disabled = false;
   input.placeholder = chatMode === 'research' ? t.researchPrompt : t.placeholder;
-  sendBtn.textContent = active ? (readOnlyTool() ? t.checking : t.stop) : t.send;
-  sendBtn.disabled = separate && (toolStopping || (readOnlyTool() && active));
-  sendBtn.classList.toggle('is-danger', active && !readOnlyTool());
+  sendBtn.textContent = (active && !instantReady) ? (readOnlyTool() ? t.checking : t.stop) : t.send;
+  sendBtn.disabled = separate && !instantReady && (toolStopping || (readOnlyTool() && active));
+  sendBtn.classList.toggle('is-danger', active && !instantReady && !readOnlyTool());
   $('.log__mic').disabled = separate;
   $('.log__ask').hidden = separate || !asking;
   for (const mode of modeItems) {
@@ -301,6 +367,7 @@ function setChatMode(mode, nextTemporary) {
   temporary = nextTemporary;
   input.value = drafts.get(toolKey()) || '';
   hint(null);
+  slashMenu?.refresh();
   renderControls();
   renderLog();
   input.focus();
@@ -345,25 +412,13 @@ imageList.addEventListener('click', () => {
   renderControls();
 });
 
-$('.log__compose').addEventListener('submit', async (e) => {
-  e.preventDefault();
+async function sendPlainMessage(text) {
   if (usesTool()) {
     const research = chatMode === 'research';
-    if (toolBusy) {
-      if (toolStopping || readOnlyTool()) return;
-      toolStopping = true;
-      hint(research ? t.stopping : t.localStopping);
-      renderControls();
-      host.chatsStopTool();
-      return;
-    }
-    const text = input.value.trim();
-    if (!text && !attachedImages.length) return;
     const images = attachedImages.map(({ data }) => data);
     const content = [text, attachedImages.map(({ name }) => name).join(', ')].filter(Boolean).join('\n');
     attachedImages = [];
     imageSelection++;
-    input.value = '';
     const turn = { question: { role: 'user', content, at: Date.now() } };
     toolTurns.set(toolKey(), turn);
     toolBusy = true;
@@ -388,30 +443,34 @@ $('.log__compose').addEventListener('submit', async (e) => {
     }
     return;
   }
-  if (busy) return host.chatsStop();
-  const text = input.value.trim();
-  if (!text) return;
-  // on an old chat: your message goes to the live one (or a new one): shown there
-  input.value = '';
   hint(null);
   current = live;
   following = true;
   streamed = '';
   host.chatsSend(text);
-});
-$('.log__mic').addEventListener('click', () => host.chatsListen());
-$('.log__resume-go').addEventListener('click', () => {
-  if (!current) return;
-  following = true;
-  host.chatsResume(current);
-});
-$('.hud__new').addEventListener('click', () => {
+}
+
+function triggerStopActive() {
+  if (usesTool()) {
+    if (toolBusy && !toolStopping && !readOnlyTool()) {
+      toolStopping = true;
+      hint(chatMode === 'research' ? t.stopping : t.localStopping);
+      renderControls();
+      host.chatsStopTool();
+    }
+    return;
+  }
+  if (busy) host.chatsStop();
+}
+
+function triggerNewChat() {
   if (toolBusy) return;
   if (usesTool() && chatMode !== 'research') {
     toolTurns.delete(toolKey());
     attachedImages = [];
     imageSelection++;
     input.value = '';
+    contextPct = 0;
     hint(null);
     renderControls();
     renderLog();
@@ -421,11 +480,416 @@ $('.hud__new').addEventListener('click', () => {
   setChatMode('capri', false);
   current = null;
   following = true;
+  contextPct = 0;
   host.chatsNew();
   renderList();
   renderLog();
   input.focus();
+}
+
+async function runCompactFlow(focus = '', preCompacted = null) {
+  let res = preCompacted;
+  if (!res && typeof host.chatCompact === 'function') {
+    hint('Сжимаю контекст…');
+    try {
+      res = await host.chatCompact({
+        mode: chatMode,
+        ephemeral: temporary,
+        history: currentHistory(),
+        focus,
+      });
+    } catch (err) {
+      hint(err.message || 'Не удалось сжать контекст.');
+      return;
+    }
+  }
+  if (!res || res.error) {
+    hint(res?.error || 'Сжатие контекста недоступно.');
+    return;
+  }
+  const pct = extractContextPct(res.context);
+  if (pct !== null) contextPct = pct;
+  if (usesTool() && Array.isArray(res.history)) {
+    const lastTurn = res.history[res.history.length - 1];
+    toolTurns.set(toolKey(), {
+      answer: { role: 'assistant', content: res.summary || lastTurn?.content || 'Контекст сжат.', at: Date.now() },
+    });
+    renderLog();
+  } else {
+    await load();
+  }
+  const stats = Number.isFinite(res.droppedCount)
+    ? `Сжато сообщений: ${res.droppedCount}, оставлено: ${res.keptCount ?? ''}`.trim()
+    : 'Контекст обновлён';
+  hint(null);
+  showSlashCard(slashDock, {
+    title: '/compact',
+    meta: pct !== null ? `${stats} · ${pct}%` : stats,
+    icon: 'compact',
+    text: res.summary || 'Ранняя часть разговора свёрнута в конспект.',
+    formatBody: (node, txt) => appendHubText(node, txt),
+  });
+  slashMenu?.refresh();
+}
+
+async function runBtwSideQuestion(questionText, preReply = '') {
+  if (preReply) {
+    showSlashCard(slashDock, {
+      title: '/btw',
+      meta: 'В стороне · без записи в историю',
+      icon: 'message',
+      text: preReply,
+      formatBody: (node, txt) => appendHubText(node, txt),
+    });
+    return;
+  }
+  if (!questionText) return;
+  showSlashCard(slashDock, {
+    title: '/btw',
+    meta: 'Отвечаю без записи в историю…',
+    icon: 'message',
+    text: 'Запрашиваю ответ…',
+  });
+  try {
+    const res = await host.chatsRunTool({ text: questionText, mode: chatMode, ephemeral: true });
+    showSlashCard(slashDock, {
+      title: '/btw',
+      meta: 'В стороне · без записи в историю',
+      icon: 'message',
+      text: res?.reply || 'Нет ответа.',
+      formatBody: (node, txt) => appendHubText(node, txt),
+    });
+  } catch (err) {
+    showSlashCard(slashDock, {
+      title: '/btw',
+      meta: 'Ошибка',
+      icon: 'message',
+      text: err.message || 'Не удалось получить ответ.',
+    });
+  }
+}
+
+async function executeSlashCommand(rawText, { confirm = false } = {}) {
+  const parsed = parseLeadingSlash(rawText);
+  if (!parsed) return false;
+  const cmdName = parsed.cmd;
+  const isInstant = isInstantSlashCommand(rawText);
+
+  if (typeof host.commandsRun !== 'function') {
+    // Graceful local fallback if backend IPC isn't ready yet
+    if (cmdName === 'stop') { triggerStopActive(); return true; }
+    if (cmdName === 'new' || cmdName === 'clear') { triggerNewChat(); return true; }
+    if (cmdName === 'focus') { applySlashState({ focus: !slashState.focus }); return true; }
+    if (cmdName === 'copy') {
+      const reply = lastAssistantReply();
+      if (reply) { host.chatsCopy(reply); hint(t.copied); }
+      return true;
+    }
+    if (cmdName === 'retry') {
+      const prev = lastUserMessage();
+      if (prev && !busy && !toolBusy) await sendPlainMessage(prev);
+      return true;
+    }
+    if (cmdName === 'help' || cmdName === 'skills') {
+      openActiveCatalog(cmdName === 'skills' ? 'skills' : 'commands');
+      return true;
+    }
+    return false;
+  }
+
+  let result;
+  try {
+    result = await host.commandsRun({
+      text: rawText,
+      mode: chatMode,
+      ephemeral: temporary,
+      sessionId: current || live || null,
+      history: currentHistory(),
+      confirm,
+    });
+  } catch (err) {
+    hint(err.message || 'Не удалось выполнить команду.');
+    return true;
+  }
+
+  if (!result) return false;
+  if (result.error) {
+    hint(result.error);
+    return true;
+  }
+
+  if (result.state) applySlashState(result.state);
+  const nextPct = extractContextPct(result.context);
+  if (nextPct !== null) contextPct = nextPct;
+
+  if (result.confirmRequired) {
+    showSlashConfirm(slashDock, {
+      text: result.reply || 'Удалить текущий разговор навсегда?',
+      confirmLabel: 'Удалить',
+      cancelLabel: 'Отмена',
+      onConfirm: () => { executeSlashCommand(rawText, { confirm: true }); },
+      onCancel: () => { hint('Удаление отменено.'); },
+    });
+    return true;
+  }
+
+  const act = normalizeSlashAction(result.action);
+  const actType = act?.type || '';
+
+  if (actType === 'open-catalog') {
+    openCatalogModal({
+      initialTab: act.tab || result.tab || 'commands',
+      getContext: getChatsSlashContext,
+      onRunCommand: handleCatalogSelect,
+    });
+    return true;
+  }
+
+  if (actType === 'stop') {
+    triggerStopActive();
+    if (result.reply) hint(result.reply);
+    return true;
+  }
+
+  if (actType === 'new' || actType === 'clear') {
+    triggerNewChat();
+    if (result.reply) hint(result.reply);
+    return true;
+  }
+
+  if (actType === 'retry') {
+    const prev = act.text || lastUserMessage();
+    if (!prev) {
+      hint('Нет сообщения для повтора.');
+      return true;
+    }
+    if (!busy && !toolBusy) await sendPlainMessage(prev);
+    return true;
+  }
+
+  if (actType === 'copy') {
+    const toCopy = act.text || lastAssistantReply() || result.reply || '';
+    if (toCopy) {
+      host.chatsCopy(toCopy);
+      hint(result.reply || t.copied);
+    } else {
+      hint('Нечего копировать.');
+    }
+    return true;
+  }
+
+  if (actType === 'compact' || result.compacted) {
+    await runCompactFlow(act?.focus || parsed.rest, result.compacted || null);
+    return true;
+  }
+
+  if (actType === 'focus') {
+    const nextFocus = typeof act.value === 'boolean' ? act.value : (typeof result.state?.focus === 'boolean' ? result.state.focus : !slashState.focus);
+    applySlashState({ focus: nextFocus });
+    if (result.reply) hint(result.reply);
+    return true;
+  }
+
+  if (['plan-mode', 'effort', 'temp', 'output-style', 'advisor', 'autocompact', 'pet'].includes(actType)) {
+    if (result.reply) hint(result.reply);
+    slashMenu?.refresh();
+    return true;
+  }
+
+  if (actType === 'model') {
+    if (act.mode && ['capri', 'task', 'private', 'nsfw', 'research'].includes(act.mode)) {
+      setChatMode(act.mode, temporary && act.mode !== 'research');
+    }
+    if (result.reply) hint(result.reply);
+    slashMenu?.refresh();
+    return true;
+  }
+
+  if (['rename', 'pin', 'archive'].includes(actType)) {
+    await load();
+    if (result.reply) hint(result.reply);
+    return true;
+  }
+
+  if (actType === 'delete') {
+    const targetId = act.id || current;
+    if (targetId && !act.deleted) host.chatsDelete(targetId);
+    current = null;
+    following = true;
+    await load();
+    if (result.reply) hint(result.reply);
+    return true;
+  }
+
+  if (actType === 'fork') {
+    await load();
+    const forkedId = act.sessionId || act.id;
+    if (forkedId) show(forkedId);
+    if (result.reply) hint(result.reply);
+    return true;
+  }
+
+  if (actType === 'btw' || cmdName === 'btw') {
+    const rewrite = typeof result.promptRewrite === 'string'
+      ? result.promptRewrite
+      : (result.promptRewrite?.text || result.promptRewrite?.prompt || parsed.rest);
+    await runBtwSideQuestion(rewrite, result.reply || '');
+    return true;
+  }
+
+  if (result.promptRewrite) {
+    const rewriteText = typeof result.promptRewrite === 'string'
+      ? result.promptRewrite
+      : (result.promptRewrite.text || result.promptRewrite.prompt || '');
+    const targetMode = result.promptRewrite.mode || act?.mode;
+    if (targetMode && ['capri', 'task', 'private', 'nsfw', 'research', 'search', 'pim'].includes(targetMode)) {
+      if (!(temporary && ['research', 'search', 'pim'].includes(targetMode))) {
+        setChatMode(targetMode, temporary);
+      }
+    }
+    if (rewriteText) {
+      const active = usesTool() ? toolBusy : busy;
+      if (active) {
+        hint(t.busy);
+        return true;
+      }
+      await sendPlainMessage(rewriteText);
+      return true;
+    }
+  }
+
+  if (result.handled) {
+    if (result.reply) {
+      if (isInstant || result.instant || result.reply.includes('\n') || result.reply.length > 100) {
+        showSlashCard(slashDock, {
+          title: `/${cmdName}`,
+          meta: nextPct !== null ? `Контекст: ${nextPct}%` : '',
+          icon: cmdName,
+          text: result.reply,
+          formatBody: (node, txt) => appendHubText(node, txt),
+        });
+        hint(null);
+      } else {
+        hint(result.reply);
+      }
+    }
+    if (cmdName === 'reload-skills') slashMenu?.refresh();
+    return true;
+  }
+
+  return false;
+}
+
+function getChatsSlashContext() {
+  return {
+    mode: chatMode,
+    ephemeral: temporary,
+    agent: null,
+    pct: estimateContextPct(),
+  };
+}
+
+function handleCatalogSelect(it) {
+  const slash = it.slash || `/${it.name}`;
+  const needsArgs = it.kind === 'skill' || it.kind === 'prompt' || (it.argsHint && String(it.argsHint).trim().startsWith('<'));
+  if (needsArgs) {
+    const prev = input.value.trim();
+    input.value = prev ? `${slash} ${prev}` : `${slash} `;
+    input.focus();
+    renderControls();
+    return;
+  }
+  input.value = '';
+  renderControls();
+  executeSlashCommand(slash);
+}
+
+slashMenu = attachSlashMenu({
+  input,
+  container: composeEl,
+  getContext: getChatsSlashContext,
+  onSelectItem: (it, { runImmediately }) => {
+    renderControls();
+    if (runImmediately) {
+      const text = input.value.trim() || it.slash || `/${it.name}`;
+      input.value = '';
+      renderControls();
+      executeSlashCommand(text);
+    }
+  },
+  onOpenCatalog: (tabId) => {
+    openCatalogModal({
+      initialTab: tabId,
+      getContext: getChatsSlashContext,
+      onRunCommand: handleCatalogSelect,
+    });
+  },
 });
+
+registerCatalogTarget('chats', {
+  getContext: getChatsSlashContext,
+  onRunCommand: handleCatalogSelect,
+});
+
+const catalogBtn = document.querySelector('.hud__catalog-btn');
+if (catalogBtn) {
+  catalogBtn.addEventListener('click', () => openActiveCatalog('commands'));
+}
+
+input.addEventListener('input', () => {
+  if (busy || toolBusy) renderControls();
+});
+
+composeEl.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = input.value.trim();
+  const separate = usesTool();
+  const active = separate ? toolBusy : busy;
+
+  // CRITICAL: Instant slash commands execute IMMEDIATELY even while busy or toolBusy!
+  if (text && isInstantSlashCommand(text)) {
+    input.value = '';
+    slashMenu?.close();
+    renderControls();
+    await executeSlashCommand(text);
+    return;
+  }
+
+  if (active) {
+    if (!text) {
+      triggerStopActive();
+      return;
+    }
+    hint(t.busy);
+    return;
+  }
+
+  if (text.startsWith('/')) {
+    input.value = '';
+    slashMenu?.close();
+    renderControls();
+    const handled = await executeSlashCommand(text);
+    if (handled) return;
+    // Unrecognized slash text falls through as normal message
+  }
+
+  if (separate) {
+    if (!text && !attachedImages.length) return;
+    input.value = '';
+    await sendPlainMessage(text);
+    return;
+  }
+  if (!text) return;
+  input.value = '';
+  await sendPlainMessage(text);
+});
+$('.log__mic').addEventListener('click', () => host.chatsListen());
+$('.log__resume-go').addEventListener('click', () => {
+  if (!current) return;
+  following = true;
+  host.chatsResume(current);
+});
+$('.hud__new').addEventListener('click', triggerNewChat);
 delBtn.addEventListener('click', () => {
   if (!current) return;
   if (!sure) {
