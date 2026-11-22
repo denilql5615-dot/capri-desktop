@@ -181,3 +181,17 @@ test('analysisMode triggers at >4000 chars or phrase, uses 2048 budget, and obey
   assert.deepEqual(analysisMode(baseCfg, { rolesReady: false, auto: true, tor: false, text: 'разбери документ' }), { active: false, numPredict: undefined });
   assert.deepEqual(analysisMode(baseCfg, { rolesReady: true, auto: false, tor: false, text: 'разбери документ' }), { active: false, numPredict: undefined });
 });
+
+test('use(main) unloads extraneous loaded models from loadedModels and falls back to selected when null', async () => {
+  const { brains, calls } = fake();
+  brains.ollama.loadedModels = async () => ['capri-qwen36-heretic:latest', FAST];
+  brains.ollama.unload = async (m) => { calls.push(['unload', m]); return true; };
+  assert.equal(await brains.use('main'), MAIN);
+  assert.deepEqual(calls, [['unload', 'capri-qwen36-heretic:latest'], ['unload', FAST]]);
+
+  const fallback = fake();
+  fallback.brains.ollama.loadedModels = async () => null;
+  fallback.brains.ollama.unload = async (m) => { fallback.calls.push(['unload', m]); return true; };
+  assert.equal(await fallback.brains.use('main'), MAIN);
+  assert.deepEqual(fallback.calls, [['unload', FAST]]);
+});

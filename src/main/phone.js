@@ -3,7 +3,8 @@
 // ALTAI:RE phone bridge (wire-compatible with Bridge.kt & GENESIS):
 //   GET  /ping                    -> { ok, pose, sprites }
 //   GET  /suggestions?mode=...    -> { mode, items: [{ title, prompt }], cachedAt } (E4B cached 45m)
-//   POST /chat { text, voice, ephemeral?, mode?, skills?, tool? } -> { reply, brain, pose, audio?, image? }
+//   POST /chat { text, voice, requestId?, ephemeral?, mode?, skills?, tool? } -> { reply, brain, pose, audio?, image? }
+//   GET  /chat/status?requestId=... / POST /chat/stop { requestId } -> { state }
 //   POST /deep-research { query } -> { reply, workers, rector, obsidianPath? }
 //   POST /event { kind }          -> { ok }
 //   GET  /audio/<id>              -> mp3
@@ -22,6 +23,11 @@ const MAX_RESEARCH_REPORT_BYTES = 256 * 1024;
 const AUDIO_TTL_MS = 10 * 60 * 1000;
 const AUDIO_MAX = 20;
 const TURNS = 12;
+const CHAT_REQUEST_LIMIT = 64;
+const CHAT_REQUEST_TTL_MS = 20 * 60 * 1000;
+const ISOLATED_CHAT_REQUEST_TTL_MS = 2 * 60 * 1000;
+const CHAT_STOPPED = { reply: 'Запрос остановлен.', brain: 'stopped', pose: '' };
+const CHAT_ABORTED = { ...CHAT_STOPPED, brain: 'error' };
 const { PHONE_MODEL_KEYS } = require('./phone-model');
 const SUGGESTIONS_TTL_MS = 45 * 60 * 1000; // 45 минут кэша подсказок от E4B
 const WORKER_COOLDOWN_MS = 30 * 60 * 1000; // 30 минут кулдауна для уставших воркеров Deep Research
@@ -52,7 +58,8 @@ function addresses(port) {
 }
 
 const PHONE_NOTE = 'Канал: телефон (ALTAI:RE). Соразмеряй ответ с запросом: бытовая реплика коротко, сложная задача с нужными деталями. '
-  + 'Ничего опасного на ПК самовольно не запускай без подтверждения.';
+  + 'Ничего опасного на ПК самовольно не запускай без подтверждения. '
+  + 'Никогда не утверждай, что записала заметку, создала задачу, нашла данные в Vault или передала работу агенту, если в контексте нет явного результата этого инструмента.';
 
 const SKILL_NOTES = {
   'i-have-adhd': 'Режим i-have-adhd: сначала дай конкретный следующий шаг, потом нумерованные пункты, без длинных вступлений и отвлечений.',
@@ -61,29 +68,264 @@ const SKILL_NOTES = {
 
 const DEFAULT_SUGGESTIONS = {
   chat: [
-    { title: 'Что горит по делам и календарю', prompt: 'Проверь мои ближайшие планы, календарь и важные заметки в памяти' },
-    { title: 'Продолжить последнюю тему из чатов', prompt: 'Вспомни о чём мы говорили в последний раз и предложи следующий шаг' },
-    { title: 'Быстрый разбор новой идеи', prompt: 'Разбери мою идею по полочкам: плюсы, риски и что проверить первым' },
+    [
+      { title: 'Что горит по делам и календарю', prompt: 'Проверь мои ближайшие планы, календарь и важные заметки в памяти' },
+      { title: 'Продолжить последнюю тему из чатов', prompt: 'Вспомни о чём мы говорили в последний раз и предложи следующий шаг' },
+      { title: 'Быстрый разбор новой идеи', prompt: 'Разбери мою идею по полочкам: плюсы, риски и что проверить первым' },
+    ],
+    [
+      { title: 'Сводка свежих писем и встреч', prompt: 'Покажи свежие письма и что запланировано на сегодня' },
+      { title: 'Проверить активные напоминания', prompt: 'Какие у меня сейчас активные напоминания и задачи в планировщике' },
+      { title: 'Короткий план на вечер', prompt: 'Помоги набросать короткий реалистичный план на остаток дня' },
+    ],
+    [
+      { title: 'Что нового в заметках памяти', prompt: 'Найди в обсидиане последние заметки по моим текущим проектам' },
+      { title: 'Разобрать спорное решение', prompt: 'Проверь моё решение на слабые места и скрытые допущения' },
+      { title: 'Статус ноутбука и ресурсов', prompt: 'Покажи статус ПК: память, видеокарта и свободное место на дисках' },
+    ],
+    [
+      { title: 'Сформулировать короткое сообщение', prompt: 'Помоги написать короткое деловое сообщение без воды и штампов' },
+      { title: 'Сравнить два варианта действий', prompt: 'Сравни два варианта: что быстрее, что надёжнее и где меньше рисков' },
+      { title: 'Что сейчас играет на ПК', prompt: 'Какая сейчас музыка играет на ноутбуке' },
+    ],
+    [
+      { title: 'Быстрая проверка факта', prompt: 'Объясни простыми словами суть вопроса и выдели проверенные факты' },
+      { title: 'Напомнить о важном деле', prompt: 'Напомни через 30 минут проверить сборку и тесты' },
+      { title: 'Разгрузить голову на три шага', prompt: 'Разбей мою текущую загрузку на три простых последовательных шага' },
+    ],
+    [
+      { title: 'Итоги дня по проектам', prompt: 'Помоги подвести короткий итог того, что сделано за сегодня' },
+      { title: 'Проверить свободные окна завтра', prompt: 'Какие планы у меня на завтра и когда есть свободное окно' },
+      { title: 'Оценить идею без поддакивания', prompt: 'Критически оцени идею: где логика хромает и что может пойти не так' },
+    ],
+    [
+      { title: 'Найти договорённости в базе', prompt: 'Найди в обсидиане мои последние договорённости и правила' },
+      { title: 'Собрать вопросы к созвону', prompt: 'Помоги составить 5 точных вопросов для предстоящего обсуждения' },
+      { title: 'Проверить очередь агентов в Хабе', prompt: 'Чем сейчас заняты агенты в Хабе' },
+    ],
+    [
+      { title: 'Краткий конспект длинной мысли', prompt: 'Сожми мою мысль до трёх ясных тезисов без потери смысла' },
+      { title: 'Что по плану ALTA', prompt: 'Что там по плану ALTA и какие ближайшие вехи' },
+      { title: 'Освободить память видеокарты', prompt: 'Освободи память и проверь сколько свободно VRAM' },
+    ],
+    [
+      { title: 'Разобрать плюсы и минусы покупки', prompt: 'Сделай трезвый разбор характеристик и слабых мест перед покупкой' },
+      { title: 'Планы на ближайшую неделю', prompt: 'Покажи моё расписание и задачи на ближайшую неделю' },
+      { title: 'Зафиксировать новую заметку', prompt: 'Запомни ключевой факт из нашего сегодняшнего разговора' },
+    ],
+    [
+      { title: 'Быстрый старт рабочего спринта', prompt: 'Выдели одну главную задачу на ближайший час, чтобы не распыляться' },
+      { title: 'Проверить буфер обмена ПК', prompt: 'Что сейчас лежит в буфере обмена ПК' },
+      { title: 'Сверить аргументы перед спором', prompt: 'Проверь мои аргументы на логические дыры и подскажи контрдоводы' },
+    ],
   ],
   task: [
-    { title: 'Разобрать свежий дифф и тесты проекта', prompt: 'Посмотри последние изменения в репозитории и подскажи, где могут быть баги' },
-    { title: 'Собрать план закрытия задач по ALTA', prompt: 'Составь чёткий план действий на сегодня по приоритетам' },
-    { title: 'Проверить логи и память за неделю', prompt: 'Подними свежие записи из памяти и выдели главное' },
+    [
+      { title: 'Разобрать свежий дифф и тесты проекта', prompt: 'Посмотри последние изменения в репозитории и подскажи, где могут быть баги' },
+      { title: 'Собрать план закрытия задач по ALTA', prompt: 'Составь чёткий план действий на сегодня по приоритетам' },
+      { title: 'Проверить логи и память за неделю', prompt: 'Подними свежие записи из памяти и выдели главное' },
+    ],
+    [
+      { title: 'Найти причину падения теста', prompt: 'Разбери стек ошибки и назови точную причину падения и минимальный фикс' },
+      { title: 'Проверить краевые случаи модуля', prompt: 'Перечисли узкие места и пограничные случаи, которые нужно покрыть тестами' },
+      { title: 'Сверить контракт API и типов', prompt: 'Проверь совместимость полей запроса и ответа между клиентом и сервером' },
+    ],
+    [
+      { title: 'Декомпозировать фичу на диффы', prompt: 'Разбей задачу на маленькие независимые шаги без лишнего рефакторинга' },
+      { title: 'Аудит утечек памяти и таймеров', prompt: 'Проверь жизненный цикл подписок, таймеров и кэшей на утечки' },
+      { title: 'Собрать чек-лист приёмки этапа', prompt: 'Составь конкретный список проверок для приёмки текущей задачи' },
+    ],
+    [
+      { title: 'Ревью обработки сетевых ошибок', prompt: 'Проверь таймауты, повторы и отмену запросов при обрыве соединения' },
+      { title: 'Упростить сложную функцию', prompt: 'Предложи как упростить логику без создания лишних абстракций' },
+      { title: 'Проверить изоляцию состояний чата', prompt: 'Убедись, что переключение режимов и моделей не смешивает состояние' },
+    ],
+    [
+      { title: 'Написать минимальный регрессионный тест', prompt: 'Набросай точечный тест, который воспроизводит баг и страхует фикс' },
+      { title: 'Разобрать узкое место по VRAM/ОЗУ', prompt: 'Оцени расход памяти и предложи как избежать двойной загрузки моделей' },
+      { title: 'Сверить правила безопасности и путей', prompt: 'Проверь валидацию путей, границ каталогов и экранирование ввода' },
+    ],
+    [
+      { title: 'Подготовить сводку по коммитам', prompt: 'Собери краткую техническую сводку изменений для рабочего журнала' },
+      { title: 'Проверить кодировку и парсинг JSON', prompt: 'Проверь обработку неполных чанков, UTF-8 и пустых ответов в потоке' },
+      { title: 'Оценить риски миграции конфига', prompt: 'Проверь обратную совместимость новых полей конфига со старыми данными' },
+    ],
+    [
+      { title: 'Разобрать гонку асинхронных вызовов', prompt: 'Найди потенциальную гонку между очередью запросов и кнопкой отмены' },
+      { title: 'Сверить UI-состояния с бэкендом', prompt: 'Проверь, чтобы индикаторы загрузки и ошибок точно отражали ответ сервера' },
+      { title: 'Отфильтровать устаревшие задачи', prompt: 'Сверь список открытых задач с тем, что уже закрыто в коде' },
+    ],
+    [
+      { title: 'Проверить работу офлайн-сборки', prompt: 'Что нужно проверить перед запуском профильной офлайн-сборки и тестов' },
+      { title: 'Анализ производительности рендера', prompt: 'Найди лишние перерисовки и блокировки главного потока в интерфейсе' },
+      { title: 'Собрать ТЗ на исправление бага', prompt: 'Оформи чёткое описание бага: файл, строка, причина и ожидаемое поведение' },
+    ],
+    [
+      { title: 'Проверить идемпотентность повтора', prompt: 'Убедись, что повтор запроса с тем же ID не создаёт дублей в истории' },
+      { title: 'Ревью структуры хранения заметок', prompt: 'Проверь атомарность записи файлов и защиту от повреждения при сбое' },
+      { title: 'Сформировать план стендовых проверок', prompt: 'Составь порядок проверки сценариев на живом стенде ПК и телефона' },
+    ],
+    [
+      { title: 'Найти расхождения со спецификацией', prompt: 'Сравни текущую реализацию с требованиями этапа и выпиши пробелы' },
+      { title: 'Проверить очистку временных ресурсов', prompt: 'Проверь удаление временных файлов и закрытие дескрипторов в finally' },
+      { title: 'Подготовить финальный отчёт этапа', prompt: 'Собери итог: что исправлено, какие тесты прошли и что осталось проверить' },
+    ],
   ],
   cloud: [
-    { title: 'Архитектурное ревью текущего этапа', prompt: 'Проведи жёсткое архитектурное ревью моего текущего решения' },
-    { title: 'Проверить свежие релизы и бенчмарки', prompt: 'Найди свежие релизы и сравнения моделей по моей задаче' },
-    { title: 'Собрать ТЗ и промпт для агента', prompt: 'Помоги сформулировать точное ТЗ с критериями приёмки' },
+    [
+      { title: 'Архитектурное ревью текущего этапа', prompt: 'Проведи жёсткое архитектурное ревью моего текущего решения' },
+      { title: 'Проверить свежие релизы и бенчмарки', prompt: 'Найди свежие релизы и сравнения моделей по моей задаче' },
+      { title: 'Собрать ТЗ и промпт для агента', prompt: 'Помоги сформулировать точное ТЗ с критериями приёмки' },
+    ],
+    [
+      { title: 'Глубокий аудит безопасности кода', prompt: 'Проверь архитектуру на векторы атак, утечки данных и обход границ' },
+      { title: 'Сравнить подходы в индустрии', prompt: 'Сравни как эта задача решается в современных продакшен-системах' },
+      { title: 'Спроектировать контракт протокола', prompt: 'Разработай минималистичный и надёжный протокол обмена с обработкой сбоев' },
+    ],
+    [
+      { title: 'Найти корневую причину сложного бага', prompt: 'Проанализируй симптомы и выдвини ранжированные гипотезы причины сбоя' },
+      { title: 'Оптимизировать пайплайн инференса', prompt: 'Предложи настройки контекста, батчинга и квантования под 8 ГБ VRAM' },
+      { title: 'Составить план рефакторинга модуля', prompt: 'Напиши пошаговый план распутывания зависимостей без поломки тестов' },
+    ],
+    [
+      { title: 'Проверить математику и алгоритмы', prompt: 'Проверь формулы скоринга, весов и ранжирования на вырожденные случаи' },
+      { title: 'Синтез выводов из нескольких докладов', prompt: 'Сведи разные точки зрения в один проверенный отчёт с таблицей рисков' },
+      { title: 'Ревью UX и сценариев отказа', prompt: 'Проверь пользовательский путь при потере сети, таймауте и нехватке квот' },
+    ],
+    [
+      { title: 'Разбор документации нового API', prompt: 'Выдели главное из спецификации API: лимиты, форматы и подводные камни' },
+      { title: 'Подготовить питч или описание релиза', prompt: 'Напиши живое и точное описание проекта без рекламных штампов' },
+      { title: 'Оценить сложность и риски фичи', prompt: 'Оцени трудоёмкость, скрытые зависимости и точки возможного отказа' },
+    ],
+    [
+      { title: 'Сравнить модели под конкретную роль', prompt: 'Сравни точность, стоимость квот и скорость моделей для моей задачи' },
+      { title: 'Построить матрицу тестовых сценариев', prompt: 'Составь полную матрицу позитивных, негативных и нагрузочных тестов' },
+      { title: 'Проверить устойчивость к инъекциям', prompt: 'Оцени защиту пайплайна от prompt-injection при чтении внешних текстов' },
+    ],
+    [
+      { title: 'Разработать схему миграции данных', prompt: 'Предложи безопасную схему обновления формата хранения с откатом' },
+      { title: 'Анализ геймдизайна и баланса', prompt: 'Разбери механику, кривую сложности и удержание игрока на узкие места' },
+      { title: 'Сформировать контракт для роя агентов', prompt: 'Опиши роли, входные данные и критерии готовности для параллельных воркеров' },
+    ],
+    [
+      { title: 'Найти узкие места в сетевом стеке', prompt: 'Проанализируй задержки, ретраи и сериализацию между телефоном и ПК' },
+      { title: 'Критическая проверка бизнес-логики', prompt: 'Найди противоречия в правилах и случаях пересечения нескольких режимов' },
+      { title: 'Собрать эталонный системный промпт', prompt: 'Напиши компактный системный промпт с жёсткими границами и без воды' },
+    ],
+    [
+      { title: 'Проверить совместимость Android 16', prompt: 'Какие ограничения фоновой работы, сети и разрешений нужно учесть на Android 16' },
+      { title: 'Разбор архитектуры RAG и памяти', prompt: 'Оцени схему индексации, дедупликации и фильтрации карточек памяти' },
+      { title: 'Подготовить план релизной сборки', prompt: 'Составь чек-лист подписи, проверки APK и валидации перед установкой' },
+    ],
+    [
+      { title: 'Постмортем прошедшего инцидента', prompt: 'Собери структурный постмортем: хронология, корень проблемы и защита на будущее' },
+      { title: 'Сравнить библиотеки и зависимости', prompt: 'Оцени стоит ли брать внешнюю зависимость или проще написать 30 строк' },
+      { title: 'Итоговое ревью перед слиянием ветки', prompt: 'Проверь чистоту диффа, покрытие тестами и соблюдение всех инвариантов' },
+    ],
   ],
   private: [
-    { title: 'Поиск по изолированному Vault', prompt: 'Найди в моём изолированном Vault заметки по теме' },
-    { title: 'Разобрать чувствительный вопрос локально', prompt: 'Разберём вопрос строго локально, без выхода в облако' },
-    { title: 'Свести личные заметки в один план', prompt: 'Собери мои локальные заметки в структурированный список' },
+    [
+      { title: 'Поиск по изолированному Vault', prompt: 'Найди в моём изолированном Vault заметки по теме' },
+      { title: 'Разобрать чувствительный вопрос локально', prompt: 'Разберём вопрос строго локально, без выхода в облако' },
+      { title: 'Свести личные заметки в один план', prompt: 'Собери мои локальные заметки в структурированный список' },
+    ],
+    [
+      { title: 'Проверить закрытые записи по проекту', prompt: 'Подними из приватного Vault материалы и выдели ключевые даты' },
+      { title: 'Анализ документа в закрытом контуре', prompt: 'Разбери текст строго на локальной модели без внешней отправки' },
+      { title: 'Сверить факты внутри приватного архива', prompt: 'Найди противоречия или устаревшие пункты в моих закрытых заметках' },
+    ],
+    [
+      { title: 'Составить приватную сводку решений', prompt: 'Собери принятые решения из изолированного Vault в короткую памятку' },
+      { title: 'Оценить риски opsec и утечек', prompt: 'Проверь мой план на возможные точки утечки метаданных или ключей' },
+      { title: 'Структурировать черновик в карточку', prompt: 'Оформи мои сырые мысли в чистую локальную карточку для приватного Vault' },
+    ],
+    [
+      { title: 'Найти связанные темы в закрытой базе', prompt: 'Какие ещё записи в приватном Vault связаны с этим вопросом' },
+      { title: 'Локальный разбор личной дилеммы', prompt: 'Помоги взвесить за и против в личном вопросе без сохранения в общий лог' },
+      { title: 'Проверить полноту приватного конспекта', prompt: 'Чего не хватает в моих закрытых заметках по этой теме' },
+    ],
+    [
+      { title: 'Сжать приватные записи до тезисов', prompt: 'Выжми главные выводы из найденных в приватном Vault заметок' },
+      { title: 'Локальная проверка конфигов и путей', prompt: 'Проверь настройки на отсутствие пересечений с общими папками и облаком' },
+      { title: 'Подготовить закрытый список вопросов', prompt: 'Составь список вопросов для личной проверки без внешних ссылок' },
+    ],
+    [
+      { title: 'Поиск по старым записям сейфа', prompt: 'Найди в приватном Vault упоминания и контекст по ключевому слову' },
+      { title: 'Разобрать финансовый или личный расчёт', prompt: 'Проверь цифры и логику расчёта строго на локальной модели' },
+      { title: 'Собрать хронологию из закрытых заметок', prompt: 'Выстрой события и заметки из приватного Vault в хронологическом порядке' },
+    ],
+    [
+      { title: 'Аудит границ приватного хранения', prompt: 'Перечисли какие данные остаются только в приватном Vault и что блокируется' },
+      { title: 'Редактура личного текста офлайн', prompt: 'Вычитай и улучши мой черновик локально без отправки на внешние серверы' },
+      { title: 'Выделить приоритеты из личного архива', prompt: 'Отранжируй мои закрытые задачи по важности и срочности' },
+    ],
+    [
+      { title: 'Сравнить две версии приватной заметки', prompt: 'Покажи в чём разница между подходами в моих локальных записях' },
+      { title: 'Локальный мозговой штурм в тишине', prompt: 'Предложи три нетривиальных хода по моей задаче внутри закрытого контура' },
+      { title: 'Проверить зависимости личного плана', prompt: 'Какие шаги в моём приватном плане блокируют друг друга' },
+    ],
+    [
+      { title: 'Подготовить тезисы для закрытой памятки', prompt: 'Сформулируй чёткие правила и памятку для сохранения в приватный Vault' },
+      { title: 'Найти пробелы в локальной базе знаний', prompt: 'Какие темы в моём приватном Vault описаны неполно и требуют уточнения' },
+      { title: 'Разбор чувствительного лога офлайн', prompt: 'Проанализируй фрагмент лога локально и укажи на аномалии' },
+    ],
+    [
+      { title: 'Итоговая выжимка по закрытой теме', prompt: 'Собери финальную сводку по теме только из материалов приватного Vault' },
+      { title: 'Проверить гипотезу на локальных данных', prompt: 'Подтверждают ли записи в моём приватном Vault эту гипотезу' },
+      { title: 'Очистить план от лишних деталей', prompt: 'Оставь в моём локальном плане только конкретные проверяемые действия' },
+    ],
   ],
   nsfw: [
-    { title: 'Продолжить сцену с того же места', prompt: 'Продолжи нашу последнюю сцену, сохраняя характер и тон' },
-    { title: 'Задать новый сеттинг и правила', prompt: 'Давай зададим новый сеттинг и персонажей для сцены' },
-    { title: 'Свободный разговор без тормозов', prompt: 'Поболтаем свободно, без лишних ограничений' },
+    [
+      { title: 'Продолжить сцену с того же места', prompt: 'Продолжи нашу последнюю сцену, сохраняя характер и тон' },
+      { title: 'Задать новый сеттинг и правила', prompt: 'Давай зададим новый сеттинг и персонажей для сцены' },
+      { title: 'Свободный разговор без тормозов', prompt: 'Поболтаем свободно, без лишних ограничений' },
+    ],
+    [
+      { title: 'Ночной бар в Нео-Токио', prompt: 'Запустим сцену: поздний вечер в закрытом неоновом баре, мы остались вдвоём' },
+      { title: 'Сменить темп и добавить напряжения', prompt: 'Сделай сцену медленнее, детальнее и добавь больше живых эмоций' },
+      { title: 'Отыграть дерзкий диалог наедине', prompt: 'Отвечай дерзко, с иронией и притяжением, без лишней скромности' },
+    ],
+    [
+      { title: 'Закрытая квартира после дождя', prompt: 'Сеттинг: за окном ливень, мы в тёмной квартире, никаких дел до утра' },
+      { title: 'Описать сцену от первого лица', prompt: 'Веди повествование ярко и чувственно, описывая взгляды, жесты и атмосферу' },
+      { title: 'Предложить три смелых сценария', prompt: 'Предложи три разных ролевых завязки на выбор: от лёгкого флирта до страсти' },
+    ],
+    [
+      { title: 'Игра на желания без отказов', prompt: 'Сыграем в игру на откровенные вопросы и желания один на один' },
+      { title: 'Усилить характер и инициативу', prompt: 'Возьми инициативу в сцене на себя и задай более смелый поворот' },
+      { title: 'Киберпанк-отель на верхнем этаже', prompt: 'Сцена: пентхаус с видом на ночной мегаполис, тишина и полное доверие' },
+    ],
+    [
+      { title: 'Секретная встреча после долгой разлуки', prompt: 'Отыграем встречу после долгого перерыва, когда оба ждали этого момента' },
+      { title: 'Больше деталей в описании действий', prompt: 'Не спеши с сюжетом: описывай прикосновения, дыхание и реакцию подробно' },
+      { title: 'Ночной разговор на грани фола', prompt: 'Поговорим откровенно о фантазиях и том, чего хочется прямо сейчас' },
+    ],
+    [
+      { title: 'Сменить роли и расстановку сил', prompt: 'Давай поменяем динамику в сцене: теперь ты ведёшь и диктуешь условия' },
+      { title: 'Уютный вечер с вином и музыкой', prompt: 'Начнём со спокойного тёплого вечера наедине, который постепенно накаляется' },
+      { title: 'Импровизация по одному слову', prompt: 'Я задаю настроение одним предложением, а ты разворачиваешь полноценную сцену' },
+    ],
+    [
+      { title: 'Случайное знакомство в закрытом клубе', prompt: 'Завязка: взгляды пересеклись в полумраке закрытого лаунжа, подойди первой' },
+      { title: 'Сделать диалог живее и острее', prompt: 'Убери шаблонные фразы, говори естественно, прямо и с характером' },
+      { title: 'Продолжить без пауз и цензуры', prompt: 'Развивай текущую сцену дальше прямо и подробно, не обрывая на полуслове' },
+    ],
+    [
+      { title: 'Сцена в купе ночного экспресса', prompt: 'Сеттинг: ночной поезд, закрытое купе на двоих и долгая дорога впереди' },
+      { title: 'Флирт и провокация с порога', prompt: 'Начни с лёгкой провокации и дразнящего тона, проверяя мою реакцию' },
+      { title: 'Свободная фантазия по моим правилам', prompt: 'Сейчас я опишу обстановку и роли, а ты сразу войдёшь в образ' },
+    ],
+    [
+      { title: 'После напряжённого дня — только мы', prompt: 'Сбросим напряжение рабочего дня: переключись на тёплый и близкий тон' },
+      { title: 'Добавить неожиданный поворот в сцену', prompt: 'Внеси в наш текущий сюжет внезапную искру, которая изменит обстановку' },
+      { title: 'Откровенный монолог без масок', prompt: 'Скажи прямо, чего бы тебе хотелось в этой сцене, не сглаживая углы' },
+    ],
+    [
+      { title: 'Новый персонаж и закрытая локация', prompt: 'Придумай яркий образ и атмосферное место для новой сцены 18+' },
+      { title: 'Максимум внимания к атмосфере и темпу', prompt: 'Держи плотный контакт и атмосферу сцены, реагируя на каждую деталь' },
+      { title: 'Разговор наедине в полной темноте', prompt: 'Сеттинг: свет погас, остались только голос, шёпот и прикосновения' },
+    ],
   ],
 };
 
@@ -157,7 +399,10 @@ class PhoneBridge {
     this.server = null;
     this.audio = new Map();
     this.turns = [];
-    this.suggestionsCache = new Map(); // mode -> { items, cachedAt }
+    this.suggestionsCache = new Map(); // mode -> { sets, cachedAt }
+    this.suggestionIndices = new Map(); // mode -> last setIndex
+    this.privateSuggestionsCache = null; // isolated private Vault pool cache
+    this.privateSuggestionIndex = -1;
     this.workerCooldowns = new Map(); // workerId -> untilMs
     this.researchRequests = new Map();
     this.earlyResearchStops = new Map();
@@ -186,8 +431,31 @@ class PhoneBridge {
     const s = this.server;
     this.server = null;
     this.audio.clear();
+    for (const entry of this.chatRequests.values()) {
+      clearTimeout(entry.timer);
+      entry.abort?.abort();
+    }
+    this.chatRequests.clear();
     if (!s) return Promise.resolve();
     return new Promise((r) => { s.closeAllConnections(); s.close(() => r()); });
+  }
+
+  expireChatRequest(id, entry, ttl) {
+    if (this.chatRequests.get(id) === entry) {
+      entry.timer = setTimeout(() => this.chatRequests.delete(id), ttl).unref();
+    }
+  }
+
+  freeChatRequestSlot() {
+    if (this.chatRequests.size < CHAT_REQUEST_LIMIT) return true;
+    for (const [id, entry] of this.chatRequests) {
+      if (entry.state !== 'queued' && entry.state !== 'running') {
+        clearTimeout(entry.timer);
+        this.chatRequests.delete(id);
+        if (this.chatRequests.size < CHAT_REQUEST_LIMIT) return true;
+      }
+    }
+    return false;
   }
 
   send(res, code, body) {
@@ -228,18 +496,37 @@ class PhoneBridge {
   }
 
   async getSuggestions(mode = 'chat', force = false) {
-    const m = DEFAULT_SUGGESTIONS[mode] ? mode : 'chat';
-    const cached = this.suggestionsCache.get(m);
+    const m = Object.hasOwn(DEFAULT_SUGGESTIONS, mode) ? mode : 'chat';
+    const isPrivate = m === 'private';
+    const baseSets = DEFAULT_SUGGESTIONS[m];
+    const cached = isPrivate ? this.privateSuggestionsCache : this.suggestionsCache.get(m);
+    const prevIndex = isPrivate ? this.privateSuggestionIndex : (this.suggestionIndices.get(m) ?? -1);
     const now = Date.now();
+
+    const pickRotated = (sets, cachedFlag, stamp) => {
+      const pool = Array.isArray(sets) && sets.length ? sets : baseSets;
+      const nextIndex = (prevIndex + 1) % pool.length;
+      if (isPrivate) this.privateSuggestionIndex = nextIndex;
+      else this.suggestionIndices.set(m, nextIndex);
+      return {
+        mode: m,
+        items: pool[nextIndex],
+        sets: pool,
+        setIndex: nextIndex,
+        cachedAt: stamp,
+        cached: cachedFlag,
+      };
+    };
+
     if (!force && cached && (now - cached.cachedAt) < SUGGESTIONS_TTL_MS) {
-      return { mode: m, items: cached.items, cachedAt: cached.cachedAt, cached: true };
+      return pickRotated(cached.sets, true, cached.cachedAt);
     }
 
-    let items = null;
+    let generatedSet = null;
     if (typeof this.d.suggestions === 'function') {
       try {
         const res = await this.d.suggestions(m);
-        if (Array.isArray(res) && res.length >= 3) items = res.slice(0, 3);
+        if (Array.isArray(res) && res.length >= 3) generatedSet = res.slice(0, 3);
       } catch {}
     } else if (typeof this.d.chat === 'function') {
       const abort = new AbortController();
@@ -247,25 +534,29 @@ class PhoneBridge {
       try {
         const prompt = `Сгенерируй ровно 3 короткие стартовые подсказки (до 6 слов в заголовке) для режима "${m}" ассистента ALTAI:RE. `
           + 'Верни строго JSON-массив вида [{"title":"...","prompt":"..."}] без пояснений.';
+        const chatOpts = isPrivate
+          ? { fastLocal: true, localOnly: true, ephemeral: true, source: 'vault', useVault: false }
+          : { fastLocal: true, ephemeral: true };
         const { text } = await this.d.chat([
           { role: 'system', content: 'Ты генератор коротких UI-подсказок. Отвечай только валидным JSON-массивом.' },
           { role: 'user', content: prompt },
-        ], abort.signal, { fastLocal: true, ephemeral: true });
+        ], abort.signal, chatOpts);
         const jsonMatch = /\[[\s\S]*\]/.exec(String(text || ''));
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[0]);
           const valid = parsed.filter((x) => x && x.title && x.prompt).slice(0, 3);
-          if (valid.length === 3) items = valid;
+          if (valid.length === 3) generatedSet = valid;
         }
       } catch {} finally {
         clearTimeout(timer);
       }
     }
 
-    const finalItems = items || DEFAULT_SUGGESTIONS[m];
-    const entry = { mode: m, items: finalItems, cachedAt: now, cached: false };
-    this.suggestionsCache.set(m, entry);
-    return entry;
+    const sets = generatedSet ? [generatedSet, ...baseSets.slice(1)] : baseSets;
+    const cacheEntry = { mode: m, sets, cachedAt: now };
+    if (isPrivate) this.privateSuggestionsCache = cacheEntry;
+    else this.suggestionsCache.set(m, cacheEntry);
+    return pickRotated(sets, false, now);
   }
 
   async runDeepResearch(query, opts = {}) {
@@ -411,7 +702,7 @@ class PhoneBridge {
     if (!tokenMatches(got, this.d.token())) return this.send(res, 401, { error: 'bad token' });
     try {
       const pack = this.d.sprites?.() || null;
-      if (req.method === 'GET' && url.pathname === '/ping') return this.send(res, 200, { ok: true, pose: '', sprites: pack?.version || '', isolatedChat: true, modelSelection: true });
+      if (req.method === 'GET' && url.pathname === '/ping') return this.send(res, 200, { ok: true, pose: '', sprites: pack?.version || '', isolatedChat: true, modelSelection: true, chatRecovery: true, privateVaultSave: Boolean(this.d.savePrivateChat) });
       if (req.method === 'GET' && url.pathname === '/suggestions') {
         const mode = url.searchParams.get('mode') || 'chat';
         const force = url.searchParams.get('refresh') === 'true';
@@ -535,6 +826,40 @@ class PhoneBridge {
         }
         return;
       }
+      if (req.method === 'POST' && url.pathname === '/chat/private/save') {
+        if (!this.d.savePrivateChat) return this.send(res, 503, { error: 'Приватный Vault недоступен.' });
+        const { chatId, history } = await this.readJson(req, 2 * 1024 * 1024);
+        try {
+          await this.d.savePrivateChat(chatId, history);
+          return this.send(res, 200, { saved: true });
+        } catch (err) {
+          const status = [400, 403, 409, 413].includes(err?.status) ? err.status : 503;
+          return this.send(res, status, { error: status === 503 ? 'Приватный Vault недоступен.' : err.message });
+        }
+      }
+      const chatStatus = req.method === 'GET' && url.pathname === '/chat/status';
+      const chatStop = req.method === 'POST' && url.pathname === '/chat/stop';
+      if (chatStatus || chatStop) {
+        const requestId = chatStatus ? url.searchParams.get('requestId') : (await this.readJson(req)).requestId;
+        if (typeof requestId !== 'string' || !RESEARCH_ID.test(requestId)) {
+          return this.send(res, 400, { error: 'Некорректный идентификатор сообщения.' });
+        }
+        const entry = this.chatRequests.get(requestId);
+        const owner = crypto.createHash('sha256').update(got).digest('hex');
+        if (chatStop && !entry) {
+          if (!this.freeChatRequestSlot()) return this.send(res, 503, { error: 'ПК занят. Повтори отправку позже.' });
+          const tombstone = { owner, fingerprint: null, state: 'stopped', result: Promise.resolve(CHAT_STOPPED) };
+          this.chatRequests.set(requestId, tombstone);
+          this.expireChatRequest(requestId, tombstone, ISOLATED_CHAT_REQUEST_TTL_MS);
+          return this.send(res, 200, { state: 'stopped' });
+        }
+        if (entry?.owner !== owner) return this.send(res, 404, { error: 'Запрос не найден.' });
+        if (chatStop && entry.abort) {
+          entry.state = 'stopped';
+          entry.abort.abort();
+        }
+        return this.send(res, 200, { state: entry.state });
+      }
       if (req.method === 'POST' && url.pathname === '/chat') {
         const body = await this.readJson(req, MAX_BODY + Math.ceil(MAX_UPLOAD_BYTES / 3) * 4);
         if (body.text != null && typeof body.text !== 'string') return this.send(res, 400, { error: 'Некорректный текст сообщения.' });
@@ -562,43 +887,67 @@ class PhoneBridge {
         flags.images = images;
         if (!flags.text && !images.length) return this.send(res, 400, { error: 'empty' });
         if (!flags.text) flags.text = imagePrompt;
+        if (body.privateChatId !== undefined) {
+          if (!flags.privateMode || flags.ephemeral || typeof body.privateChatId !== 'string' || !RESEARCH_ID.test(body.privateChatId)) {
+            return this.send(res, 400, { error: 'Некорректный идентификатор приватного чата.' });
+          }
+          if (!this.d.savePrivateChat) return this.send(res, 503, { error: 'Приватный Vault недоступен.' });
+          flags.privateChatId = body.privateChatId;
+        }
+        if (body.privateUserText !== undefined) {
+          if (!flags.privateChatId || typeof body.privateUserText !== 'string' || body.privateUserText.length > 24000) {
+            return this.send(res, 400, { error: 'Некорректный текст приватного чата.' });
+          }
+          flags.privateUserText = body.privateUserText.replace(/\u0000/g, '');
+        }
         const requestId = body.requestId;
         if (requestId !== undefined && (typeof requestId !== 'string' || !RESEARCH_ID.test(requestId))) {
           return this.send(res, 400, { error: 'Некорректный идентификатор сообщения.' });
         }
-        const canRetry = requestId && !flags.ephemeral && !flags.privateMode && !flags.localOnly;
-        if (canRetry) {
-          for (const [id, result] of this.chatRequests) {
-            if (result.expires !== null && result.expires <= Date.now()) this.chatRequests.delete(id);
+        const isolated = flags.ephemeral || flags.privateMode || flags.localOnly;
+        let entry = null;
+        let ttl;
+        if (requestId) {
+          const owner = crypto.createHash('sha256').update(got).digest('hex');
+          const fingerprint = crypto.createHmac('sha256', got).update(JSON.stringify(body)).digest('hex');
+          const previous = this.chatRequests.get(requestId);
+          if (previous) {
+            if (previous.owner !== owner) return this.send(res, 404, { error: 'Запрос не найден.' });
+            if (previous.fingerprint !== null && previous.fingerprint !== fingerprint) {
+              return this.send(res, 409, { error: 'Этот идентификатор уже используется для другого запроса.' });
+            }
+            const result = await previous.result;
+            if (!res.destroyed) return this.send(res, 200, result);
+            return;
           }
-          if (this.chatRequests.has(requestId)) {
-            return this.send(res, 200, await this.chatRequests.get(requestId).result);
-          }
-          if (this.chatRequests.size >= 64) {
-            const finished = [...this.chatRequests].find(([, entry]) => entry.expires !== null);
-            if (!finished) return this.send(res, 503, { error: 'ПК занят. Повтори отправку позже.' });
-            this.chatRequests.delete(finished[0]);
-          }
+          if (!this.freeChatRequestSlot()) return this.send(res, 503, { error: 'ПК занят. Повтори отправку позже.' });
+          ttl = isolated || this.d.externalBlocked?.(flags.text) ? ISOLATED_CHAT_REQUEST_TTL_MS : CHAT_REQUEST_TTL_MS;
+          entry = { owner, fingerprint, state: 'queued', abort: new AbortController(), timer: null, result: null };
+          this.chatRequests.set(requestId, entry);
         }
-        const turn = this.queue.catch(() => {}).then(() => {
-          if (body.reset === true && flags.history === undefined && !flags.ephemeral && !flags.privateMode) this.turns = [];
-          return this.turn(flags, body.voice === true);
+        const signal = entry?.abort.signal;
+        const turn = this.queue.then(() => {
+          signal?.throwIfAborted();
+          if (entry) entry.state = 'running';
+          if (body.reset === true && flags.history === undefined && !isolated) this.turns = [];
+          return this.turn(flags, body.voice === true, signal);
         });
-        this.queue = turn;
-        if (canRetry) {
-          this.chatRequests.set(requestId, { expires: null, result: turn });
+        // Keep the queue independent of response data, including after the last recovery TTL.
+        this.queue = turn.then(() => {}, () => {});
+        let response = turn;
+        if (entry) {
+          response = turn.catch(() => ({ reply: 'Не удалось завершить запрос.', brain: 'error', pose: '' })).then((result) => {
+            const stopped = signal.aborted;
+            entry.state = stopped ? 'stopped' : result.brain === 'error' ? 'error' : 'complete';
+            entry.abort = null;
+            this.expireChatRequest(requestId, entry, ttl);
+            return stopped ? CHAT_STOPPED : result;
+          });
+          entry.result = response;
         }
-        try {
-          const result = await turn;
-          if (canRetry) {
-            if (result.brain === 'error') this.chatRequests.delete(requestId);
-            else this.chatRequests.get(requestId).expires = Date.now() + 20 * 60 * 1000;
-          }
-          return this.send(res, 200, result);
-        } catch (err) {
-          this.chatRequests.delete(requestId);
-          throw err;
-        }
+        const result = await response;
+        if (!res.destroyed) return this.send(res, 200, result);
+        return;
       }
       if (req.method === 'GET' && url.pathname === '/agents') {
         const data = await this.d.agentsList?.();
@@ -620,7 +969,27 @@ class PhoneBridge {
         return this.send(res, 200, { id, messages: history || [] });
       }
       if (req.method === 'POST' && url.pathname === '/agents/send') {
-        const body = await this.readJson(req, MAX_BODY + Math.ceil(MAX_UPLOAD_BYTES / 3) * 4);
+        const body = await this.readJson(req, MAX_BODY * 4 + Math.ceil(MAX_UPLOAD_BYTES / 3) * 4);
+        const rawText = typeof body.text === 'string' ? body.text : '';
+        if (body.ephemeral === true || body.privateMode === true || body.localOnly === true
+            || body.mode === 'private' || body.mode === 'nsfw'
+            || /\[VAULT_LOCAL_ONLY\]|\[NO_MEMORY\]/i.test(rawText)) {
+          return this.send(res, 403, { ok: false, error: 'Облачные модели недоступны в этом режиме.' });
+        }
+        if (body.history !== undefined) {
+          if (!Array.isArray(body.history) || body.history.length > 60 || body.history.some((row) =>
+            !row || !['user', 'assistant'].includes(row.role) || typeof row.content !== 'string'
+            || !row.content.trim() || row.content.length > 24000
+            || row.ephemeral === true || row.private === true || row.privateMode === true || row.localOnly === true
+            || row.mode === 'private' || row.mode === 'nsfw'
+            || /\[VAULT_LOCAL_ONLY\]|\[NO_MEMORY\]/i.test(row.content))) {
+            return this.send(res, 400, { ok: false, error: 'Некорректная история разговора.' });
+          }
+        }
+        if (this.d.externalBlocked?.(rawText)
+            || (Array.isArray(body.history) && body.history.some((row) => this.d.externalBlocked?.(String(row?.content || ''))))) {
+          return this.send(res, 403, { ok: false, error: 'Облачные модели недоступны для этого запроса.' });
+        }
         const result = await this.d.agentSend?.(body);
         return this.send(res, 200, result || { ok: false });
       }
@@ -687,15 +1056,23 @@ class PhoneBridge {
     }
     if (deepResearch) {
       try {
-        const res = await this.runDeepResearch(text, flags);
-      if (flags.history === undefined) this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: res.reply });
+        const res = await this.runDeepResearch(text, { ...flags, signal });
+        signal?.throwIfAborted();
+        if (flags.history === undefined) this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: res.reply });
         return { reply: res.reply, brain: res.brain };
       } catch (err) {
         return { reply: `Deep Research не прошёл: ${err.message}`, brain: 'error' };
       }
     }
 
-    const sysParts = [this.d.persona(), PHONE_NOTE];
+    const sysParts = [this.d.persona({
+      isolated,
+      ephemeral,
+      privateMode,
+      localMode: flags.localMode,
+      useVault: flags.useVault !== false,
+      requestedModel: flags.requestedModel,
+    }), PHONE_NOTE];
     sysParts.push('Поддерживай тему текущего диалога. Не упоминай личные факты, числа, расписание и технические детали из памяти без прямой связи с вопросом. Если данных не хватает, скажи об этом.');
     if (ephemeral) sysParts.push('Временный чат: не ссылайся на долговременную память и не сохраняй факты.');
     if (privateMode) sysParts.push('Режим Приват (Vault): строго локальная обработка, данные и контекст только из Vault, выход в облако запрещён.');
@@ -727,6 +1104,7 @@ class PhoneBridge {
       };
       const requestSignal = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
       const { text: said, brain } = await this.d.chat(messages, requestSignal, opts);
+      requestSignal.throwIfAborted();
       const reply = String(said || '').trim();
       if (!reply) return { reply: 'Модель промолчала. Спроси ещё раз, покороче.', brain };
       if (!isolated && flags.history === undefined) {
@@ -741,6 +1119,7 @@ class PhoneBridge {
   }
 
   async turn(flags, voice, signal) {
+    if (signal?.aborted) return CHAT_ABORTED;
     const text = flags.text;
     const isolated = flags.ephemeral || flags.privateMode || flags.localOnly === true;
     const search = /^найди в сети:\s*([\s\S]+)$/i.exec(text)?.[1].trim();
@@ -761,19 +1140,33 @@ class PhoneBridge {
     const { reply, brain, image } = media ? await this.media(text, media, flags)
       : (!isolated && !flags.deepResearch && (!flags.requestedModel || flags.requestedModel === 'auto') && await this.switchModel(text))
         || await this.reply(flags, signal);
+    if (signal?.aborted) return CHAT_ABORTED;
 
-    // Временные чаты (ephemeral) и приватный Vault (privateMode) не утекают в общий лог чатов
-    if (brain !== 'error' && !isolated && flags.history === undefined && !/^новый разговор/i.test(text)) {
+    // Временные чаты (ephemeral), приватный Vault (privateMode), 18+ (localOnly) и useVault: false не утекают в общий лог чатов
+    if (brain !== 'error' && !isolated && flags.useVault !== false && !/^новый разговор/i.test(text)) {
       this.d.log?.({ said: text, answer: image ? `${reply}\n[[photo:${image}]]` : reply });
     }
     const out = { reply, brain, pose: '', ...(image && { image: `/gallery/${image}` }) };
     if (voice && brain !== 'error') {
       const data = await this.d.speak(reply).catch(() => null);
+      if (signal?.aborted) return CHAT_ABORTED;
       if (data) {
         const id = `${crypto.randomUUID().replace(/-/g, '')}.mp3`;
         this.audio.set(id, { data, at: Date.now() });
         this.pruneAudio();
         out.audio = `/audio/${id}`;
+      }
+    }
+    if (flags.privateChatId && brain !== 'error' && !signal?.aborted) {
+      try {
+        await this.d.savePrivateChat(flags.privateChatId, [
+          { role: 'user', content: flags.privateUserText ?? text },
+          { role: 'assistant', content: reply },
+        ], { append: true });
+        out.vaultSaved = true;
+      } catch (err) {
+        out.vaultSaved = false;
+        out.vaultError = [403, 409, 413].includes(err?.status) ? err.message : 'Приватный Vault недоступен.';
       }
     }
     return out;

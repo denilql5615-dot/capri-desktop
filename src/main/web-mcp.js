@@ -89,6 +89,17 @@ function makeServer(web) {
     try { return result(await web.search({ query, node, read })); } catch (e) { return failed(e.message); }
   });
 
+  if (web.runPublicGeminiResearch) {
+    server.registerTool('run_public_gemini_research', {
+      title: 'Gemini Web public repository research',
+      description: 'Start a new Gemini Web task on DeepSeek Harness, OpenClaw and OpenCode using only a built-in public brief. Select hydrogen or neon. Works during Tor quarantine.',
+      inputSchema: { worker: z.enum(['hydrogen', 'neon']) },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    }, async ({ worker }) => {
+      try { return result(await web.runPublicGeminiResearch({ worker })); } catch (e) { return failed(e.message); }
+    });
+  }
+
   if (web.askGemini) {
     server.registerTool('ask_gemini', {
       title: 'Ask Gemini (adviser, second opinion)',

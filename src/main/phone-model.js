@@ -6,6 +6,7 @@ const QWEN_MODELS = Object.freeze({
 });
 const PHONE_MODEL_KEYS = ['auto', 'e4b', '26b', ...Object.keys(QWEN_MODELS)];
 const isAuxiliaryModel = (model) => /(?:^|\/)capri-qwen3[68]-heretic(?::|$)|^hf\.co\/[^/]+\/qwen3\.[68][^:]*heretic/i.test(model || '');
+const mobileAutoOverride = (model, fast) => isAuxiliaryModel(model) ? fast : undefined;
 
 function resolveRequestedModel(selection, { fast, large }) {
   if (selection == null || selection === 'auto') return undefined;
@@ -15,4 +16,4 @@ function resolveRequestedModel(selection, { fast, large }) {
   throw new RangeError('Выбранная модель недоступна на ПК.');
 }
 
-module.exports = { PHONE_MODEL_KEYS, isAuxiliaryModel, resolveRequestedModel };
+module.exports = { PHONE_MODEL_KEYS, isAuxiliaryModel, mobileAutoOverride, resolveRequestedModel };

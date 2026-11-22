@@ -207,10 +207,25 @@ const killTree = (child) => (process.platform === 'win32'
 // where they work, told to them: what they make goes there, and the user hears where it is
 const folderNote = (cwd) => `Your working folder is ${cwd}. You can read files anywhere, but write only there: anything you make for the user (a document, a script, notes) goes in that folder. When you made a file, say its name and that it is in that folder.`;
 
-// The CLIs take one prompt: the last turns ride along as a transcript.
-function transcript(messages, last = 8) {
-  const turns = messages.filter((m) => m.role !== 'system');
-  const before = turns.slice(0, -1).slice(-last).map((m) => `${m.role === 'user' ? 'User' : 'Capri'}: ${m.content}`).join('\n\n');
+const TRANSCRIPT_TURN_LIMIT = 40;
+const TRANSCRIPT_CHAR_LIMIT = 40000;
+
+// The CLIs take one prompt: recent turns ride along as a transcript (up to 40 turns / ~40k chars, freshest first).
+function transcript(messages, last = TRANSCRIPT_TURN_LIMIT, maxChars = TRANSCRIPT_CHAR_LIMIT) {
+  const turns = (Array.isArray(messages) ? messages : []).filter((m) => m && m.role !== 'system');
+  const slice = turns.slice(0, -1).slice(-Math.max(0, last));
+  const kept = [];
+  let used = 0;
+  for (let i = slice.length - 1; i >= 0; i--) {
+    const m = slice[i];
+    const line = `${m.role === 'user' ? 'User' : 'Capri'}: ${String(m.content || '')}`;
+    const cost = line.length + (kept.length ? 2 : 0);
+    if (kept.length > 0 && used + cost > maxChars) break;
+    const trimmed = line.length > maxChars ? line.slice(0, maxChars) : line;
+    kept.push(trimmed);
+    used += trimmed.length + (kept.length > 1 ? 2 : 0);
+  }
+  const before = kept.reverse().join('\n\n');
   return [before ? `Conversation so far:\n${before}` : '', `Task: ${turns.at(-1)?.content || ''}`].filter(Boolean).join('\n\n');
 }
 
@@ -333,10 +348,12 @@ const desktopNote = (cmd) => [
   `Proton Calendar is not a separate app: it lives inside Proton Mail ("${PROTON_MAIL}"; focus it with --app="Proton Mail" if it is running). Expand the "Приложения Proton" menubutton and click "Proton Calendar". A window titled "Proton Account" is not the calendar.`,
 ].join('\n');
 
+const UTF8_ENV = { PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', CAPRI_WORKER_SUBPROCESS: '1' };
+
 // Claude: one-shot `claude -p` in her folder; edits there go through without asking (acceptEdits),
 // anything needing a yes (a command) is refused, and it says so. With `desktop`, agent-desktop is the one
 // command it may run.
-function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = null, model = null, onQuota } = {}, find = findClaude) {
+function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = null, model = null, effort = null, onQuota } = {}, find = findClaude) {
   const exe = find();
   if (!exe) return Promise.reject(new Error('Claude Code не найден на этом ПК: поставь его и войди.'));
   const cwd = workDir(cfg);
@@ -347,12 +364,13 @@ function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = nul
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
     '--append-system-prompt-file', personaFile, '--no-session-persistence',
     ...(model ? ['--model', model] : []), // the router's pick for how hard it is (router.js)
+    ...(effort ? ['--effort', effort] : []),
     ...(desktop ? ['--allowedTools', 'Bash(agent-desktop:*)', 'Bash(agent-desktop.exe:*)'] : [])];
   // agent-desktop on its PATH, found by name, so the one allowed command is just that; and her own home for
   // it (`home`): it refuses one whose files others could read
   const env = desktop
-    ? { ...process.env, PATH: `${AGENT_DESKTOP_DIR}${path.delimiter}${process.env.PATH || ''}`, ...(home && { AGENT_DESKTOP_HOME: home }) }
-    : process.env;
+    ? { ...process.env, ...UTF8_ENV, PATH: `${AGENT_DESKTOP_DIR}${path.delimiter}${process.env.PATH || ''}`, ...(home && { AGENT_DESKTOP_HOME: home }) }
+    : { ...process.env, ...UTF8_ENV };
   return new Promise((resolve, reject) => {
     const child = spawn(exe, args, { cwd, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     const kill = () => killTree(child);
@@ -404,46 +422,121 @@ function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = nul
 
 // Codex: `codex exec` in its workspace-write sandbox. With `desktop` (a computer task, after your yes in
 // main.js handsFor): out of the sandbox, which can't see your windows, with agent-desktop to drive them.
-function askCodex(cfg, messages, onDelta, signal, { desktop = false, home = null, effort: picked = null, model = null } = {}) {
-  const exe = findCodex();
+function askCodex(cfg, messages, onDelta, signal, { desktop = false, home = null, effort: picked = null, model = null } = {}, find = findCodex, spawnImpl = spawn) {
+  const exe = find();
   if (!exe) return Promise.reject(new Error('Codex не найден на этом ПК: поставь Codex и войди в него.'));
   const cwd = workDir(cfg);
   const since = Date.now();
   const out = path.join(os.tmpdir(), `capri-codex-${randomUUID()}.txt`);
   const effort = picked || codexEffort(messages.findLast((m) => m.role === 'user')?.content || '');
   const brief = [codexBrief(messages, cwd), ...(desktop ? [desktopNote(`"${path.join(AGENT_DESKTOP_DIR, 'agent-desktop.exe')}"`)] : [])].join('\n\n');
-  const env = desktop && home ? { ...process.env, AGENT_DESKTOP_HOME: home } : process.env;
+  const env = desktop && home ? { ...process.env, ...UTF8_ENV, AGENT_DESKTOP_HOME: home } : { ...process.env, ...UTF8_ENV };
   const codexFastFlags = [
+    '--ephemeral',
+    '--json',
     '-c', 'mcp_servers.node_repl.enabled=false',
     '-c', 'mcp_servers.capri-pim.enabled=false',
+    '-c', 'mcp_servers.capri-web.enabled=false',
+    '-c', 'mcp_servers.blender.enabled=false',
+    '-c', 'notify=[]',
     '-c', 'plugins."browser@openai-bundled".enabled=false',
     '-c', 'plugins."computer-use@openai-bundled".enabled=false',
     '-c', 'plugins."codex-app-tools@openai-bundled".enabled=false',
     '-c', 'plugins."visualize@openai-bundled".enabled=false',
+    '-c', 'plugins."documents@openai-primary-runtime".enabled=false',
+    '-c', 'plugins."pdf@openai-primary-runtime".enabled=false',
+    '-c', 'plugins."spreadsheets@openai-primary-runtime".enabled=false',
+    '-c', 'plugins."presentations@openai-primary-runtime".enabled=false',
+    '-c', 'plugins."template-creator@openai-primary-runtime".enabled=false',
     '-c', 'features.memories=false',
   ];
   return new Promise((resolve, reject) => {
-    const child = spawn(exe, ['exec', '--skip-git-repo-check', '--sandbox', desktop ? 'danger-full-access' : 'workspace-write', '--cd', cwd,
+    const child = spawnImpl(exe, ['exec', '--skip-git-repo-check', '--sandbox', desktop ? 'danger-full-access' : 'workspace-write', '--cd', cwd,
       ...(model ? ['--model', model] : []), '-c', `model_reasoning_effort="${effort}"`, ...codexFastFlags, '--output-last-message', out, '-'], {
-      cwd, env, windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'],
+      cwd, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
     });
     const kill = () => killTree(child);
-    signal.addEventListener('abort', kill, { once: true });
+    signal?.addEventListener('abort', kill, { once: true });
     const timer = setTimeout(kill, TIMEOUT_MS);
+    let buffer = '';
+    const agentMessages = [];
     let errors = '';
-    child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (d) => { errors = (errors + d).slice(-4000); });
-    child.on('error', (err) => reject(new Error(`Codex не запустился: ${err.message}`)));
+    let settled = false;
+    const readOutFallback = () => {
+      try {
+        return fs.readFileSync(out, 'utf8').trim();
+      } catch {
+        return '';
+      }
+    };
+    const cleanupOut = () => fs.rm(out, { force: true }, () => {});
+    const finishSuccess = (text) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', kill);
+      cleanupOut();
+      resolve(finish(text, cwd, since).then((said) => {
+        onDelta(said);
+        return said;
+      }));
+    };
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk) => {
+      if (settled) return;
+      buffer += chunk;
+      let nl;
+      while ((nl = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line) continue;
+        let msg;
+        try { msg = JSON.parse(line); } catch { continue; }
+        if (msg.type === 'item.completed' && msg.item?.type === 'agent_message' && typeof msg.item.text === 'string' && msg.item.text.trim()) {
+          agentMessages.push(msg.item.text.trim());
+        } else if (msg.type === 'error' && msg.message) {
+          errors = `${errors}\n${msg.message}`.slice(-4000);
+        } else if (msg.type === 'turn.failed' && msg.error?.message) {
+          errors = `${errors}\n${msg.error.message}`.slice(-4000);
+        } else if (msg.type === 'turn.completed') {
+          if (signal?.aborted) {
+            settled = true;
+            clearTimeout(timer);
+            cleanupOut();
+            setImmediate(kill);
+            reject(new Error('stopped'));
+            return;
+          }
+          const text = agentMessages.join('\n\n').trim() || readOutFallback();
+          if (text) {
+            finishSuccess(text);
+            setImmediate(kill);
+            return;
+          }
+        }
+      }
+    });
+    child.stderr?.setEncoding('utf8');
+    child.stderr?.on('data', (d) => { errors = (errors + d).slice(-4000); });
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', kill);
+      cleanupOut();
+      reject(new Error(`Codex не запустился: ${err.message}`));
+    });
     child.on('close', (code) => {
       clearTimeout(timer);
-      let text = '';
-      try {
-        text = fs.readFileSync(out, 'utf8').trim();
-      } catch {
-        // no answer written
+      signal?.removeEventListener('abort', kill);
+      if (settled) {
+        cleanupOut();
+        return;
       }
-      fs.rm(out, { force: true }, () => {});
-      if (signal.aborted) return reject(new Error('stopped'));
+      settled = true;
+      const text = agentMessages.join('\n\n').trim() || readOutFallback();
+      cleanupOut();
+      if (signal?.aborted) return reject(new Error('stopped'));
       if (text) {
         return resolve(finish(text, cwd, since).then((said) => {
           onDelta(said); // the CLI gives its answer whole, at the end
@@ -474,7 +567,7 @@ function askGeminiCli(cfg, messages, onDelta, signal, find = findGeminiCli) {
   const cwd = workDir(cfg);
   const since = Date.now();
   const brief = codexBrief(messages, cwd);
-  const env = { ...process.env };
+  const env = { ...process.env, ...UTF8_ENV };
   delete env.GOOGLE_CLOUD_PROJECT;
   delete env.GOOGLE_CLOUD_PROJECT_ID;
   const cmd = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : exe;
@@ -508,65 +601,329 @@ function askGeminiCli(cfg, messages, onDelta, signal, find = findGeminiCli) {
   });
 }
 
+const AGY_IDLE_TTL_MS = 10 * 60 * 1000;
+const AGY_POOL_MAX = 2;
+const agyPool = new Map();
+
+function agyHomeDir(cwd) {
+  const dir = path.join(cwd, '.agy-home');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  return dir;
+}
+
+function formatAgyError(model, code, details) {
+  if (/usage|rate.?limit|quota|credits?|\b429\b/i.test(details)) {
+    return new Error(`Лимит ${model}. Резерв можно вызвать явно: «Опус, …» или «Флеш, …».`);
+  }
+  if (/sign in|auth|credential|oauth/i.test(details)) {
+    return new Error('Gemini не вошла в Google AI Pro: открой agy и войди.');
+  }
+  return new Error(`${model} завершилась (${code ?? 1}): ${String(details || '').split('\n').at(-1)?.slice(0, 200) || 'без ответа'}`);
+}
+
+function disposeAgyEntry(key) {
+  const entry = agyPool.get(key);
+  if (!entry) return;
+  agyPool.delete(key);
+  entry.closed = true;
+  if (entry.idleTimer) clearTimeout(entry.idleTimer);
+  entry.idleTimer = null;
+  try { entry.child.stdin?.end(); } catch {}
+  try { killTree(entry.child); } catch {}
+}
+
+function stopAgyWorkers() {
+  for (const key of [...agyPool.keys()]) {
+    disposeAgyEntry(key);
+  }
+}
+
+function createAgyPoolEntry({ key, sessionId, model, exe, cwd, spawnImpl = spawn }) {
+  const fastHome = agyHomeDir(cwd);
+  const env = { ...process.env, ...UTF8_ENV, USERPROFILE: fastHome, HOME: fastHome };
+  const child = spawnImpl(exe, [
+    '--input-format', 'stream-json',
+    '--output-format', 'stream-json',
+    '--disable-slash-commands',
+    '--model', model,
+    '--mode', 'accept-edits',
+    '--dangerously-skip-permissions',
+    '--print-timeout', '10m',
+  ], {
+    cwd,
+    env,
+    windowsHide: true,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const entry = {
+    key,
+    sessionId,
+    model,
+    cwd,
+    child,
+    turns: 0,
+    closed: false,
+    buffer: '',
+    errors: '',
+    currentTurn: null,
+    idleTimer: null,
+    queue: Promise.resolve(),
+    lastUsedAt: Date.now(),
+  };
+  child.stdout?.setEncoding('utf8');
+  child.stdout?.on('data', (chunk) => {
+    entry.buffer += chunk;
+    let nl;
+    while ((nl = entry.buffer.indexOf('\n')) >= 0) {
+      const line = entry.buffer.slice(0, nl).trim();
+      entry.buffer = entry.buffer.slice(nl + 1);
+      if (!line) continue;
+      const result = parseAgyEvent(line);
+      if (result && entry.currentTurn) {
+        entry.currentTurn.onResult(result);
+      }
+    }
+  });
+  child.stderr?.setEncoding('utf8');
+  child.stderr?.on('data', (d) => {
+    entry.errors = (entry.errors + d).slice(-4000);
+  });
+  child.on('error', (err) => {
+    const turn = entry.currentTurn;
+    entry.currentTurn = null;
+    disposeAgyEntry(key);
+    turn?.onError(err);
+  });
+  child.on('close', (code) => {
+    const turn = entry.currentTurn;
+    entry.currentTurn = null;
+    disposeAgyEntry(key);
+    turn?.onClose(code);
+  });
+  return entry;
+}
+
+function touchAgyEntryIdle(entry) {
+  if (entry.idleTimer) clearTimeout(entry.idleTimer);
+  entry.lastUsedAt = Date.now();
+  entry.idleTimer = setTimeout(() => disposeAgyEntry(entry.key), AGY_IDLE_TTL_MS);
+  entry.idleTimer.unref?.();
+}
+
 // Antigravity: the model for the task's tier (AGY_BY_TIER), one named in the message, or the chain's step.
-function askGemini(cfg, messages, onDelta, signal, { model: forcedModel = null, tier = 'routine' } = {}) {
+function askGemini(cfg, messages, onDelta, signal, {
+  model: forcedModel = null,
+  tier = 'routine',
+  sessionId = null,
+  sameProviderContiguous = false,
+} = {}, find = findAgy, spawnImpl = spawn) {
   if (forcedModel === 'gemini-cli-free') return askGeminiCli(cfg, messages, onDelta, signal);
-  const exe = findAgy();
+  const exe = find();
   if (!exe) return Promise.reject(new Error('Antigravity не найден: поставь agy и войди в Google AI Pro.'));
   const cwd = workDir(cfg);
+  const resolvedForced = forcedModel === 'orchestrator-claude-opus' ? 'claude-opus-5-5-medium' : forcedModel;
+  const model = resolvedForced || agyModel(messages.findLast((message) => message.role === 'user')?.content, tier);
+
+  if (sessionId) {
+    const key = `${sessionId}::${model}`;
+    for (const otherKey of [...agyPool.keys()]) {
+      if (otherKey.startsWith(`${sessionId}::`) && otherKey !== key) {
+        disposeAgyEntry(otherKey);
+      }
+    }
+    if (agyPool.has(key) && !sameProviderContiguous) {
+      disposeAgyEntry(key);
+    }
+    let entry = agyPool.get(key);
+    if (!entry || entry.closed) {
+      if (agyPool.size >= AGY_POOL_MAX) {
+        const oldest = [...agyPool.values()].sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
+        if (oldest) disposeAgyEntry(oldest.key);
+      }
+      entry = createAgyPoolEntry({ key, sessionId, model, exe, cwd, spawnImpl });
+      agyPool.set(key, entry);
+    }
+    const runTurn = () => new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        disposeAgyEntry(key);
+        return reject(new Error('stopped'));
+      }
+      if (entry.closed) {
+        entry = createAgyPoolEntry({ key, sessionId, model, exe, cwd, spawnImpl });
+        agyPool.set(key, entry);
+      }
+      if (entry.idleTimer) clearTimeout(entry.idleTimer);
+      const since = Date.now();
+      const isWarmReuse = entry.turns > 0 && sameProviderContiguous;
+      const turnMessages = isWarmReuse
+        ? [...messages.filter((m) => m.role === 'system'), ...(messages.findLast((m) => m.role === 'user') ? [messages.findLast((m) => m.role === 'user')] : [])]
+        : messages;
+      const brief = codexBrief(turnMessages, cwd);
+      entry.errors = '';
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        entry.currentTurn = null;
+        disposeAgyEntry(key);
+        reject(new Error('stopped'));
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', onAbort);
+        entry.currentTurn = null;
+        disposeAgyEntry(key);
+        reject(new Error(`${model} не ответила за отведённое время`));
+      }, TIMEOUT_MS);
+      const cleanupTurn = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        entry.currentTurn = null;
+      };
+      entry.currentTurn = {
+        onResult: (result) => {
+          if (settled) return;
+          settled = true;
+          cleanupTurn();
+          if (signal?.aborted) {
+            disposeAgyEntry(key);
+            return reject(new Error('stopped'));
+          }
+          const text = String(result?.response || '').trim();
+          if (result?.status === 'SUCCESS' && text) {
+            entry.turns++;
+            touchAgyEntryIdle(entry);
+            return resolve(finish(text, cwd, since).then((said) => { onDelta(said); return said; }));
+          }
+          const details = String(result?.error || entry.errors).trim();
+          disposeAgyEntry(key);
+          reject(formatAgyError(model, 1, details));
+        },
+        onError: (err) => {
+          if (settled) return;
+          settled = true;
+          cleanupTurn();
+          reject(new Error(`Antigravity не запустился: ${err.message}`));
+        },
+        onClose: (code) => {
+          if (settled) return;
+          settled = true;
+          cleanupTurn();
+          if (signal?.aborted) return reject(new Error('stopped'));
+          reject(formatAgyError(model, code, entry.errors.trim()));
+        },
+      };
+      try {
+        entry.child.stdin.write(`${JSON.stringify({ event: 'user', message: { content: brief } })}\n`);
+      } catch (err) {
+        if (!settled) {
+          settled = true;
+          cleanupTurn();
+          disposeAgyEntry(key);
+          reject(new Error(`Antigravity не принял запрос: ${err.message}`));
+        }
+      }
+    });
+    const next = entry.queue.then(runTurn, runTurn);
+    entry.queue = next.catch(() => {});
+    return next;
+  }
+
   const since = Date.now();
   const brief = codexBrief(messages, cwd);
-  const model = forcedModel || agyModel(messages.findLast((message) => message.role === 'user')?.content, tier);
+  const fastHome = agyHomeDir(cwd);
   return new Promise((resolve, reject) => {
-    const child = spawn(exe, ['--input-format', 'stream-json', '--output-format', 'stream-json',
-      '--model', model, '--mode', 'accept-edits', '--dangerously-skip-permissions', '--print-timeout', '10m'], {
-      cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
+    const child = spawnImpl(exe, ['--input-format', 'stream-json', '--output-format', 'stream-json',
+      '--disable-slash-commands', '--model', model, '--mode', 'accept-edits', '--dangerously-skip-permissions', '--print-timeout', '10m'], {
+      cwd, env: { ...process.env, ...UTF8_ENV, USERPROFILE: fastHome, HOME: fastHome }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
     });
     const kill = () => killTree(child);
-    signal.addEventListener('abort', kill, { once: true });
+    signal?.addEventListener('abort', kill, { once: true });
     const timer = setTimeout(kill, TIMEOUT_MS);
     let buffer = '';
     let result = null;
     let errors = '';
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => {
+    let settled = false;
+    const settleResult = (resObj) => {
+      if (settled) return;
+      if (signal?.aborted) {
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', kill);
+        setImmediate(kill);
+        reject(new Error('stopped'));
+        return;
+      }
+      const text = String(resObj?.response || '').trim();
+      if (resObj?.status === 'SUCCESS' && text) {
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', kill);
+        try { child.stdin.end(); } catch {}
+        setImmediate(kill);
+        resolve(finish(text, cwd, since).then((said) => { onDelta(said); return said; }));
+      }
+    };
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk) => {
+      if (settled) return;
       buffer += chunk;
       let nl;
       while ((nl = buffer.indexOf('\n')) >= 0) {
-        result = parseAgyEvent(buffer.slice(0, nl).trim()) || result;
+        const parsed = parseAgyEvent(buffer.slice(0, nl).trim());
         buffer = buffer.slice(nl + 1);
+        if (parsed) {
+          result = parsed;
+          settleResult(parsed);
+        }
       }
     });
-    child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (d) => { errors = (errors + d).slice(-4000); });
-    child.on('error', (err) => reject(new Error(`Antigravity не запустился: ${err.message}`)));
+    child.stderr?.setEncoding('utf8');
+    child.stderr?.on('data', (d) => { errors = (errors + d).slice(-4000); });
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', kill);
+      reject(new Error(`Antigravity не запустился: ${err.message}`));
+    });
     child.on('close', (code) => {
       clearTimeout(timer);
-      if (signal.aborted) return reject(new Error('stopped'));
+      signal?.removeEventListener('abort', kill);
+      if (settled) return;
+      settled = true;
+      if (signal?.aborted) return reject(new Error('stopped'));
       const text = String(result?.response || '').trim();
       if (result?.status === 'SUCCESS' && text) {
         return resolve(finish(text, cwd, since).then((said) => { onDelta(said); return said; }));
       }
       const details = String(result?.error || errors).trim();
-      if (/usage|rate.?limit|quota|credits?|\b429\b/i.test(details)) return reject(new Error(`Лимит ${model}. Резерв можно вызвать явно: «Опус, …» или «Флеш, …».`));
-      if (/sign in|auth|credential|oauth/i.test(details)) return reject(new Error('Gemini не вошла в Google AI Pro: открой agy и войди.'));
-      reject(new Error(`${model} завершилась (${code}): ${details.split('\n').at(-1)?.slice(0, 200) || 'без ответа'}`));
+      reject(formatAgyError(model, code, details));
     });
-    child.stdin.end(`${JSON.stringify({ event: 'user', message: { content: brief } })}\n`);
+    child.stdin.write(`${JSON.stringify({ event: 'user', message: { content: brief } })}\n`);
   });
 }
 
 const AGY_CHAIN = AGY_BY_TIER.routine;
 const AGY_LABEL = (id) => {
-  const m = String(id).match(/^(gemini-4-argon|gemini-4-hydrogen|gemini-3\.8-flash|claude-opus-5-5|claude-sonnet-5-5|gpt-oss-120b)-(low|medium|high|xhigh)$/);
+  const m = String(id).match(/^(gemini-4-neon|gemini-4-argon|gemini-4-hydrogen|gemini-3\.8-flash|claude-opus-5-5|claude-sonnet-5-5|gpt-oss-120b)-(low|medium|high|xhigh)$/);
   if (!m) return null;
-  const name = { 'gemini-4-argon': 'Gemini Argon', 'gemini-4-hydrogen': 'Gemini Hydrogen', 'gemini-3.8-flash': 'Gemini Flash', 'claude-opus-5-5': 'Claude Opus 5.5', 'claude-sonnet-5-5': 'Claude Sonnet 5.5', 'gpt-oss-120b': 'GPT-OSS 120B' }[m[1]];
+  const name = { 'gemini-4-neon': 'Gemini Neon', 'gemini-4-argon': 'Gemini Argon', 'gemini-4-hydrogen': 'Gemini Hydrogen', 'gemini-3.8-flash': 'Gemini Flash', 'claude-opus-5-5': 'Claude Opus 5.5', 'claude-sonnet-5-5': 'Claude Sonnet 5.5', 'gpt-oss-120b': 'GPT-OSS 120B' }[m[1]];
   return m[2] === 'medium' ? name : `${name} (${m[2]})`;
 };
 const WORKER_LABELS = new Proxy({
   claude: 'Claude',
   codex: 'Codex',
   gemini: 'Antigravity',
+  'gemini-web': 'Gemini Web',
+  'gemini-web-neon': 'Gemini Web · Neon (Задачи)',
+  'gemini-web-hydrogen': 'Gemini Web · Hydrogen (Задачи)',
+  'gemini-pro-orchestrator-neon': 'Оркестратор · Gemini 4 Neon High',
+  'gemini-pro-orchestrator-g1-pro': 'Оркестратор · Gemini 4 Argon High',
+  'orchestrator-claude-opus': 'Оркестратор · Claude Opus 5.5 Medium',
   'gemini-cli-free': 'Gemini CLI',
 }, { get: (o, k) => (k in o ? o[k] : AGY_LABEL(k) || undefined), has: (o, k) => k in o || Boolean(AGY_LABEL(k)) });
 const LIMIT_ERR_RE = /hit your .*limit|usage limit|rate.?limit|quota|кончился лимит|^Лимит |\b429\b/i;
@@ -629,4 +986,4 @@ function isWorkerEvent(evt, cfg) {
   return cwd === dir || cwd.startsWith(dir + path.sep);
 }
 
-module.exports = { isWorkerEvent, route, handsWorker, workerChain, runWorker, WORKER_LABELS, isStop, findClaude, findCodex, findAgy, findGeminiCli, askClaude, askCodex, askGemini, askGeminiCli, agyModel, parseAgyEvent, codexBrief, codexEffort, transcript, workDir, convertDocs, skillHints, cheatsheet };
+module.exports = { isWorkerEvent, route, handsWorker, workerChain, runWorker, WORKER_LABELS, isStop, findClaude, findCodex, findAgy, findGeminiCli, askClaude, askCodex, askGemini, askGeminiCli, stopAgyWorkers, agyModel, parseAgyEvent, codexBrief, codexEffort, transcript, workDir, convertDocs, skillHints, cheatsheet };

@@ -6,9 +6,11 @@
 // she answers, the notes that fit what you said are put in her prompt. You read and edit them in
 // Obsidian like any note: what's in the files is what she remembers. On this PC only.
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const memoryRag = require('./memory-rag');
+const privateVaultCrypto = require('./private-vault-crypto');
 
 const INDEX = '_Память.md';
 const TYPES = ['о тебе', 'проект', 'договорённость', 'вкус'];
@@ -81,6 +83,47 @@ function list(dir) {
   }).filter((n) => n?.text);
 }
 
+function markdownCandidate(parsed, title, relative, { privateRoot = false, history = false, fallbackDate = '' } = {}) {
+  const layer = relative.split(path.sep)[0].toLowerCase();
+  const status = unquote(parsed.meta.status);
+  if (status === 'conflicted') return null;
+  if (history || (!privateRoot && ACTIVE_MEMORY_DIRS.has(layer))) {
+    const requiredStatus = history ? 'archived' : 'verified';
+    if (status !== requiredStatus) return null;
+  }
+  const { text } = parsed;
+  const excerpt = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 4).join(' ').slice(0, VAULT_TEXT);
+  return {
+    title,
+    text: excerpt,
+    body: text.slice(0, 4000),
+    file: relative,
+    layer: unquote(parsed.meta.layer) || layer,
+    status,
+    topic: unquote(parsed.meta.topic),
+    source: unquote(parsed.meta.source) || (privateRoot ? 'vault' : ''),
+    vault: privateRoot || unquote(parsed.meta.vault) === 'true',
+    link: unquote(parsed.meta.link),
+    quote: unquote(parsed.meta.quote),
+    created: unquote(parsed.meta.created || parsed.meta['создано']) || fallbackDate,
+    updated: unquote(parsed.meta.updated || parsed.meta['обновлено']) || fallbackDate,
+  };
+}
+
+function rankAndFormat(candidates, said, { limit = VAULT_MATCHED, vaultOnly = false } = {}) {
+  return memoryRag.rankCards(candidates, said, { limit, vaultOnly }).map((item) => ({
+    title: item.title,
+    text: item.text,
+    score: item.score,
+    file: item.file,
+    factors: item.factors,
+    updated: item.updated || '',
+    created: item.created || '',
+    source: item.source || '',
+    layer: item.layer || '',
+  }));
+}
+
 // The rest of the Obsidian vault: only a few notes that match this message. Her own Capri/ notes are
 // still handled by list()/recall(), so their metadata and index keep their old meaning.
 function searchVault(dir, said, limit = VAULT_MATCHED, { history = false, journalDir = null, vaultOnly = false } = {}) {
@@ -111,46 +154,216 @@ function searchVault(dir, said, limit = VAULT_MATCHED, { history = false, journa
     let parsed;
     try { parsed = parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
     const relative = path.relative(root, file);
-    const layer = relative.split(path.sep)[0].toLowerCase();
-    const status = unquote(parsed.meta.status);
-    if (status === 'conflicted') return null;
-    if (history || ACTIVE_MEMORY_DIRS.has(layer)) {
-      const requiredStatus = history ? 'archived' : 'verified';
-      if (status !== requiredStatus) return null;
-    }
-    const { text } = parsed;
     const title = path.basename(file, path.extname(file));
-    const excerpt = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 4).join(' ').slice(0, VAULT_TEXT);
-    return {
-      title,
-      text: excerpt,
-      body: text.slice(0, 4000),
-      file: relative,
-      layer: unquote(parsed.meta.layer) || layer,
-      status,
-      topic: unquote(parsed.meta.topic),
-      source: unquote(parsed.meta.source),
-      vault: unquote(parsed.meta.vault) === 'true',
-      link: unquote(parsed.meta.link),
-      quote: unquote(parsed.meta.quote),
-      created: unquote(parsed.meta.created || parsed.meta['создано']),
-      updated: unquote(parsed.meta.updated || parsed.meta['обновлено']),
-    };
+    return markdownCandidate(parsed, title, relative, { history });
   }).filter(Boolean);
-  return memoryRag.rankCards(candidates, said, { limit, vaultOnly }).map((item) => ({
-    title: item.title,
-    text: item.text,
-    score: item.score,
-    file: item.file,
-    factors: item.factors,
-  }));
+  return rankAndFormat(candidates, said, { limit, vaultOnly });
+}
+
+function privateVaultRoot(dir, commonNotesDir) {
+  const unavailable = () => new Error('Приватный Vault недоступен.');
+  if (typeof dir !== 'string' || !path.isAbsolute(dir)) throw unavailable();
+  const common = path.basename(commonNotesDir).toLowerCase() === 'capri' ? path.dirname(commonNotesDir) : commonNotesDir;
+  const within = (parent, child) => {
+    const relative = path.relative(parent, child);
+    return !relative || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+  };
+  try {
+    const root = fs.realpathSync(dir);
+    let sharedRoot = path.resolve(common);
+    try { sharedRoot = fs.realpathSync(sharedRoot); } catch (err) { if (err.code !== 'ENOENT') throw err; }
+    if (within(sharedRoot, root) || within(root, sharedRoot)) throw unavailable();
+    fs.accessSync(root, fs.constants.R_OK);
+    if (!fs.statSync(root).isDirectory()) throw unavailable();
+    return root;
+  } catch {
+    throw unavailable();
+  }
+}
+
+function assertPrivateKey(key) {
+  if (!Buffer.isBuffer(key) || key.length !== privateVaultCrypto.KEY_BYTES) {
+    throw new Error('Приватный Vault недоступен.');
+  }
+}
+
+function writeAtomic(file, data, encoding) {
+  const temporary = `${file}.${crypto.randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, data, encoding ? { encoding, flag: 'wx' } : { flag: 'wx' });
+    fs.renameSync(temporary, file);
+  } catch {
+    try { fs.unlinkSync(temporary); } catch {}
+    throw new Error('Приватный Vault недоступен.');
+  }
+}
+
+function chatCandidate(rows, relative, queryWords, fallbackDate) {
+  const lines = rows
+    .filter((row) => row && ['user', 'assistant'].includes(row.role) && typeof row.content === 'string' && row.content.trim())
+    .map((row) => `${row.role === 'user' ? 'Ты' : 'Капри'}: ${row.content.trim().replace(/\s+/g, ' ')}`);
+  if (!lines.length) return null;
+  const matched = lines.filter((line) => {
+    const lineStems = stems(line);
+    for (const w of queryWords) {
+      if (lineStems.has(w)) return true;
+    }
+    return false;
+  });
+  const excerpt = (matched.length ? matched : lines.slice(-4)).join(' ').slice(0, VAULT_TEXT);
+  const fullText = lines.join('\n');
+  const idMatch = /^altair-chat-([0-9a-f-]+)\.enc$/i.exec(path.basename(relative));
+  const title = idMatch ? `Приватный чат (${idMatch[1].slice(0, 8)})` : path.basename(relative, '.enc');
+  return {
+    title,
+    text: excerpt,
+    body: fullText.slice(-16000),
+    file: relative,
+    layer: 'vault',
+    status: 'verified',
+    topic: '',
+    source: 'vault',
+    vault: true,
+    link: '',
+    quote: '',
+    created: fallbackDate,
+    updated: fallbackDate,
+  };
+}
+
+function searchPrivateVault(dir, commonNotesDir, said, { key = null } = {}) {
+  const root = privateVaultRoot(dir, commonNotesDir);
+  if (key !== null && key !== undefined) assertPrivateKey(key);
+  const words = stems(said);
+  if (!words.size) return [];
+  const files = [];
+  const walk = (folder) => {
+    let entries = [];
+    try { entries = fs.readdirSync(folder, { withFileTypes: true }); } catch { throw new Error('Приватный Vault недоступен.'); }
+    for (const entry of entries) {
+      const entryName = entry.name.toLowerCase();
+      if (entryName === '.obsidian') continue;
+      if (folder === root) {
+        if (entryName === RAW_DIR.toLowerCase() || entryName === PENDING_REVIEW_DIR || entryName === MEMORY_ARCHIVE_DIR) continue;
+      }
+      const file = path.join(folder, entry.name);
+      if (entry.isDirectory()) walk(file);
+      else if (entry.isFile()) {
+        if (entryName.endsWith('.md')) files.push({ file, kind: 'md' });
+        else if (key && entryName.endsWith('.md.enc')) files.push({ file, kind: 'md.enc' });
+        else if (key && /^altair-chat-[0-9a-f-]+\.enc$/i.test(entryName)) files.push({ file, kind: 'chat.enc' });
+      }
+    }
+  };
+  walk(root);
+
+  const candidates = files.map(({ file, kind }) => {
+    const relative = path.relative(root, file);
+    let mtimeDate = '';
+    try { mtimeDate = fs.statSync(file).mtime.toISOString().slice(0, 10); } catch {}
+    if (kind === 'md') {
+      let parsed;
+      try { parsed = parse(fs.readFileSync(file, 'utf8')); } catch { throw new Error('Приватный Vault недоступен.'); }
+      const title = path.basename(file, path.extname(file));
+      return markdownCandidate(parsed, title, relative, { privateRoot: true });
+    }
+    let raw;
+    try { raw = fs.readFileSync(file); } catch { throw new Error('Приватный Vault недоступен.'); }
+    const decrypted = privateVaultCrypto.decryptBuffer(key, raw);
+    if (kind === 'md.enc') {
+      const parsed = parse(decrypted);
+      const title = unquote(parsed.meta.title) || path.basename(file).slice(0, -'.md.enc'.length);
+      return markdownCandidate(parsed, title, relative, { privateRoot: true, fallbackDate: mtimeDate });
+    }
+    let rows;
+    try { rows = JSON.parse(decrypted); } catch { throw new Error('Приватный Vault недоступен.'); }
+    if (!Array.isArray(rows)) throw new Error('Приватный Vault недоступен.');
+    return chatCandidate(rows, relative, words, mtimeDate);
+  }).filter(Boolean);
+  return rankAndFormat(candidates, said, { limit: VAULT_MATCHED, vaultOnly: true });
+}
+
+const PRIVATE_CHAT_BYTES = 2 * 1024 * 1024;
+function savePrivateChat(dir, commonNotesDir, chatId, messages, { append = false, key = null } = {}) {
+  if (typeof chatId !== 'string' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(chatId)
+      || !Array.isArray(messages) || !messages.length || messages.length > 1000
+      || messages.some(row => !row || !['user', 'assistant'].includes(row.role) || typeof row.content !== 'string')) {
+    throw Object.assign(new Error('Некорректная история приватного чата.'), { status: 400 });
+  }
+  const root = privateVaultRoot(dir, commonNotesDir);
+  if (key !== null && key !== undefined) assertPrivateKey(key);
+  const encrypted = Boolean(key);
+  const file = path.join(root, `altair-chat-${chatId.toLowerCase()}.${encrypted ? 'enc' : 'json'}`);
+  const incoming = messages.map(({ role, content }) => ({ role, content }));
+  const previous = (() => {
+    try {
+      const stat = fs.lstatSync(file);
+      if (!stat.isFile() || stat.size > PRIVATE_CHAT_BYTES + (encrypted ? 128 : 0)) throw new Error('Invalid private chat file');
+      const rawText = encrypted
+        ? privateVaultCrypto.decryptBuffer(key, fs.readFileSync(file))
+        : fs.readFileSync(file, 'utf8');
+      const saved = JSON.parse(rawText);
+      if (!Array.isArray(saved)) throw new Error('Invalid private chat file');
+      return saved;
+    } catch (err) {
+      if (err.code === 'ENOENT') return [];
+      throw new Error('Приватный Vault недоступен.');
+    }
+  })();
+  if (!append) {
+    const sharedLength = Math.min(previous.length, incoming.length);
+    const samePrefix = previous.slice(0, sharedLength).every((row, index) =>
+      row?.role === incoming[index].role && row?.content === incoming[index].content);
+    if (!samePrefix) throw Object.assign(new Error('История приватного чата расходится с сохранённой копией.'), { status: 409 });
+    if (previous.length >= incoming.length) return true;
+  }
+  const data = JSON.stringify(append ? previous.concat(incoming) : incoming);
+  if (Buffer.byteLength(data, 'utf8') > PRIVATE_CHAT_BYTES) {
+    throw Object.assign(new Error('Приватный чат превышает лимит сохранения.'), { status: 413 });
+  }
+  const payload = encrypted ? privateVaultCrypto.encryptBuffer(key, data) : data;
+  writeAtomic(file, payload, encrypted ? undefined : 'utf8');
+  return true;
+}
+
+function savePrivateNote(dir, commonNotesDir, title, content, { key } = {}) {
+  const root = privateVaultRoot(dir, commonNotesDir);
+  assertPrivateKey(key);
+  const cleanTitle = String(title || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const body = String(content || '').trim();
+  if (!cleanTitle || !body) {
+    throw Object.assign(new Error('Некорректная приватная заметка.'), { status: 400 });
+  }
+  const base = fileName(cleanTitle);
+  const slug = base.toLowerCase().replace(/[^a-zа-яё0-9]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 60).replace(/-+$/g, '') || 'note';
+  const shortId = crypto.randomBytes(4).toString('hex');
+  const name = `${slug}-${shortId}.md.enc`;
+  const today = new Date().toISOString().slice(0, 10);
+  const markdown = [
+    '---',
+    `title: ${sanitizeYamlLine(cleanTitle)}`,
+    `created: ${sanitizeYamlLine(today)}`,
+    `updated: ${sanitizeYamlLine(today)}`,
+    'source: vault',
+    '---',
+    '',
+    body,
+    '',
+  ].join('\n');
+  const payload = privateVaultCrypto.encryptBuffer(key, markdown);
+  writeAtomic(path.join(root, name), payload);
+  return name;
 }
 
 function vaultPrompt(matches) {
   if (!matches.length) return '';
   return [
-    'Relevant excerpts from the user\'s C.A.P.R.I knowledge base. Use only when they answer the request; do not claim they are facts about the user:',
-    ...matches.map((n) => `- ${n.title}: ${n.text.replace(/\s+/g, ' ')}`),
+    'Relevant excerpts from the user\'s C.A.P.R.I knowledge base. Use only when they answer the request; do not claim they are facts about the user. Fresh user corrections in the current chat and newer dated notes take priority over older archive descriptions; cite source and date when answering from memory:',
+    ...matches.map((n) => {
+      const src = n.file || n.source || 'Vault';
+      const date = n.updated || n.created || 'н/д';
+      return `- ${n.title}: ${n.text.replace(/\s+/g, ' ')} [источник: ${src}, дата: ${date}]`;
+    }),
   ].join('\n');
 }
 
@@ -316,8 +529,8 @@ function prompt(notes) {
   if (!notes.length) return '';
   return [
     // written to the user ("ты"): said plainly that "ты" there is them, or her model takes the facts as hers
-    'Facts about the USER from your notes (in them "ты" means the user, never you). Use them when they fit and answer from them, e.g. "your favourite X is Y"; never read them out as a list:',
-    ...notes.map((n) => `- about the user, ${n.title}: ${n.text.replace(/\s+/g, ' ')}`),
+    'Facts about the USER from your notes (in them "ты" means the user, never you). Fresh user corrections in the current conversation override older notes; use them when they fit and answer from them, e.g. "your favourite X is Y"; never read them out as a list:',
+    ...notes.map((n) => `- about the user, ${n.title}: ${n.text.replace(/\s+/g, ' ')} [источник: Capri/${n.title}.md, дата: ${n.updated || 'н/д'}]`),
   ].join('\n');
 }
 
@@ -441,7 +654,7 @@ function writePendingCandidate(dir, payload = {}, today = new Date().toISOString
 }
 
 module.exports = {
-  INDEX, TYPES, EXTRACT_SCHEMA, PLAN_DIR, RAW_DIR, OUT_DIR, PENDING_REVIEW_DIR, dirOf, fileName, list, searchVault, write, writePendingCandidate, writeIndex, writePlanNote,
+  INDEX, TYPES, EXTRACT_SCHEMA, PLAN_DIR, RAW_DIR, OUT_DIR, PENDING_REVIEW_DIR, dirOf, fileName, list, searchVault, searchPrivateVault, savePrivateChat, savePrivateNote, write, writePendingCandidate, writeIndex, writePlanNote,
   appendChat, appendSearch, writeOutput,
   recall, prompt, vaultPrompt, extractMessages, parseFacts,
 };

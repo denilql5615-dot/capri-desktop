@@ -143,6 +143,43 @@ test('private memory is available only through vaultOnly, and Tor notes stay exc
   assert.deepStrictEqual(notes.searchVault(dir, 'контрольрубин', 4, { vaultOnly: true }).map(note => note.title), ['Приват']);
 });
 
+test('private Vault searches its own root and surfaces an absent or shared Vault', (t) => {
+  const dir = tmp();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const common = path.join(dir, 'Common');
+  const vault = path.join(dir, 'Private', 'Capri');
+  fs.mkdirSync(common);
+  fs.mkdirSync(vault, { recursive: true });
+  fs.writeFileSync(path.join(common, 'Общее.md'), 'контрольрубин общаяметка');
+  fs.writeFileSync(path.join(dir, 'Private', 'Сосед.md'), 'контрольрубин соседняяметка');
+  fs.writeFileSync(path.join(vault, 'Приват.md'), 'контрольрубин приватнаяметка');
+  assert.deepEqual(notes.searchPrivateVault(vault, common, 'контрольрубин').map(row => row.title), ['Приват']);
+  assert.deepEqual(notes.searchVault(common, 'контрольрубин').map(row => row.title), ['Общее']);
+  for (const invalid of ['', path.join(dir, 'Missing'), common, dir]) {
+    assert.throws(() => notes.searchPrivateVault(invalid, common, 'контрольрубин'), /Приватный Vault недоступен/);
+  }
+});
+
+test('private autosave and manual save share one transcript and never fall back to shared notes', (t) => {
+  const dir = tmp();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const common = path.join(dir, 'Common');
+  const vault = path.join(dir, 'Private');
+  fs.mkdirSync(common);
+  fs.mkdirSync(vault);
+  const id = '3d73e088-2a4e-4d41-befe-045cbb75e03e';
+  const question = { role: 'user', content: 'Приватнаяметка' };
+  const answer = { role: 'assistant', content: 'Синтетический ответ' };
+  assert.equal(notes.savePrivateChat(vault, common, id, [question, answer], { append: true }), true);
+  assert.equal(notes.savePrivateChat(vault, common, id, [question]), true);
+  const file = path.join(vault, `altair-chat-${id}.json`);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), [question, answer]);
+  assert.throws(() => notes.savePrivateChat(vault, common, id, [answer]), { status: 409 });
+  assert.throws(() => notes.savePrivateChat(path.join(dir, 'Missing'), common, id, [question]), /Приватный Vault недоступен/);
+  assert.throws(() => notes.savePrivateChat(common, common, id, [question]), /Приватный Vault недоступен/);
+  assert.deepEqual(fs.readdirSync(common), []);
+});
+
 test('searchVault reconciles incomplete promotion journal before returning active or archive hits', (t) => {
   const { createVaultPromotionStore } = require('../src/main/memory-promotion');
   const vault = tmp();
@@ -177,4 +214,41 @@ test('searchVault reconciles incomplete promotion journal before returning activ
   assert.deepEqual(activeHits.map((h) => h.title), ['Порт-новый']);
   const archiveHits = notes.searchVault(path.join(vault, 'Capri'), 'ксилофон77', 5, { history: true, journalDir });
   assert.deepEqual(archiveHits.map((h) => h.title), ['Порт']);
+});
+
+test('searchPrivateVault includes plain markdown notes inside 10_Ствол and 20_Крона without verified status', (t) => {
+  const dir = tmp();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const common = path.join(dir, 'Common');
+  const vault = path.join(dir, 'Private');
+  fs.mkdirSync(path.join(common, '10_Ствол'), { recursive: true });
+  fs.mkdirSync(path.join(vault, '10_Ствол'), { recursive: true });
+  fs.mkdirSync(path.join(vault, '20_Крона'), { recursive: true });
+  fs.writeFileSync(path.join(common, '10_Ствол', 'Непроверенное.md'), 'Обычная заметка топаз91 без статуса.');
+  fs.writeFileSync(path.join(vault, '10_Ствол', 'ПриватСтвол.md'), 'Личная заметка топаз91 в стволе.');
+  fs.writeFileSync(path.join(vault, '20_Крона', 'ПриватКрона.md'), 'Личная заметка топаз91 в кроне.');
+
+  assert.deepEqual(notes.searchVault(common, 'топаз91'), []);
+  assert.deepEqual(
+    notes.searchPrivateVault(vault, common, 'топаз91').map((row) => row.title).sort(),
+    ['ПриватКрона', 'ПриватСтвол'],
+  );
+});
+
+test('searchVault and vaultPrompt preserve source file, date and recency priority rule', (t) => {
+  const vault = tmp();
+  t.after(() => fs.rmSync(vault, { recursive: true, force: true }));
+  const capri = path.join(vault, 'Capri');
+  fs.mkdirSync(path.join(vault, 'GENESIS'), { recursive: true });
+  fs.writeFileSync(
+    path.join(vault, 'GENESIS', 'Архитектура.md'),
+    '---\nupdated: 2026-11-22\nsource: genesis_doc\n---\nМост использует порт 8770 для изумруд55.\n',
+  );
+  const hits = notes.searchVault(capri, 'изумруд55', 3);
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].updated, '2026-11-22');
+  assert.equal(hits[0].source, 'genesis_doc');
+  const formatted = notes.vaultPrompt(hits);
+  assert.match(formatted, /Fresh user corrections in the current chat and newer dated notes take priority/);
+  assert.match(formatted, /\[источник: GENESIS[\\/]Архитектура\.md, дата: 2026-11-22\]/);
 });

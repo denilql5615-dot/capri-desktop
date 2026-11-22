@@ -142,3 +142,166 @@ test('skillHints and cheatsheet include domain references, anti-slop rules, and 
   assert.strictEqual(WORKER_LABELS['gemini-4-hydrogen-xhigh'], 'Gemini Hydrogen (xhigh)');
   assert.strictEqual(WORKER_LABELS['claude-opus-5-5-medium'], 'Claude Opus 5.5');
 });
+
+test('transcript preserves up to 40 prior turns without truncating at 8', () => {
+  const { transcript } = require('../src/main/workers');
+  const msgs = [];
+  for (let i = 1; i <= 15; i++) {
+    msgs.push({ role: 'user', content: `question-${i}` });
+    msgs.push({ role: 'assistant', content: `answer-${i}` });
+  }
+  msgs.push({ role: 'user', content: 'final-question' });
+  const out = transcript(msgs);
+  assert.match(out, /User: question-1\b/);
+  assert.match(out, /Capri: answer-15\b/);
+  assert.match(out, /Task: final-question$/);
+});
+
+test('askCodex resolves immediately on turn.completed JSONL event without waiting for slow process close', async () => {
+  const { EventEmitter } = require('node:events');
+  const { PassThrough } = require('node:stream');
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { askCodex } = require('../src/main/workers');
+  const tmpWorkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'capri-codex-test-'));
+
+  let spawnedArgs = null;
+  let spawnedEnv = null;
+  const mockSpawn = (_exe, args, opts) => {
+    spawnedArgs = args;
+    spawnedEnv = opts.env;
+    const child = new EventEmitter();
+    child.pid = 999999;
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => {};
+    child.stdin.on('finish', () => {
+      child.stdout.write(`${JSON.stringify({ type: 'thread.started' })}\n`);
+      child.stdout.write(`${JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'OK' } })}\n`);
+      child.stdout.write(`${JSON.stringify({ type: 'turn.completed' })}\n`);
+      // Intentionally do NOT emit 'close' to prove immediate resolution on turn.completed
+    });
+    return child;
+  };
+
+  const deltas = [];
+  const res = await askCodex(
+    { workDir: tmpWorkDir },
+    [{ role: 'user', content: 'Ответь словом OK' }],
+    (d) => deltas.push(d),
+    new AbortController().signal,
+    { model: 'gpt-6.2-sol', effort: 'low' },
+    () => 'codex-mock',
+    mockSpawn,
+  );
+  assert.strictEqual(res, 'OK');
+  assert.deepStrictEqual(deltas, ['OK']);
+  assert.ok(spawnedArgs.includes('--ephemeral'));
+  assert.ok(spawnedArgs.includes('--json'));
+  assert.ok(spawnedArgs.includes('mcp_servers.capri-web.enabled=false'));
+  assert.ok(spawnedArgs.includes('mcp_servers.blender.enabled=false'));
+  assert.ok(spawnedArgs.includes('notify=[]'));
+  assert.strictEqual(spawnedEnv.CAPRI_WORKER_SUBPROCESS, '1');
+  try { fs.rmSync(tmpWorkDir, { recursive: true, force: true }); } catch {}
+});
+
+test('askGemini reuses warm persistent stream-json process for contiguous session turns and resets on provider switch', async () => {
+  const { EventEmitter } = require('node:events');
+  const { PassThrough } = require('node:stream');
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { askGemini, stopAgyWorkers } = require('../src/main/workers');
+  const tmpWorkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'capri-agy-test-'));
+
+  let spawnCount = 0;
+  const receivedPrompts = [];
+  const mockSpawn = () => {
+    spawnCount++;
+    const procId = spawnCount;
+    const child = new EventEmitter();
+    child.pid = 888000 + procId;
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => {};
+    let turnNum = 0;
+    let inBuf = '';
+    child.stdin.on('data', (chunk) => {
+      inBuf += chunk.toString('utf8');
+      let nl;
+      while ((nl = inBuf.indexOf('\n')) >= 0) {
+        const line = inBuf.slice(0, nl).trim();
+        inBuf = inBuf.slice(nl + 1);
+        if (!line) continue;
+        turnNum++;
+        const payload = JSON.parse(line);
+        receivedPrompts.push(payload.message.content);
+        setImmediate(() => {
+          child.stdout.write(`${JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: `proc${procId}-turn${turnNum}` } })}\n`);
+        });
+      }
+    });
+    return child;
+  };
+
+  try {
+    const sig = new AbortController().signal;
+    const r1 = await askGemini(
+      { workDir: tmpWorkDir },
+      [{ role: 'user', content: 'first question' }],
+      () => {},
+      sig,
+      { model: 'gemini-3.8-flash-high', sessionId: 'sess-1', sameProviderContiguous: false },
+      () => 'agy-mock',
+      mockSpawn,
+    );
+    assert.strictEqual(r1, 'proc1-turn1');
+    assert.strictEqual(spawnCount, 1);
+
+    // Contiguous turn 2 in same session + same model -> reuses warm process 1 without duplicating history
+    const r2 = await askGemini(
+      { workDir: tmpWorkDir },
+      [
+        { role: 'user', content: 'first question' },
+        { role: 'assistant', content: 'proc1-turn1' },
+        { role: 'user', content: 'second question' },
+      ],
+      () => {},
+      sig,
+      { model: 'gemini-3.8-flash-high', sessionId: 'sess-1', sameProviderContiguous: true },
+      () => 'agy-mock',
+      mockSpawn,
+    );
+    assert.strictEqual(r2, 'proc1-turn2');
+    assert.strictEqual(spawnCount, 1);
+    assert.ok(!receivedPrompts[1].includes('Conversation so far:'));
+    assert.match(receivedPrompts[1], /Task: second question$/);
+
+    // Non-contiguous turn (another provider answered in between) -> respawns fresh process with full history
+    const r3 = await askGemini(
+      { workDir: tmpWorkDir },
+      [
+        { role: 'user', content: 'first question' },
+        { role: 'assistant', content: 'proc1-turn1' },
+        { role: 'user', content: 'codex question' },
+        { role: 'assistant', content: 'codex answer' },
+        { role: 'user', content: 'third question back on agy' },
+      ],
+      () => {},
+      sig,
+      { model: 'gemini-3.8-flash-high', sessionId: 'sess-1', sameProviderContiguous: false },
+      () => 'agy-mock',
+      mockSpawn,
+    );
+    assert.strictEqual(r3, 'proc2-turn1');
+    assert.strictEqual(spawnCount, 2);
+    assert.match(receivedPrompts[2], /Conversation so far:/);
+    assert.match(receivedPrompts[2], /Capri: codex answer/);
+  } finally {
+    stopAgyWorkers();
+    try { fs.rmSync(tmpWorkDir, { recursive: true, force: true }); } catch {}
+  }
+});

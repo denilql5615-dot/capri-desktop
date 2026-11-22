@@ -1,6 +1,18 @@
 #!/usr/bin/env node
 "use strict";
 
+if (process.env.CAPRI_WORKER_SUBPROCESS === "1") {
+  const hookType = process.argv[2] || "PreToolUse";
+  process.stdout.write(
+    hookType === "PreToolUse"
+      ? '{"decision":"allow"}\n'
+      : hookType === "Stop"
+        ? '{"decision":"stop"}\n'
+        : "{}\n"
+  );
+  process.exit(0);
+}
+
 // Antigravity (AGY) hook -> Capri.
 // Reads the Antigravity hook payload on stdin, translates it to Capri's event format,
 // forwards it to Capri over HTTP, and prints the required JSON response on stdout.

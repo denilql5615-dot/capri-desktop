@@ -5,7 +5,7 @@ const { createInterface } = require('node:readline');
 
 function quotaGroup(agent, model) {
   if (agent !== 'gemini') return agent;
-  if (/^gemini-4-argon(?:-|$)/.test(model)) return 'agy-argon';
+  if (/^gemini-4-argon(?:-|$)|^gemini-pro-orchestrator-g1-pro$/.test(model)) return 'agy-argon';
   if (/^gemini-/.test(model)) return 'agy-gemini';
   return 'agy-third-party';
 }

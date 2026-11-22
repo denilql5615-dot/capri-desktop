@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { isAuxiliaryModel, resolveRequestedModel } = require('../src/main/phone-model');
+const { isAuxiliaryModel, mobileAutoOverride, resolveRequestedModel } = require('../src/main/phone-model');
 
 const MODELS = Object.freeze({
   fast: 'gemma-4-heretic-e4b',
@@ -36,6 +36,15 @@ test('resolveRequestedModel handles 26b -> e4b -> 26b transitions without hidden
   assert.equal(first, MODELS.large);
   assert.equal(second, MODELS.fast);
   assert.equal(third, MODELS.large);
+});
+
+test('mobile Auto leaves a prior Qwen selection and keeps the Gemma roles', () => {
+  for (const selection of ['qwen36', 'qwen38']) {
+    const priorChat = resolveRequestedModel(selection, MODELS);
+    assert.equal(mobileAutoOverride(priorChat, MODELS.fast), MODELS.fast);
+  }
+  assert.equal(mobileAutoOverride(MODELS.fast, MODELS.fast), undefined);
+  assert.equal(mobileAutoOverride(MODELS.large, MODELS.fast), undefined);
 });
 
 test('resolveRequestedModel throws RangeError for unsupported selection values', () => {

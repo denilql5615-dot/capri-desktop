@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
 const {
   app, BrowserWindow, Tray, Menu, ipcMain, screen, protocol, net, shell, globalShortcut, nativeImage,
-  clipboard, ClipboardItem, dialog, powerMonitor, desktopCapturer,
+  clipboard, ClipboardItem, dialog, powerMonitor, desktopCapturer, safeStorage,
 } = require('electron');
 const { randomUUID, randomBytes } = require('node:crypto');
 
@@ -28,12 +28,13 @@ const policy = require('./policy');
 const desktop = require('./desktop');
 const agent = require('./agent');
 const chatLog = require('./chats');
-const { AgentSessions, MODELS: SESSION_MODELS } = require('./agent-sessions');
-const { isAuxiliaryModel, resolveRequestedModel } = require('./phone-model');
+const { AgentSessions, MODELS: SESSION_MODELS, CATALOG: SESSION_CATALOG, isAllowedModel } = require('./agent-sessions');
+const { isAuxiliaryModel, mobileAutoOverride, resolveRequestedModel } = require('./phone-model');
 const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
 const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('./hub-artifacts');
 const notes = require('./notes');
+const privateVaultCrypto = require('./private-vault-crypto');
 const { registerMemoryPromotionIpc } = require('./memory-promotion');
 const pim = require('./pim');
 const pimImap = require('./pim-imap');
@@ -437,10 +438,49 @@ async function hubQuota(agent, model, refresh) {
 
 function ensureAgentSessions() {
   agentSessions ??= new AgentSessions(path.join(app.getPath('userData'), 'agent-sessions.json'),
-    async (agent, model, messages, signal, delta) => {
+    async (agent, model, messages, signal, delta, meta = {}) => {
       const cfg = config.load();
       const lastUser = messages.findLast((m) => m.role === 'user')?.content || '';
       const hints = workers.skillHints(lastUser);
+      if (meta?.ephemeral || meta?.privateMode || meta?.localOnly || meta?.mode === 'private' || meta?.mode === 'nsfw') {
+        throw new Error('Облачные модели недоступны в этом режиме.');
+      }
+      if (['claude', 'codex', 'gemini', 'gemini-web'].includes(agent)) {
+        if (torState.isQuarantined() || messagesHaveTor(messages)) {
+          throw new Error(TOR_CLOUD_BLOCK_MSG);
+        }
+      }
+      if (agent === 'gemini-web') {
+        const webModel = model === 'gemini-web-hydrogen' ? 'code' : 'research';
+        const expectedActual = model === 'gemini-web-hydrogen' ? 'gemini-4-hydrogen' : 'gemini-4-neon';
+        const prevAssistant = messages.slice(0, -1).findLast((m) => m.role === 'assistant');
+        const canContinueWebChat = Boolean(
+          meta?.sameProviderContiguous
+          && meta?.session?.webChatId
+          && prevAssistant
+          && prevAssistant.provider === 'gemini-web'
+          && (!prevAssistant.webChatId || prevAssistant.webChatId === meta.session.webChatId)
+          && (prevAssistant.model === model || prevAssistant.actualModel === expectedActual),
+        );
+        const existingChatId = canContinueWebChat ? meta.session.webChatId : null;
+        const prompt = existingChatId
+          ? lastUser
+          : workers.codexBrief([{ role: 'system', content: hints }, ...messages], workers.workDir(cfg));
+        const res = await agentWeb.askGemini({ prompt, chat: existingChatId, model: webModel, task: true });
+        signal?.throwIfAborted();
+        const text = String(res?.answer || '').trim();
+        if (text) delta(text);
+        const agentLabel = model in workers.WORKER_LABELS ? model : 'gemini-web';
+        setImmediate(() => toVault(cfg, agentLabel, lastUser, text, []));
+        return {
+          text,
+          artifacts: [],
+          actualModel: expectedActual,
+          effort: 'task',
+          ...(res?.fellBack && { fallback: res.fellBack }),
+          ...(res?.chat && { webChatId: res.chat }),
+        };
+      }
       const run = { claude: workers.askClaude, codex: workers.askCodex, gemini: workers.askGemini }[agent];
       if (run) {
         const output = randomUUID();
@@ -453,18 +493,36 @@ function ensureAgentSessions() {
           'Если у тебя нет нужного инструмента, скажи об этом. Не выдавай ссылку или описание за созданный файл.',
           hints,
         ].join('\n');
-        let text = await run(cfg, [{ role: 'system', content: instruction }, ...messages], delta, signal, { model, onQuota: recordClaudeQuota });
-        const compiled = await workers.convertDocs(destination, since).catch(() => []);
+        let text = await run(cfg, [{ role: 'system', content: instruction }, ...messages], delta, signal, {
+          model,
+          ...(meta?.effort && { effort: meta.effort }),
+          sessionId: meta?.sessionId || meta?.session?.id || null,
+          sameProviderContiguous: Boolean(meta?.sameProviderContiguous),
+          onQuota: recordClaudeQuota,
+        });
+        let hasDestFiles = false;
+        try {
+          hasDestFiles = fs.existsSync(destination) && fs.readdirSync(destination).length > 0;
+        } catch {}
+        const compiled = hasDestFiles ? await workers.convertDocs(destination, since).catch(() => []) : [];
         if (compiled.length) {
           text = text.replace(/\.docx\.md\b/gi, '.docx').replace(/\.pdf\.md\b/gi, '.pdf').replace(/\.png\.svg\b/gi, '.png');
         }
-        const artifacts = await listArtifacts(root, output);
-        const agentLabel = model && model in workers.WORKER_LABELS ? model : agent;
-        toVault(cfg, agentLabel, lastUser, text, artifacts);
-        if (text) {
-          telegramBot?.send(telegram.hubNotice({ agent: workers.WORKER_LABELS[agentLabel] || agentLabel, model, task: lastUser, text, artifacts })).catch(() => {});
-        }
-        return { text, artifacts };
+        const artifacts = hasDestFiles ? await listArtifacts(root, output) : [];
+        const actualModel = meta?.actualModel || model || (agent === 'codex' ? 'gpt-6.2-sol' : agent);
+        const agentLabel = actualModel in workers.WORKER_LABELS ? actualModel : (model && model in workers.WORKER_LABELS ? model : agent);
+        setImmediate(() => {
+          toVault(cfg, agentLabel, lastUser, text, artifacts);
+          if (text) {
+            telegramBot?.send(telegram.hubNotice({ agent: workers.WORKER_LABELS[agentLabel] || agentLabel, model: actualModel, task: lastUser, text, artifacts })).catch(() => {});
+          }
+        });
+        return {
+          text,
+          artifacts,
+          actualModel,
+          ...(meta?.effort && { effort: meta.effort }),
+        };
       }
       const rp = agent === 'faun' && !brainsLib.isEmergency(lastUser);
       const generate = () => ollama.chat({ model, messages: [
@@ -513,16 +571,123 @@ function hubSessions(event) {
 // Her long memory: notes in your Obsidian vault (notes.js)
 const notesDir = () => notes.dirOf({ notesDir: config.load().notesDir, appData: app.getPath('appData'), documents: app.getPath('documents') });
 
+function recentPhoneHistoryPrompt(said, messages) {
+  try {
+    const store = chatLog.read(chatsFile());
+    const phoneChats = (store.chats || []).filter((c) => c && c.via === 'phone' && Array.isArray(c.messages) && c.messages.length);
+    if (!phoneChats.length) return '';
+    const existing = new Set(
+      (Array.isArray(messages) ? messages : [])
+        .filter((m) => m && typeof m.content === 'string')
+        .map((m) => `${m.role}:${m.content.trim()}`),
+    );
+    const now = Date.now();
+    const recentWindowMs = 2 * 60 * 60 * 1000;
+    const rows = [];
+    for (const chat of phoneChats.slice(-3)) {
+      if (now - (chat.updated || 0) > recentWindowMs) continue;
+      for (const m of chat.messages.slice(-6)) {
+        const text = String(m?.content || '').trim();
+        if (!text || text === said.trim() || existing.has(`${m.role}:${text}`)) continue;
+        const stamp = new Date(m.at || chat.updated || now).toISOString().slice(0, 16).replace('T', ' ');
+        rows.push(`- ${m.role === 'user' ? 'USER' : 'ALTA'}: ${text.replace(/\s+/g, ' ').slice(0, 360)} [источник: история чата, дата: ${stamp}]`);
+      }
+    }
+    if (!rows.length) return '';
+    return [
+      'Recent exchanges from the user\'s previous phone chat (use when the current task continues or references that topic):',
+      ...rows.slice(-6),
+    ].join('\n');
+  } catch {
+    return '';
+  }
+}
+
+const privateVaultKeys = new Map();
+
+function privateVaultSeal(plain) {
+  if (safeStorage.isEncryptionAvailable()) {
+    const sealed = setup.sealKey(plain);
+    if (typeof sealed === 'string' && sealed.startsWith('enc:')) return sealed;
+    throw new Error('Приватный Vault недоступен.');
+  }
+  if (process.platform !== 'win32') throw new Error('Приватный Vault недоступен.');
+  const sealed = setup.sealMcpCapability(plain);
+  if (typeof sealed === 'string' && sealed.startsWith('dpapi:')) return sealed;
+  throw new Error('Приватный Vault недоступен.');
+}
+
+function privateVaultOpen(stored) {
+  if (typeof stored !== 'string') throw new Error('Приватный Vault недоступен.');
+  if (stored.startsWith('enc:')) {
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('Приватный Vault недоступен.');
+    const opened = setup.openKey(stored);
+    if (!opened) throw new Error('Приватный Vault недоступен.');
+    return opened;
+  }
+  if (stored.startsWith('dpapi:')) {
+    if (process.platform !== 'win32') throw new Error('Приватный Vault недоступен.');
+    const opened = setup.unsealMcpCapability(stored);
+    if (!opened) throw new Error('Приватный Vault недоступен.');
+    return opened;
+  }
+  throw new Error('Приватный Vault недоступен.');
+}
+
+function privateVaultKey(dir) {
+  const target = String(dir || '').trim();
+  if (!target || !path.isAbsolute(target)) throw new Error('Приватный Vault недоступен.');
+  let realDir;
+  try {
+    realDir = fs.realpathSync(target);
+    if (!fs.statSync(realDir).isDirectory()) throw new Error('Приватный Vault недоступен.');
+  } catch {
+    throw new Error('Приватный Vault недоступен.');
+  }
+  const cached = privateVaultKeys.get(realDir);
+  if (cached && Buffer.isBuffer(cached) && cached.length === privateVaultCrypto.KEY_BYTES) {
+    if (fs.existsSync(path.join(realDir, privateVaultCrypto.KEY_FILE))) return cached;
+    privateVaultKeys.delete(realDir);
+  }
+  const key = privateVaultCrypto.ensurePrivateVaultKey(realDir, {
+    seal: privateVaultSeal,
+    open: privateVaultOpen,
+  });
+  privateVaultKeys.set(realDir, key);
+  return key;
+}
+
+function initPrivateVault() {
+  const cfg = config.load();
+  const configured = String(cfg.privateVaultDir || '').trim();
+  const target = configured || privateVaultCrypto.DEFAULT_PRIVATE_VAULT_DIR;
+  try {
+    if (!configured) {
+      fs.mkdirSync(target, { recursive: true });
+    }
+    privateVaultKey(target);
+    if (!configured) {
+      config.save({ privateVaultDir: target });
+    }
+  } catch (err) {
+    console.warn('[capri] private vault:', err.message);
+  }
+}
+
 // Her notes that fit your last message, put right by it for this answer: small local models mostly go by
 // the last thing they read (chat.js does the same with her mood), up in her persona they'd skip them
-function withNotes(messages, { vaultOnly = false, matchedOnly = false } = {}) {
+function withNotes(messages, { vaultOnly = false, matchedOnly = false, includeRecentPhone = false } = {}) {
   const at = messages.map((m) => m.role).lastIndexOf('user');
   const said = messages[at]?.content;
   if (typeof said !== 'string') return messages;
   const dir = notesDir();
+  const privateDir = config.load().privateVaultDir;
   const recalled = [
     vaultOnly ? '' : notes.prompt(notes.recall(notes.list(dir), said, { matchedOnly })),
-    notes.vaultPrompt(notes.searchVault(dir, said, undefined, { vaultOnly })),
+    notes.vaultPrompt(vaultOnly
+      ? notes.searchPrivateVault(privateDir, dir, said, { key: privateVaultKey(privateDir) })
+      : notes.searchVault(dir, said)),
+    (!vaultOnly && includeRecentPhone) ? recentPhoneHistoryPrompt(said, messages) : '',
   ].filter(Boolean).join('\n\n');
   if (!recalled) return messages;
   return messages.map((m, i) => (i === at ? { ...m, content: `${said}
@@ -747,14 +912,16 @@ async function morningBriefTick(now = new Date()) {
 
 // A plain question about your schedule, reminders, or fresh mail: her answer by code, no model (quick.js).
 // null: not one, or couldn't be read (her model answers then).
-async function quickAnswer(said) {
+async function quickAnswer(said, { useVault = true } = {}) {
   try {
     const memo = quick.parseRememberCommand(said);
     if (memo) {
+      if (!useVault) return 'Запись в Obsidian выключена для этого чата (режим Obsidian off).';
       if (shouldSkipChatPersistence({ torState, messages: [{ role: 'user', content: said }], tor })) return TOR_PERSIST_BLOCK_MSG;
       const today = new Date().toISOString().slice(0, 10);
+      const dir = notesDir();
       const title = notes.writePendingCandidate(
-        notesDir(),
+        dir,
         {
           topic: memo.split(/\s+/).slice(0, 5).join(' '),
           source: 'user_remember',
@@ -765,17 +932,35 @@ async function quickAnswer(said) {
         today,
       );
       if (!title) return 'Не удалось сохранить карточку в pending_review.';
+      const vaultRoot = path.basename(dir).toLowerCase() === 'capri' ? path.dirname(dir) : dir;
+      const pendingFile = path.join(vaultRoot, notes.PENDING_REVIEW_DIR, `${title}.md`);
+      const verified = (() => {
+        try { return fs.existsSync(pendingFile) && fs.statSync(pendingFile).size > 0; } catch { return false; }
+      })();
+      if (!verified) return 'Не удалось подтвердить запись карточки в pending_review.';
       return `Добавила карточку в pending_review на подтверждение ([[${title}]]): «${memo.slice(0, 140)}».`;
     }
     const planCmd = quick.parseQuickPlanCommand(said);
     if (planCmd && localPlanner) {
       if (shouldSkipChatPersistence({ torState, messages: [{ role: 'user', content: said }], tor })) return TOR_PERSIST_BLOCK_MSG;
       const entry = localPlanner.create(planCmd);
-      try { notes.writePlanNote(notesDir(), entry); } catch {}
+      const verifiedPlanner = Boolean(entry?.id && localPlanner.list().some((p) => p.id === entry.id));
+      if (!verifiedPlanner) return 'Не удалось подтвердить сохранение задачи в Планировщике.';
+      let vaultVerified = false;
+      if (useVault) {
+        try {
+          const dir = notesDir();
+          const rel = notes.writePlanNote(dir, entry);
+          const vaultRoot = path.basename(dir).toLowerCase() === 'capri' ? path.dirname(dir) : dir;
+          vaultVerified = Boolean(rel && fs.existsSync(path.join(vaultRoot, rel)));
+        } catch {}
+      }
       if (planCmd.kind === 'reminder') {
         const when = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' }).format(new Date(planCmd.at));
         return `Поставила напоминание на ${when}: «${planCmd.title}». Пришлю и в Telegram, когда сработает.`;
       }
+      if (!useVault) return `Добавила задачу в Планировщик (Obsidian выключен для этого чата): «${planCmd.title}».`;
+      if (!vaultVerified) return `Задача «${planCmd.title}» сохранена в Планировщик, но запись заметки в Obsidian не подтвердилась.`;
       return `Добавила задачу в Планировщик и Obsidian: «${planCmd.title}».`;
     }
     const remoteCmd = quick.parseQuickRemoteCommand(said);
@@ -797,6 +982,7 @@ async function quickAnswer(said) {
       return cur ? `В буфере обмена ПК сейчас:\n${cur.slice(0, 1500)}` : 'Буфер обмена ПК сейчас пуст (или там не текст).';
     }
     if (quick.isQuickAlta(said)) {
+      if (!useVault) return 'Чтение Obsidian выключено для этого чата (режим Obsidian off).';
       const dir = notesDir();
       const vaultRoot = path.basename(dir).toLowerCase() === 'capri' ? path.dirname(dir) : dir;
       let planMarkdown = '';
@@ -828,6 +1014,7 @@ async function quickAnswer(said) {
     }
     const searchQ = quick.parseQuickSearchCommand(said);
     if (searchQ) {
+      if (!useVault) return 'Поиск по Obsidian выключен для этого чата (режим Obsidian off).';
       const [vaultHits, fileHits] = await Promise.all([
         Promise.resolve(notes.searchVault(notesDir(), searchQ, 4, { journalDir: path.join(app.getPath('userData'), 'memory-journal') })).catch(() => []),
         files.search(searchQ).catch(() => []),
@@ -1520,13 +1707,41 @@ function phoneToken() {
 
 const PHONE_REACT = { pet: 'pet', poke: 'poke', shake: 'shake', back: 'back' };
 
-function phonePersona() {
-  const cfg = config.load();
+function runtimeInventoryNote({ isolated = false, ephemeral = false, privateMode = false, localMode = '', useVault = true, requestedModel } = {}) {
+  const installed = Array.isArray(chatModels) ? chatModels : [];
+  const hasE4b = !installed.length || installed.includes(brains.fast);
+  const has26b = !installed.length || installed.includes(brains.main);
+  const hasQwen36 = installed.includes('capri-qwen36-heretic:latest');
+  const hasQwen38 = installed.includes('capri-qwen38-heretic:latest');
+  const localList = [
+    hasE4b ? 'Gemma 4 Lite / E4B (установлена и доступна локально)' : 'Gemma 4 Lite / E4B (настроена)',
+    has26b ? 'Gemma 4 26B Heretic (установлена и доступна локально)' : 'Gemma 4 26B Heretic (настроена)',
+    hasQwen36 ? 'Qwen 3.6 Heretic (установлена и доступна локально)' : 'Qwen 3.6 Heretic (настроена в каталоге)',
+    hasQwen38 ? 'Qwen 3.8 Heretic (установлена и доступна локально)' : 'Qwen 3.8 Heretic (настроена в каталоге)',
+  ].join(', ');
+  const cloudList = isolated
+    ? 'отключены в текущем изолированном режиме'
+    : 'Claude (Opus 5.5, Sonnet 5.5, Haiku 5.5), Codex (GPT-6.2 Sol, GPT-6.2 Astra, GPT-6.1 Terra), Antigravity (Gemini 4 Neon, Gemini 4 Argon, Gemini 4 Hydrogen, Gemini 3.8 Flash, резерв Claude 5.5, Оркестратор), Gemini Web (Neon/Hydrogen · Задачи)';
+  const vaultState = privateMode
+    ? 'Приватный Vault (строго локально)'
+    : (ephemeral || localMode === 'nsfw' || useVault === false ? 'выключен для этого чата (Obsidian off)' : 'включён');
+  return [
+    `Рантайм-инвентарь моделей на ПК: локальные — ${localList}; облачные — ${cloudList}.`,
+    `Статус инструментов: Obsidian Vault — ${vaultState}${requestedModel ? `; запрошена модель — ${requestedModel}` : ''}.`,
+    'Разграничивай статус модели: упоминание в старой заметке ≠ установлена ≠ настроена ≠ доступна сейчас. Не путай архивные описания с текущим рантайм-инвентарём.',
+    'Подтверждай запись заметки, создание задачи, поиск по Vault или делегирование агенту только при наличии фактического результата инструмента в контексте.',
+  ].join('\n');
+}
+
+function phonePersona(opts = {}) {
+  const { isolated = false } = opts;
+  const cfg = isolated ? {} : config.load();
   return [
     'Ты Альта (полное имя Альтаир, система ALTAI:RE — Autonomous Local Technical Artificial Intelligence: Revanced).',
     'Характер: живой, технически подкованный напарник. Говоришь точно, по-человечески, с лёгкой иронией, без канцелярита и заискивания.',
     'Приветствие, разговорную фразу и опечатку понимай в контексте беседы. Отвечай как собеседник, без оценок настроения или занятости пользователя.',
     'Опирайся на слова пользователя и доступные данные. Если для задачи не хватает важной детали, задай один конкретный вопрос.',
+    runtimeInventoryNote(opts),
     cfg.userName ? `Пользователя зовут ${cfg.userName}.` : '',
     cfg.persona ? `Особые пожелания по стилю: ${cfg.persona}` : '',
 
@@ -1553,6 +1768,16 @@ async function applyPhone() {
     phoneBridge = new phone.PhoneBridge({
       token: phoneToken,
       persona: phonePersona,
+      savePrivateChat: (id, messages, options) => {
+        if (torState.isQuarantined() || (Array.isArray(messages) && messagesHaveTor(messages.filter(row => row && typeof row.content === 'string')))) {
+          throw Object.assign(new Error('Сохранение в приватный Vault недоступно во время Tor-изоляции.'), { status: 403 });
+        }
+        const privateDir = config.load().privateVaultDir;
+        return notes.savePrivateChat(privateDir, notesDir(), id, messages, {
+          ...options,
+          key: privateVaultKey(privateDir),
+        });
+      },
       externalBlocked: (query) => torState.isQuarantined() || hasSecret(query) || messagesHaveTor([{ role: 'user', content: query }]),
       webSearch: (query) => agentWeb.search({ query, read: 0 }),
       readPim: readPimTool,
@@ -1566,9 +1791,9 @@ async function applyPhone() {
         const hasImages = Boolean(user?.images?.length);
         const requestedModel = resolveRequestedModel(opts.requestedModel, {
           fast: brains.fast, large: brains.main,
-        }) || (opts.mobile && !opts.fastLocal ? brains.auxiliary : null);
-        if (!requestedModel && !opts.fastLocal && !opts.localOnly && !hasImages) {
-          const fast = await quickAnswer(said);
+        });
+        if (!opts.fastLocal && !opts.ephemeral && opts.source !== 'vault' && opts.localMode !== 'nsfw' && (!opts.localOnly || opts.localMode === 'task') && !hasImages) {
+          const fast = await quickAnswer(said, { useVault: opts.useVault !== false });
           if (fast) return { text: fast, brain: 'quick' };
         }
         const cfg = config.load();
@@ -1578,7 +1803,9 @@ async function applyPhone() {
           const text = await ollama.chat({ model: brains.fast, messages, numPredict: 320 }, () => {}, signal);
           return { text, brain: brains.fast };
         }
-        const pickedModel = requestedModel || pickModel(cfg);
+        const pickMobileAutoOverride = () => opts.mobile && cfg.provider === 'ollama'
+          ? mobileAutoOverride(pickModel(cfg), brains.fast) : undefined;
+        const pickedModel = requestedModel || pickMobileAutoOverride() || pickModel(cfg);
         if ((torSensitive || opts.mobile) && !isLocalOnlyModelAllowed({ cfg, model: pickedModel, llm, ollama, localOnly: true })) {
           throw new Error(opts.localOnly || opts.mobile ? 'Для этого режима нужна доступная локальная модель.' : TOR_CLOUD_BLOCK_MSG);
         }
@@ -1604,12 +1831,14 @@ async function applyPhone() {
         }
         if (opts.localMode === 'nsfw' && !brainsLib.isEmergency(said)) messages = brainsLib.withRp(messages);
         const prepared = (opts.ephemeral || torSensitive)
-          ? { messages: opts.source === 'vault' && opts.useVault && !opts.ephemeral && !hasTor && !torState.isQuarantined()
+          ? { messages: opts.source === 'vault' && !hasTor && !torState.isQuarantined()
             ? withNotes(messages, { vaultOnly: true }) : messages }
           : await prepLocal(cfg, messages, { explicitModel: requestedModel, mobile: opts.mobile, useVault: opts.useVault });
         prepared.numPredict = opts.numPredict ?? prepared.numPredict;
         const torAfterPrep = torSensitive || messagesHaveTor(prepared.messages);
-        let usedModel = pickModel(cfg);
+        const autoOverride = !model ? pickMobileAutoOverride() : undefined;
+        model ||= autoOverride;
+        let usedModel = model || pickModel(cfg);
         const generate = () => chatWithFallback(
           cfg,
           prepared,
@@ -1625,7 +1854,8 @@ async function applyPhone() {
             onSuccess: ({ model: okModel }) => { usedModel = okModel; },
           },
         );
-        const text = brains.isRole(requestedModel) ? await brains.withModel(requestedModel, generate, signal)
+        const directRole = requestedModel || autoOverride;
+        const text = brains.isRole(directRole) ? await brains.withModel(directRole, generate, signal)
           : (model || pickModel(cfg)) === brains.main ? await brains.runMain(generate) : await generate();
         return { text, brain: usedModel || cfg.provider };
       },
@@ -1710,6 +1940,7 @@ async function applyPhone() {
       agentsList: async () => ({
         sessions: ensureAgentSessions().summaries(),
         models: SESSION_MODELS,
+        catalog: SESSION_CATALOG,
       }),
       agentSessions: async (agent) => {
         const all = ensureAgentSessions().summaries();
@@ -1717,23 +1948,32 @@ async function applyPhone() {
       },
       agentCreate: async (agent) => ensureAgentSessions().create(agent),
       agentHistory: async (id) => ensureAgentSessions().history(id),
-      agentSend: async ({ id, model, text, retry, files, queue, signal }) => {
+      agentSend: async ({ id, agent, model, effort, text, retry, files, queue, history, ephemeral, privateMode, localOnly, mode, signal }) => {
         signal?.throwIfAborted();
+        if (ephemeral === true || privateMode === true || localOnly === true || mode === 'private' || mode === 'nsfw') {
+          throw new Error('Облачные модели недоступны в этом режиме.');
+        }
+        if (torState.isQuarantined() || (Array.isArray(history) && messagesHaveTor(history))) {
+          throw new Error(TOR_CLOUD_BLOCK_MSG);
+        }
         const mgr = ensureAgentSessions();
         const session = mgr.sessions.find((item) => item.id === id);
         if (!session) throw new Error('Сессия не найдена.');
+        const targetAgent = (typeof agent === 'string' && agent.trim()) ? agent.trim() : session.agent;
         let chosenModel = typeof model === 'string' ? model : '';
-        if (session && Object.hasOwn(SESSION_MODELS, session.agent)) {
-          const validModels = SESSION_MODELS[session.agent];
-          if (!validModels.some(([key]) => key === chosenModel)) {
+        if (session && Object.hasOwn(SESSION_MODELS, targetAgent)) {
+          const validModels = SESSION_MODELS[targetAgent];
+          if (!isAllowedModel(targetAgent, chosenModel)) {
             if (chosenModel) throw new Error('Выбранная облачная модель недоступна на ПК.');
             chosenModel = validModels[0]?.[0] ?? '';
           }
         }
-        const promptText = await withUploadedFiles(id, text, files);
+        const baseText = String(text || '').trim() || (Array.isArray(files) && files.length ? 'Разбери прикреплённое вложение.' : '');
+        const promptText = await withUploadedFiles(id, baseText, files);
         signal?.throwIfAborted();
-        if (queue === true && retry !== true) return mgr.enqueue(id, chosenModel, promptText);
-        return mgr.send(id, chosenModel, promptText, retry === true, false, true);
+        const sendOpts = { effort, agent: targetAgent, history, ephemeral, privateMode, localOnly, mode };
+        if (queue === true && retry !== true) return mgr.enqueue(id, chosenModel, promptText, sendOpts);
+        return mgr.send(id, chosenModel, promptText, retry === true, false, true, sendOpts);
       },
       agentStop: async (id) => ensureAgentSessions().stop(id),
       agentQuota: async ({ agent, model, refresh }) => hubQuota(agent, model, refresh === true),
@@ -1781,7 +2021,9 @@ async function applyPhone() {
 function pickModel(cfg = config.load()) {
   if (!chatModels?.length) return null;
   // both brains installed and nothing else picked by hand: the fast one, or the main one while it's in
-  if (cfg.provider === 'ollama' && brains.ready(chatModels) && brains.isAuto(cfg.chatModel, chatModels)) return brains.current();
+  if (cfg.provider === 'ollama' && brains.ready(chatModels) && brains.isAuto(cfg.chatModel, chatModels)) {
+    return brains.auxiliary ? brains.fast : brains.current();
+  }
   if (chatModels.includes(cfg.chatModel)) return cfg.chatModel;
   const candidates = chatModels.filter((model) => !isAuxiliaryModel(model));
   return candidates.find((m) => !ollama.isCloud(m)) || candidates[0] || null;
@@ -2145,10 +2387,12 @@ async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = 
   const analysis = brainsLib.analysisMode(cfg, { rolesReady, auto, tor: torCtx, text: said });
   if (auto && !explicitModel) {
     if (!main && !hasImages && brainsLib.wantsFast(said)) await brains.release();
-    else if (!brains.auxiliary && (main || rp || hasImages || analysis.active || brainsLib.wantsMain(said) || brainsLib.wantsLocal(said))) await brains.use('main');
+    else if (main || rp || hasImages || analysis.active || brainsLib.wantsMain(said) || brainsLib.wantsLocal(said)) await brains.use('main');
     else await brains.use('fast');
   }
-  const enriched = shortTalk || !useVault ? messages : await withPim(withNotes(messages, { matchedOnly: mobile }), said);
+  const includeRecentPhone = Boolean(mobile && Array.isArray(messages) && messages.filter((m) => m.role !== 'system').length <= 2);
+  const skipNotes = !useVault || (shortTalk && !includeRecentPhone);
+  const enriched = skipNotes ? messages : await withPim(withNotes(messages, { matchedOnly: mobile, includeRecentPhone }), said);
   return { messages: rp ? brainsLib.withRp(enriched) : enriched, numPredict: analysis.numPredict };
 }
 
@@ -3310,10 +3554,10 @@ function registerIpc() {
   });
   ipcMain.handle('agents:history', (event, id) => hubSessions(event).history(id));
   ipcMain.handle('agents:create', (event, agent) => hubSessions(event).create(agent));
-  ipcMain.handle('agents:send', async (event, { id, model, text, retry, files }) => {
+  ipcMain.handle('agents:send', async (event, { id, agent, model, effort, text, retry, files, history }) => {
     const sessions = hubSessions(event);
     const promptText = retry === true ? text : await withUploadedFiles(id, text, files);
-    return sessions.send(id, model, promptText, retry === true);
+    return sessions.send(id, model, promptText, retry === true, false, false, { effort, agent, history });
   });
   ipcMain.handle('agents:pick-file', async (event) => {
     hubSessions(event);
@@ -4028,6 +4272,7 @@ function main() {
     // Ctrl+Alt+X: her answer under way stops (Claude or Codex at work in her chat: killed)
     globalShortcut.register('Control+Alt+X', () => sendCommand('stop'));
     speech.ensureWhisper(config.load().voice);
+    initPrivateVault();
     applyPhone();
     applyTelegram();
     applyPimMcp();
@@ -4078,6 +4323,7 @@ function main() {
     try { routerJournalInstance?.close(); } catch {}
     capriBrowser.releaseAll(); // her control session in your browser ended, so the next Capri can attach
     agentSessions?.stopAll();
+    workers.stopAgyWorkers?.();
     globalShortcut.unregisterAll();
     speech.stopWhisper();
     comfy.stop(); // ComfyUI goes with her

@@ -290,6 +290,22 @@ test('agentWeb.askGemini circuit (a): blocks ALL prompts while Tor is active, in
   await assert.rejects(() => h.agentWeb.askGemini({ prompt: 'обычный вопрос' }), /карантин|использовался Tor/i);
 });
 
+test('fixed public Gemini research can run in quarantine without forwarding caller content', async () => {
+  const torState = createTorState({ now: () => 10_000_000 });
+  torState.touch({ inChat: true });
+  const h = makeHarness({ torState });
+  await assert.rejects(() => h.agentWeb.askGemini({ prompt: 'private-marker' }), /карантин/);
+  await assert.rejects(() => h.agentWeb.runPublicGeminiResearch({ worker: 'other' }), /Неизвестный/);
+  for (const worker of ['hydrogen', 'neon']) {
+    const result = await h.agentWeb.runPublicGeminiResearch({ worker, prompt: 'private-marker', chat: 'private-chat', files: ['private-file'] });
+    assert.equal(result.answer, 'ok');
+  }
+  assert.equal(h.geminiCalls.length, 2);
+  assert(h.geminiCalls.every(prompt => prompt.includes('https://github.com/deepseek-ai/deepseek-harness') && !prompt.includes('private-')));
+  assert.notEqual(h.geminiCalls[0], h.geminiCalls[1]);
+  assert(torState.isQuarantined());
+});
+
 test('selectWorkerMessages strips prior history when Tor isolated, keeping system messages and latest user reply', () => {
   const history = [
     { role: 'system', content: 'Ты Капри.' },

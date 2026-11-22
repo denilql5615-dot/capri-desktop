@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
+if (process.env.CAPRI_WORKER_SUBPROCESS === '1') process.exit(0);
+
 // Translate Codex lifecycle hooks into Capri's existing event vocabulary.
 // Observe only: never return an approval decision or block a turn.
 const { run } = require('./capri-hook');

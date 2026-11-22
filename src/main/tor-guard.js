@@ -355,7 +355,28 @@ function createAgentWeb({
     nomadSearch: ({ query, lang, books, limit }) => kiwix.fromLocalFirst((url) => kiwix.search(query, { lang, books, limit, url }), getConfig().kiwixUrl),
     nomadRead: ({ link, chars }) => kiwix.fromLocalFirst((url) => kiwix.read(link, { chars, url }), getConfig().kiwixUrl),
     nomadCatalog: async () => (await kiwix.fromLocalFirst((url) => kiwix.catalog({ url }), getConfig().kiwixUrl)).map(({ name, title, lang }) => ({ name, title, lang })),
-    async askGemini({ prompt, chat, model, files } = {}) {
+    async runPublicGeminiResearch({ worker } = {}) {
+      if (worker !== 'hydrogen' && worker !== 'neon') throw new Error('Неизвестный веб-исполнитель.');
+      const cfg = getConfig();
+      if (cfg.geminiAdviser === false) throw new Error('советник Gemini выключен в трее');
+      // This entry point accepts an enum only. No caller text, attachments, or conversation ID cross the boundary.
+      const focus = worker === 'hydrogen'
+        ? 'Сверь маршрутизацию по провайдерам и передачу истории.'
+        : 'Сверь статусы заданий, возобновление и идемпотентность.';
+      return gemini.ask([
+        'Изучи публичные репозитории DeepSeek Harness, OpenClaw и OpenCode:',
+        'https://github.com/deepseek-ai/deepseek-harness',
+        'https://github.com/openclaw/openclaw',
+        'https://github.com/anomalyco/opencode',
+        focus,
+        'Ответь кратко на русском. Отдели факты от гипотез, укажи ссылки на конкретные исходники и один следующий шаг.',
+      ].join('\n'), {
+        model: worker === 'hydrogen' ? 'code' : 'research',
+        task: true,
+        open: () => browser.openSession(browserOpts(cfg)),
+      });
+    },
+    async askGemini({ prompt, chat, model, files, task } = {}) {
       if (torState && (torState.inCooldown() || torState.isChatTainted())) {
         touchTor({ extendCooldown: false });
         throw new Error('Gemini временно недоступен: в этом чате использовался Tor или ещё идёт карантин после Tor (5 минут).');
@@ -370,6 +391,7 @@ function createAgentWeb({
       const said = await gemini.ask(prompt, {
         chat,
         model,
+        ...(task !== undefined && { task }),
         files,
         clipboard: gemini.electronClipboard(),
         open: () => browser.openSession(browserOpts(cfg)),

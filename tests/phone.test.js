@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
+const { randomUUID } = require('node:crypto');
 const { PhoneBridge, tokenMatches, controlPatch, parseModelCommand } = require('../src/main/phone');
 
 test('tokenMatches: only the right key, never an empty one', () => {
@@ -12,11 +13,12 @@ test('tokenMatches: only the right key, never an empty one', () => {
 
 test('mobile chat carries model and isolated context, and retries one PC turn', async () => {
   const calls = [];
+  const logged = [];
   const longReply = 'Развёрнутый ответ. '.repeat(2500) + 'Конечная строка.';
   const bridge = new PhoneBridge({
     token: () => 'k',
     persona: () => 'Персона.',
-    log: () => assert.fail('client-owned chats must not fall into the legacy log'),
+    log: (row) => logged.push(row.said),
     chat: async (messages, _signal, options) => {
       calls.push({ messages, options });
       return { text: messages.at(-1).content === 'длинный ответ' ? longReply : 'готово', brain: options.requestedModel };
@@ -42,12 +44,112 @@ test('mobile chat carries model and isolated context, and retries one PC turn', 
     assert.strictEqual(calls[1].messages.length, 2);
     assert.strictEqual(calls[1].options.localOnly, true);
     assert.strictEqual(calls[1].options.useVault, false);
+    await post({ text: 'без обсидиана', history: [], model: 'e4b', useVault: false });
+    assert.strictEqual(calls[2].options.useVault, false);
     await post({ text: 'новый чат', history: [], model: 'e4b' });
-    assert.strictEqual(calls[2].messages.length, 2);
-    assert.strictEqual(calls[2].options.requestedModel, 'e4b');
+    assert.strictEqual(calls[3].messages.length, 2);
+    assert.strictEqual(calls[3].options.requestedModel, 'e4b');
     assert.strictEqual((await post({ text: 'длинный ответ', history: [], model: 'e4b' })).reply, longReply);
+    assert.deepStrictEqual(logged, ['продолжим', 'новый чат', 'длинный ответ']);
   } finally {
     bridge.stop();
+  }
+});
+
+test('mobile chat recovers private and temporary replies after an HTTP disconnect', async () => {
+  let token = 'old-token';
+  let started;
+  let finish;
+  let calls = 0;
+  const bridge = new PhoneBridge({
+    token: () => token,
+    persona: () => 'Персона.',
+    log: () => assert.fail('isolated chats must not enter the shared log'),
+    chat: async (_messages, signal, { localOnly }) => {
+      assert.strictEqual(localOnly, true);
+      calls++;
+      started();
+      await new Promise((resolve) => { finish = resolve; });
+      assert.strictEqual(signal.aborted, false);
+      return { text: 'синтетический ответ', brain: 'e4b' };
+    },
+  });
+  const port = await bridge.start(0, '127.0.0.1');
+  const api = (path, body, signal) => fetch(`http://127.0.0.1:${port}${path}`, {
+    headers: { 'x-capri-token': token }, ...(body && { method: 'POST', body: JSON.stringify(body) }), signal,
+  });
+  try {
+    for (const flags of [{ mode: 'private' }, { ephemeral: true }]) {
+      const input = { text: 'синтетический запрос', history: [], requestId: randomUUID(), ...flags };
+      const start = new Promise((resolve) => { started = resolve; });
+      const disconnect = new AbortController();
+      const first = api('/chat', input, disconnect.signal);
+      await start;
+      disconnect.abort();
+      await assert.rejects(first, { name: 'AbortError' });
+      const statusPath = `/chat/status?requestId=${input.requestId}`;
+      assert.deepStrictEqual(await (await api(statusPath)).json(), { state: 'running' });
+      assert.strictEqual((await api('/chat', { ...input, text: 'другой запрос' })).status, 409);
+      const retry = api('/chat', input);
+      finish();
+      assert.deepStrictEqual(await (await retry).json(), { reply: 'синтетический ответ', brain: 'e4b', pose: '' });
+      assert.deepStrictEqual(await (await api(statusPath)).json(), { state: 'complete' });
+      token = 'new-token';
+      assert.strictEqual((await api(statusPath)).status, 404);
+      assert.strictEqual((await api('/chat', input)).status, 404);
+      token = 'old-token';
+    }
+    assert.strictEqual(calls, 2);
+    assert.deepStrictEqual(bridge.turns, []);
+  } finally {
+    finish?.();
+    await bridge.stop();
+  }
+});
+
+test('mobile chat status distinguishes terminal model errors and confirmed stops', async () => {
+  let calls = 0;
+  let started;
+  const start = new Promise((resolve) => { started = resolve; });
+  const bridge = new PhoneBridge({
+    token: () => 'k',
+    persona: () => 'Персона.',
+    chat: async (messages, signal) => {
+      calls++;
+      if (messages.at(-1).content === 'сбой') throw new Error('синтетический сбой');
+      started();
+      await new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    },
+  });
+  const port = await bridge.start(0, '127.0.0.1');
+  const api = (path, body) => fetch(`http://127.0.0.1:${port}${path}`, {
+    headers: { 'x-capri-token': 'k' }, ...(body && { method: 'POST', body: JSON.stringify(body) }),
+  });
+  const status = (id) => api(`/chat/status?requestId=${id}`).then((r) => r.json());
+  const error = { text: 'сбой', ephemeral: true, requestId: randomUUID() };
+  const active = { text: 'стоп', ephemeral: true, requestId: randomUUID() };
+  const early = { ...active, requestId: randomUUID() };
+  try {
+    const failed = await (await api('/chat', error)).json();
+    assert.strictEqual(failed.brain, 'error');
+    assert.deepStrictEqual(await status(error.requestId), { state: 'error' });
+    assert.deepStrictEqual(await (await api('/chat', error)).json(), failed);
+
+    const pending = api('/chat', active);
+    await start;
+    assert.deepStrictEqual(await (await api('/chat/stop', { requestId: active.requestId })).json(), { state: 'stopped' });
+    assert.strictEqual((await (await pending).json()).brain, 'stopped');
+    assert.deepStrictEqual(await status(active.requestId), { state: 'stopped' });
+    assert.strictEqual((await (await api('/chat', active)).json()).brain, 'stopped');
+
+    assert.strictEqual((await api(`/chat/status?requestId=${early.requestId}`)).status, 404);
+    assert.deepStrictEqual(await (await api('/chat/stop', { requestId: early.requestId })).json(), { state: 'stopped' });
+    assert.strictEqual((await (await api('/chat', early)).json()).brain, 'stopped');
+    assert.strictEqual(calls, 2);
+  } finally {
+    await bridge.stop();
   }
 });
 
@@ -76,7 +178,7 @@ test('bridge: token, chat with the phone note, voice, events, control', async ()
   try {
     assert.strictEqual((await fetch(url('/ping'))).status, 401);
     assert.strictEqual((await post('/chat', { text: 'hi' }, 'wrong')).status, 401);
-    assert.deepStrictEqual(await (await fetch(url('/ping?token=k'))).json(), { ok: true, pose: '', sprites: '', isolatedChat: true, modelSelection: true });
+    assert.deepStrictEqual(await (await fetch(url('/ping?token=k'))).json(), { ok: true, pose: '', sprites: '', isolatedChat: true, modelSelection: true, chatRecovery: true, privateVaultSave: false });
 
     const chat = await (await post('/chat', { text: 'привет', voice: true })).json();
     assert.strictEqual(chat.reply, 'йо');
@@ -142,6 +244,44 @@ test('bridge: private and temporary chat do not cross the shared history or rese
   } finally {
     await bridge.stop();
   }
+});
+
+test('bridge: private autosave only runs for a completed private request and reports Vault failure', async (t) => {
+  const writes = [];
+  const shared = [];
+  let available = true;
+  const bridge = new PhoneBridge({
+    token: () => 'fixture',
+    persona: () => '',
+    chat: async () => ({ text: 'Синтетический ответ', brain: 'local' }),
+    log: row => shared.push(row),
+    savePrivateChat: (...args) => {
+      if (!available) throw new Error('fixture filesystem error');
+      writes.push(args);
+    },
+  });
+  const port = await bridge.start(0, '127.0.0.1');
+  t.after(() => bridge.stop());
+  const post = (route, body) => fetch(`http://127.0.0.1:${port}${route}`, {
+    method: 'POST', headers: { 'x-capri-token': 'fixture', 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const chatId = randomUUID();
+  const body = { mode: 'private', privateChatId: chatId, text: 'Приватнаяметка', requestId: randomUUID() };
+  assert.equal((await (await post('/chat', body)).json()).vaultSaved, true);
+  assert.equal((await (await post('/chat', body)).json()).vaultSaved, true);
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writes[0][2], { append: true });
+  assert.match(writes[0][1][0].content, /Приватнаяметка/);
+  assert.equal((await post('/chat', { ...body, ephemeral: true })).status, 400);
+  const manual = { chatId, history: writes[0][1] };
+  assert.deepEqual(await (await post('/chat/private/save', manual)).json(), { saved: true });
+  available = false;
+  assert.equal((await post('/chat/private/save', manual)).status, 503);
+  const failure = await (await post('/chat', { ...body, requestId: randomUUID() })).json();
+  assert.equal(failure.vaultSaved, false);
+  assert.match(failure.vaultError, /Vault недоступен/);
+  assert.deepEqual(shared, []);
 });
 
 test('bridge: an isolated desktop turn forwards cancellation without calling web or logging', async () => {
@@ -470,4 +610,144 @@ test('bridge: /agents endpoints (list, sessions, create, send, stop, quota, arti
     await bridge.stop();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('bridge: chatRequests evicts finished entries past 64 and returns 503 only when 64 are active', async (t) => {
+  let block = false;
+  let gate = Promise.withResolvers();
+  const bridge = new PhoneBridge({
+    token: () => 'k',
+    persona: () => 'Персона.',
+    chat: async () => {
+      if (block) await gate.promise;
+      return { text: 'ок', brain: 'e4b' };
+    },
+  });
+  const port = await bridge.start(0, '127.0.0.1');
+  t.after(async () => {
+    gate.resolve();
+    await bridge.stop();
+  });
+  const api = (route, body) => fetch(`http://127.0.0.1:${port}${route}`, {
+    headers: { 'x-capri-token': 'k' },
+    ...(body && { method: 'POST', body: JSON.stringify(body) }),
+  });
+
+  const finishedIds = [];
+  for (let i = 0; i < 64; i++) {
+    const requestId = randomUUID();
+    finishedIds.push(requestId);
+    assert.strictEqual((await api('/chat', { text: `done-${i}`, ephemeral: true, requestId })).status, 200);
+  }
+  const extraId = randomUUID();
+  assert.strictEqual((await api('/chat', { text: 'done-65', ephemeral: true, requestId: extraId })).status, 200);
+  assert.strictEqual((await api(`/chat/status?requestId=${finishedIds[0]}`)).status, 404);
+  assert.strictEqual((await api(`/chat/status?requestId=${extraId}`)).status, 200);
+
+  block = true;
+  const active = [];
+  for (let i = 0; i < 64; i++) {
+    const requestId = randomUUID();
+    active.push(api('/chat', { text: `active-${i}`, ephemeral: true, requestId }));
+  }
+  while (bridge.chatRequests.size < 64 || [...bridge.chatRequests.values()].some((e) => e.state !== 'queued' && e.state !== 'running')) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  const rejected = await api('/chat', { text: 'overflow', ephemeral: true, requestId: randomUUID() });
+  assert.strictEqual(rejected.status, 503);
+  const stopRejected = await api('/chat/stop', { requestId: randomUUID() });
+  assert.strictEqual(stopRejected.status, 503);
+
+  gate.resolve();
+  const settled = await Promise.all(active);
+  for (const res of settled) assert.strictEqual(res.status, 200);
+});
+
+test('bridge: private + ephemeral reads Vault boundary without writing or logging', async (t) => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const notes = require('../src/main/notes');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'capri-priv-eph-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const common = path.join(dir, 'Common');
+  const vault = path.join(dir, 'Private');
+  fs.mkdirSync(common);
+  fs.mkdirSync(vault);
+  fs.writeFileSync(path.join(vault, 'Секрет.md'), 'Токен приватвременный42 в закрытом Vault.');
+
+  let seenOpts = null;
+  let recalled = [];
+  const bridge = new PhoneBridge({
+    token: () => 'k',
+    persona: () => 'Персона.',
+    log: () => assert.fail('private+ephemeral must not write shared log'),
+    savePrivateChat: () => assert.fail('private+ephemeral must not save transcript'),
+    chat: async (messages, _signal, opts) => {
+      seenOpts = opts;
+      if (opts.source === 'vault') {
+        recalled = notes.searchPrivateVault(vault, common, messages.at(-1).content);
+      }
+      return { text: 'ответ из vault', brain: 'e4b' };
+    },
+  });
+  const port = await bridge.start(0, '127.0.0.1');
+  t.after(() => bridge.stop());
+  const post = (body) => fetch(`http://127.0.0.1:${port}/chat`, {
+    method: 'POST',
+    headers: { 'x-capri-token': 'k' },
+    body: JSON.stringify(body),
+  });
+
+  const res = await post({ text: 'Что знаешь про приватвременный42?', mode: 'private', ephemeral: true, useVault: false });
+  assert.strictEqual(res.status, 200);
+  const body = await res.json();
+  assert.strictEqual(body.reply, 'ответ из vault');
+  assert.strictEqual(body.vaultSaved, undefined);
+  assert.strictEqual(seenOpts.source, 'vault');
+  assert.strictEqual(seenOpts.ephemeral, true);
+  assert.strictEqual(seenOpts.localOnly, true);
+  assert.deepStrictEqual(recalled.map((n) => n.title), ['Секрет']);
+  assert.deepStrictEqual(bridge.turns, []);
+  assert.strictEqual(fs.readdirSync(vault).filter((f) => f.endsWith('.json')).length, 0);
+});
+
+test('suggestions: 3 x 10 x 5 pool rotates sets without repeats and keeps private Vault pool isolated', async () => {
+  const { DEFAULT_SUGGESTIONS } = require('../src/main/phone');
+  const modes = ['chat', 'task', 'cloud', 'private', 'nsfw'];
+  for (const mode of modes) {
+    assert.strictEqual(DEFAULT_SUGGESTIONS[mode].length, 10, `expected 10 sets for ${mode}`);
+    for (const set of DEFAULT_SUGGESTIONS[mode]) {
+      assert.strictEqual(set.length, 3, `expected 3 items per set for ${mode}`);
+      for (const item of set) {
+        assert.ok(item.title && item.prompt);
+      }
+    }
+  }
+
+  const chatCalls = [];
+  const bridge = new PhoneBridge({
+    token: () => 'k',
+    persona: () => 'Персона.',
+    chat: async (_messages, _signal, opts) => {
+      chatCalls.push(opts);
+      return { text: 'not json', brain: 'e4b' };
+    },
+  });
+
+  const firstChat = await bridge.getSuggestions('chat');
+  const secondChat = await bridge.getSuggestions('chat');
+  assert.strictEqual(firstChat.setIndex, 0);
+  assert.strictEqual(secondChat.setIndex, 1);
+  assert.notDeepStrictEqual(firstChat.items, secondChat.items);
+
+  const firstPrivate = await bridge.getSuggestions('private');
+  const secondPrivate = await bridge.getSuggestions('private');
+  assert.strictEqual(firstPrivate.setIndex, 0);
+  assert.strictEqual(secondPrivate.setIndex, 1);
+  assert.notDeepStrictEqual(firstPrivate.items, secondPrivate.items);
+  assert.notDeepStrictEqual(firstPrivate.items, firstChat.items);
+  assert.strictEqual(chatCalls.at(-1).localOnly, true);
+  assert.strictEqual(chatCalls.at(-1).ephemeral, true);
+  assert.strictEqual(chatCalls.at(-1).source, 'vault');
 });

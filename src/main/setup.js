@@ -154,6 +154,12 @@ function sealMcpCapability(token) {
   }).trim();
 }
 
+function unsealMcpCapability(sealed) {
+  return execFileSync('powershell.exe', [...pimHeadersArgs, '-Unprotect'], {
+    encoding: 'utf8', input: sealed, windowsHide: true,
+  }).trim();
+}
+
 function openMcpCapability(configPath) {
   return execFileSync('powershell.exe', [...pimHeadersArgs, '-TokenOnly', '-ConfigPath', configPath], {
     encoding: 'utf8', windowsHide: true,
@@ -171,5 +177,5 @@ function publishMcpCapability(sealed) {
 
 module.exports = {
   MODELS, KEY_PAGES, ollamaState, installOllama, startOllama, pullModel, launchThroughOllama,
-  sealKey, openKeys, sealMcpCapability, openMcpCapability, publishMcpCapability,
+  sealKey, openKey, openKeys, sealMcpCapability, unsealMcpCapability, openMcpCapability, publishMcpCapability,
 };

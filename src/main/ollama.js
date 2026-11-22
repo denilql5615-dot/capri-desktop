@@ -67,7 +67,7 @@ const isCloud = (model) => known.get(model)?.cloud ?? /[:-]cloud$/.test(model ||
 // Gemma 4 / Qwen 3 by name too: a GGUF from Hugging Face ("hf.co/…/gemma-4-…-heretic") isn't marked
 // "thinking" by Ollama, yet thinks by default and spends the whole answer on it unless told not to.
 const THINKS_RE = /(^|\/)(gemma-?4|qwen3)/i;
-const canThink = (model) => Boolean(known.get(model)?.thinking) || THINKS_RE.test(model || '');
+const canThink = (model) => Boolean(known.get(model)?.thinking) || THINKS_RE.test(model || '') || isAuxiliaryModel(model);
 
 // Your Ollama account, when you're signed in to it on this PC: { name, plan }. Signed out: { signin },
 // the page that links this PC to an account. null when Ollama can't tell (asleep, cloud turned off).
@@ -101,7 +101,7 @@ async function freeModels() {
 // otherwise waits for it to load, which can take a while). Nothing to load for a cloud model.
 // A 26B one is never loaded ahead: it comes only when asked for (brains.js).
 function warm(model, keepAlive = '5m') {
-  if (!model || isCloud(model) || /26b/i.test(model)) return;
+  if (!model || isCloud(model) || /26b/i.test(model) || isAuxiliaryModel(model)) return;
   const numCtx = ctxFor(model);
   return fetch(`${base()}/api/generate`, {
     method: 'POST',
@@ -166,30 +166,37 @@ async function chat({ model, messages, numPredict = 240, keepAlive = '5m', numCt
   let buffer = '';
   let text = '';
   let thinkingChars = 0;
+  const consume = (msg) => {
+    if (msg.error) throw new Error(msg.error);
+    thinkingChars += String(msg.message?.thinking || '').length;
+    const piece = msg.message?.content || ''; // a thinking model's reasoning comes apart, and is left out
+    if (piece) {
+      text += piece;
+      onDelta(piece);
+    }
+    if (!msg.done) return false;
+    if (!text.trim()) console.warn('[capri] empty Ollama answer', model, {
+      thinkingChars, doneReason: msg.done_reason || '', evalCount: msg.eval_count || 0,
+    });
+    return true;
+  };
   for await (const chunk of res.body) {
     buffer += decoder.decode(chunk, { stream: true });
     let nl;
     while ((nl = buffer.indexOf('\n')) >= 0) {
       const line = buffer.slice(0, nl).trim();
       buffer = buffer.slice(nl + 1);
-      if (!line) continue;
-      const msg = JSON.parse(line);
-      if (msg.error) throw new Error(msg.error);
-      thinkingChars += String(msg.message?.thinking || '').length;
-      const piece = msg.message?.content || ''; // a thinking model's reasoning comes apart, and is left out
-      if (piece) {
-        text += piece;
-        onDelta(piece);
-      }
-      if (msg.done) {
-        if (!text.trim()) console.warn('[capri] empty Ollama answer', model, {
-          thinkingChars, doneReason: msg.done_reason || '', evalCount: msg.eval_count || 0,
-        });
-        return text;
-      }
+      if (line && consume(JSON.parse(line))) return text;
     }
   }
-  return text;
+  signal?.throwIfAborted();
+  const tail = (buffer + decoder.decode()).trim();
+  if (tail) {
+    let finalFrame;
+    try { finalFrame = JSON.parse(tail); } catch { /* the socket may have closed inside a frame */ }
+    if (finalFrame && consume(finalFrame)) return text;
+  }
+  throw Object.assign(new Error('Ollama прервал ответ до подтверждения завершения.'), { code: 'incomplete' });
 }
 
 // One step of a task (agent.js): her answer as JSON held to `schema`. Not streamed, no thinking aloud

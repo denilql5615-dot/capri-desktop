@@ -3,6 +3,7 @@ param(
   # written by the running Capri; outside %APPDATA%, which MSIX apps (Claude, Codex) each see a copy of
   [string]$CapabilityPath = (Join-Path $HOME '.capri\pim-mcp.dpapi'),
   [switch]$Protect,
+  [switch]$Unprotect,
   [switch]$TokenOnly
 )
 
@@ -22,6 +23,25 @@ try {
       [Security.Cryptography.DataProtectionScope]::CurrentUser
     )
     "dpapi:$([Convert]::ToBase64String($ciphertext))"
+    exit 0
+  }
+
+  if ($Unprotect) {
+    $encrypted = [Console]::In.ReadToEnd().Trim()
+    if (-not $encrypted.StartsWith('dpapi:', [StringComparison]::Ordinal)) {
+      throw 'Missing encrypted PIM capability'
+    }
+    $ciphertext = [Convert]::FromBase64String($encrypted.Substring(6))
+    $plaintext = [Security.Cryptography.ProtectedData]::Unprotect(
+      $ciphertext,
+      $null,
+      [Security.Cryptography.DataProtectionScope]::CurrentUser
+    )
+    $token = [Text.Encoding]::UTF8.GetString($plaintext)
+    if ([string]::IsNullOrWhiteSpace($token) -or $token.Length -gt 4096) {
+      throw 'Invalid PIM capability'
+    }
+    $token
     exit 0
   }
 

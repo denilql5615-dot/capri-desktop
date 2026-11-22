@@ -166,7 +166,12 @@ class Brains {
     if (role !== 'main') return this.current();
     if (!this.mainActive()) {
       this.transition = Promise.resolve().then(async () => {
-        if (!(await this.ollama.unload(this.selected))) throw new Error('Текущая модель не выгрузилась. Переключение остановлено.');
+        const loaded = typeof this.ollama.loadedModels === 'function' ? await this.ollama.loadedModels() : null;
+        const toUnload = Array.isArray(loaded) ? loaded.filter((name) => name !== this.main) : [this.selected];
+        for (const name of toUnload) {
+          if (!(await this.ollama.unload(name))) throw new Error('Текущая модель не выгрузилась. Переключение остановлено.');
+          if (this.selected === name) this.forget();
+        }
         this.selected = this.main;
       });
       try {

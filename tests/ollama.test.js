@@ -78,11 +78,35 @@ test('chat accepts a larger prediction budget for vision and keeps selected Qwen
   assert.equal(await chat({ model: 'gemma4:26b-a4b-it-qat', messages: [], numPredict: 900 }, () => {}), 'вижу');
   assert.equal(body.think, false);
   assert.equal(body.options.num_predict, 900);
-  await chat({ model: 'capri-qwen36-heretic:latest', messages: [] }, () => {});
-  assert.equal(body.keep_alive, -1);
-  assert.equal(body.options.num_ctx, 4096);
-  await chat({ model: 'capri-qwen38-heretic:latest', messages: [] }, () => {});
-  assert.equal(body.keep_alive, -1);
+  // The alias still needs think:false before the Ollama model catalogue has been read.
+  for (const model of ['capri-qwen36-heretic:latest', 'capri-qwen38-heretic:latest']) {
+    await chat({ model, messages: [], numPredict: -1 }, () => {});
+    assert.equal(body.model, model);
+    assert.equal(body.think, false);
+    assert.equal(body.keep_alive, -1);
+    assert.equal(body.options.num_ctx, 4096);
+    assert.equal(body.options.num_predict, -1);
+  }
+});
+
+test('chat requires a terminal frame but accepts one without a trailing newline', async (t) => {
+  const before = global.fetch;
+  t.after(() => { global.fetch = before; });
+  let tail = '{"message":';
+  global.fetch = async () => ({
+    ok: true,
+    body: new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"message":{"content":"начало"}}\n' + tail));
+      controller.close();
+    } }),
+  });
+  const request = { model: 'capri-qwen36-heretic:latest', messages: [] };
+  const pieces = [];
+  await assert.rejects(chat(request, (piece) => pieces.push(piece)), { code: 'incomplete' });
+  assert.deepEqual(pieces, ['начало']);
+  await assert.rejects(chat(request, () => {}, AbortSignal.abort()), { name: 'AbortError' });
+  tail = '{"message":{"content":" и конец"},"done":true}';
+  assert.equal(await chat(request, () => {}), 'начало и конец');
 });
 
 test('setContextFor/ctxFor enforces 16384 across chat, jsonChat, pick, warm for ruled models and leaves E4B unset', async (t) => {
@@ -149,4 +173,15 @@ test('setContextFor/ctxFor enforces 16384 across chat, jsonChat, pick, warm for 
   await llm.chat('ollama', {}, { model: MAIN, messages: [{ role: 'user', content: 'doc' }], numPredict: 2048 }, () => {});
   assert.equal(seen[0].body.options.num_predict, 2048);
   assert.equal(seen[0].body.options.num_ctx, 16384);
+});
+
+test('warm skips auxiliary Qwen models', async (t) => {
+  const before = global.fetch;
+  let calls = 0;
+  global.fetch = async () => { calls++; return { ok: true }; };
+  t.after(() => { global.fetch = before; });
+  warm('capri-qwen36-heretic:latest');
+  warm('capri-qwen38-heretic:latest');
+  await Promise.resolve();
+  assert.equal(calls, 0);
 });
