@@ -1,5 +1,7 @@
 'use strict';
 
+const { isAuxiliaryModel } = require('./phone-model');
+
 // Talking to her: a local model through Ollama (https://ollama.com). Done from here, not from
 // the overlay's page, which can't reach other local ports. Everything stays on this machine
 // unless OLLAMA_HOST points somewhere else, or you pick one of Ollama's cloud models ("beam:cloud"):
@@ -34,7 +36,7 @@ const known = new Map();
 // usual 5 minutes of one request would let Ollama drop it.
 const pinned = new Set();
 const pin = (model) => model && pinned.add(model);
-const keepFor = (model, usual) => (pinned.has(model) ? -1 : usual);
+const keepFor = (model, usual) => (pinned.has(model) || isAuxiliaryModel(model) ? -1 : usual);
 
 // Per-model context window rule (e.g. 26B = 16384): applied uniformly across chat, jsonChat, pick, and
 // warm so Ollama never reloads the model in VRAM due to mismatched num_ctx between callers.
@@ -48,7 +50,7 @@ function setContextFor(model, numCtx) {
 function ctxFor(model, explicitCtx = null) {
   if (model && contexts.has(model)) return contexts.get(model);
   const n = Number(explicitCtx);
-  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : isAuxiliaryModel(model) ? 4096 : null;
 }
 
 // The models installed, by name ("llama3.2:latest", "beam:cloud"...).

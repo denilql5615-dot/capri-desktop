@@ -102,6 +102,7 @@ const harness = require('./harness');
 const harnessManager = harness.createHarnessManager();
 const brains = new brainsLib.Brains({ ollama });
 ollama.pin(brains.fast);
+ollama.pin(brains.main);
 ollama.setContextFor(brains.main, 16384);
 
 protocol.registerSchemesAsPrivileged([
@@ -465,13 +466,12 @@ function ensureAgentSessions() {
         }
         return { text, artifacts };
       }
-      // the main one asked for in the hub: the fast one makes room first (brains.js)
-      if (model === brains.main) await brains.use('main');
       const rp = agent === 'faun' && !brainsLib.isEmergency(lastUser);
-      return ollama.chat({ model, messages: [
+      const generate = () => ollama.chat({ model, messages: [
         { role: 'system', content: rp ? `Веди ролевую сцену на русском, следуя сеттингу пользователя. ${brainsLib.RP_PROMPT}` : `Ты Альта (ALTAI:RE). Отвечай по-русски, точно и без воды. ${hints}` },
         ...messages,
       ] }, delta, signal);
+      return brains.isRole(model) ? brains.withModel(model, generate, signal) : generate();
     }, (id, delta) => chatsWin?.webContents.send('agents:update', { id, delta }));
   return agentSessions;
 }
@@ -705,7 +705,9 @@ async function switchSpokenModel(wanted) {
   if (!model) return { ok: false, error: `Не нашла установленную модель «${String(wanted || '').slice(0, 80)}».` };
   chatModels = models;
   updateConfig({ provider: 'ollama', chatModel: model });
-  ollama.warm(model);
+  if (isAuxiliaryModel(model) || brains.auxiliary) {
+    await brains.withModel(model, () => ollama.warm(model));
+  } else ollama.warm(model);
   return { ok: true, model };
 }
 
@@ -1564,7 +1566,7 @@ async function applyPhone() {
         const hasImages = Boolean(user?.images?.length);
         const requestedModel = resolveRequestedModel(opts.requestedModel, {
           fast: brains.fast, large: brains.main,
-        });
+        }) || (opts.mobile && !opts.fastLocal ? brains.auxiliary : null);
         if (!requestedModel && !opts.fastLocal && !opts.localOnly && !hasImages) {
           const fast = await quickAnswer(said);
           if (fast) return { text: fast, brain: 'quick' };
@@ -1572,7 +1574,7 @@ async function applyPhone() {
         const cfg = config.load();
         if ((!chatModels && !opts.localOnly) || (requestedModel && !chatModels?.includes(requestedModel))) await refreshModels();
         if (opts.fastLocal) {
-          if (cfg.provider !== 'ollama' || !brains.ready(chatModels) || brains.mainActive() || brains.visionRunning) return { text: '' };
+          if (cfg.provider !== 'ollama' || !brains.ready(chatModels) || brains.mainActive() || brains.auxiliary || brains.visionRunning) return { text: '' };
           const text = await ollama.chat({ model: brains.fast, messages, numPredict: 320 }, () => {}, signal);
           return { text, brain: brains.fast };
         }
@@ -1595,19 +1597,6 @@ async function applyPhone() {
             ['gemma', 'faun'].includes(agent) && agentSessions.active.has(id))) {
             throw new Error('ПК уже отвечает в другом чате. Повтори после завершения.');
           }
-          if (brains.isRole(requestedModel)) {
-            const loaded = await ollama.loadedModels(signal);
-            if (!loaded || loaded.some((name) => !brains.isRole(name))) {
-              throw new Error('Проверь доступность Ollama и дождись освобождения памяти другой моделью.');
-            }
-            if (requestedModel === brains.main) {
-              await brains.use('main');
-            } else {
-              const released = brains.mainUntil > 0 ? await brains.release()
-                : !loaded.includes(brains.main) || await ollama.unload(brains.main);
-              if (!released) throw new Error('Не удалось выгрузить 26B. Повтори после завершения текущей задачи.');
-            }
-          }
           model = requestedModel;
         } else if (opts.localMode === 'task' || (opts.localMode === 'nsfw' && !brainsLib.isEmergency(said))) {
           if (cfg.provider !== 'ollama' || !brains.ready(chatModels)) throw new Error('Локальная модель для задач недоступна.');
@@ -1619,12 +1608,6 @@ async function applyPhone() {
             ? withNotes(messages, { vaultOnly: true }) : messages }
           : await prepLocal(cfg, messages, { explicitModel: requestedModel, mobile: opts.mobile, useVault: opts.useVault });
         prepared.numPredict = opts.numPredict ?? prepared.numPredict;
-        if (requestedModel && !brains.isRole(requestedModel)) {
-          const text = await brains.withAuxiliaryModel(requestedModel, () => ollama.chat({
-            model: requestedModel, messages: prepared.messages, numCtx: 4096, numPredict: prepared.numPredict, keepAlive: 0,
-          }, () => {}, signal), signal);
-          return { text, brain: requestedModel };
-        }
         const torAfterPrep = torSensitive || messagesHaveTor(prepared.messages);
         let usedModel = pickModel(cfg);
         const generate = () => chatWithFallback(
@@ -1642,7 +1625,8 @@ async function applyPhone() {
             onSuccess: ({ model: okModel }) => { usedModel = okModel; },
           },
         );
-        const text = (model || pickModel(cfg)) === brains.main ? await brains.runMain(generate) : await generate();
+        const text = brains.isRole(requestedModel) ? await brains.withModel(requestedModel, generate, signal)
+          : (model || pickModel(cfg)) === brains.main ? await brains.runMain(generate) : await generate();
         return { text, brain: usedModel || cfg.provider };
       },
       saveObsidianResearch: async ({ query, markdown }) => {
@@ -2161,7 +2145,7 @@ async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = 
   const analysis = brainsLib.analysisMode(cfg, { rolesReady, auto, tor: torCtx, text: said });
   if (auto && !explicitModel) {
     if (!main && !hasImages && brainsLib.wantsFast(said)) await brains.release();
-    else if (main || rp || hasImages || analysis.active || brainsLib.wantsMain(said) || brainsLib.wantsLocal(said)) await brains.use('main');
+    else if (!brains.auxiliary && (main || rp || hasImages || analysis.active || brainsLib.wantsMain(said) || brainsLib.wantsLocal(said))) await brains.use('main');
     else await brains.use('fast');
   }
   const enriched = shortTalk || !useVault ? messages : await withPim(withNotes(messages, { matchedOnly: mobile }), said);
@@ -2185,12 +2169,14 @@ async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch,
       ? baseMessages
       : require('./brain/influence-glue').stripBrainHints(baseMessages);
     try {
-      const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict }, send, signal);
+      const generate = () => llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict }, send, signal);
+      const needsSwap = cfg.provider === 'ollama' && model && (isAuxiliaryModel(model) || brains.auxiliary);
+      const text = needsSwap ? await brains.withModel(model, generate, signal) : await generate();
       if (opts?.persistFallback !== false && model !== pickModel(cfg)) updateConfig({ chatModel: model });
       try { opts?.onSuccess?.({ model, local: attemptLocal, text }); } catch {}
       return text;
     } catch (err) {
-      if (opts?.strictModel || signal.aborted || streamed() || !['busy', 'gone', 'signin'].includes(err.code)) {
+      if (opts?.strictModel || isAuxiliaryModel(model) || signal.aborted || streamed() || !['busy', 'gone', 'signin'].includes(err.code)) {
         try { opts?.onAttemptError?.({ model, local: attemptLocal, err }); } catch {}
         throw err;
       }
@@ -2681,7 +2667,7 @@ function registerIpc() {
     if (!models) return { ok: false, error: chatError || 'offline', code: chatErrorCode, provider };
     if (!models.length) return { ok: false, error: 'nomodel', provider };
     const model = pickModel();
-    if (!brains.visionRunning) llm.warm(provider, model); // loading while you type your first message
+    if (!brains.visionRunning && !isAuxiliaryModel(model) && !brains.auxiliary) llm.warm(provider, model);
     const local = llm.isLocal(provider, cfg, model);
     return { ok: true, provider, model, agent: provider === 'claude', local, warmup: provider === 'ollama' && local };
   });

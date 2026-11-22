@@ -9,16 +9,10 @@ const {
 
 function fake() {
   const calls = [];
-  let clock = 0;
-  let fire = null;
   const brains = new Brains({
     ollama: { unload: async (m) => calls.push(['unload', m]), warm: (m, k) => calls.push(['warm', m, k]) },
-    idleMs: 1000,
-    now: () => clock,
-    setTimer: (fn) => { fire = fn; return 1; },
-    clearTimer: () => { fire = null; },
   });
-  return { brains, calls, tick: (ms) => { clock += ms; }, fire: () => fire?.() };
+  return { brains, calls };
 }
 
 test('the fast brain answers by default; small things never swap', async () => {
@@ -45,28 +39,36 @@ test('phone vision releases the fast model and restores it after the vision mode
   assert.deepEqual(calls, [['unload', FAST], ['chat', VISION, 2, 2048], ['unload', VISION], ['warm', FAST, -1]]);
 });
 
-test('a requested Qwen runs alone and restores E4B when its inference fails', async () => {
+test('Qwen stays loaded across replies and unloads on a model switch', async () => {
   const { brains, calls } = fake();
-  brains.ollama.loadedModels = async () => [MAIN];
-  const qwen = 'capri-qwen36-heretic:latest';
-  await assert.rejects(brains.withAuxiliaryModel(qwen, async () => {
-    assert.deepStrictEqual(calls, [['unload', MAIN]]);
-    assert.equal(brains.visionRunning, true);
-    throw new Error('synthetic inference failure');
-  }), /synthetic inference failure/);
+  let loaded = [MAIN];
+  brains.ollama.loadedModels = async () => loaded;
+  const qwen36 = 'capri-qwen36-heretic:latest';
+  const qwen38 = 'capri-qwen38-heretic:latest';
+  const answer = (model) => brains.withModel(model, async () => { loaded = [model]; });
+  await answer(qwen36);
+  await answer(qwen36);
+  assert.equal(brains.current(), qwen36);
+  assert.deepEqual(calls, [['unload', MAIN]]);
+  await answer(qwen38);
+  await answer(FAST);
   assert.equal(brains.visionRunning, false);
   assert.equal(brains.current(), FAST);
-  assert.deepStrictEqual(calls, [['unload', MAIN], ['unload', qwen], ['warm', FAST, -1]]);
+  assert.deepStrictEqual(calls, [['unload', MAIN], ['unload', qwen36], ['unload', qwen38]]);
 });
 
-test('the main brain: the fast one out first, then the main one stays for the idle window', async () => {
-  const { brains, calls, tick } = fake();
+test('26B stays selected after an idle period and unloads on an explicit switch', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { brains, calls } = fake();
   assert.equal(await brains.use('main'), MAIN);
   assert.deepEqual(calls, [['unload', FAST]]);
-  tick(500);
-  assert.equal(brains.current(), MAIN); // small things go to the main one while it's in: no swap back and forth
+  t.mock.timers.tick(30 * 60 * 1000);
+  assert.equal(brains.current(), MAIN);
   assert.equal(await brains.use('main'), MAIN);
   assert.equal(calls.length, 1); // already in: nothing unloaded again
+  assert.equal(await brains.release(), true);
+  assert.equal(brains.current(), FAST);
+  assert.deepEqual(calls.slice(1), [['unload', MAIN], ['warm', FAST, -1]]);
 });
 
 test('a failed text-model unload neither starts the other model nor lets vision enter the swap', async () => {
@@ -81,26 +83,15 @@ test('a failed text-model unload neither starts the other model nor lets vision 
   assert.deepStrictEqual(calls, []);
 });
 
-test('after the idle window the main one goes and the fast one comes back for good', async () => {
-  const { brains, calls, tick, fire } = fake();
-  await brains.use('main');
-  tick(1000);
-  await fire();
-  assert.equal(brains.current(), FAST);
-  assert.deepEqual(calls.slice(1), [['unload', MAIN], ['warm', FAST, -1]]);
-});
-
-test('the idle timer cannot interrupt a long 26B reply', async () => {
-  const { brains, calls, tick, fire } = fake();
+test('switching is blocked during a 26B reply', async () => {
+  const { brains, calls } = fake();
   await brains.use('main');
   await brains.runMain(async () => {
-    tick(2000);
-    await fire();
+    assert.equal(await brains.release(), false);
     assert.equal(brains.mainActive(), true);
     assert.deepStrictEqual(calls, [['unload', FAST]]);
   });
-  tick(1001);
-  await fire();
+  await brains.release();
   assert.deepStrictEqual(calls, [['unload', FAST], ['unload', MAIN], ['warm', FAST, -1]]);
 });
 
