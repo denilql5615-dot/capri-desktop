@@ -593,8 +593,11 @@ async function executeSlashCommand(rawText, { confirm = false } = {}) {
       if (prev && !busy && !toolBusy) await sendPlainMessage(prev);
       return true;
     }
-    if (cmdName === 'help' || cmdName === 'skills') {
-      openActiveCatalog(cmdName === 'skills' ? 'skills' : 'commands');
+    if (cmdName === 'help' || cmdName === 'skills' || cmdName === 'plugins' || cmdName === 'plugin' || cmdName === 'hookify') {
+      const targetTab = cmdName === 'skills'
+        ? 'skills'
+        : (['plugins', 'plugin', 'hookify'].includes(cmdName) ? 'plugins' : 'commands');
+      openActiveCatalog(targetTab, cmdName === 'hookify' ? { focusPluginId: 'hookify' } : {});
       return true;
     }
     return false;
@@ -642,9 +645,11 @@ async function executeSlashCommand(rawText, { confirm = false } = {}) {
   if (actType === 'open-catalog') {
     openCatalogModal({
       initialTab: act.tab || result.tab || 'commands',
+      focusPluginId: act.focusPlugin || act.pluginId || act.focusPluginId || result.focusPlugin || result.pluginId || null,
       getContext: getChatsSlashContext,
       onRunCommand: handleCatalogSelect,
       onSkillsChanged: handleChatsSkillsChanged,
+      onPluginsChanged: handleChatsPluginsChanged,
     });
     return true;
   }
@@ -797,6 +802,17 @@ function getChatsSlashContext() {
 }
 
 function handleCatalogSelect(it) {
+  if (it?.kind === 'plugin') {
+    openCatalogModal({
+      initialTab: 'plugins',
+      focusPluginId: it.id || it.name || null,
+      getContext: getChatsSlashContext,
+      onRunCommand: handleCatalogSelect,
+      onSkillsChanged: handleChatsSkillsChanged,
+      onPluginsChanged: handleChatsPluginsChanged,
+    });
+    return;
+  }
   const slash = it.slash || `/${it.name}`;
   const needsArgs = it.kind === 'skill' || it.kind === 'prompt' || (it.argsHint && String(it.argsHint).trim().startsWith('<'));
   if (needsArgs) {
@@ -817,6 +833,11 @@ function handleChatsSkillsChanged(data) {
   slashMenu?.refresh();
 }
 
+function handleChatsPluginsChanged() {
+  quickSkills?.sync();
+  slashMenu?.refresh();
+}
+
 slashMenu = attachSlashMenu({
   input,
   container: composeEl,
@@ -830,12 +851,14 @@ slashMenu = attachSlashMenu({
       executeSlashCommand(text);
     }
   },
-  onOpenCatalog: (tabId) => {
+  onOpenCatalog: (tabId, opts) => {
     openCatalogModal({
       initialTab: tabId,
+      focusPluginId: opts?.focusPluginId || null,
       getContext: getChatsSlashContext,
       onRunCommand: handleCatalogSelect,
       onSkillsChanged: handleChatsSkillsChanged,
+      onPluginsChanged: handleChatsPluginsChanged,
     });
   },
 });
@@ -844,6 +867,7 @@ registerCatalogTarget('chats', {
   getContext: getChatsSlashContext,
   onRunCommand: handleCatalogSelect,
   onSkillsChanged: handleChatsSkillsChanged,
+  onPluginsChanged: handleChatsPluginsChanged,
 });
 
 quickSkills = bindQuickSkillToggles({

@@ -5,7 +5,8 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 
 export const INSTANT_COMMANDS = new Set([
   'status', 'usage', 'quota', 'context', 'tasks', 'tools', 'mcp',
-  'skills', 'reload-skills', 'doctor', 'storage', 'permissions',
+  'skills', 'reload-skills', 'plugin', 'plugins', 'hookify',
+  'doctor', 'storage', 'permissions',
   'memory', 'help', 'find', 'free', 'today', 'mail', 'clip',
   'alta', 'agents', 'harness', 'nomad', 'web', 'tor', 'copy',
   'export', 'insights', 'stop',
@@ -254,6 +255,7 @@ const ICON_ALIAS = {
   connectors: 'plug',
   plugin: 'puzzle',
   plugins: 'puzzle',
+  hookify: 'shield',
   style: 'palette',
   styles: 'palette',
   'output-style': 'palette',
@@ -348,8 +350,214 @@ export const SKILL_CATEGORIES = [
   { id: 'system', title: 'Система и мастерская' },
 ];
 
+export const PLUGIN_CATEGORIES = [
+  { id: 'knowledge', title: 'Знания и документы' },
+  { id: 'creative', title: 'Дизайн, маркетинг и геймдев' },
+  { id: 'dev', title: 'Разработка и ревью' },
+  { id: 'safety', title: 'Безопасность и автоматизация' },
+];
+
 const COMMAND_CATEGORY_TITLES = Object.fromEntries(COMMAND_CATEGORIES.map((c) => [c.id, c.title]));
 const SKILL_CATEGORY_TITLES = Object.fromEntries(SKILL_CATEGORIES.map((c) => [c.id, c.title]));
+const PLUGIN_CATEGORY_TITLES = Object.fromEntries(PLUGIN_CATEGORIES.map((c) => [c.id, c.title]));
+
+const PLUGIN_ICON_BY_ID = {
+  'obsidian-wiki-pack': 'book',
+  'docs-office-pack': 'clipboard',
+  'impeccable-ui-pack': 'palette',
+  'marketing-pack': 'target',
+  'gamedev-pack': 'layers',
+  'genesis-review-pack': 'check',
+  'capri-hooks-pack': 'plug',
+  'chrome-devtools': 'globe',
+  'android-dev': 'cpu',
+  'developer-docs': 'book',
+  'security-guard': 'shield',
+  hookify: 'sliders',
+};
+
+const PLUGIN_ICON_BY_CAT = {
+  knowledge: 'book',
+  creative: 'palette',
+  dev: 'wrench',
+  safety: 'shield',
+};
+
+function pluginIconName(p) {
+  if (p?.icon && (ICON_PATHS[p.icon] || ICON_ALIAS[p.icon])) return p.icon;
+  return PLUGIN_ICON_BY_ID[p?.id] || PLUGIN_ICON_BY_CAT[p?.category] || 'puzzle';
+}
+
+function makeFallbackPlugin(id, name, category, description, opts = {}) {
+  return {
+    id,
+    name,
+    version: opts.version || '1.0.0',
+    category,
+    categoryTitle: PLUGIN_CATEGORY_TITLES[category] || '',
+    description,
+    enabled: opts.enabled !== false,
+    pausedInMode: false,
+    pauseReason: '',
+    cloudOnly: Boolean(opts.cloudOnly),
+    vaultOnly: Boolean(opts.vaultOnly),
+    skills: opts.skills || [],
+    commands: opts.commands || [],
+    hooks: opts.hooks || [],
+    rules: opts.rules || [],
+    statusNote: opts.statusNote || '',
+    health: opts.health || 'ok',
+    source: opts.source || 'builtin',
+    isCustom: Boolean(opts.isCustom),
+    kind: 'plugin',
+    section: 'plugins',
+    icon: opts.icon || PLUGIN_ICON_BY_ID[id] || PLUGIN_ICON_BY_CAT[category] || 'puzzle',
+  };
+}
+
+export const FALLBACK_PLUGINS = [
+  makeFallbackPlugin(
+    'obsidian-wiki-pack',
+    'Obsidian Wiki Pack',
+    'knowledge',
+    'База знаний, заметки, холсты и транзакционная работа с Obsidian Vault',
+    {
+      vaultOnly: true,
+      skills: [
+        'obsidian-markdown', 'obsidian-bases', 'obsidian-cli', 'json-canvas',
+        'canvas', 'defuddle', 'knap', 'wiki', 'wiki-cli', 'wiki-fold',
+        'wiki-ingest', 'wiki-lint', 'wiki-mode', 'wiki-query', 'wiki-retrieve', 'save',
+      ],
+      commands: ['/remember', '/save', '/memory', '/find'],
+      rules: ['Не перезаписывай заметки Obsidian без проверки.'],
+      statusNote: '16 скиллов',
+    },
+  ),
+  makeFallbackPlugin(
+    'docs-office-pack',
+    'Документы и таблицы',
+    'knowledge',
+    'Работа с Word (.docx), PDF, презентациями (.pptx), таблицами (.xlsx) и документами',
+    {
+      skills: ['docx', 'pdf', 'pptx', 'xlsx', 'docs'],
+      rules: ['Проверяй верстку и кодировку при создании офисных документов.'],
+      statusNote: '5 скиллов',
+    },
+  ),
+  makeFallbackPlugin(
+    'impeccable-ui-pack',
+    'Impeccable UI & Gemini',
+    'creative',
+    'Полировка интерфейса по сетке 4px, тихий хром и строгий anti-slop',
+    {
+      skills: ['impeccable-ui', 'unslop-gemini'],
+      rules: ['Соблюдай сетку 4px/4dp, тихий хром и запрет на визуальный слоп.'],
+      statusNote: '2 скилла',
+    },
+  ),
+  makeFallbackPlugin(
+    'marketing-pack',
+    'Маркетинг и питчи',
+    'creative',
+    'Фреймворки позиционирования, описаний, лендингов и питчей',
+    {
+      skills: ['marketingskills'],
+      statusNote: '1 пак',
+    },
+  ),
+  makeFallbackPlugin(
+    'gamedev-pack',
+    'Геймдев и баланс',
+    'creative',
+    'Справочник игровых студий, системного геймдизайна и баланса',
+    {
+      skills: ['game-studios-reference'],
+      statusNote: '1 пак',
+    },
+  ),
+  makeFallbackPlugin(
+    'genesis-review-pack',
+    'GENESIS Review Pack',
+    'dev',
+    'Код-ревью, верификация, упрощение и контроль минимальных диффов',
+    {
+      skills: ['genesis-techlead-reviewer', 'unslop-gemini', 'stop-slop', 'second-brain'],
+      commands: ['/review', '/ultrareview', '/verify', '/simplify'],
+      rules: ['Минимальный обозримый дифф: одна задача — один точечный патч.'],
+      statusNote: '4 скилла',
+    },
+  ),
+  makeFallbackPlugin(
+    'ponytail-pack',
+    'Ponytail 5 Pack',
+    'dev',
+    'Минимальные диффы (YAGNI), аудит репо, код-ревью и реестр техдолга',
+    {
+      skills: ['ponytail', 'ponytail-audit', 'ponytail-review', 'ponytail-debt', 'ponytail-gain', 'ponytail-help'],
+      commands: ['/review', '/simplify', '/verify'],
+      rules: ['Ponytail: минимальное решение — сначала существующий код, stdlib и установленные пакеты.'],
+      statusNote: '6 скиллов',
+    },
+  ),
+  makeFallbackPlugin(
+    'capri-hooks-pack',
+    'Capri Agent Hooks',
+    'dev',
+    'Локальные хуки синхронизации агентов Claude, Codex и Antigravity',
+    {
+      hooks: ['capri-hook.js', 'capri-codex-hook.js', 'capri-agy-hook.js'],
+      statusNote: '3 хука',
+    },
+  ),
+  makeFallbackPlugin(
+    'chrome-devtools',
+    'Chrome DevTools',
+    'dev',
+    'Инспекция, отладка и профилирование веб-страниц в браузере',
+    {
+      statusNote: 'Плагин IDE',
+    },
+  ),
+  makeFallbackPlugin(
+    'android-dev',
+    'Android CLI',
+    'dev',
+    'Сборка, диагностика и работа с Android-клиентом Капри',
+    {
+      statusNote: 'Плагин IDE',
+    },
+  ),
+  makeFallbackPlugin(
+    'developer-docs',
+    'Developer Docs',
+    'dev',
+    'Справочная документация Google Developer Knowledge',
+    {
+      cloudOnly: true,
+      statusNote: 'Облако',
+    },
+  ),
+  makeFallbackPlugin(
+    'security-guard',
+    'Security Guard',
+    'safety',
+    'Защита от утечки секретов, разрушительных команд и prompt-injection',
+    {
+      rules: ['Всегда проверять секреты, разрушительные команды и prompt-injection.'],
+      statusNote: 'Всегда активен',
+    },
+  ),
+  makeFallbackPlugin(
+    'hookify',
+    'Hookify',
+    'safety',
+    'Пользовательские правила предупреждений, дополнений и блокировки по шаблону',
+    {
+      commands: ['/hookify'],
+      statusNote: '0 правил',
+    },
+  ),
+];
 
 function item(name, description, opts = {}) {
   const section = opts.section || 'commands';
@@ -431,6 +639,8 @@ export const FALLBACK_SECTIONS = [
       item('tools', 'Список доступных инструментов', { category: 'system' }),
       item('mcp', 'Статус MCP-подключений', { category: 'system' }),
       item('skills', 'Список установленных навыков', { category: 'system' }),
+      item('plugins', 'Каталог локальных плагинов и правил', { aliases: ['plugin'], category: 'system' }),
+      item('hookify', 'Пользовательские правила Hookify', { category: 'system' }),
       item('doctor', 'Быстрая диагностика систем Капри', { category: 'system' }),
       item('storage', 'Использование диска и базы', { category: 'system' }),
       item('help', 'Справка по командам и навыкам', { aliases: ['find'], category: 'system' }),
@@ -463,12 +673,7 @@ export const FALLBACK_SECTIONS = [
     id: 'plugins',
     title: 'Плагины',
     allLabel: 'Все плагины',
-    stage: '2.3',
-    items: [
-      item('obsidian-suite', 'Набор инструментов и правил для Obsidian Vault', { section: 'plugins', kind: 'draft', icon: 'puzzle', badge: 'Этап 2.3' }),
-      item('dev-workbench', 'Плагин ревью, отладки и профильных проверок', { section: 'plugins', kind: 'draft', icon: 'puzzle', badge: 'Этап 2.3' }),
-      item('research-pack', 'Сбор источников и структурированные досье', { section: 'plugins', kind: 'draft', icon: 'puzzle', badge: 'Этап 2.3' }),
-    ],
+    items: FALLBACK_PLUGINS,
   },
   {
     id: 'connectors',
@@ -522,20 +727,52 @@ function isIsolatedContext(ctx) {
   return Boolean(ctx?.ephemeral || ['private', 'nsfw', 'tor'].includes(ctx?.mode));
 }
 
+function applyPluginModePause(plugin, ctx) {
+  if (!plugin) return plugin;
+  if (plugin.id === 'security-guard') {
+    return { ...plugin, pausedInMode: false, pauseReason: '' };
+  }
+  const isolated = isIsolatedContext(ctx);
+  const noVault = Boolean(ctx?.ephemeral || ctx?.mode === 'nsfw');
+  if (plugin.cloudOnly && isolated) {
+    return {
+      ...plugin,
+      pausedInMode: true,
+      pauseReason: plugin.pauseReason || 'Пауза в изолированном режиме',
+    };
+  }
+  if (plugin.vaultOnly && noVault) {
+    return {
+      ...plugin,
+      pausedInMode: true,
+      pauseReason: plugin.pauseReason || 'Пауза во временном/18+ режиме',
+    };
+  }
+  return { ...plugin };
+}
+
 function buildFallbackCatalog(ctx) {
   const isolated = isIsolatedContext(ctx);
   const pct = Number.isFinite(ctx?.pct) ? Math.round(ctx.pct) : null;
-  const sections = FALLBACK_SECTIONS.map((sec) => ({
-    ...sec,
-    items: sec.items
-      .filter((it) => !(isolated && sec.id !== 'skills' && it.cloudOnly))
-      .map((it) => {
-        if (it.name === 'compact' && pct !== null) {
-          return { ...it, badge: `${pct}%` };
-        }
-        return { ...it };
-      }),
-  }));
+  const sections = FALLBACK_SECTIONS.map((sec) => {
+    if (sec.id === 'plugins') {
+      return {
+        ...sec,
+        items: sec.items.map((p) => applyPluginModePause(p, ctx)),
+      };
+    }
+    return {
+      ...sec,
+      items: sec.items
+        .filter((it) => !(isolated && sec.id !== 'skills' && it.cloudOnly))
+        .map((it) => {
+          if (it.name === 'compact' && pct !== null) {
+            return { ...it, badge: `${pct}%` };
+          }
+          return { ...it };
+        }),
+    };
+  });
   return { sections, state: {} };
 }
 
@@ -620,6 +857,84 @@ async function fetchSkills(ctx, fallbackItems = []) {
   return normalizeSkillsResponse({ items: base }, base);
 }
 
+function normalizePluginsResponse(res, fallbackItems = [], ctx = null) {
+  const rawItems = Array.isArray(res?.items)
+    ? res.items
+    : (Array.isArray(res?.categories) ? res.categories.flatMap((c) => c.items || []) : fallbackItems);
+  const items = (rawItems || []).map((p) => ({
+    ...p,
+    id: p.id || p.slug || p.name,
+    name: p.name || p.title || p.id,
+    category: p.category || 'safety',
+    categoryTitle: p.categoryTitle || PLUGIN_CATEGORY_TITLES[p.category] || 'Прочее',
+    enabled: p.enabled !== false,
+    pausedInMode: Boolean(p.pausedInMode),
+    pauseReason: p.pauseReason || '',
+    skills: Array.isArray(p.skills) ? p.skills : [],
+    commands: Array.isArray(p.commands) ? p.commands : [],
+    hooks: Array.isArray(p.hooks) ? p.hooks : [],
+    rules: Array.isArray(p.rules) ? p.rules : [],
+    statusNote: p.statusNote || '',
+    health: p.health || 'ok',
+    source: p.source || (p.isCustom ? 'custom' : 'builtin'),
+    isCustom: Boolean(p.isCustom),
+    kind: 'plugin',
+    section: 'plugins',
+    icon: pluginIconName(p),
+  }));
+  const finalItems = ctx && !Array.isArray(res?.items) && !Array.isArray(res?.categories)
+    ? items.map((p) => applyPluginModePause(p, ctx))
+    : items;
+  const categories = Array.isArray(res?.categories) && res.categories.length
+    ? res.categories.map((c) => ({
+      id: c.id,
+      title: c.title || PLUGIN_CATEGORY_TITLES[c.id] || 'Прочее',
+      items: (c.items || []).map((p) => finalItems.find((x) => x.id === (p.id || p.slug || p.name)) || p),
+    }))
+    : groupByCategories(finalItems, PLUGIN_CATEGORIES);
+  const hookifyRules = Array.isArray(res?.hookifyRules) ? res.hookifyRules : [];
+  const total = Number.isFinite(res?.stats?.total) ? res.stats.total : finalItems.length;
+  const enabled = Number.isFinite(res?.stats?.enabled)
+    ? res.stats.enabled
+    : finalItems.filter((p) => p.enabled !== false).length;
+  const activeInMode = Number.isFinite(res?.stats?.activeInMode)
+    ? res.stats.activeInMode
+    : finalItems.filter((p) => p.enabled !== false && !p.pausedInMode).length;
+  const customCount = Number.isFinite(res?.stats?.customCount)
+    ? res.stats.customCount
+    : finalItems.filter((p) => p.isCustom).length;
+  const hookifyRulesCount = Number.isFinite(res?.stats?.hookifyRulesCount)
+    ? res.stats.hookifyRulesCount
+    : hookifyRules.length;
+  return {
+    categories,
+    items: finalItems,
+    stats: { total, enabled, activeInMode, customCount, hookifyRulesCount },
+    hookifyRules,
+  };
+}
+
+async function fetchPlugins(ctx, fallbackItems = []) {
+  const host = window.host;
+  if (typeof host?.pluginsList === 'function') {
+    try {
+      const res = await host.pluginsList({
+        mode: ctx?.mode || 'capri',
+        ephemeral: Boolean(ctx?.ephemeral),
+      });
+      if (res && (Array.isArray(res.categories) || Array.isArray(res.items))) {
+        return normalizePluginsResponse(res, fallbackItems, ctx);
+      }
+    } catch {
+      // fall back cleanly
+    }
+  }
+  const base = fallbackItems.length
+    ? fallbackItems
+    : FALLBACK_PLUGINS;
+  return normalizePluginsResponse({}, base, ctx);
+}
+
 async function fetchCatalog(ctx) {
   const host = window.host;
   if (typeof host?.commandsList === 'function') {
@@ -682,11 +997,17 @@ function scoreItem(it, query) {
   const desc = (it.description || '').toLowerCase();
   const cat = (it.category || '').toLowerCase();
   const catTitle = (it.categoryTitle || '').toLowerCase();
+  const skills = Array.isArray(it.skills) ? it.skills.map((s) => String(s).toLowerCase()) : [];
+  const commands = Array.isArray(it.commands) ? it.commands.map((c) => String(c).toLowerCase()) : [];
+  const hooks = Array.isArray(it.hooks) ? it.hooks.map((h) => String(h).toLowerCase()) : [];
+  const rules = Array.isArray(it.rules) ? it.rules.map((r) => String(r).toLowerCase()) : [];
+  const statusNote = (it.statusNote || '').toLowerCase();
 
   if (name === query || id === query || slash === `/${query}` || aliases.includes(query)) return 100;
   if (name.startsWith(query) || id.startsWith(query) || title.startsWith(query) || aliases.some((a) => a.startsWith(query))) return 80;
   if (name.includes(query) || id.includes(query) || title.includes(query) || slash.includes(query) || aliases.some((a) => a.includes(query))) return 50;
-  if (desc.includes(query)) return 25;
+  if (skills.some((s) => s.includes(query)) || commands.some((c) => c.includes(query)) || hooks.some((h) => h.includes(query))) return 35;
+  if (desc.includes(query) || statusNote.includes(query) || rules.some((r) => r.includes(query))) return 25;
   if (cat.includes(query) || catTitle.includes(query)) return 15;
   return 0;
 }
@@ -727,7 +1048,7 @@ function applyTokenReplacement(input, range, slashText) {
 const INITIAL_LIMITS = {
   commands: 8,
   skills: 5,
-  plugins: 2,
+  plugins: 3,
   connectors: 2,
   styles: 2,
 };
@@ -762,6 +1083,17 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
     }
     const seq = ++fetchSeq;
     const loaded = await fetchCatalog(ctx);
+    const pluginsSec = loaded?.sections?.find((s) => s.id === 'plugins');
+    const needsLivePlugins = !pluginsSec
+      || pluginsSec.stage
+      || (Array.isArray(pluginsSec.items) && pluginsSec.items.some((it) => it.kind === 'draft'));
+    if (needsLivePlugins && typeof window.host?.pluginsList === 'function') {
+      const livePlugins = await fetchPlugins(ctx);
+      if (pluginsSec && Array.isArray(livePlugins.items) && livePlugins.items.length) {
+        delete pluginsSec.stage;
+        pluginsSec.items = livePlugins.items;
+      }
+    }
     if (seq !== fetchSeq) return catalog || loaded;
     catalog = loaded;
     lastCtxKey = key;
@@ -798,6 +1130,11 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
       return;
     }
     const it = entry.item;
+    if (entry.sectionId === 'plugins' || it.kind === 'plugin') {
+      close();
+      onOpenCatalog?.('plugins', { focusPluginId: it.id || it.name });
+      return;
+    }
     if (it.kind === 'draft') {
       close();
       onOpenCatalog?.(it.section || entry.sectionId);
@@ -827,6 +1164,7 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
 
   function buildItemRow(it, sectionId, ctxPct) {
     const isSkill = sectionId === 'skills' || it.kind === 'skill';
+    const isPlugin = sectionId === 'plugins' || it.kind === 'plugin';
     const isPaused = Boolean(it.pausedInMode);
     const row = document.createElement('button');
     row.type = 'button';
@@ -836,17 +1174,20 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
 
     const iconWrap = document.createElement('span');
     iconWrap.className = 'slash-menu__icon';
-    iconWrap.appendChild(createIconSvg(it.icon || (it.isPack ? 'layers' : (isSkill ? 'sparkles' : it.name)), 18));
+    const iconName = isPlugin
+      ? pluginIconName(it)
+      : (it.icon || (it.isPack ? 'layers' : (isSkill ? 'sparkles' : it.name)));
+    iconWrap.appendChild(createIconSvg(iconName, 18));
 
     const main = document.createElement('span');
     main.className = 'slash-menu__main';
 
     const title = document.createElement('span');
     title.className = 'slash-menu__title';
-    title.textContent = it.slash || `/${it.name}`;
+    title.textContent = isPlugin ? (it.name || it.id) : (it.slash || `/${it.name}`);
     main.appendChild(title);
 
-    if (it.argsHint) {
+    if (it.argsHint && !isPlugin) {
       const args = document.createElement('span');
       args.className = 'slash-menu__args';
       args.textContent = it.argsHint;
@@ -873,7 +1214,19 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
       right.appendChild(pausedBadge);
     }
 
-    if (isSkill) {
+    if (isPlugin) {
+      if (it.statusNote) {
+        const metaBadge = document.createElement('span');
+        metaBadge.className = 'slash-menu__badge slash-menu__badge--meta';
+        metaBadge.textContent = String(it.statusNote);
+        right.appendChild(metaBadge);
+      } else if (it.isCustom) {
+        const customBadge = document.createElement('span');
+        customBadge.className = 'slash-menu__badge slash-menu__badge--meta';
+        customBadge.textContent = 'Свой';
+        right.appendChild(customBadge);
+      }
+    } else if (isSkill) {
       if (it.isPack && it.subCount) {
         const packBadge = document.createElement('span');
         packBadge.className = 'slash-menu__badge slash-menu__badge--meta';
@@ -1003,7 +1356,7 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
 
     for (const sec of data.sections || []) {
       let items = Array.isArray(sec.items) ? sec.items : [];
-      if (sec.id === 'skills') {
+      if (sec.id === 'skills' || sec.id === 'plugins') {
         items = items.filter((it) => it.enabled !== false);
       }
       if (isChained) {
@@ -1145,6 +1498,7 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
   input.addEventListener('keydown', onKeyDown, true);
   window.addEventListener('keydown', onWindowKeyDown, true);
   window.addEventListener('capri:skills-changed', onSkillsChangedEvent);
+  window.addEventListener('capri:plugins-changed', onSkillsChangedEvent);
   document.addEventListener('mousedown', onDocMouseDown);
 
   return {
@@ -1159,6 +1513,7 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
       input.removeEventListener('keydown', onKeyDown, true);
       window.removeEventListener('keydown', onWindowKeyDown, true);
       window.removeEventListener('capri:skills-changed', onSkillsChangedEvent);
+      window.removeEventListener('capri:plugins-changed', onSkillsChangedEvent);
       document.removeEventListener('mousedown', onDocMouseDown);
       menu.remove();
     },
@@ -1192,7 +1547,14 @@ function createToggleSwitch(checked, { label, disabled = false, onToggle }) {
   return sw;
 }
 
-export async function openCatalogModal({ initialTab = 'commands', getContext, onRunCommand, onSkillsChanged } = {}) {
+export async function openCatalogModal({
+  initialTab = 'commands',
+  focusPluginId = null,
+  getContext,
+  onRunCommand,
+  onSkillsChanged,
+  onPluginsChanged,
+} = {}) {
   if (activeModalCleanup) {
     activeModalCleanup();
     activeModalCleanup = null;
@@ -1204,15 +1566,24 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
   let skillsData = normalizeSkillsResponse({
     items: catalog.sections.find((s) => s.id === 'skills')?.items || [],
   });
+  let pluginsData = normalizePluginsResponse({}, catalog.sections.find((s) => s.id === 'plugins')?.items || FALLBACK_PLUGINS, ctx);
   let activeTab = initialTab || 'commands';
   let searchQuery = '';
   let noticeText = '';
-  let activeForm = null; // null | 'create' | 'install'
+  let activeForm = null; // null | 'create' | 'install' | 'plugin-create' | 'plugin-install' | 'hookify-add'
+  let plusPanelOpen = false;
+  let inlineHookifyFormOpen = false;
   let formBusy = false;
   let formError = '';
+  let hookifyError = '';
   let reloadingSkills = false;
+  let reloadingPlugins = false;
+  let pendingFocusPluginId = focusPluginId || null;
   const pendingToggles = new Set();
+  const pendingPluginToggles = new Set();
+  const pendingHookifyOps = new Set();
   const collapsedGroups = new Set();
+  const expandedPlugins = new Set(focusPluginId ? [focusPluginId] : []);
 
   const createDraft = {
     name: '',
@@ -1231,12 +1602,36 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
     preview: null,
     previewMessage: '',
   };
+  const pluginCreateDraft = {
+    name: '',
+    slug: '',
+    category: 'dev',
+    description: '',
+    skills: '',
+    rules: '',
+    cloudOnly: false,
+    vaultOnly: false,
+  };
+  const pluginInstallDraft = {
+    sourceType: 'path', // 'path' | 'json'
+    sourcePath: '',
+    manifestJson: '',
+    slug: '',
+    preview: null,
+    previewMessage: '',
+  };
+  const hookifyDraft = {
+    name: '',
+    triggerPattern: '',
+    action: 'warn', // 'warn' | 'inject' | 'block'
+    message: '',
+  };
 
   const backdrop = document.createElement('div');
   backdrop.className = 'slash-catalog-backdrop';
   backdrop.setAttribute('role', 'dialog');
   backdrop.setAttribute('aria-modal', 'true');
-  backdrop.setAttribute('aria-label', 'Каталог команд и навыков');
+  backdrop.setAttribute('aria-label', 'Каталог команд, навыков и плагинов');
 
   const modal = document.createElement('div');
   modal.className = 'slash-catalog';
@@ -1261,17 +1656,40 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
   const searchInput = document.createElement('input');
   searchInput.type = 'search';
   searchInput.className = 'slash-catalog__search';
-  searchInput.placeholder = 'Поиск по командам, навыкам и категориям…';
+  searchInput.placeholder = 'Поиск по командам, навыкам, плагинам и категориям…';
   searchInput.setAttribute('aria-label', 'Поиск по каталогу');
   searchWrap.appendChild(searchInput);
 
-  bar.append(closeBtn, searchWrap);
+  const plusBtn = document.createElement('button');
+  plusBtn.type = 'button';
+  plusBtn.className = 'slash-catalog__plus-btn';
+  plusBtn.setAttribute('aria-label', 'Создать или установить');
+  plusBtn.title = 'Создать или установить';
+  plusBtn.appendChild(createIconSvg('plus', 18));
+  plusBtn.addEventListener('click', () => {
+    if (activeForm) {
+      activeForm = null;
+      formError = '';
+      installDraft.preview = null;
+      pluginInstallDraft.preview = null;
+      plusPanelOpen = false;
+    } else {
+      plusPanelOpen = !plusPanelOpen;
+    }
+    renderModal();
+  });
+
+  bar.append(closeBtn, searchWrap, plusBtn);
+
+  const plusPanelEl = document.createElement('div');
+  plusPanelEl.className = 'slash-catalog__plus-panel';
+  plusPanelEl.hidden = true;
 
   const tabsEl = document.createElement('div');
   tabsEl.className = 'slash-catalog__tabs';
   tabsEl.setAttribute('role', 'tablist');
 
-  top.append(bar, tabsEl);
+  top.append(bar, plusPanelEl, tabsEl);
 
   const body = document.createElement('div');
   body.className = 'slash-catalog__body';
@@ -1288,6 +1706,15 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
     }
   }
 
+  function syncPluginsIntoCatalog() {
+    const sections = catalog.sections || [];
+    const pluginSec = sections.find((s) => s.id === 'plugins');
+    if (pluginSec && Array.isArray(pluginsData?.items)) {
+      delete pluginSec.stage;
+      pluginSec.items = pluginsData.items;
+    }
+  }
+
   function emitSkillsChanged(nextData) {
     skillsData = normalizeSkillsResponse(nextData, skillsData.items);
     syncSkillsIntoCatalog();
@@ -1297,6 +1724,21 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
       // ignore listener errors
     }
     window.dispatchEvent(new CustomEvent('capri:skills-changed', { detail: skillsData }));
+  }
+
+  async function emitPluginsChanged(nextData, { refreshSkills = false } = {}) {
+    pluginsData = normalizePluginsResponse(nextData, pluginsData.items, ctx);
+    syncPluginsIntoCatalog();
+    try {
+      onPluginsChanged?.(pluginsData);
+    } catch {
+      // ignore listener errors
+    }
+    window.dispatchEvent(new CustomEvent('capri:plugins-changed', { detail: pluginsData }));
+    if (refreshSkills) {
+      const refreshedSkills = await fetchSkills(ctx, skillsData.items);
+      emitSkillsChanged(refreshedSkills);
+    }
   }
 
   function cleanup() {
@@ -1309,10 +1751,14 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopImmediatePropagation();
-      if (activeForm) {
+      if (activeForm || plusPanelOpen || inlineHookifyFormOpen) {
         activeForm = null;
+        plusPanelOpen = false;
+        inlineHookifyFormOpen = false;
         formError = '';
+        hookifyError = '';
         installDraft.preview = null;
+        pluginInstallDraft.preview = null;
         renderModal();
         return;
       }
@@ -1326,6 +1772,65 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
     if (e.target === backdrop) cleanup();
   });
   window.addEventListener('keydown', onEscape, true);
+
+  function renderTopPlusControls() {
+    const supportsPlus = activeTab === 'skills' || activeTab === 'plugins';
+    plusBtn.hidden = !supportsPlus;
+    if (!supportsPlus) {
+      plusPanelEl.hidden = true;
+      return;
+    }
+    const labelText = activeTab === 'skills'
+      ? 'Создать или установить навык'
+      : 'Создать, установить плагин или добавить правило Hookify';
+    plusBtn.title = labelText;
+    plusBtn.setAttribute('aria-label', labelText);
+    plusBtn.setAttribute('aria-expanded', String(plusPanelOpen || Boolean(activeForm)));
+    plusBtn.classList.toggle('is-active', plusPanelOpen || Boolean(activeForm));
+
+    if (!plusPanelOpen) {
+      plusPanelEl.hidden = true;
+      return;
+    }
+
+    plusPanelEl.hidden = false;
+    const panelLabel = document.createElement('span');
+    panelLabel.className = 'slash-catalog__plus-panel-label';
+    panelLabel.textContent = activeTab === 'skills' ? 'Добавить навык' : 'Добавить плагин или правило';
+
+    const panelActions = document.createElement('div');
+    panelActions.className = 'slash-catalog__plus-panel-actions';
+
+    const items = activeTab === 'skills'
+      ? [
+        { id: 'create', icon: 'plus', label: 'Создать навык' },
+        { id: 'install', icon: 'download', label: 'Установить навык' },
+      ]
+      : [
+        { id: 'plugin-create', icon: 'plus', label: 'Создать плагин' },
+        { id: 'plugin-install', icon: 'download', label: 'Установить плагин' },
+        { id: 'hookify-add', icon: 'shield', label: 'Добавить правило Hookify' },
+      ];
+
+    for (const act of items) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `slash-catalog__action-btn${activeForm === act.id ? ' is-active' : ''}`;
+      btn.append(createIconSvg(act.icon, 15), document.createTextNode(act.label));
+      btn.addEventListener('click', () => {
+        activeForm = act.id;
+        plusPanelOpen = false;
+        formError = '';
+        hookifyError = '';
+        installDraft.preview = null;
+        pluginInstallDraft.preview = null;
+        renderModal();
+      });
+      panelActions.appendChild(btn);
+    }
+
+    plusPanelEl.replaceChildren(panelLabel, panelActions);
+  }
 
   function renderTabs() {
     const sections = catalog.sections || [];
@@ -1345,21 +1850,22 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
       count.className = 'slash-catalog__tab-count';
       const itemCount = sec.id === 'skills'
         ? (skillsData.items || []).length
-        : (sec.items || []).length;
+        : (sec.id === 'plugins' ? (pluginsData.items || []).length : (sec.items || []).length);
       count.textContent = String(itemCount);
 
       btn.append(label, count);
       btn.addEventListener('click', () => {
         activeTab = sec.id;
         noticeText = '';
-        if (sec.id !== 'skills') {
-          activeForm = null;
-          formError = '';
-        }
+        plusPanelOpen = false;
+        activeForm = null;
+        formError = '';
+        hookifyError = '';
         renderModal();
       });
       return btn;
     }));
+    renderTopPlusControls();
   }
 
   function buildCatalogItem(it, secStage) {
@@ -2184,6 +2690,1193 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
     }
   }
 
+  async function handleReloadPlugins() {
+    if (reloadingPlugins) return;
+    reloadingPlugins = true;
+    renderModal();
+    try {
+      const res = typeof window.host?.pluginsReload === 'function'
+        ? await window.host.pluginsReload()
+        : await fetchPlugins(ctx, pluginsData.items);
+      if (res && (Array.isArray(res.categories) || Array.isArray(res.items))) {
+        await emitPluginsChanged(res, { refreshSkills: true });
+      } else {
+        const refreshed = await fetchPlugins(ctx, pluginsData.items);
+        await emitPluginsChanged(refreshed, { refreshSkills: true });
+      }
+      noticeText = `Список плагинов обновлён (${pluginsData.items.length}).`;
+    } catch (err) {
+      noticeText = err?.message || 'Не удалось обновить список плагинов.';
+    } finally {
+      reloadingPlugins = false;
+      if (document.body.contains(backdrop)) renderModal();
+    }
+  }
+
+  async function handlePluginToggle(plugin, nextEnabled) {
+    const id = plugin.id || plugin.name;
+    if (!id || pendingPluginToggles.has(id)) return;
+    pendingPluginToggles.add(id);
+    renderModal();
+
+    const host = window.host;
+    if (typeof host?.pluginsToggle === 'function') {
+      try {
+        const res = await host.pluginsToggle({ id, enabled: Boolean(nextEnabled), cascade: true });
+        if (res && res.ok !== false) {
+          if (Array.isArray(res.categories) || Array.isArray(res.items)) {
+            await emitPluginsChanged(res, { refreshSkills: true });
+          } else {
+            const refreshed = await fetchPlugins(ctx, pluginsData.items);
+            await emitPluginsChanged(refreshed, { refreshSkills: true });
+          }
+          noticeText = '';
+        } else {
+          noticeText = res?.error || 'Не удалось переключить плагин.';
+        }
+      } catch (err) {
+        noticeText = err?.message || 'Не удалось переключить плагин.';
+      }
+    } else {
+      const nextItems = (pluginsData.items || []).map((p) => (
+        p.id === id ? { ...p, enabled: Boolean(nextEnabled) } : p
+      ));
+      await emitPluginsChanged({ items: nextItems, hookifyRules: pluginsData.hookifyRules }, { refreshSkills: true });
+    }
+
+    pendingPluginToggles.delete(id);
+    if (document.body.contains(backdrop)) renderModal();
+  }
+
+  async function handleHookifyToggle(rule) {
+    const id = rule?.id;
+    if (!id || pendingHookifyOps.has(id)) return;
+    pendingHookifyOps.add(id);
+    hookifyError = '';
+    renderModal();
+
+    const nextEnabled = rule.enabled === false;
+    const host = window.host;
+    if (typeof host?.pluginsHookify === 'function') {
+      try {
+        const res = await host.pluginsHookify({ op: 'toggle', id, enabled: nextEnabled });
+        if (res && res.ok !== false) {
+          await emitPluginsChanged(res);
+        } else {
+          hookifyError = res?.error || 'Не удалось обновить правило Hookify.';
+        }
+      } catch (err) {
+        hookifyError = err?.message || 'Не удалось обновить правило Hookify.';
+      }
+    } else {
+      const nextRules = (pluginsData.hookifyRules || []).map((r) => (
+        r.id === id ? { ...r, enabled: nextEnabled } : r
+      ));
+      await emitPluginsChanged({ items: pluginsData.items, hookifyRules: nextRules });
+    }
+
+    pendingHookifyOps.delete(id);
+    if (document.body.contains(backdrop)) renderModal();
+  }
+
+  async function handleHookifyDelete(rule) {
+    const id = rule?.id;
+    if (!id || pendingHookifyOps.has(id)) return;
+    pendingHookifyOps.add(id);
+    hookifyError = '';
+    renderModal();
+
+    const host = window.host;
+    if (typeof host?.pluginsHookify === 'function') {
+      try {
+        const res = await host.pluginsHookify({ op: 'delete', id });
+        if (res && res.ok !== false) {
+          await emitPluginsChanged(res);
+        } else {
+          hookifyError = res?.error || 'Не удалось удалить правило Hookify.';
+        }
+      } catch (err) {
+        hookifyError = err?.message || 'Не удалось удалить правило Hookify.';
+      }
+    } else {
+      const nextRules = (pluginsData.hookifyRules || []).filter((r) => r.id !== id);
+      await emitPluginsChanged({ items: pluginsData.items, hookifyRules: nextRules });
+    }
+
+    pendingHookifyOps.delete(id);
+    if (document.body.contains(backdrop)) renderModal();
+  }
+
+  async function submitHookifyAdd({ inline = false } = {}) {
+    if (formBusy) return;
+    const name = hookifyDraft.name.trim();
+    const triggerPattern = hookifyDraft.triggerPattern.trim();
+    const action = ['warn', 'inject', 'block'].includes(hookifyDraft.action) ? hookifyDraft.action : 'warn';
+    const message = hookifyDraft.message.trim();
+    if (!name || !triggerPattern || !message) {
+      const msg = 'Заполни название, триггер и текст правила/сообщения.';
+      if (inline) hookifyError = msg;
+      else formError = msg;
+      renderModal();
+      return;
+    }
+
+    formBusy = true;
+    if (inline) hookifyError = '';
+    else formError = '';
+    renderModal();
+
+    try {
+      const host = window.host;
+      if (typeof host?.pluginsHookify === 'function') {
+        const res = await host.pluginsHookify({
+          op: 'add',
+          name,
+          triggerPattern,
+          action,
+          message,
+          enabled: true,
+        });
+        if (!res || res.ok === false) {
+          const msg = res?.error || 'Не удалось добавить правило Hookify.';
+          if (inline) hookifyError = msg;
+          else formError = msg;
+        } else {
+          await emitPluginsChanged(res);
+          hookifyDraft.name = '';
+          hookifyDraft.triggerPattern = '';
+          hookifyDraft.action = 'warn';
+          hookifyDraft.message = '';
+          if (inline) inlineHookifyFormOpen = false;
+          else activeForm = null;
+          expandedPlugins.add('hookify');
+          noticeText = `Правило Hookify «${name}» добавлено.`;
+        }
+      } else {
+        const nextRules = [
+          ...(pluginsData.hookifyRules || []),
+          { id: `rule-${Date.now()}`, name, triggerPattern, action, message, enabled: true },
+        ];
+        await emitPluginsChanged({ items: pluginsData.items, hookifyRules: nextRules });
+        hookifyDraft.name = '';
+        hookifyDraft.triggerPattern = '';
+        hookifyDraft.action = 'warn';
+        hookifyDraft.message = '';
+        if (inline) inlineHookifyFormOpen = false;
+        else activeForm = null;
+        expandedPlugins.add('hookify');
+        noticeText = `Правило Hookify «${name}» добавлено.`;
+      }
+    } catch (err) {
+      const msg = err?.message || 'Ошибка при добавлении правила Hookify.';
+      if (inline) hookifyError = msg;
+      else formError = msg;
+    } finally {
+      formBusy = false;
+      if (document.body.contains(backdrop)) renderModal();
+    }
+  }
+
+  function buildHookifyAddForm({ inline = false } = {}) {
+    const form = document.createElement('form');
+    form.className = inline ? 'slash-hookify__form' : 'slash-skill-form';
+    form.autocomplete = 'off';
+
+    const head = document.createElement('div');
+    head.className = 'slash-skill-form__head';
+    const title = document.createElement('h3');
+    title.className = 'slash-skill-form__title';
+    title.textContent = 'Добавить правило Hookify';
+    const closeFormBtn = document.createElement('button');
+    closeFormBtn.type = 'button';
+    closeFormBtn.className = 'slash-catalog__action-btn slash-catalog__action-btn--icon';
+    closeFormBtn.setAttribute('aria-label', 'Закрыть форму правила');
+    closeFormBtn.appendChild(createIconSvg('close', 16));
+    closeFormBtn.addEventListener('click', () => {
+      if (inline) {
+        inlineHookifyFormOpen = false;
+        hookifyError = '';
+      } else {
+        activeForm = null;
+        formError = '';
+      }
+      renderModal();
+    });
+    head.append(title, closeFormBtn);
+    form.appendChild(head);
+
+    const errText = inline ? hookifyError : formError;
+    if (errText) {
+      const err = document.createElement('p');
+      err.className = 'slash-skill-form__error';
+      err.textContent = errText;
+      form.appendChild(err);
+    }
+
+    const grid = document.createElement('div');
+    grid.className = 'slash-skill-form__grid';
+
+    const nameField = document.createElement('label');
+    nameField.className = 'slash-skill-form__field';
+    const nameLbl = document.createElement('span');
+    nameLbl.className = 'slash-skill-form__label';
+    nameLbl.textContent = 'Название';
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'slash-skill-form__input';
+    nameInput.placeholder = 'Например, Запрет force-push';
+    nameInput.value = hookifyDraft.name;
+    nameInput.required = true;
+    nameInput.addEventListener('input', () => { hookifyDraft.name = nameInput.value; });
+    nameField.append(nameLbl, nameInput);
+
+    const actionField = document.createElement('label');
+    actionField.className = 'slash-skill-form__field';
+    const actionLbl = document.createElement('span');
+    actionLbl.className = 'slash-skill-form__label';
+    actionLbl.textContent = 'Действие';
+    const actionSelect = document.createElement('select');
+    actionSelect.className = 'slash-skill-form__select';
+    for (const [val, lbl] of [
+      ['warn', 'Предупредить'],
+      ['inject', 'Добавить правило'],
+      ['block', 'Заблокировать'],
+    ]) {
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = lbl;
+      actionSelect.appendChild(opt);
+    }
+    actionSelect.value = hookifyDraft.action || 'warn';
+    actionSelect.addEventListener('change', () => { hookifyDraft.action = actionSelect.value; });
+    actionField.append(actionLbl, actionSelect);
+
+    const patField = document.createElement('label');
+    patField.className = 'slash-skill-form__field slash-skill-form__field--full';
+    const patLbl = document.createElement('span');
+    patLbl.className = 'slash-skill-form__label';
+    patLbl.textContent = 'Триггер (текст/шаблон)';
+    const patInput = document.createElement('input');
+    patInput.type = 'text';
+    patInput.className = 'slash-skill-form__input';
+    patInput.placeholder = 'Например, git push --force или /prod|delete\\s+all/i';
+    patInput.value = hookifyDraft.triggerPattern;
+    patInput.required = true;
+    patInput.addEventListener('input', () => { hookifyDraft.triggerPattern = patInput.value; });
+    patField.append(patLbl, patInput);
+
+    const msgField = document.createElement('label');
+    msgField.className = 'slash-skill-form__field slash-skill-form__field--full';
+    const msgLbl = document.createElement('span');
+    msgLbl.className = 'slash-skill-form__label';
+    msgLbl.textContent = 'Текст правила/сообщения';
+    const msgArea = document.createElement('textarea');
+    msgArea.className = 'slash-skill-form__textarea';
+    msgArea.rows = 3;
+    msgArea.placeholder = 'Что показать пользователю или добавить в системную инструкцию…';
+    msgArea.value = hookifyDraft.message;
+    msgArea.required = true;
+    msgArea.addEventListener('input', () => { hookifyDraft.message = msgArea.value; });
+    msgField.append(msgLbl, msgArea);
+
+    grid.append(nameField, actionField, patField, msgField);
+    form.appendChild(grid);
+
+    const actions = document.createElement('div');
+    actions.className = 'slash-skill-form__actions';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'slash-catalog__action-btn';
+    cancelBtn.textContent = 'Отмена';
+    cancelBtn.disabled = formBusy;
+    cancelBtn.addEventListener('click', () => {
+      if (inline) {
+        inlineHookifyFormOpen = false;
+        hookifyError = '';
+      } else {
+        activeForm = null;
+        formError = '';
+      }
+      renderModal();
+    });
+
+    const submitBtn = document.createElement('button');
+    submitBtn.type = 'submit';
+    submitBtn.className = 'slash-catalog__action-btn slash-catalog__action-btn--primary';
+    submitBtn.textContent = formBusy ? 'Сохраняю…' : 'Сохранить правило';
+    submitBtn.disabled = formBusy;
+
+    actions.append(cancelBtn, submitBtn);
+    form.appendChild(actions);
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      submitHookifyAdd({ inline });
+    });
+
+    return form;
+  }
+
+  function buildHookifyManager() {
+    const rules = Array.isArray(pluginsData.hookifyRules) ? pluginsData.hookifyRules : [];
+    const wrap = document.createElement('div');
+    wrap.className = 'slash-hookify';
+
+    const head = document.createElement('div');
+    head.className = 'slash-hookify__head';
+
+    const title = document.createElement('h4');
+    title.className = 'slash-hookify__title';
+    title.textContent = `Правила Hookify (${rules.length})`;
+
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = `slash-catalog__action-btn${inlineHookifyFormOpen ? ' is-active' : ''}`;
+    addBtn.append(createIconSvg('plus', 14), document.createTextNode('Добавить правило'));
+    addBtn.addEventListener('click', () => {
+      inlineHookifyFormOpen = !inlineHookifyFormOpen;
+      hookifyError = '';
+      renderModal();
+    });
+
+    head.append(title, addBtn);
+    wrap.appendChild(head);
+
+    if (hookifyError && !inlineHookifyFormOpen) {
+      const err = document.createElement('p');
+      err.className = 'slash-skill-form__error';
+      err.textContent = hookifyError;
+      wrap.appendChild(err);
+    }
+
+    if (inlineHookifyFormOpen) {
+      wrap.appendChild(buildHookifyAddForm({ inline: true }));
+    }
+
+    if (!rules.length) {
+      const empty = document.createElement('div');
+      empty.className = 'slash-hookify__empty';
+      empty.textContent = 'Правил пока нет. Добавь первое правило для предупреждений, подсказок или блокировки.';
+      wrap.appendChild(empty);
+      return wrap;
+    }
+
+    const ACTION_LABELS = {
+      warn: 'Предупредить',
+      inject: 'Добавить правило',
+      block: 'Заблокировать',
+    };
+
+    const list = document.createElement('div');
+    list.className = 'slash-hookify__list';
+
+    for (const r of rules) {
+      const isEnabled = r.enabled !== false;
+      const busy = pendingHookifyOps.has(r.id);
+      const actKey = ['warn', 'inject', 'block'].includes(r.action) ? r.action : 'warn';
+
+      const row = document.createElement('div');
+      row.className = `slash-hookify__row${isEnabled ? '' : ' is-disabled'}`;
+
+      const main = document.createElement('div');
+      main.className = 'slash-hookify__main';
+
+      const topLine = document.createElement('div');
+      topLine.className = 'slash-hookify__top';
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'slash-hookify__name';
+      nameEl.textContent = r.name || 'Правило';
+
+      const patEl = document.createElement('span');
+      patEl.className = 'slash-hookify__pattern';
+      patEl.textContent = r.triggerPattern || '';
+
+      const actEl = document.createElement('span');
+      actEl.className = `slash-hookify__action slash-hookify__action--${actKey}`;
+      actEl.textContent = ACTION_LABELS[actKey];
+
+      topLine.append(nameEl, patEl, actEl);
+      main.appendChild(topLine);
+
+      if (r.message) {
+        const msgEl = document.createElement('p');
+        msgEl.className = 'slash-hookify__msg';
+        msgEl.textContent = r.message;
+        main.appendChild(msgEl);
+      }
+
+      const controls = document.createElement('div');
+      controls.className = 'slash-hookify__controls';
+
+      const sw = createToggleSwitch(isEnabled, {
+        label: `${isEnabled ? 'Выключить' : 'Включить'} правило ${r.name || ''}`,
+        disabled: busy,
+        onToggle: () => handleHookifyToggle(r),
+      });
+
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'slash-hookify__delete';
+      delBtn.setAttribute('aria-label', `Удалить правило ${r.name || ''}`);
+      delBtn.title = 'Удалить правило';
+      delBtn.disabled = busy;
+      delBtn.appendChild(createIconSvg('trash', 15));
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleHookifyDelete(r);
+      });
+
+      controls.append(sw, delBtn);
+      row.append(main, controls);
+      list.appendChild(row);
+    }
+
+    wrap.appendChild(list);
+    return wrap;
+  }
+
+  function buildCreatePluginForm() {
+    const form = document.createElement('form');
+    form.className = 'slash-skill-form';
+    form.autocomplete = 'off';
+
+    const head = document.createElement('div');
+    head.className = 'slash-skill-form__head';
+    const title = document.createElement('h3');
+    title.className = 'slash-skill-form__title';
+    title.textContent = 'Создать плагин';
+    const closeFormBtn = document.createElement('button');
+    closeFormBtn.type = 'button';
+    closeFormBtn.className = 'slash-catalog__action-btn slash-catalog__action-btn--icon';
+    closeFormBtn.setAttribute('aria-label', 'Закрыть форму');
+    closeFormBtn.appendChild(createIconSvg('close', 16));
+    closeFormBtn.addEventListener('click', () => {
+      activeForm = null;
+      formError = '';
+      renderModal();
+    });
+    head.append(title, closeFormBtn);
+    form.appendChild(head);
+
+    if (formError) {
+      const err = document.createElement('p');
+      err.className = 'slash-skill-form__error';
+      err.textContent = formError;
+      form.appendChild(err);
+    }
+
+    const grid = document.createElement('div');
+    grid.className = 'slash-skill-form__grid';
+
+    const nameField = document.createElement('label');
+    nameField.className = 'slash-skill-form__field';
+    const nameLbl = document.createElement('span');
+    nameLbl.className = 'slash-skill-form__label';
+    nameLbl.textContent = 'Название';
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'slash-skill-form__input';
+    nameInput.placeholder = 'Например, Набор для релизов';
+    nameInput.value = pluginCreateDraft.name;
+    nameInput.required = true;
+    nameInput.addEventListener('input', () => { pluginCreateDraft.name = nameInput.value; });
+    nameField.append(nameLbl, nameInput);
+
+    const catField = document.createElement('label');
+    catField.className = 'slash-skill-form__field';
+    const catLbl = document.createElement('span');
+    catLbl.className = 'slash-skill-form__label';
+    catLbl.textContent = 'Категория';
+    const catSelect = document.createElement('select');
+    catSelect.className = 'slash-skill-form__select';
+    for (const c of PLUGIN_CATEGORIES) {
+      const opt = document.createElement('option');
+      opt.value = c.id;
+      opt.textContent = c.title;
+      catSelect.appendChild(opt);
+    }
+    catSelect.value = pluginCreateDraft.category || 'dev';
+    catSelect.addEventListener('change', () => { pluginCreateDraft.category = catSelect.value; });
+    catField.append(catLbl, catSelect);
+
+    const descField = document.createElement('label');
+    descField.className = 'slash-skill-form__field slash-skill-form__field--full';
+    const descLbl = document.createElement('span');
+    descLbl.className = 'slash-skill-form__label';
+    descLbl.textContent = 'Краткое описание';
+    const descInput = document.createElement('input');
+    descInput.type = 'text';
+    descInput.className = 'slash-skill-form__input';
+    descInput.placeholder = 'В одну строку: какие задачи закрывает плагин';
+    descInput.value = pluginCreateDraft.description;
+    descInput.required = true;
+    descInput.addEventListener('input', () => { pluginCreateDraft.description = descInput.value; });
+    descField.append(descLbl, descInput);
+
+    const skillsField = document.createElement('label');
+    skillsField.className = 'slash-skill-form__field slash-skill-form__field--full';
+    const skillsLbl = document.createElement('span');
+    skillsLbl.className = 'slash-skill-form__label';
+    skillsLbl.textContent = 'Входящие скиллы (через запятую, необязательно)';
+    const skillsInput = document.createElement('input');
+    skillsInput.type = 'text';
+    skillsInput.className = 'slash-skill-form__input';
+    skillsInput.placeholder = 'second-brain, russian-editor, research-method';
+    skillsInput.value = pluginCreateDraft.skills;
+    skillsInput.addEventListener('input', () => { pluginCreateDraft.skills = skillsInput.value; });
+    skillsField.append(skillsLbl, skillsInput);
+
+    const rulesField = document.createElement('label');
+    rulesField.className = 'slash-skill-form__field slash-skill-form__field--full';
+    const rulesLbl = document.createElement('span');
+    rulesLbl.className = 'slash-skill-form__label';
+    rulesLbl.textContent = 'Правила плагина (по одному на строку, необязательно)';
+    const rulesArea = document.createElement('textarea');
+    rulesArea.className = 'slash-skill-form__textarea';
+    rulesArea.rows = 4;
+    rulesArea.placeholder = 'Короткие системные правила, которые подключаются, пока плагин включён…';
+    rulesArea.value = pluginCreateDraft.rules;
+    rulesArea.addEventListener('input', () => { pluginCreateDraft.rules = rulesArea.value; });
+    rulesField.append(rulesLbl, rulesArea);
+
+    grid.append(nameField, catField, descField, skillsField, rulesField);
+    form.appendChild(grid);
+
+    const cloudRow = document.createElement('div');
+    cloudRow.className = 'slash-skill-form__check-row';
+    const cloudCopy = document.createElement('span');
+    cloudCopy.className = 'slash-skill-form__check-copy';
+    const cloudStrong = document.createElement('strong');
+    cloudStrong.textContent = 'Только с облаком';
+    const cloudSmall = document.createElement('small');
+    cloudSmall.textContent = 'Автоматически ставить на паузу в приватном, временном, 18+ и Tor режимах';
+    cloudCopy.append(cloudStrong, cloudSmall);
+    const cloudSwitch = createToggleSwitch(pluginCreateDraft.cloudOnly, {
+      label: 'Только с облаком',
+      disabled: formBusy,
+      onToggle: () => {
+        pluginCreateDraft.cloudOnly = !pluginCreateDraft.cloudOnly;
+        cloudSwitch.classList.toggle('is-on', pluginCreateDraft.cloudOnly);
+        cloudSwitch.setAttribute('aria-checked', String(pluginCreateDraft.cloudOnly));
+      },
+    });
+    cloudRow.append(cloudCopy, cloudSwitch);
+    form.appendChild(cloudRow);
+
+    const actions = document.createElement('div');
+    actions.className = 'slash-skill-form__actions';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'slash-catalog__action-btn';
+    cancelBtn.textContent = 'Отмена';
+    cancelBtn.disabled = formBusy;
+    cancelBtn.addEventListener('click', () => {
+      activeForm = null;
+      formError = '';
+      renderModal();
+    });
+
+    const submitBtn = document.createElement('button');
+    submitBtn.type = 'submit';
+    submitBtn.className = 'slash-catalog__action-btn slash-catalog__action-btn--primary';
+    submitBtn.textContent = formBusy ? 'Создаю…' : 'Сохранить плагин';
+    submitBtn.disabled = formBusy;
+
+    actions.append(cancelBtn, submitBtn);
+    form.appendChild(actions);
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (formBusy) return;
+      const name = pluginCreateDraft.name.trim();
+      const description = pluginCreateDraft.description.trim();
+      if (!name || !description) {
+        formError = 'Заполни название и краткое описание плагина.';
+        renderModal();
+        return;
+      }
+      if (typeof window.host?.pluginsCreate !== 'function') {
+        formError = 'Создание плагинов недоступно в текущем режиме.';
+        renderModal();
+        return;
+      }
+
+      const skills = pluginCreateDraft.skills
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const rules = pluginCreateDraft.rules
+        .split(/\r?\n/)
+        .map((r) => r.trim())
+        .filter(Boolean);
+
+      formBusy = true;
+      formError = '';
+      renderModal();
+      try {
+        const res = await window.host.pluginsCreate({
+          name,
+          slug: pluginCreateDraft.slug.trim() || undefined,
+          category: pluginCreateDraft.category || 'dev',
+          description,
+          skills,
+          rules,
+          cloudOnly: Boolean(pluginCreateDraft.cloudOnly),
+          vaultOnly: Boolean(pluginCreateDraft.vaultOnly),
+        });
+        if (!res || res.ok === false) {
+          formError = res?.error || 'Не удалось создать плагин.';
+        } else {
+          if (Array.isArray(res.categories) || Array.isArray(res.items)) {
+            await emitPluginsChanged(res, { refreshSkills: true });
+          } else {
+            const refreshed = await fetchPlugins(ctx, pluginsData.items);
+            await emitPluginsChanged(refreshed, { refreshSkills: true });
+          }
+          noticeText = `Плагин «${res.plugin?.name || name}» создан.`;
+          if (res.plugin?.id) expandedPlugins.add(res.plugin.id);
+          activeForm = null;
+          pluginCreateDraft.name = '';
+          pluginCreateDraft.slug = '';
+          pluginCreateDraft.description = '';
+          pluginCreateDraft.skills = '';
+          pluginCreateDraft.rules = '';
+          pluginCreateDraft.cloudOnly = false;
+          pluginCreateDraft.vaultOnly = false;
+        }
+      } catch (err) {
+        formError = err?.message || 'Ошибка при создании плагина.';
+      } finally {
+        formBusy = false;
+        if (document.body.contains(backdrop)) renderModal();
+      }
+    });
+
+    return form;
+  }
+
+  function buildInstallPluginForm() {
+    const form = document.createElement('form');
+    form.className = 'slash-skill-form';
+    form.autocomplete = 'off';
+
+    const head = document.createElement('div');
+    head.className = 'slash-skill-form__head';
+    const title = document.createElement('h3');
+    title.className = 'slash-skill-form__title';
+    title.textContent = 'Установить плагин';
+    const closeFormBtn = document.createElement('button');
+    closeFormBtn.type = 'button';
+    closeFormBtn.className = 'slash-catalog__action-btn slash-catalog__action-btn--icon';
+    closeFormBtn.setAttribute('aria-label', 'Закрыть форму');
+    closeFormBtn.appendChild(createIconSvg('close', 16));
+    closeFormBtn.addEventListener('click', () => {
+      activeForm = null;
+      formError = '';
+      pluginInstallDraft.preview = null;
+      renderModal();
+    });
+    head.append(title, closeFormBtn);
+    form.appendChild(head);
+
+    if (formError) {
+      const err = document.createElement('p');
+      err.className = 'slash-skill-form__error';
+      err.textContent = formError;
+      form.appendChild(err);
+    }
+
+    const modeTabs = document.createElement('div');
+    modeTabs.className = 'slash-skill-form__tabs';
+    for (const [key, label] of [['path', 'Локальный plugin.json'], ['json', 'Вставить JSON']]) {
+      const tabBtn = document.createElement('button');
+      tabBtn.type = 'button';
+      tabBtn.className = `slash-skill-form__tab${pluginInstallDraft.sourceType === key ? ' is-active' : ''}`;
+      tabBtn.textContent = label;
+      tabBtn.disabled = formBusy;
+      tabBtn.addEventListener('click', () => {
+        pluginInstallDraft.sourceType = key;
+        pluginInstallDraft.preview = null;
+        formError = '';
+        renderModal();
+      });
+      modeTabs.appendChild(tabBtn);
+    }
+    form.appendChild(modeTabs);
+
+    const grid = document.createElement('div');
+    grid.className = 'slash-skill-form__grid';
+
+    if (pluginInstallDraft.sourceType === 'path') {
+      const pathField = document.createElement('label');
+      pathField.className = 'slash-skill-form__field slash-skill-form__field--full';
+      const pathLbl = document.createElement('span');
+      pathLbl.className = 'slash-skill-form__label';
+      pathLbl.textContent = 'Путь к файлу plugin.json на ПК';
+      const pathInput = document.createElement('input');
+      pathInput.type = 'text';
+      pathInput.className = 'slash-skill-form__input';
+      pathInput.placeholder = 'D:\\path\\to\\plugin\\plugin.json';
+      pathInput.value = pluginInstallDraft.sourcePath;
+      pathInput.addEventListener('input', () => {
+        pluginInstallDraft.sourcePath = pathInput.value;
+        pluginInstallDraft.preview = null;
+      });
+      pathField.append(pathLbl, pathInput);
+      grid.appendChild(pathField);
+    } else {
+      const jsonField = document.createElement('label');
+      jsonField.className = 'slash-skill-form__field slash-skill-form__field--full';
+      const jsonLbl = document.createElement('span');
+      jsonLbl.className = 'slash-skill-form__label';
+      jsonLbl.textContent = 'Манифест плагина (JSON)';
+      const jsonArea = document.createElement('textarea');
+      jsonArea.className = 'slash-skill-form__textarea';
+      jsonArea.rows = 6;
+      jsonArea.placeholder = '{\n  "id": "my-pack",\n  "name": "Мой набор",\n  "category": "dev",\n  "description": "Описание",\n  "skills": [],\n  "rules": []\n}';
+      jsonArea.value = pluginInstallDraft.manifestJson;
+      jsonArea.addEventListener('input', () => {
+        pluginInstallDraft.manifestJson = jsonArea.value;
+        pluginInstallDraft.preview = null;
+      });
+      jsonField.append(jsonLbl, jsonArea);
+      grid.appendChild(jsonField);
+    }
+
+    const slugField = document.createElement('label');
+    slugField.className = 'slash-skill-form__field slash-skill-form__field--full';
+    const slugLbl = document.createElement('span');
+    slugLbl.className = 'slash-skill-form__label';
+    slugLbl.textContent = 'Идентификатор slug (необязательно)';
+    const slugInput = document.createElement('input');
+    slugInput.type = 'text';
+    slugInput.className = 'slash-skill-form__input';
+    slugInput.placeholder = 'Определяется из манифеста';
+    slugInput.value = pluginInstallDraft.slug;
+    slugInput.addEventListener('input', () => {
+      pluginInstallDraft.slug = slugInput.value;
+      pluginInstallDraft.preview = null;
+    });
+    slugField.append(slugLbl, slugInput);
+    grid.appendChild(slugField);
+
+    form.appendChild(grid);
+
+    if (pluginInstallDraft.preview) {
+      const pv = pluginInstallDraft.preview;
+      const previewBox = document.createElement('div');
+      previewBox.className = 'slash-skill-form__preview';
+
+      const pvTitle = document.createElement('div');
+      pvTitle.className = 'slash-skill-form__preview-title';
+      const pvName = document.createElement('span');
+      pvName.textContent = pv.name || pv.id || 'Плагин';
+      pvTitle.appendChild(pvName);
+      if (pv.id) {
+        const pvId = document.createElement('span');
+        pvId.className = 'slash-catalog__item-slash';
+        pvId.textContent = pv.id;
+        pvTitle.appendChild(pvId);
+      }
+
+      const pvDesc = document.createElement('p');
+      pvDesc.className = 'slash-skill-form__preview-desc';
+      pvDesc.textContent = pv.description || pluginInstallDraft.previewMessage || 'Готово к установке.';
+
+      const pvMeta = document.createElement('div');
+      pvMeta.className = 'slash-skill-form__preview-meta';
+      const parts = [];
+      if (pv.category) parts.push(`Категория: ${PLUGIN_CATEGORY_TITLES[pv.category] || pv.category}`);
+      if (Number.isFinite(pv.skillsCount)) parts.push(`Скиллов: ${pv.skillsCount}`);
+      if (Number.isFinite(pv.rulesCount)) parts.push(`Правил: ${pv.rulesCount}`);
+      if (pv.source) parts.push(`Источник: ${pv.source}`);
+      if (pluginInstallDraft.previewMessage && pv.description) parts.push(pluginInstallDraft.previewMessage);
+      pvMeta.textContent = parts.join(' · ');
+
+      previewBox.append(pvTitle, pvDesc);
+      if (pvMeta.textContent) previewBox.appendChild(pvMeta);
+      form.appendChild(previewBox);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'slash-skill-form__actions';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'slash-catalog__action-btn';
+    cancelBtn.textContent = pluginInstallDraft.preview ? 'Сбросить' : 'Отмена';
+    cancelBtn.disabled = formBusy;
+    cancelBtn.addEventListener('click', () => {
+      if (pluginInstallDraft.preview) {
+        pluginInstallDraft.preview = null;
+        pluginInstallDraft.previewMessage = '';
+        formError = '';
+        renderModal();
+        return;
+      }
+      activeForm = null;
+      formError = '';
+      renderModal();
+    });
+
+    const submitBtn = document.createElement('button');
+    submitBtn.type = 'submit';
+    submitBtn.className = 'slash-catalog__action-btn slash-catalog__action-btn--primary';
+    if (pluginInstallDraft.preview) {
+      submitBtn.textContent = formBusy ? 'Устанавливаю…' : 'Подтвердить установку';
+    } else {
+      submitBtn.textContent = formBusy ? 'Проверяю…' : 'Проверить плагин';
+    }
+    submitBtn.disabled = formBusy;
+
+    actions.append(cancelBtn, submitBtn);
+    form.appendChild(actions);
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (formBusy) return;
+      const isPath = pluginInstallDraft.sourceType === 'path';
+      const sourcePath = isPath ? pluginInstallDraft.sourcePath.trim() : '';
+      const manifestJson = !isPath ? pluginInstallDraft.manifestJson.trim() : '';
+      if (isPath && !sourcePath) {
+        formError = 'Укажи путь к файлу plugin.json.';
+        renderModal();
+        return;
+      }
+      if (!isPath && !manifestJson) {
+        formError = 'Вставь JSON манифеста плагина.';
+        renderModal();
+        return;
+      }
+      if (typeof window.host?.pluginsInstall !== 'function') {
+        formError = 'Установка плагинов недоступна в текущем режиме.';
+        renderModal();
+        return;
+      }
+
+      const confirm = Boolean(pluginInstallDraft.preview);
+      formBusy = true;
+      formError = '';
+      renderModal();
+      try {
+        const res = await window.host.pluginsInstall({
+          ...(sourcePath ? { sourcePath } : {}),
+          ...(manifestJson ? { manifestJson } : {}),
+          slug: (confirm && pluginInstallDraft.preview?.id)
+            ? pluginInstallDraft.preview.id
+            : (pluginInstallDraft.slug.trim() || undefined),
+          confirm,
+        });
+        if (!confirm && res?.confirmRequired) {
+          pluginInstallDraft.preview = res.preview || {
+            id: pluginInstallDraft.slug.trim(),
+            name: pluginInstallDraft.slug.trim() || 'Плагин',
+          };
+          pluginInstallDraft.previewMessage = res.message || '';
+        } else if (!res || res.ok === false) {
+          formError = res?.error || res?.message || 'Не удалось установить плагин.';
+        } else {
+          if (Array.isArray(res.categories) || Array.isArray(res.items)) {
+            await emitPluginsChanged(res, { refreshSkills: true });
+          } else {
+            const refreshed = await fetchPlugins(ctx, pluginsData.items);
+            await emitPluginsChanged(refreshed, { refreshSkills: true });
+          }
+          const installedName = res.plugin?.name || res.plugin?.id || pluginInstallDraft.preview?.name || 'Плагин';
+          noticeText = `Плагин «${installedName}» установлен.`;
+          if (res.plugin?.id) expandedPlugins.add(res.plugin.id);
+          activeForm = null;
+          pluginInstallDraft.sourcePath = '';
+          pluginInstallDraft.manifestJson = '';
+          pluginInstallDraft.slug = '';
+          pluginInstallDraft.preview = null;
+          pluginInstallDraft.previewMessage = '';
+        }
+      } catch (err) {
+        formError = err?.message || 'Ошибка при установке плагина.';
+      } finally {
+        formBusy = false;
+        if (document.body.contains(backdrop)) renderModal();
+      }
+    });
+
+    return form;
+  }
+
+  function buildPluginsStatsBar() {
+    const st = pluginsData.stats || {};
+    const active = Number.isFinite(st.activeInMode)
+      ? st.activeInMode
+      : (pluginsData.items || []).filter((p) => p.enabled !== false && !p.pausedInMode).length;
+    const total = Number.isFinite(st.total) ? st.total : (pluginsData.items || []).length;
+    const hookifyCount = Number.isFinite(st.hookifyRulesCount)
+      ? st.hookifyRulesCount
+      : (pluginsData.hookifyRules || []).length;
+    const customCount = Number.isFinite(st.customCount)
+      ? st.customCount
+      : (pluginsData.items || []).filter((p) => p.isCustom).length;
+
+    const strip = document.createElement('div');
+    strip.className = 'slash-budget';
+
+    const main = document.createElement('span');
+    main.className = 'slash-budget__main';
+
+    const dot = document.createElement('span');
+    dot.className = 'slash-budget__dot';
+    dot.setAttribute('aria-hidden', 'true');
+
+    const text = document.createElement('span');
+    text.textContent = `Активно: ${active} / ${total} · Правил Hookify: ${hookifyCount}`;
+
+    main.append(dot, text);
+
+    const meta = document.createElement('span');
+    meta.className = 'slash-budget__meta';
+    meta.textContent = customCount > 0 ? `Своих: ${customCount}` : 'Локальный движок';
+
+    strip.append(main, meta);
+    return strip;
+  }
+
+  function buildPluginCard(p) {
+    const id = p.id || p.name;
+    const enabled = p.enabled !== false;
+    const paused = Boolean(p.pausedInMode);
+    const busy = pendingPluginToggles.has(id);
+    const expanded = expandedPlugins.has(id);
+    const isHookify = id === 'hookify';
+    const isFocused = pendingFocusPluginId === id;
+
+    const card = document.createElement('div');
+    card.className = `slash-plugin-card${enabled ? '' : ' is-disabled'}${expanded ? ' is-expanded' : ''}${isFocused ? ' is-focused' : ''}`;
+    card.dataset.pluginId = id;
+
+    const row = document.createElement('div');
+    row.className = 'slash-plugin-row';
+
+    const toggleExpand = () => {
+      if (expandedPlugins.has(id)) expandedPlugins.delete(id);
+      else expandedPlugins.add(id);
+      renderModal();
+    };
+
+    const hit = document.createElement('button');
+    hit.type = 'button';
+    hit.className = 'slash-plugin-hit';
+    hit.setAttribute('aria-expanded', String(expanded));
+    hit.title = expanded ? 'Свернуть состав плагина' : 'Показать входящие скиллы и правила';
+    hit.addEventListener('click', toggleExpand);
+
+    const avatar = document.createElement('span');
+    avatar.className = 'slash-catalog__avatar';
+    avatar.appendChild(createIconSvg(pluginIconName(p), 18));
+
+    const main = document.createElement('span');
+    main.className = 'slash-catalog__item-main';
+
+    const topLine = document.createElement('span');
+    topLine.className = 'slash-catalog__item-top';
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'slash-catalog__item-name';
+    nameEl.textContent = p.name || id;
+    topLine.appendChild(nameEl);
+
+    const statusText = p.statusNote
+      || (p.hooks?.length ? `${p.hooks.length} хука` : (p.skills?.length ? `${p.skills.length} скиллов` : ''));
+    if (statusText) {
+      const statusChip = document.createElement('span');
+      statusChip.className = 'slash-skill-chip';
+      statusChip.textContent = String(statusText);
+      topLine.appendChild(statusChip);
+    }
+
+    if (p.isCustom) {
+      const customChip = document.createElement('span');
+      customChip.className = 'slash-skill-chip';
+      customChip.textContent = 'Свой';
+      topLine.appendChild(customChip);
+    }
+
+    if (p.health && p.health !== 'ok') {
+      const healthEl = document.createElement('span');
+      healthEl.className = 'slash-plugin-health slash-plugin-health--degraded';
+      const hDot = document.createElement('span');
+      hDot.className = 'slash-plugin-health__dot';
+      const hText = document.createElement('span');
+      hText.textContent = p.health === 'degraded' ? 'Неполный' : String(p.health);
+      healthEl.append(hDot, hText);
+      topLine.appendChild(healthEl);
+    } else if (p.hooks?.length || ['chrome-devtools', 'android-dev', 'developer-docs'].includes(id)) {
+      const healthEl = document.createElement('span');
+      healthEl.className = 'slash-plugin-health';
+      const hDot = document.createElement('span');
+      hDot.className = 'slash-plugin-health__dot';
+      const hText = document.createElement('span');
+      hText.textContent = 'OK';
+      healthEl.append(hDot, hText);
+      topLine.appendChild(healthEl);
+    }
+
+    const descEl = document.createElement('span');
+    descEl.className = 'slash-catalog__item-desc';
+    descEl.textContent = p.description || '';
+
+    main.append(topLine, descEl);
+
+    if (paused) {
+      const metaRow = document.createElement('span');
+      metaRow.className = 'slash-catalog__meta-row';
+      const pauseChip = document.createElement('span');
+      pauseChip.className = 'slash-skill-chip slash-skill-chip--paused';
+      pauseChip.textContent = 'Пауза в этом режиме';
+      if (p.pauseReason) pauseChip.title = p.pauseReason;
+      metaRow.appendChild(pauseChip);
+      main.appendChild(metaRow);
+    }
+
+    hit.append(avatar, main);
+
+    const right = document.createElement('span');
+    right.className = 'slash-catalog__item-right';
+
+    const chevBtn = document.createElement('button');
+    chevBtn.type = 'button';
+    chevBtn.className = 'slash-plugin-chevron';
+    chevBtn.setAttribute('aria-label', expanded ? 'Свернуть детали' : 'Развернуть детали');
+    chevBtn.setAttribute('aria-expanded', String(expanded));
+    chevBtn.appendChild(createIconSvg('chevron-down', 16));
+    chevBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleExpand();
+    });
+
+    const sw = createToggleSwitch(enabled, {
+      label: `${enabled ? 'Выключить' : 'Включить'} плагин ${p.name || id}`,
+      disabled: busy,
+      onToggle: () => handlePluginToggle(p, !enabled),
+    });
+
+    right.append(chevBtn, sw);
+    row.append(hit, right);
+    card.appendChild(row);
+
+    if (expanded) {
+      const drawer = document.createElement('div');
+      drawer.className = 'slash-plugin-drawer';
+
+      const div = document.createElement('div');
+      div.className = 'slash-plugin-drawer__divider';
+      drawer.appendChild(div);
+
+      const hasDetails = Boolean(
+        p.skills?.length || p.commands?.length || p.hooks?.length || p.rules?.length || isHookify,
+      );
+
+      if (p.skills?.length) {
+        const block = document.createElement('div');
+        block.className = 'slash-plugin-detail-block';
+        const lbl = document.createElement('span');
+        lbl.className = 'slash-plugin-detail-label';
+        lbl.textContent = `Входящие скиллы (${p.skills.length})`;
+        const chips = document.createElement('div');
+        chips.className = 'slash-plugin-detail-chips';
+        for (const s of p.skills) {
+          const ch = document.createElement('span');
+          ch.className = 'slash-plugin-detail-chip';
+          ch.textContent = String(s);
+          chips.appendChild(ch);
+        }
+        block.append(lbl, chips);
+        drawer.appendChild(block);
+      }
+
+      if (p.commands?.length) {
+        const block = document.createElement('div');
+        block.className = 'slash-plugin-detail-block';
+        const lbl = document.createElement('span');
+        lbl.className = 'slash-plugin-detail-label';
+        lbl.textContent = `Команды (${p.commands.length})`;
+        const chips = document.createElement('div');
+        chips.className = 'slash-plugin-detail-chips';
+        for (const c of p.commands) {
+          const ch = document.createElement('span');
+          ch.className = 'slash-plugin-detail-chip';
+          ch.textContent = String(c);
+          chips.appendChild(ch);
+        }
+        block.append(lbl, chips);
+        drawer.appendChild(block);
+      }
+
+      if (p.hooks?.length) {
+        const block = document.createElement('div');
+        block.className = 'slash-plugin-detail-block';
+        const lbl = document.createElement('span');
+        lbl.className = 'slash-plugin-detail-label';
+        lbl.textContent = `Хуки (${p.hooks.length})`;
+        const chips = document.createElement('div');
+        chips.className = 'slash-plugin-detail-chips';
+        for (const h of p.hooks) {
+          const ch = document.createElement('span');
+          ch.className = 'slash-plugin-detail-chip';
+          ch.textContent = String(h);
+          chips.appendChild(ch);
+        }
+        block.append(lbl, chips);
+        drawer.appendChild(block);
+      }
+
+      if (p.rules?.length) {
+        const block = document.createElement('div');
+        block.className = 'slash-plugin-detail-block';
+        const lbl = document.createElement('span');
+        lbl.className = 'slash-plugin-detail-label';
+        lbl.textContent = `Входящие правила (${p.rules.length})`;
+        const ul = document.createElement('ul');
+        ul.className = 'slash-plugin-rules-list';
+        for (const r of p.rules) {
+          const li = document.createElement('li');
+          li.textContent = String(r);
+          ul.appendChild(li);
+        }
+        block.append(lbl, ul);
+        drawer.appendChild(block);
+      }
+
+      if (isHookify) {
+        drawer.appendChild(buildHookifyManager());
+      }
+
+      if (!hasDetails) {
+        const emptyDet = document.createElement('div');
+        emptyDet.className = 'slash-plugin-source';
+        emptyDet.textContent = 'Отдельных скиллов и правил не объявлено.';
+        drawer.appendChild(emptyDet);
+      }
+
+      const metaParts = [];
+      if (p.version) metaParts.push(`v${p.version}`);
+      if (p.source && p.source !== 'builtin') metaParts.push(`Источник: ${p.source}`);
+      if (p.cloudOnly) metaParts.push('Только с облаком');
+      if (p.vaultOnly) metaParts.push('Только с Obsidian Vault');
+      if (metaParts.length) {
+        const srcEl = document.createElement('div');
+        srcEl.className = 'slash-plugin-source';
+        srcEl.textContent = metaParts.join(' · ');
+        drawer.appendChild(srcEl);
+      }
+
+      card.appendChild(drawer);
+    }
+
+    return card;
+  }
+
   function renderModal() {
     renderTabs();
     const sections = catalog.sections || [];
@@ -2221,6 +3914,7 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
       createBtn.append(createIconSvg('plus', 16), document.createTextNode('Создать навык'));
       createBtn.addEventListener('click', () => {
         activeForm = activeForm === 'create' ? null : 'create';
+        plusPanelOpen = false;
         formError = '';
         renderModal();
       });
@@ -2231,6 +3925,7 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
       installBtn.append(createIconSvg('download', 16), document.createTextNode('Установить'));
       installBtn.addEventListener('click', () => {
         activeForm = activeForm === 'install' ? null : 'install';
+        plusPanelOpen = false;
         formError = '';
         installDraft.preview = null;
         renderModal();
@@ -2248,6 +3943,58 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
       actions.append(createBtn, installBtn, reloadBtn);
       heroRow.append(copy, actions);
       hero.appendChild(heroRow);
+    } else if (sec.id === 'plugins') {
+      const heroRow = document.createElement('div');
+      heroRow.className = 'slash-catalog__hero-row';
+
+      const copy = document.createElement('div');
+      copy.className = 'slash-catalog__hero-copy';
+      const h2 = document.createElement('h2');
+      h2.className = 'slash-catalog__title';
+      h2.textContent = heroInfo.title;
+      const sub = document.createElement('p');
+      sub.className = 'slash-catalog__subtitle';
+      sub.textContent = heroInfo.subtitle;
+      copy.append(h2, sub);
+
+      const actions = document.createElement('div');
+      actions.className = 'slash-catalog__hero-actions';
+
+      const createBtn = document.createElement('button');
+      createBtn.type = 'button';
+      createBtn.className = `slash-catalog__action-btn${activeForm === 'plugin-create' ? ' is-active' : ''}`;
+      createBtn.append(createIconSvg('plus', 16), document.createTextNode('Создать плагин'));
+      createBtn.addEventListener('click', () => {
+        activeForm = activeForm === 'plugin-create' ? null : 'plugin-create';
+        plusPanelOpen = false;
+        formError = '';
+        renderModal();
+      });
+
+      const installBtn = document.createElement('button');
+      installBtn.type = 'button';
+      installBtn.className = `slash-catalog__action-btn${activeForm === 'plugin-install' ? ' is-active' : ''}`;
+      installBtn.append(createIconSvg('download', 16), document.createTextNode('Установить'));
+      installBtn.addEventListener('click', () => {
+        activeForm = activeForm === 'plugin-install' ? null : 'plugin-install';
+        plusPanelOpen = false;
+        formError = '';
+        pluginInstallDraft.preview = null;
+        renderModal();
+      });
+
+      const reloadBtn = document.createElement('button');
+      reloadBtn.type = 'button';
+      reloadBtn.className = 'slash-catalog__action-btn slash-catalog__action-btn--icon';
+      reloadBtn.setAttribute('aria-label', 'Обновить список плагинов');
+      reloadBtn.title = 'Обновить список плагинов';
+      reloadBtn.disabled = reloadingPlugins;
+      reloadBtn.appendChild(createIconSvg('refresh', 16));
+      reloadBtn.addEventListener('click', handleReloadPlugins);
+
+      actions.append(createBtn, installBtn, reloadBtn);
+      heroRow.append(copy, actions);
+      hero.appendChild(heroRow);
     } else {
       const h2 = document.createElement('h2');
       h2.className = 'slash-catalog__title';
@@ -2261,6 +4008,8 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
 
     if (sec.id === 'skills') {
       frag.appendChild(buildBudgetBar());
+    } else if (sec.id === 'plugins') {
+      frag.appendChild(buildPluginsStatsBar());
     }
 
     if (noticeText) {
@@ -2274,6 +4023,52 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
       frag.appendChild(buildCreateSkillForm());
     } else if (sec.id === 'skills' && activeForm === 'install') {
       frag.appendChild(buildInstallSkillForm());
+    } else if (sec.id === 'plugins' && activeForm === 'plugin-create') {
+      frag.appendChild(buildCreatePluginForm());
+    } else if (sec.id === 'plugins' && activeForm === 'plugin-install') {
+      frag.appendChild(buildInstallPluginForm());
+    } else if (sec.id === 'plugins' && activeForm === 'hookify-add') {
+      frag.appendChild(buildHookifyAddForm({ inline: false }));
+    }
+
+    if (sec.id === 'plugins') {
+      const cats = Array.isArray(pluginsData.categories) && pluginsData.categories.length
+        ? pluginsData.categories
+        : groupByCategories(pluginsData.items || [], PLUGIN_CATEGORIES);
+      let renderedCount = 0;
+      for (const cat of cats) {
+        let items = Array.isArray(cat.items) ? cat.items : [];
+        if (q) {
+          const catMatch = (cat.title || '').toLowerCase().includes(q) || (cat.id || '').toLowerCase().includes(q);
+          items = items
+            .map((it) => ({ it, score: catMatch ? Math.max(15, scoreItem(it, q)) : scoreItem(it, q) }))
+            .filter((x) => x.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .map((x) => x.it);
+        }
+        if (!items.length) continue;
+        renderedCount += items.length;
+        const hasFocused = Boolean(pendingFocusPluginId && items.some((it) => it.id === pendingFocusPluginId));
+        frag.appendChild(
+          buildCollapsibleGroup(`plugins:${cat.id}`, cat.title, items, buildPluginCard, Boolean(q) || hasFocused),
+        );
+      }
+      if (!renderedCount) {
+        const empty = document.createElement('div');
+        empty.className = 'slash-catalog__empty';
+        empty.textContent = q ? 'По запросу плагины не нашлись.' : 'Плагинов пока нет.';
+        frag.appendChild(empty);
+      }
+      body.replaceChildren(frag);
+      if (pendingFocusPluginId) {
+        const targetCard = Array.from(body.querySelectorAll('.slash-plugin-card'))
+          .find((el) => el.dataset.pluginId === pendingFocusPluginId);
+        if (targetCard) {
+          targetCard.scrollIntoView({ block: 'nearest' });
+          pendingFocusPluginId = null;
+        }
+      }
+      return;
     }
 
     if (sec.id === 'skills') {
@@ -2396,14 +4191,17 @@ export async function openCatalogModal({ initialTab = 'commands', getContext, on
   renderModal();
   searchInput.focus();
 
-  const [liveCatalog, liveSkills] = await Promise.all([
+  const [liveCatalog, liveSkills, livePlugins] = await Promise.all([
     fetchCatalog(ctx),
     fetchSkills(ctx, catalog.sections.find((s) => s.id === 'skills')?.items || []),
+    fetchPlugins(ctx, catalog.sections.find((s) => s.id === 'plugins')?.items || FALLBACK_PLUGINS),
   ]);
   if (document.body.contains(backdrop)) {
     catalog = liveCatalog;
     skillsData = liveSkills;
+    pluginsData = livePlugins;
     syncSkillsIntoCatalog();
+    syncPluginsIntoCatalog();
     renderModal();
   }
 }
@@ -2416,19 +4214,21 @@ export function registerCatalogTarget(tabName, handler) {
   catalogTargets.set(tabName, handler);
 }
 
-export function openActiveCatalog(initialTab = 'commands') {
+export function openActiveCatalog(initialTab = 'commands', opts = {}) {
   const agentsPlate = document.querySelector('.hud__plate[data-tab="agents"]');
   const activeTab = agentsPlate && !agentsPlate.hidden ? 'agents' : 'chats';
   const target = catalogTargets.get(activeTab) || catalogTargets.get('chats') || catalogTargets.get('agents');
   if (!target) {
-    openCatalogModal({ initialTab });
+    openCatalogModal({ initialTab, focusPluginId: opts?.focusPluginId || null });
     return;
   }
   openCatalogModal({
     initialTab,
+    focusPluginId: opts?.focusPluginId || null,
     getContext: target.getContext,
     onRunCommand: target.onRunCommand,
     onSkillsChanged: target.onSkillsChanged,
+    onPluginsChanged: target.onPluginsChanged,
   });
 }
 
@@ -2535,6 +4335,10 @@ export function bindQuickSkillToggles({ root, triggerBtn, getContext, onChanged 
     } else {
       sync();
     }
+  });
+
+  window.addEventListener('capri:plugins-changed', () => {
+    sync();
   });
 
   sync();

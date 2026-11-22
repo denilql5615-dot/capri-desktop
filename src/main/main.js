@@ -33,6 +33,7 @@ const { isAuxiliaryModel, mobileAutoOverride, resolveRequestedModel } = require(
 const { LOCAL_CONTEXT_DEFAULTS, getContextLimits, buildContextStats, resolveContextLimit } = require('./context-stats');
 const { SlashCommandEngine, compactHistory, isIsolatedMode } = require('./slash-commands');
 const { SkillsEngine } = require('./skills-engine');
+const { PluginsEngine } = require('./plugins-engine');
 const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
 const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('./hub-artifacts');
@@ -462,7 +463,15 @@ function ensureAgentSessions() {
         userText: lastUser,
         isCloud: isCloudAgent,
       });
-      const combinedHints = isRp ? '' : [skillsCtx.text, hints].filter(Boolean).join('\n\n');
+      const pluginsCtx = (meta?.pluginsEngine || ensurePluginsEngine()).buildPromptContext({
+        mode: isRp ? 'nsfw' : (meta?.mode || 'agent'),
+        ephemeral: Boolean(meta?.ephemeral),
+        userText: lastUser,
+      });
+      if (pluginsCtx.blocked) {
+        throw new Error(pluginsCtx.blockReason || 'Запрос заблокирован правилом безопасности.');
+      }
+      const combinedHints = isRp ? '' : [skillsCtx.text, pluginsCtx.text, hints].filter(Boolean).join('\n\n');
       if (meta?.ephemeral || meta?.privateMode || meta?.localOnly || meta?.mode === 'private' || meta?.mode === 'nsfw') {
         throw new Error('Облачные модели недоступны в этом режиме.');
       }
@@ -613,7 +622,10 @@ function ensureAgentSessions() {
         actualEvalTokens: usage?.evalTokens,
       });
       return { text, artifacts: [], actualModel: model, context };
-    }, (id, delta) => chatsWin?.webContents.send('agents:update', { id, delta }), { skillsEngine: ensureSkillsEngine() });
+    }, (id, delta) => chatsWin?.webContents.send('agents:update', { id, delta }), {
+      skillsEngine: ensureSkillsEngine(),
+      pluginsEngine: ensurePluginsEngine(),
+    });
   return agentSessions;
 }
 
@@ -1847,6 +1859,7 @@ function phoneControl() {
 
 let slashEngine = null;
 let skillsEngine = null;
+let pluginsEngine = null;
 
 function ensureSkillsEngine() {
   if (skillsEngine) return skillsEngine;
@@ -1856,6 +1869,17 @@ function ensureSkillsEngine() {
     saveConfig: (patch) => config.save(patch),
   });
   return skillsEngine;
+}
+
+function ensurePluginsEngine() {
+  if (pluginsEngine) return pluginsEngine;
+  pluginsEngine = new PluginsEngine({
+    userDataDir: app.getPath('userData'),
+    skillsEngine: ensureSkillsEngine(),
+    getConfig: () => config.load(),
+    saveConfig: (patch) => config.save(patch),
+  });
+  return pluginsEngine;
 }
 
 async function compactDesktopChat({ mode = 'chat', ephemeral = false, agent = null, sessionId = null, history, focus = '', model = '' } = {}) {
@@ -1916,6 +1940,7 @@ function ensureSlashEngine() {
   if (slashEngine) return slashEngine;
   slashEngine = new SlashCommandEngine({
     skillsEngine: ensureSkillsEngine(),
+    pluginsEngine: ensurePluginsEngine(),
     getConfig: () => config.load(),
     saveConfig: (patch) => config.save(patch),
     deps: {
@@ -2179,6 +2204,7 @@ async function applyPhone() {
       token: phoneToken,
       persona: phonePersona,
       skillsEngine: ensureSkillsEngine(),
+      pluginsEngine: ensurePluginsEngine(),
       slashEngine: ensureSlashEngine(),
       contextLimits: () => getContextLimits({ ctxFor: ollama.ctxFor }),
       savePrivateChat: (id, messages, options) => {
@@ -2842,6 +2868,9 @@ async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = 
   const toolsText = skipNotes ? '' : lastUserSuffix(withMemory, enriched);
   let finalMessages = rp ? brainsLib.withRp(enriched) : enriched;
   let skillsText = '';
+  let blocked = false;
+  let blockReason = '';
+  let pluginWarnings = [];
   if (!mobile) {
     const explicitSkills = new Set(Array.isArray(skills) ? skills : []);
     const lastUserIdx = finalMessages.map((m) => m?.role).lastIndexOf('user');
@@ -2856,14 +2885,25 @@ async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = 
         cleanSaid = stripped || said;
       }
     }
+    const modeNow = torCtx ? 'tor' : (rp ? 'nsfw' : 'chat');
+    const pluginCtx = ensurePluginsEngine().buildPromptContext({
+      mode: modeNow,
+      ephemeral: false,
+      userText: cleanSaid,
+    });
+    if (pluginCtx.blocked) {
+      blocked = true;
+      blockReason = pluginCtx.blockReason || 'Запрос заблокирован правилом безопасности.';
+    }
+    pluginWarnings = Array.isArray(pluginCtx.warnings) ? pluginCtx.warnings : [];
     const skillCtx = ensureSkillsEngine().buildPromptContext({
-      mode: torCtx ? 'tor' : (rp ? 'nsfw' : 'chat'),
+      mode: modeNow,
       ephemeral: false,
       explicitSkills: [...explicitSkills],
       userText: cleanSaid,
       isCloud: cfg.provider !== 'ollama',
     });
-    skillsText = skillCtx.text;
+    skillsText = [skillCtx.text, pluginCtx.text].filter(Boolean).join('\n\n');
     if (skillsText) {
       const firstSysIdx = finalMessages.findIndex((m) => m?.role === 'system');
       if (firstSysIdx >= 0) {
@@ -2875,7 +2915,7 @@ async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = 
       }
     }
   }
-  return { messages: finalMessages, numPredict: analysis.numPredict, memoryText, toolsText, skillsText };
+  return { messages: finalMessages, numPredict: analysis.numPredict, memoryText, toolsText, skillsText, blocked, blockReason, pluginWarnings };
 }
 
 async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch, opts) {
@@ -3645,14 +3685,26 @@ function registerIpc() {
           throw new Error('В Tor-контексте облачные агенты недоступны.');
         }
         const baseWorkerMessages = selectWorkerMessages(messages, torState.isChatTainted() || torState.inCooldown());
+        const userNow = yourWords(baseWorkerMessages);
+        const pluginCtx = ensurePluginsEngine().buildPromptContext({
+          mode: 'chat',
+          ephemeral: false,
+          userText: userNow,
+        });
+        if (pluginCtx.blocked) {
+          const refused = pluginCtx.blockReason || 'Запрос заблокирован правилом безопасности.';
+          send(refused);
+          return refused;
+        }
         const skillCtx = ensureSkillsEngine().buildPromptContext({
           mode: 'chat',
           ephemeral: false,
-          userText: yourWords(baseWorkerMessages),
+          userText: userNow,
           isCloud: true,
         });
-        const workerMessages = skillCtx.text
-          ? [{ role: 'system', content: skillCtx.text }, ...baseWorkerMessages]
+        const combinedWorkerRules = [skillCtx.text, pluginCtx.text].filter(Boolean).join('\n\n');
+        const workerMessages = combinedWorkerRules
+          ? [{ role: 'system', content: combinedWorkerRules }, ...baseWorkerMessages]
           : baseWorkerMessages;
         try {
           return await workers.runWorker(worker, cfg, workerMessages, send, abort.signal, desktopOpts);
@@ -3856,7 +3908,10 @@ function registerIpc() {
             : prepared;
           // any switch to another model (possibly a cloud one) abandons the observation
           genStart = Date.now();
-          if (torAfterPrep && !isLocalOnlyModelAllowed({ cfg, model: pickModel(cfg), llm, ollama, localOnly: true })) {
+          if (prepared?.blocked) {
+            text = prepared.blockReason || 'Запрос заблокирован правилом безопасности.';
+            send(text);
+          } else if (torAfterPrep && !isLocalOnlyModelAllowed({ cfg, model: pickModel(cfg), llm, ollama, localOnly: true })) {
             text = TOR_CLOUD_BLOCK_MSG;
             send(text);
           } else {
@@ -4072,6 +4127,15 @@ function registerIpc() {
   ipcMain.handle('skills:reload', (_e, params = {}) => {
     ensureSkillsEngine().reload();
     return ensureSkillsEngine().listSkills(params || {});
+  });
+  ipcMain.handle('plugins:list', (_e, params = {}) => ensurePluginsEngine().listPlugins(params || {}));
+  ipcMain.handle('plugins:toggle', (_e, payload = {}) => ensurePluginsEngine().togglePlugin(payload || {}));
+  ipcMain.handle('plugins:create', (_e, payload = {}) => ensurePluginsEngine().createPlugin(payload || {}));
+  ipcMain.handle('plugins:install', (_e, payload = {}) => ensurePluginsEngine().installPlugin(payload || {}));
+  ipcMain.handle('plugins:hookify', (_e, payload = {}) => ensurePluginsEngine().manageHookify(payload || {}));
+  ipcMain.handle('plugins:reload', (_e, params = {}) => {
+    ensurePluginsEngine().reload();
+    return ensurePluginsEngine().listPlugins(params || {});
   });
   ipcMain.handle('chat:compact', (_e, payload = {}) => compactDesktopChat(payload || {}));
   ipcMain.handle('agents:compact', (event, { id, focus } = {}) => hubSessions(event).compact(id, { focus }));

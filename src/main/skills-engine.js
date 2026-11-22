@@ -74,6 +74,13 @@ const SKILL_CATEGORY_BY_ID = Object.freeze({
   'cli-anything': 'system',
   chapar: 'system',
   kensaku: 'system',
+  // Ponytail 5 pack (core in style, companions in system)
+  ponytail: 'style',
+  'ponytail-audit': 'system',
+  'ponytail-review': 'system',
+  'ponytail-debt': 'system',
+  'ponytail-gain': 'system',
+  'ponytail-help': 'system',
 });
 
 const SKILL_ICON_BY_CATEGORY = Object.freeze({
@@ -128,6 +135,7 @@ const LIGHTWEIGHT_PINNABLE_IDS = new Set([
   'russian-editor',
   'stop-slop',
   'think',
+  'ponytail',
 ]);
 
 // Distilled inline prompts (~180-320 tokens each) so alwaysOn skills never bloat the context window.
@@ -161,6 +169,11 @@ const DISTILLED_ALWAYS_ON = Object.freeze({
     'Навык think (активен постоянно для сложных решений):',
     'Перед выводами разделяй факты на: Наблюдаемое (подтверждено кодом/тестом/данными), Выведенное (с мостом логики), Неизвестное (чего не хватает) и Предпочтение.',
     'Не выдумывай ссылки, результаты тестов и уверенность; кратко фиксируй компромиссы и риски.',
+  ].join(' '),
+  ponytail: [
+    'Навык ponytail (активен для кода):',
+    'Выбирай минимальное рабочее решение: 1) нужно ли это вообще; 2) есть ли уже в кодовой базе; 3) stdlib/платформа; 4) установленная зависимость; 5) минимальный новый код без лишних обёрток и абстракций.',
+    'Никогда не режь валидацию, безопасность, обработку потерь данных и точечный тест для сложной логики. В конце назови в одну строку, что пропущено или не проверено.',
   ].join(' '),
 });
 

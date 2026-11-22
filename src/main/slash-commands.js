@@ -32,6 +32,7 @@ const OUTPUT_STYLE_HINTS = Object.freeze({
 
 const INSTANT_COMMAND_IDS = new Set([
   'status', 'usage', 'quota', 'context', 'tasks', 'tools', 'mcp', 'skills', 'reload-skills',
+  'plugins', 'hookify',
   'doctor', 'storage', 'permissions', 'memory', 'help', 'find', 'free', 'today', 'mail',
   'clip', 'alta', 'agents', 'harness', 'nomad', 'web', 'tor', 'copy', 'export', 'insights', 'stop',
 ]);
@@ -104,6 +105,8 @@ const COMMAND_CATEGORY_BY_ID = Object.freeze({
   mcp: 'system',
   skills: 'system',
   'reload-skills': 'system',
+  plugins: 'system',
+  hookify: 'system',
   insights: 'system',
   help: 'system',
   today: 'agents',
@@ -227,6 +230,18 @@ const BUILTIN_COMMANDS = Object.freeze([
     chainable: true,
     argsHint: '[цель]',
     description: 'Профиль жёсткого техлида GENESIS для /review: поиск багов, гонок и утечек',
+  }),
+]);
+
+const PLUGIN_COMMANDS = Object.freeze([
+  CMD('plugins', {
+    aliases: ['plugin'],
+    icon: 'plug',
+    description: 'Показать установленные плагины и открыть каталог на вкладке «Плагины»',
+  }),
+  CMD('hookify', {
+    icon: 'shield',
+    description: 'Показать активные правила Hookify и открыть управление в плагинах',
   }),
 ]);
 
@@ -576,7 +591,10 @@ function normalizeState(raw = {}) {
 }
 
 function buildRegistry(dynamicSkills = []) {
-  const builtinCmdIds = new Set(BUILTIN_COMMANDS.filter((c) => c.section === 'commands').map((c) => c.id));
+  const builtinCmdIds = new Set([
+    ...BUILTIN_COMMANDS.filter((c) => c.section === 'commands').map((c) => c.id),
+    ...PLUGIN_COMMANDS.map((c) => c.id),
+  ]);
   const diskById = new Map();
   for (const sk of dynamicSkills) {
     if (!sk || !sk.id) continue;
@@ -584,7 +602,7 @@ function buildRegistry(dynamicSkills = []) {
   }
 
   const items = [];
-  for (const c of BUILTIN_COMMANDS) {
+  for (const c of [...BUILTIN_COMMANDS, ...PLUGIN_COMMANDS]) {
     if (c.id === 'genesis-techlead-reviewer' && diskById.has(c.id)) {
       const disk = diskById.get(c.id);
       items.push({ ...c, promptBody: disk.promptBody || '', skillPath: disk.skillPath || '' });
@@ -876,6 +894,7 @@ class SlashCommandEngine {
   constructor(opts = {}) {
     this.skillRoots = opts.skillRoots || defaultSkillRoots();
     this.skillsEngine = opts.skillsEngine || opts.deps?.skillsEngine || null;
+    this.pluginsEngine = opts.pluginsEngine || opts.deps?.pluginsEngine || null;
     this.getConfig = typeof opts.getConfig === 'function' ? opts.getConfig : () => ({});
     this.saveConfig = typeof opts.saveConfig === 'function' ? opts.saveConfig : () => {};
     this.deps = opts.deps || {};
@@ -1019,7 +1038,53 @@ class SlashCommandEngine {
       skillItems = reg.items.filter((i) => i.section === 'skills' && allow(i)).map(decorate);
     }
 
-    const pluginItems = DRAFT_PLUGINS.filter(allow).map((i) => ({ ...i }));
+    let pluginsSection;
+    if (this.pluginsEngine) {
+      const pluginsCatalog = this.pluginsEngine.listPlugins({ mode, ephemeral });
+      const pluginItems = pluginsCatalog.items.map((p) => ({
+        id: p.id,
+        name: p.name,
+        slash: p.slash || '',
+        aliases: p.aliases || [],
+        section: 'plugins',
+        kind: 'plugin',
+        icon: p.icon || 'plug',
+        category: p.category,
+        categoryTitle: p.categoryTitle,
+        description: p.description,
+        badge: p.badge || null,
+        active: Boolean(p.active),
+        chainable: false,
+        confirmRequired: false,
+        cloudOnly: Boolean(p.cloudOnly),
+        vaultOnly: Boolean(p.vaultOnly),
+        argsHint: '',
+        enabled: Boolean(p.enabled),
+        pausedInMode: Boolean(p.pausedInMode),
+        pauseReason: p.pauseReason || null,
+        statusNote: p.statusNote || '',
+        skills: Array.isArray(p.skills) ? [...p.skills] : [],
+        rules: Array.isArray(p.rules) ? [...p.rules] : [],
+        hooks: Array.isArray(p.hooks) ? [...p.hooks] : [],
+        commands: Array.isArray(p.commands) ? [...p.commands] : [],
+        health: p.health || 'ok',
+        source: p.source || 'builtin',
+        isCustom: Boolean(p.isCustom),
+      }));
+      pluginsSection = {
+        id: 'plugins',
+        title: 'Плагины',
+        allLabel: 'Все плагины',
+        categories: pluginsCatalog.categories,
+        items: pluginItems,
+        stats: pluginsCatalog.stats,
+        hookifyRules: pluginsCatalog.hookifyRules,
+      };
+    } else {
+      const pluginItems = DRAFT_PLUGINS.filter(allow).map((i) => ({ ...i }));
+      pluginsSection = { id: 'plugins', title: 'Плагины', allLabel: 'Все плагины', stage: '2.3', items: pluginItems };
+    }
+
     const connectorItems = DRAFT_CONNECTORS.filter(allow).map((i) => ({ ...i }));
     const styleItems = DRAFT_STYLES.filter(allow).map((i) => ({ ...i }));
 
@@ -1039,7 +1104,7 @@ class SlashCommandEngine {
           ...(skillBudget && { budget: skillBudget }),
           ...(quickToggles && { quickToggles }),
         },
-        { id: 'plugins', title: 'Плагины', allLabel: 'Все плагины', stage: '2.3', items: pluginItems },
+        pluginsSection,
         { id: 'connectors', title: 'Коннекторы', allLabel: 'Все коннекторы', stage: '2.4', items: connectorItems },
         { id: 'styles', title: 'Стили', allLabel: 'Посмотреть все стили', stage: '2.7', items: styleItems },
       ],
@@ -1211,6 +1276,44 @@ class SlashCommandEngine {
           count: refreshed.length,
           reply: `Каталог навыков обновлён: найдено ${refreshed.length} навыков.`,
         };
+      }
+
+      case 'plugins': {
+        if (this.pluginsEngine) {
+          const catalog = this.pluginsEngine.listPlugins({ mode, ephemeral });
+          const lines = [
+            `Плагинов активно: ${catalog.stats.activeInMode} / ${catalog.stats.total} (правил Hookify: ${catalog.stats.hookifyRulesCount})`,
+            ...catalog.items.slice(0, 12).map((p) => {
+              const stateTag = p.pausedInMode ? 'пауза' : (p.enabled ? 'вкл' : 'выкл');
+              return `• ${p.name} [${stateTag}] — ${p.statusNote || p.description}`;
+            }),
+          ];
+          return { handled: true, instant: true, action: 'open-catalog', tab: 'plugins', reply: lines.join('\n') };
+        }
+        return { handled: true, instant: true, action: 'open-catalog', tab: 'plugins', reply: 'Открываю каталог плагинов.' };
+      }
+
+      case 'hookify': {
+        if (this.pluginsEngine) {
+          const catalog = this.pluginsEngine.listPlugins({ mode, ephemeral });
+          const rules = catalog.hookifyRules || [];
+          const activeCount = rules.filter((r) => r.enabled).length;
+          const lines = rules.length
+            ? [
+                `Правила Hookify (${activeCount} активных из ${rules.length}):`,
+                ...rules.map((r) => `• [${r.enabled ? 'вкл' : 'выкл'}] ${r.name} (${r.action}: ${r.triggerPattern})`),
+              ]
+            : ['Правила Hookify пока не настроены. Открой вкладку «Плагины» → Hookify Rules, чтобы добавить.'];
+          return {
+            handled: true,
+            instant: true,
+            action: 'open-catalog',
+            tab: 'plugins',
+            focusPlugin: 'hookify',
+            reply: lines.join('\n'),
+          };
+        }
+        return { handled: true, instant: true, action: 'open-catalog', tab: 'plugins', focusPlugin: 'hookify', reply: 'Открываю управление правилами Hookify.' };
       }
 
       case 'status': {
@@ -1629,6 +1732,7 @@ class SlashCommandEngine {
 
 module.exports = {
   BUILTIN_COMMANDS,
+  PLUGIN_COMMANDS,
   COMMAND_CATEGORIES,
   DRAFT_PLUGINS,
   DRAFT_CONNECTORS,

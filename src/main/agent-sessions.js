@@ -443,6 +443,7 @@ class AgentSessions {
     this.run = run;
     this.notify = notify;
     this.skillsEngine = opts?.skillsEngine || null;
+    this.pluginsEngine = opts?.pluginsEngine || null;
     this.active = new Map();
     this.draining = false;
     try {
@@ -751,6 +752,16 @@ class AgentSessions {
       }).replace(/\s{2,}/g, ' ').trim();
     }
     const messages = retry ? baseMessages : [...baseMessages, { role: 'user', content: cleanUserText || text.trim() }];
+    if (!retry && this.pluginsEngine) {
+      const ruleEval = this.pluginsEngine.evaluateRules({
+        text: cleanUserText || text.trim(),
+        mode: opts?.mode || 'agent',
+        ephemeral: Boolean(opts?.ephemeral),
+      });
+      if (ruleEval.blocked) {
+        throw new Error(ruleEval.blockReason || 'Запрос заблокирован правилом безопасности.');
+      }
+    }
     const abort = new AbortController();
     const commit = (rows, pending, extra = {}) => this.save(this.sessions.map((item) => item.id === id
       ? {
@@ -789,6 +800,7 @@ class AgentSessions {
         mode: opts?.mode,
         skills: [...explicitSkills],
         skillsEngine: this.skillsEngine,
+        pluginsEngine: this.pluginsEngine,
         btw: isBtw,
         useVault: opts?.useVault !== false,
       });

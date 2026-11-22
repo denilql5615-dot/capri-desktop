@@ -38,6 +38,7 @@ const {
   isIsolatedMode,
 } = require('./slash-commands');
 const { SkillsEngine } = require('./skills-engine');
+const { PluginsEngine } = require('./plugins-engine');
 const SUGGESTIONS_TTL_MS = 45 * 60 * 1000; // 45 минут кэша подсказок от E4B
 const WORKER_COOLDOWN_MS = 30 * 60 * 1000; // 30 минут кулдауна для уставших воркеров Deep Research
 const RESEARCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -423,6 +424,7 @@ class PhoneBridge {
     this.chatRequests = new Map();
     this._fallbackSlash = null;
     this._fallbackSkills = null;
+    this._fallbackPlugins = null;
   }
 
   skillsEngine() {
@@ -434,12 +436,22 @@ class PhoneBridge {
     return this._fallbackSkills;
   }
 
+  pluginsEngine() {
+    if (this.d.pluginsEngine) return this.d.pluginsEngine;
+    if (this.d.slashEngine?.pluginsEngine) return this.d.slashEngine.pluginsEngine;
+    if (!this._fallbackPlugins) {
+      this._fallbackPlugins = new PluginsEngine({ skillsEngine: this.skillsEngine() });
+    }
+    return this._fallbackPlugins;
+  }
+
   slashEngine() {
     if (this.d.slashEngine) return this.d.slashEngine;
     if (!this._fallbackSlash) {
       this._fallbackSlash = new SlashCommandEngine({
         deps: this.buildSlashDeps(),
         skillsEngine: this.skillsEngine(),
+        pluginsEngine: this.pluginsEngine(),
       });
     }
     return this._fallbackSlash;
@@ -907,6 +919,7 @@ class PhoneBridge {
           chatRecovery: true,
           slashCommands: true,
           skillsEngine: true,
+          pluginsEngine: true,
           privateVaultSave: Boolean(this.d.savePrivateChat),
           contextLimits,
         });
@@ -959,6 +972,75 @@ class PhoneBridge {
         const body = await this.readJson(req).catch(() => ({}));
         this.skillsEngine().reload();
         return this.send(res, 200, this.skillsEngine().listSkills({
+          mode: body.mode || 'chat',
+          ephemeral: body.ephemeral === true,
+        }));
+      }
+      if (req.method === 'GET' && url.pathname === '/plugins') {
+        const mode = url.searchParams.get('mode') || 'chat';
+        const epRaw = url.searchParams.get('ephemeral');
+        const ephemeral = epRaw === 'true' || epRaw === '1';
+        return this.send(res, 200, this.pluginsEngine().listPlugins({ mode, ephemeral }));
+      }
+      if (req.method === 'POST' && url.pathname === '/plugins/toggle') {
+        const body = await this.readJson(req);
+        const result = this.pluginsEngine().togglePlugin({
+          id: body.id,
+          enabled: body.enabled,
+          cascade: body.cascade !== false,
+          mode: body.mode || 'chat',
+          ephemeral: body.ephemeral === true,
+        });
+        return this.send(res, result.ok ? 200 : 400, result);
+      }
+      if (req.method === 'POST' && url.pathname === '/plugins/create') {
+        const body = await this.readJson(req, MAX_BODY * 4);
+        const result = this.pluginsEngine().createPlugin({
+          name: body.name,
+          slug: body.slug,
+          category: body.category,
+          description: body.description,
+          skills: body.skills,
+          rules: body.rules,
+          commands: body.commands,
+          cloudOnly: body.cloudOnly,
+          vaultOnly: body.vaultOnly,
+          mode: body.mode || 'chat',
+          ephemeral: body.ephemeral === true,
+        });
+        return this.send(res, result.ok ? 200 : 400, result);
+      }
+      if (req.method === 'POST' && url.pathname === '/plugins/install') {
+        const body = await this.readJson(req, MAX_BODY * 8);
+        const result = this.pluginsEngine().installPlugin({
+          sourcePath: body.sourcePath,
+          manifestJson: body.manifestJson,
+          slug: body.slug,
+          confirm: body.confirm === true,
+          mode: body.mode || 'chat',
+          ephemeral: body.ephemeral === true,
+        });
+        return this.send(res, (result.ok || result.confirmRequired) ? 200 : 400, result);
+      }
+      if (req.method === 'POST' && url.pathname === '/plugins/hookify') {
+        const body = await this.readJson(req, MAX_BODY * 2);
+        const result = this.pluginsEngine().manageHookify({
+          op: body.op,
+          id: body.id,
+          name: body.name,
+          triggerPattern: body.triggerPattern,
+          action: body.action,
+          message: body.message,
+          enabled: body.enabled,
+          mode: body.mode || 'chat',
+          ephemeral: body.ephemeral === true,
+        });
+        return this.send(res, result.ok ? 200 : 400, result);
+      }
+      if (req.method === 'POST' && url.pathname === '/plugins/reload') {
+        const body = await this.readJson(req).catch(() => ({}));
+        this.pluginsEngine().reload();
+        return this.send(res, 200, this.pluginsEngine().listPlugins({
           mode: body.mode || 'chat',
           ephemeral: body.ephemeral === true,
         }));
@@ -1437,6 +1519,18 @@ class PhoneBridge {
     if (ephemeral) baseSysParts.push('Временный чат: не ссылайся на долговременную память и не сохраняй факты.');
     if (privateMode) baseSysParts.push('Режим Приват (Vault): строго локальная обработка, данные и контекст только из Vault, выход в облако запрещён.');
     const skillMode = flags.localMode || (privateMode ? 'private' : 'chat');
+    const pluginCtx = this.pluginsEngine().buildPromptContext({
+      mode: skillMode,
+      ephemeral: Boolean(ephemeral),
+      userText: text,
+    });
+    if (pluginCtx.blocked) {
+      return {
+        reply: pluginCtx.blockReason || 'Запрос заблокирован правилом безопасности.',
+        brain: 'guard',
+        ...(pluginCtx.warnings?.length && { warnings: pluginCtx.warnings }),
+      };
+    }
     const skillCtx = this.skillsEngine().buildPromptContext({
       mode: skillMode,
       ephemeral: Boolean(ephemeral),
@@ -1448,7 +1542,7 @@ class PhoneBridge {
       .filter((sk) => !skillCtx.activeSkillIds.includes(sk) && !skillCtx.pausedSkillIds.includes(sk) && SKILL_NOTES[sk])
       .map((sk) => SKILL_NOTES[sk]);
     const baseSystemPrompt = baseSysParts.filter(Boolean).join('\n');
-    const skillsText = [skillCtx.text, ...missingFallback, flags.slashSystemHint].filter(Boolean).join('\n\n');
+    const skillsText = [skillCtx.text, pluginCtx.text, ...missingFallback, flags.slashSystemHint].filter(Boolean).join('\n\n');
     const sysContent = [baseSystemPrompt, skillsText].filter(Boolean).join('\n');
 
     const historySlice = flags.history ?? (isolated ? [] : this.turns.slice(-TURNS * 2));
@@ -1489,7 +1583,13 @@ class PhoneBridge {
         skillsText,
         messages: [...historySlice, userMsg, { role: 'assistant', content: reply }],
       });
-      return { reply, brain, context: contextStats, ...(flags.btw === true && { btw: true }) };
+      return {
+        reply,
+        brain,
+        context: contextStats,
+        ...(pluginCtx.warnings?.length && { warnings: pluginCtx.warnings }),
+        ...(flags.btw === true && { btw: true }),
+      };
     } catch (err) {
       return { reply: `Не вышло ответить: ${err.message}`, brain: 'error' };
     } finally {
@@ -1517,16 +1617,24 @@ class PhoneBridge {
       }
     }
     const media = !isolated && !isBtw && !flags.deepResearch && this.d.photo && (flags.forceDraw ? 'photo' : this.d.mediaKind?.(text));
-    const { reply, brain, image, context } = media ? await this.media(text, media, flags)
+    const { reply, brain, image, context, warnings } = media ? await this.media(text, media, flags)
       : (!isolated && !isBtw && !flags.deepResearch && (!flags.requestedModel || flags.requestedModel === 'auto') && await this.switchModel(text))
         || await this.reply(flags, signal);
     if (signal?.aborted) return CHAT_ABORTED;
 
     // Временные чаты (ephemeral), приватный Vault (privateMode), 18+ (localOnly), btw и useVault: false не утекают в общий лог чатов
-    if (brain !== 'error' && !isolated && !isBtw && flags.useVault !== false && !/^новый разговор/i.test(text)) {
+    if (brain !== 'error' && brain !== 'guard' && !isolated && !isBtw && flags.useVault !== false && !/^новый разговор/i.test(text)) {
       this.d.log?.({ said: text, answer: image ? `${reply}\n[[photo:${image}]]` : reply });
     }
-    const out = { reply, brain, pose: '', ...(isBtw && { btw: true }), ...(image && { image: `/gallery/${image}` }), ...(context && { context }) };
+    const out = {
+      reply,
+      brain,
+      pose: '',
+      ...(isBtw && { btw: true }),
+      ...(image && { image: `/gallery/${image}` }),
+      ...(context && { context }),
+      ...(warnings?.length && { warnings }),
+    };
     if (voice && brain !== 'error') {
       const data = await this.d.speak(reply).catch(() => null);
       if (signal?.aborted) return CHAT_ABORTED;
