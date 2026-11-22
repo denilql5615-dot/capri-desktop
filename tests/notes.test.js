@@ -46,6 +46,8 @@ test('she has in mind her notes about you, and the ones that share words with wh
     { title: 'Имя', type: 'о тебе', text: 'Тебя зовут Даня.', updated: '2026-11-03' },
   ];
   const titles = (said) => notes.recall(list, said).map((n) => n.title);
+  assert.deepStrictEqual(notes.recall(list, 'совсем другая тема', { matchedOnly: true }), []);
+  assert(notes.recall(list, 'включи синтвейв', { matchedOnly: true }).some((n) => n.title === 'Любит синтвейв'));
   assert.deepEqual(titles('как там проекты?'), ['Проект GENESIS', 'Имя']);
   assert.deepEqual(titles('привет'), ['Имя']);
   assert.match(notes.prompt(notes.recall(list, 'включи синтвейв')), /- about the user, Любит синтвейв: Тебе нравится синтвейв\./);

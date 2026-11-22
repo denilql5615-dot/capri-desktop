@@ -295,7 +295,7 @@ function writeOutput(dir, { worker, task, answer, folder: workFolder, artifacts 
 const stems = (s) => new Set(String(s || '').toLowerCase().replace(/ё/g, 'е').match(/[a-zа-я0-9]{3,}/g)?.map((w) => w.slice(0, 5)) || []);
 
 // What she has in mind for this message: her notes about you, and the ones that share words with it
-function recall(notes, said) {
+function recall(notes, said, { matchedOnly = false } = {}) {
   const words = stems(said);
   const scored = notes.map((n) => {
     const title = stems(n.title);
@@ -304,7 +304,8 @@ function recall(notes, said) {
     for (const w of words) score += (title.has(w) ? 2 : 0) + (text.has(w) ? 1 : 0);
     return { n, score };
   });
-  const matched = scored.filter((s) => s.score > 0).sort((a, b) => b.score - a.score).slice(0, MATCHED).map((s) => s.n);
+  const matched = scored.filter((s) => s.score >= (matchedOnly ? 2 : 1)).sort((a, b) => b.score - a.score).slice(0, MATCHED).map((s) => s.n);
+  if (matchedOnly) return matched;
   const about = notes.filter((n) => n.type === 'о тебе' && !matched.includes(n))
     .sort((a, b) => b.updated.localeCompare(a.updated)).slice(0, ALWAYS);
   return [...matched, ...about];

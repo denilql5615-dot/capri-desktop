@@ -66,7 +66,7 @@ test('visionPrompt passes the request to Gemma unchanged', () => {
   assert.equal(visionPrompt('что на экране?'), 'что на экране?');
 });
 
-test('chat accepts a larger prediction budget for the vision model', async (t) => {
+test('chat accepts a larger prediction budget for vision and keeps selected Qwen models resident', async (t) => {
   const before = global.fetch;
   let body;
   global.fetch = async (_url, init) => {
@@ -78,6 +78,11 @@ test('chat accepts a larger prediction budget for the vision model', async (t) =
   assert.equal(await chat({ model: 'gemma4:26b-a4b-it-qat', messages: [], numPredict: 900 }, () => {}), 'вижу');
   assert.equal(body.think, false);
   assert.equal(body.options.num_predict, 900);
+  await chat({ model: 'capri-qwen36-heretic:latest', messages: [] }, () => {});
+  assert.equal(body.keep_alive, -1);
+  assert.equal(body.options.num_ctx, 4096);
+  await chat({ model: 'capri-qwen38-heretic:latest', messages: [] }, () => {});
+  assert.equal(body.keep_alive, -1);
 });
 
 test('setContextFor/ctxFor enforces 16384 across chat, jsonChat, pick, warm for ruled models and leaves E4B unset', async (t) => {

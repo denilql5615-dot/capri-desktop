@@ -1,12 +1,13 @@
 'use strict';
 
+const { isAuxiliaryModel } = require('./phone-model');
+
 // Her two local brains, one model family (Gemma 4 Heretic-std, chosen by the 2026-11-16 benchmark):
 // - fast (E4B, ~6 GB): always in memory. Routes messages, answers small talk, looks at the screen,
 //   takes notes. Weak at math: real work goes to the cloud workers or to the main one.
 // - main (26B, ~17 GB): loaded only when asked for ("основная модель", "локально"), for roleplay, or
 //   when the cloud chain (Claude → Codex → Antigravity) gave no answer. The fast one is unloaded first
-//   (8 GB of VRAM: never two big models at once); after 5 idle minutes the main one goes and the fast
-//   one comes back.
+//   (8 GB of VRAM: never two big models at once). Keep the selected model until a switch.
 // Roleplay is not a model: it's a prompt added to her chat (RP_PROMPT), never to workers, the router,
 // notes, tasks on the PC or anything that sounds like an emergency.
 
@@ -14,7 +15,6 @@ const FAST = 'capri-e4b-stage9-v2:latest';
 const MAIN = 'hf.co/llmfan46/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-GGUF:Q4_0';
 const VISION = 'hf.co/llmfan46/gemma-4-E4B-it-uncensored-heretic-GGUF:Q4_K_M';
 const VISION_BUSY = 'Локальная модель занята. Повтори запрос после её ответа.';
-const MAIN_IDLE_MS = 5 * 60 * 1000;
 const ANALYSIS_PREDICT = 2048;
 const ANALYSIS_CHARS = 4000;
 // stored by older builds as her one chat model: read as "auto" (the roles) from now on
@@ -82,10 +82,10 @@ class Brains {
   /**
    * ollama: { unload(model), warm(model, keepAlive) }; fast / main: the model names (configurable).
    */
-  constructor({ ollama, fast = FAST, main = MAIN, idleMs = MAIN_IDLE_MS, now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
-    Object.assign(this, { ollama, fast, main, idleMs, now, setTimer, clearTimer });
-    this.mainUntil = 0; // the main one is hers until then
-    this.timer = null;
+  constructor({ ollama, fast = FAST, main = MAIN } = {}) {
+    Object.assign(this, { ollama, fast, main });
+    this.selected = fast;
+    this.mainRuns = 0;
     this.visionRunning = false;
     this.transition = null;
   }
@@ -105,16 +105,20 @@ class Brains {
   }
 
   mainActive() {
-    return this.now() < this.mainUntil;
+    return this.mainRuns > 0 || this.selected === this.main;
+  }
+
+  get auxiliary() {
+    return this.isRole(this.selected) ? null : this.selected;
   }
 
   /** The model to ask now: the main one while it's hers, else the fast one (no swap for small things). */
   current() {
-    return this.mainActive() ? this.main : this.fast;
+    return this.selected;
   }
 
-  async see(messages, signal) {
-    if (this.visionRunning || this.transition || this.mainActive()) throw new Error(VISION_BUSY);
+  async see(messages, signal, numPredict = 500) {
+    if (this.visionRunning || this.transition || this.mainActive() || this.auxiliary) throw new Error(VISION_BUSY);
     this.visionRunning = true;
     try {
       const loaded = await this.ollama.loadedModels(signal);
@@ -122,7 +126,7 @@ class Brains {
       const restore = loaded.includes(this.fast);
       if (restore && !(await this.ollama.unload(this.fast))) throw new Error(VISION_BUSY);
       try {
-        return await this.ollama.chat({ model: VISION, messages, numCtx: 2048, numPredict: 500 }, () => {}, signal);
+        return await this.ollama.chat({ model: VISION, messages, numCtx: 2048, numPredict }, () => {}, signal);
       } finally {
         const released = await this.ollama.unload(VISION);
         if (restore && released) await this.ollama.warm(this.fast, -1);
@@ -132,21 +136,38 @@ class Brains {
     }
   }
 
-  /** 'main': the fast one out, the main one hers for the next idle window. 'fast': whatever is in now. */
+  async withModel(model, run, signal) {
+    if (this.visionRunning || this.transition || this.mainRuns) throw new Error(VISION_BUSY);
+    this.visionRunning = true;
+    try {
+      const loaded = await this.ollama.loadedModels(signal);
+      if (!loaded || loaded.some((name) => !this.isRole(name) && !isAuxiliaryModel(name) && name !== this.selected && name !== model)) {
+        throw new Error('В Ollama занята память другой моделью.');
+      }
+      for (const name of loaded.filter((name) => name !== model)) {
+        if (!(await this.ollama.unload(name))) throw new Error('Не удалось освободить память Ollama.');
+        if (this.selected === name) this.forget();
+      }
+      signal?.throwIfAborted();
+      this.selected = model;
+      return await run();
+    } finally {
+      this.visionRunning = false;
+    }
+  }
+
+  /** 'main' selects 26B. 'fast' keeps the model already selected. */
   async use(role) {
     if (this.visionRunning) throw new Error(VISION_BUSY);
     if (this.transition) {
       await this.transition;
       return this.use(role);
     }
-    if (role !== 'main') {
-      if (this.mainActive()) this.touch();
-      return this.current();
-    }
+    if (role !== 'main') return this.current();
     if (!this.mainActive()) {
       this.transition = Promise.resolve().then(async () => {
-        if (!(await this.ollama.unload(this.fast))) throw new Error('Быстрая модель не выгрузилась. Переключение остановлено.');
-        this.touch();
+        if (!(await this.ollama.unload(this.selected))) throw new Error('Текущая модель не выгрузилась. Переключение остановлено.');
+        this.selected = this.main;
       });
       try {
         await this.transition;
@@ -155,32 +176,28 @@ class Brains {
       }
       return this.main;
     }
-    this.touch();
     return this.main;
   }
 
-  touch() {
-    this.mainUntil = this.now() + this.idleMs;
-    if (this.timer) this.clearTimer(this.timer);
-    this.timer = this.setTimer(() => this.release(), this.idleMs);
-    this.timer?.unref?.();
+  async runMain(run) {
+    this.mainRuns++;
+    try {
+      return await run();
+    } finally {
+      this.mainRuns--;
+    }
   }
 
-  /** The main one out (idle, or "быстрая модель"), the fast one back in memory for good. */
+  /** "быстрая модель": unload the selected heavy model and warm E4B. */
   async release() {
-    if (this.visionRunning) return false;
+    if (this.visionRunning || this.mainRuns) return false;
     if (this.transition) {
       await this.transition;
       return this.release();
     }
-    if (this.timer) this.clearTimer(this.timer);
-    this.timer = null;
     this.transition = Promise.resolve().then(async () => {
-      if (this.mainUntil > 0 && !(await this.ollama.unload(this.main))) {
-        this.touch();
-        return false;
-      }
-      this.mainUntil = 0;
+      if (this.selected !== this.fast && !(await this.ollama.unload(this.selected))) return false;
+      this.forget();
       await this.ollama.warm(this.fast, -1);
       return true;
     });
@@ -193,9 +210,7 @@ class Brains {
 
   /** Everything was unloaded behind her back (ComfyUI, "освободи память"): no main one any more. */
   forget() {
-    if (this.timer) this.clearTimer(this.timer);
-    this.timer = null;
-    this.mainUntil = 0;
+    this.selected = this.fast;
   }
 }
 

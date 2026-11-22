@@ -22,6 +22,7 @@ const MAX_RESEARCH_REPORT_BYTES = 256 * 1024;
 const AUDIO_TTL_MS = 10 * 60 * 1000;
 const AUDIO_MAX = 20;
 const TURNS = 12;
+const { PHONE_MODEL_KEYS } = require('./phone-model');
 const SUGGESTIONS_TTL_MS = 45 * 60 * 1000; // 45 минут кэша подсказок от E4B
 const WORKER_COOLDOWN_MS = 30 * 60 * 1000; // 30 минут кулдауна для уставших воркеров Deep Research
 const RESEARCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -116,7 +117,8 @@ function mimeFor(name) {
 
 function parsePromptFlags(rawText, body = {}) {
   if ((body.mode !== undefined && (typeof body.mode !== 'string' || !Object.hasOwn(DEFAULT_SUGGESTIONS, body.mode)))
-    || (body.ephemeral !== undefined && typeof body.ephemeral !== 'boolean')) {
+    || (body.ephemeral !== undefined && typeof body.ephemeral !== 'boolean')
+    || (body.useVault !== undefined && typeof body.useVault !== 'boolean')) {
     throw Object.assign(new Error('Некорректный режим чата.'), { status: 400 });
   }
   let text = String(rawText || '');
@@ -143,6 +145,9 @@ function parsePromptFlags(rawText, body = {}) {
     privateMode,
     deepResearch,
     skills: [...skills],
+    ...(body.mode === 'nsfw' && { localMode: 'nsfw', localOnly: true }),
+    ...(body.mode === 'task' && { localMode: 'task' }),
+    ...(body.useVault === false && { useVault: false }),
   };
 }
 
@@ -157,6 +162,7 @@ class PhoneBridge {
     this.researchRequests = new Map();
     this.earlyResearchStops = new Map();
     this.queue = Promise.resolve();
+    this.chatRequests = new Map();
   }
 
   get running() {
@@ -405,7 +411,7 @@ class PhoneBridge {
     if (!tokenMatches(got, this.d.token())) return this.send(res, 401, { error: 'bad token' });
     try {
       const pack = this.d.sprites?.() || null;
-      if (req.method === 'GET' && url.pathname === '/ping') return this.send(res, 200, { ok: true, pose: '', sprites: pack?.version || '', isolatedChat: true });
+      if (req.method === 'GET' && url.pathname === '/ping') return this.send(res, 200, { ok: true, pose: '', sprites: pack?.version || '', isolatedChat: true, modelSelection: true });
       if (req.method === 'GET' && url.pathname === '/suggestions') {
         const mode = url.searchParams.get('mode') || 'chat';
         const force = url.searchParams.get('refresh') === 'true';
@@ -469,7 +475,7 @@ class PhoneBridge {
         }
         const flags = parsePromptFlags(body.text, body);
         if (!flags.text) return this.send(res, 400, { error: 'Введите запрос.' });
-        if (flags.ephemeral || flags.privateMode || flags.deepResearch || this.d.externalBlocked?.(flags.text)) {
+        if (flags.ephemeral || flags.privateMode || flags.localOnly || flags.deepResearch || this.d.externalBlocked?.(flags.text)) {
           return this.send(res, 403, { error: 'Инструмент недоступен для этого запроса.' });
         }
         if (body.tool === 'search') {
@@ -531,7 +537,9 @@ class PhoneBridge {
       }
       if (req.method === 'POST' && url.pathname === '/chat') {
         const body = await this.readJson(req, MAX_BODY + Math.ceil(MAX_UPLOAD_BYTES / 3) * 4);
-        const rawText = String(body.text ?? '').replace(/\u0000/g, '').trim().slice(0, 4000);
+        if (body.text != null && typeof body.text !== 'string') return this.send(res, 400, { error: 'Некорректный текст сообщения.' });
+        const rawText = (body.text ?? '').replace(/\u0000/g, '').trim();
+        if (rawText.length > 24000) return this.send(res, 400, { error: 'Сообщение длиннее 24 000 символов.' });
         const images = Array.isArray(body.files)
           ? body.files.filter((f) => f && String(f.mime || '').startsWith('image/') && f.data).map((f) => String(f.data)).slice(0, 4)
           : [];
@@ -540,14 +548,57 @@ class PhoneBridge {
           ? 'Кратко опиши каждое прикреплённое изображение по порядку.'
           : 'Кратко опиши прикреплённое изображение.';
         const flags = parsePromptFlags(rawText, body);
+        if (body.model !== undefined && !PHONE_MODEL_KEYS.includes(body.model)) {
+          return this.send(res, 400, { error: 'Выбранная модель недоступна на ПК.' });
+        }
+        flags.requestedModel = body.model;
+        if (body.history !== undefined) {
+          if (!Array.isArray(body.history) || body.history.length > TURNS * 2 || body.history.some((row) =>
+            !row || !['user', 'assistant'].includes(row.role) || typeof row.content !== 'string' || row.content.length > 4000)) {
+            return this.send(res, 400, { error: 'Некорректная история разговора.' });
+          }
+          flags.history = body.history.map(({ role, content }) => ({ role, content }));
+        }
         flags.images = images;
         if (!flags.text && !images.length) return this.send(res, 400, { error: 'empty' });
         if (!flags.text) flags.text = imagePrompt;
-        this.queue = this.queue.catch(() => {}).then(() => {
-          if (body.reset === true && !flags.ephemeral && !flags.privateMode) this.turns = [];
+        const requestId = body.requestId;
+        if (requestId !== undefined && (typeof requestId !== 'string' || !RESEARCH_ID.test(requestId))) {
+          return this.send(res, 400, { error: 'Некорректный идентификатор сообщения.' });
+        }
+        const canRetry = requestId && !flags.ephemeral && !flags.privateMode && !flags.localOnly;
+        if (canRetry) {
+          for (const [id, result] of this.chatRequests) {
+            if (result.expires !== null && result.expires <= Date.now()) this.chatRequests.delete(id);
+          }
+          if (this.chatRequests.has(requestId)) {
+            return this.send(res, 200, await this.chatRequests.get(requestId).result);
+          }
+          if (this.chatRequests.size >= 64) {
+            const finished = [...this.chatRequests].find(([, entry]) => entry.expires !== null);
+            if (!finished) return this.send(res, 503, { error: 'ПК занят. Повтори отправку позже.' });
+            this.chatRequests.delete(finished[0]);
+          }
+        }
+        const turn = this.queue.catch(() => {}).then(() => {
+          if (body.reset === true && flags.history === undefined && !flags.ephemeral && !flags.privateMode) this.turns = [];
           return this.turn(flags, body.voice === true);
         });
-        return this.send(res, 200, await this.queue);
+        this.queue = turn;
+        if (canRetry) {
+          this.chatRequests.set(requestId, { expires: null, result: turn });
+        }
+        try {
+          const result = await turn;
+          if (canRetry) {
+            if (result.brain === 'error') this.chatRequests.delete(requestId);
+            else this.chatRequests.get(requestId).expires = Date.now() + 20 * 60 * 1000;
+          }
+          return this.send(res, 200, result);
+        } catch (err) {
+          this.chatRequests.delete(requestId);
+          throw err;
+        }
       }
       if (req.method === 'GET' && url.pathname === '/agents') {
         const data = await this.d.agentsList?.();
@@ -610,10 +661,10 @@ class PhoneBridge {
 
   async media(text, kind, opts = {}) {
     try {
-      const said = await this.d.photo(text, kind, opts.ephemeral ? [] : this.turns.slice(-4));
+      const said = await this.d.photo(text, kind, opts.ephemeral ? [] : (opts.history ?? this.turns).slice(-4));
       const m = /\[\[photo:([\w.-]+\.(?:png|webm))\]\]/.exec(said);
       const reply = said.replace(/\[\[photo:[^\]]*\]\]/g, '').trim() || 'Держи.';
-      if (!opts.ephemeral) this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
+      if (!opts.ephemeral && opts.history === undefined) this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
       return { reply, brain: 'comfyui', image: m?.[1] || null };
     } catch (err) {
       return { reply: `Не вышло скинуть: ${err.message}`, brain: 'error' };
@@ -631,13 +682,13 @@ class PhoneBridge {
     const { text, ephemeral, privateMode, deepResearch, skills } = flags;
     const isolated = ephemeral || privateMode || flags.localOnly === true;
     if (/^новый разговор/i.test(text)) {
-      if (!isolated) this.turns = [];
+      if (!isolated && flags.history === undefined) this.turns = [];
       return { reply: 'Начинаем с чистого листа.', brain: 'altair' };
     }
     if (deepResearch) {
       try {
         const res = await this.runDeepResearch(text, flags);
-        this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: res.reply });
+      if (flags.history === undefined) this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: res.reply });
         return { reply: res.reply, brain: res.brain };
       } catch (err) {
         return { reply: `Deep Research не прошёл: ${err.message}`, brain: 'error' };
@@ -645,13 +696,14 @@ class PhoneBridge {
     }
 
     const sysParts = [this.d.persona(), PHONE_NOTE];
+    sysParts.push('Поддерживай тему текущего диалога. Не упоминай личные факты, числа, расписание и технические детали из памяти без прямой связи с вопросом. Если данных не хватает, скажи об этом.');
     if (ephemeral) sysParts.push('Временный чат: не ссылайся на долговременную память и не сохраняй факты.');
     if (privateMode) sysParts.push('Режим Приват (Vault): строго локальная обработка, данные и контекст только из Vault, выход в облако запрещён.');
     for (const sk of skills) {
       if (SKILL_NOTES[sk]) sysParts.push(SKILL_NOTES[sk]);
     }
 
-    const historySlice = isolated ? [] : this.turns.slice(-TURNS * 2);
+    const historySlice = flags.history ?? (isolated ? [] : this.turns.slice(-TURNS * 2));
     const userMsg = { role: 'user', content: text, ...(flags.images?.length ? { images: flags.images } : {}) };
     const messages = [
       { role: 'system', content: sysParts.filter(Boolean).join('\n') },
@@ -659,13 +711,17 @@ class PhoneBridge {
       userMsg,
     ];
     const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), 120000);
+    const timer = setTimeout(() => abort.abort(new Error('Модель не завершила ответ за 10 минут.')), 10 * 60 * 1000);
     try {
       const opts = {
         ephemeral,
         localOnly: isolated,
         source: privateMode ? 'vault' : undefined,
         skills,
+        requestedModel: flags.requestedModel,
+        useVault: flags.useVault !== false,
+        mobile: true,
+        numPredict: -1,
         ...(flags.requireVision && { requireVision: true }),
         ...(flags.localMode && { localMode: flags.localMode }),
       };
@@ -673,7 +729,7 @@ class PhoneBridge {
       const { text: said, brain } = await this.d.chat(messages, requestSignal, opts);
       const reply = String(said || '').trim();
       if (!reply) return { reply: 'Модель промолчала. Спроси ещё раз, покороче.', brain };
-      if (!isolated) {
+      if (!isolated && flags.history === undefined) {
         this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
       }
       return { reply, brain };
@@ -703,10 +759,11 @@ class PhoneBridge {
     }
     const media = !isolated && !flags.deepResearch && this.d.photo && this.d.mediaKind?.(text);
     const { reply, brain, image } = media ? await this.media(text, media, flags)
-      : (!isolated && !flags.deepResearch && await this.switchModel(text)) || await this.reply(flags, signal);
+      : (!isolated && !flags.deepResearch && (!flags.requestedModel || flags.requestedModel === 'auto') && await this.switchModel(text))
+        || await this.reply(flags, signal);
 
     // Временные чаты (ephemeral) и приватный Vault (privateMode) не утекают в общий лог чатов
-    if (brain !== 'error' && !isolated && !/^новый разговор/i.test(text)) {
+    if (brain !== 'error' && !isolated && flags.history === undefined && !/^новый разговор/i.test(text)) {
       this.d.log?.({ said: text, answer: image ? `${reply}\n[[photo:${image}]]` : reply });
     }
     const out = { reply, brain, pose: '', ...(image && { image: `/gallery/${image}` }) };

@@ -10,6 +10,47 @@ test('tokenMatches: only the right key, never an empty one', () => {
   assert.strictEqual(tokenMatches('', ''), false);
 });
 
+test('mobile chat carries model and isolated context, and retries one PC turn', async () => {
+  const calls = [];
+  const longReply = 'Развёрнутый ответ. '.repeat(2500) + 'Конечная строка.';
+  const bridge = new PhoneBridge({
+    token: () => 'k',
+    persona: () => 'Персона.',
+    log: () => assert.fail('client-owned chats must not fall into the legacy log'),
+    chat: async (messages, _signal, options) => {
+      calls.push({ messages, options });
+      return { text: messages.at(-1).content === 'длинный ответ' ? longReply : 'готово', brain: options.requestedModel };
+    },
+  });
+  const port = await bridge.start(0, '127.0.0.1');
+  const post = async (body) => {
+    const r = await fetch(`http://127.0.0.1:${port}/chat`, {
+      method: 'POST', headers: { 'x-capri-token': 'k' }, body: JSON.stringify(body),
+    });
+    return r.json();
+  };
+  try {
+    const input = { text: 'продолжим', history: [{ role: 'user', content: 'контекст' }], model: '26b',
+      requestId: 'a2345678-abcd-abcd-abcd-123456789012' };
+    assert.deepStrictEqual(await Promise.all([post(input), post(input)]), [
+      { reply: 'готово', brain: '26b', pose: '' }, { reply: 'готово', brain: '26b', pose: '' },
+    ]);
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0].messages.at(-2).content, 'контекст');
+    assert.strictEqual(calls[0].options.numPredict, -1);
+    await post({ text: 'тайна', history: [], model: 'e4b', ephemeral: true, useVault: false });
+    assert.strictEqual(calls[1].messages.length, 2);
+    assert.strictEqual(calls[1].options.localOnly, true);
+    assert.strictEqual(calls[1].options.useVault, false);
+    await post({ text: 'новый чат', history: [], model: 'e4b' });
+    assert.strictEqual(calls[2].messages.length, 2);
+    assert.strictEqual(calls[2].options.requestedModel, 'e4b');
+    assert.strictEqual((await post({ text: 'длинный ответ', history: [], model: 'e4b' })).reply, longReply);
+  } finally {
+    bridge.stop();
+  }
+});
+
 test('controlPatch: the remote may switch its few settings, nothing else', () => {
   assert.deepStrictEqual(controlPatch({ voice: false }), { voice: false });
   assert.strictEqual(controlPatch({ voice: 'yes' }), null);
@@ -35,7 +76,7 @@ test('bridge: token, chat with the phone note, voice, events, control', async ()
   try {
     assert.strictEqual((await fetch(url('/ping'))).status, 401);
     assert.strictEqual((await post('/chat', { text: 'hi' }, 'wrong')).status, 401);
-    assert.deepStrictEqual(await (await fetch(url('/ping?token=k'))).json(), { ok: true, pose: '', sprites: '', isolatedChat: true });
+    assert.deepStrictEqual(await (await fetch(url('/ping?token=k'))).json(), { ok: true, pose: '', sprites: '', isolatedChat: true, modelSelection: true });
 
     const chat = await (await post('/chat', { text: 'привет', voice: true })).json();
     assert.strictEqual(chat.reply, 'йо');

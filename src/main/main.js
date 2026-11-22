@@ -29,6 +29,7 @@ const desktop = require('./desktop');
 const agent = require('./agent');
 const chatLog = require('./chats');
 const { AgentSessions, MODELS: SESSION_MODELS } = require('./agent-sessions');
+const { isAuxiliaryModel, resolveRequestedModel } = require('./phone-model');
 const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
 const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('./hub-artifacts');
@@ -101,6 +102,7 @@ const harness = require('./harness');
 const harnessManager = harness.createHarnessManager();
 const brains = new brainsLib.Brains({ ollama });
 ollama.pin(brains.fast);
+ollama.pin(brains.main);
 ollama.setContextFor(brains.main, 16384);
 
 protocol.registerSchemesAsPrivileged([
@@ -464,13 +466,12 @@ function ensureAgentSessions() {
         }
         return { text, artifacts };
       }
-      // the main one asked for in the hub: the fast one makes room first (brains.js)
-      if (model === brains.main) await brains.use('main');
       const rp = agent === 'faun' && !brainsLib.isEmergency(lastUser);
-      return ollama.chat({ model, messages: [
+      const generate = () => ollama.chat({ model, messages: [
         { role: 'system', content: rp ? `Веди ролевую сцену на русском, следуя сеттингу пользователя. ${brainsLib.RP_PROMPT}` : `Ты Альта (ALTAI:RE). Отвечай по-русски, точно и без воды. ${hints}` },
         ...messages,
       ] }, delta, signal);
+      return brains.isRole(model) ? brains.withModel(model, generate, signal) : generate();
     }, (id, delta) => chatsWin?.webContents.send('agents:update', { id, delta }));
   return agentSessions;
 }
@@ -514,13 +515,13 @@ const notesDir = () => notes.dirOf({ notesDir: config.load().notesDir, appData: 
 
 // Her notes that fit your last message, put right by it for this answer: small local models mostly go by
 // the last thing they read (chat.js does the same with her mood), up in her persona they'd skip them
-function withNotes(messages, { vaultOnly = false } = {}) {
+function withNotes(messages, { vaultOnly = false, matchedOnly = false } = {}) {
   const at = messages.map((m) => m.role).lastIndexOf('user');
   const said = messages[at]?.content;
   if (typeof said !== 'string') return messages;
   const dir = notesDir();
   const recalled = [
-    vaultOnly ? '' : notes.prompt(notes.recall(notes.list(dir), said)),
+    vaultOnly ? '' : notes.prompt(notes.recall(notes.list(dir), said, { matchedOnly })),
     notes.vaultPrompt(notes.searchVault(dir, said, undefined, { vaultOnly })),
   ].filter(Boolean).join('\n\n');
   if (!recalled) return messages;
@@ -704,7 +705,9 @@ async function switchSpokenModel(wanted) {
   if (!model) return { ok: false, error: `Не нашла установленную модель «${String(wanted || '').slice(0, 80)}».` };
   chatModels = models;
   updateConfig({ provider: 'ollama', chatModel: model });
-  ollama.warm(model);
+  if (isAuxiliaryModel(model) || brains.auxiliary) {
+    await brains.withModel(model, () => ollama.warm(model));
+  } else ollama.warm(model);
   return { ok: true, model };
 }
 
@@ -1561,40 +1564,53 @@ async function applyPhone() {
         const user = messages.findLast((m) => m.role === 'user');
         const said = user?.content || '';
         const hasImages = Boolean(user?.images?.length);
-        if (!opts.fastLocal && !opts.localOnly && !hasImages) {
+        const requestedModel = resolveRequestedModel(opts.requestedModel, {
+          fast: brains.fast, large: brains.main,
+        }) || (opts.mobile && !opts.fastLocal ? brains.auxiliary : null);
+        if (!requestedModel && !opts.fastLocal && !opts.localOnly && !hasImages) {
           const fast = await quickAnswer(said);
           if (fast) return { text: fast, brain: 'quick' };
         }
         const cfg = config.load();
-        if (!chatModels && !opts.localOnly) await refreshModels();
+        if ((!chatModels && !opts.localOnly) || (requestedModel && !chatModels?.includes(requestedModel))) await refreshModels();
         if (opts.fastLocal) {
-          if (cfg.provider !== 'ollama' || !brains.ready(chatModels) || brains.mainActive() || brains.visionRunning) return { text: '' };
+          if (cfg.provider !== 'ollama' || !brains.ready(chatModels) || brains.mainActive() || brains.auxiliary || brains.visionRunning) return { text: '' };
           const text = await ollama.chat({ model: brains.fast, messages, numPredict: 320 }, () => {}, signal);
           return { text, brain: brains.fast };
         }
-        const pickedModel = pickModel(cfg);
-        if (torSensitive && !isLocalOnlyModelAllowed({ cfg, model: pickedModel, llm, ollama, localOnly: true })) {
-          return { text: opts.localOnly ? 'Для этого режима нужна доступная локальная модель.' : TOR_CLOUD_BLOCK_MSG, brain: 'local-only' };
+        const pickedModel = requestedModel || pickModel(cfg);
+        if ((torSensitive || opts.mobile) && !isLocalOnlyModelAllowed({ cfg, model: pickedModel, llm, ollama, localOnly: true })) {
+          throw new Error(opts.localOnly || opts.mobile ? 'Для этого режима нужна доступная локальная модель.' : TOR_CLOUD_BLOCK_MSG);
         }
-        if (hasImages && cfg.provider === 'ollama' && chatModels?.includes(brainsLib.VISION)
+        if (!requestedModel && hasImages && cfg.provider === 'ollama' && chatModels?.includes(brainsLib.VISION)
           && (opts.requireVision || brains.isAuto(cfg.chatModel, chatModels))) {
           if (chats.size) throw new Error(brainsLib.VISION_BUSY);
-          return { text: await brains.see(messages, signal), brain: brainsLib.VISION };
+          return { text: await brains.see(messages, signal, opts.numPredict), brain: brainsLib.VISION };
         }
         if (opts.requireVision) throw new Error('Локальная Vision-модель недоступна.');
         let model;
-        if (opts.localMode === 'task') {
+        if (requestedModel) {
+          if (cfg.provider !== 'ollama' || !chatModels?.includes(requestedModel)) {
+            throw new Error('Выбранная модель недоступна в Ollama на ПК.');
+          }
+          if (chats.size || agentSessions?.sessions.some(({ id, agent }) =>
+            ['gemma', 'faun'].includes(agent) && agentSessions.active.has(id))) {
+            throw new Error('ПК уже отвечает в другом чате. Повтори после завершения.');
+          }
+          model = requestedModel;
+        } else if (opts.localMode === 'task' || (opts.localMode === 'nsfw' && !brainsLib.isEmergency(said))) {
           if (cfg.provider !== 'ollama' || !brains.ready(chatModels)) throw new Error('Локальная модель для задач недоступна.');
           model = await brains.use('main');
         }
-        if (opts.localMode === 'nsfw') messages = brainsLib.withRp(messages);
+        if (opts.localMode === 'nsfw' && !brainsLib.isEmergency(said)) messages = brainsLib.withRp(messages);
         const prepared = (opts.ephemeral || torSensitive)
-          ? { messages: opts.source === 'vault' && !opts.ephemeral && !hasTor && !torState.isQuarantined()
-            ? withNotes(messages, { vaultOnly: true }) : messages, numPredict: opts.localOnly ? 1200 : undefined }
-          : await prepLocal(cfg, messages);
+          ? { messages: opts.source === 'vault' && opts.useVault && !opts.ephemeral && !hasTor && !torState.isQuarantined()
+            ? withNotes(messages, { vaultOnly: true }) : messages }
+          : await prepLocal(cfg, messages, { explicitModel: requestedModel, mobile: opts.mobile, useVault: opts.useVault });
+        prepared.numPredict = opts.numPredict ?? prepared.numPredict;
         const torAfterPrep = torSensitive || messagesHaveTor(prepared.messages);
         let usedModel = pickModel(cfg);
-        const text = await chatWithFallback(
+        const generate = () => chatWithFallback(
           cfg,
           prepared,
           () => {},
@@ -1602,12 +1618,15 @@ async function applyPhone() {
           () => false,
           (nextModel) => { usedModel = nextModel; },
           {
-            localOnly: torAfterPrep,
-            persistFallback: !opts.localOnly,
+            localOnly: torAfterPrep || opts.mobile,
+            persistFallback: !opts.localOnly && !model,
+            strictModel: Boolean(requestedModel),
             model,
             onSuccess: ({ model: okModel }) => { usedModel = okModel; },
           },
         );
+        const text = brains.isRole(requestedModel) ? await brains.withModel(requestedModel, generate, signal)
+          : (model || pickModel(cfg)) === brains.main ? await brains.runMain(generate) : await generate();
         return { text, brain: usedModel || cfg.provider };
       },
       saveObsidianResearch: async ({ query, markdown }) => {
@@ -1707,13 +1726,14 @@ async function applyPhone() {
         if (session && Object.hasOwn(SESSION_MODELS, session.agent)) {
           const validModels = SESSION_MODELS[session.agent];
           if (!validModels.some(([key]) => key === chosenModel)) {
+            if (chosenModel) throw new Error('Выбранная облачная модель недоступна на ПК.');
             chosenModel = validModels[0]?.[0] ?? '';
           }
         }
         const promptText = await withUploadedFiles(id, text, files);
         signal?.throwIfAborted();
         if (queue === true && retry !== true) return mgr.enqueue(id, chosenModel, promptText);
-        return mgr.send(id, chosenModel, promptText, retry === true);
+        return mgr.send(id, chosenModel, promptText, retry === true, false, true);
       },
       agentStop: async (id) => ensureAgentSessions().stop(id),
       agentQuota: async ({ agent, model, refresh }) => hubQuota(agent, model, refresh === true),
@@ -1763,7 +1783,8 @@ function pickModel(cfg = config.load()) {
   // both brains installed and nothing else picked by hand: the fast one, or the main one while it's in
   if (cfg.provider === 'ollama' && brains.ready(chatModels) && brains.isAuto(cfg.chatModel, chatModels)) return brains.current();
   if (chatModels.includes(cfg.chatModel)) return cfg.chatModel;
-  return chatModels.find((m) => !ollama.isCloud(m)) || chatModels[0];
+  const candidates = chatModels.filter((model) => !isAuxiliaryModel(model));
+  return candidates.find((m) => !ollama.isCloud(m)) || candidates[0] || null;
 }
 
 async function refreshModels() {
@@ -2113,21 +2134,21 @@ async function isMainBrainLoaded(signal, timeoutMs = 300) {
   }
 }
 
-async function prepLocal(cfg, messages, { main = false } = {}) {
+async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = false, useVault = true } = {}) {
   const said = yourWords(messages);
   const hasImages = Array.isArray(messages) && messages.some((m) => Array.isArray(m?.images) && m.images.length > 0);
   const shortTalk = String(said || '').trim().length < 15 && !hasImages;
-  const rp = cfg.rp === true && !brainsLib.isEmergency(said);
+  const rp = !mobile && cfg.rp === true && !brainsLib.isEmergency(said);
   const rolesReady = cfg.provider === 'ollama' && brains.ready(chatModels);
   const auto = rolesReady && brains.isAuto(cfg.chatModel, chatModels);
   const torCtx = torState.isQuarantined() || messagesHaveTor(messages);
   const analysis = brainsLib.analysisMode(cfg, { rolesReady, auto, tor: torCtx, text: said });
-  if (auto) {
+  if (auto && !explicitModel) {
     if (!main && !hasImages && brainsLib.wantsFast(said)) await brains.release();
-    else if (main || rp || hasImages || analysis.active || brainsLib.wantsMain(said) || brainsLib.wantsLocal(said)) await brains.use('main');
+    else if (!brains.auxiliary && (main || rp || hasImages || analysis.active || brainsLib.wantsMain(said) || brainsLib.wantsLocal(said))) await brains.use('main');
     else await brains.use('fast');
   }
-  const enriched = shortTalk ? messages : await withPim(withNotes(messages), said);
+  const enriched = shortTalk || !useVault ? messages : await withPim(withNotes(messages, { matchedOnly: mobile }), said);
   return { messages: rp ? brainsLib.withRp(enriched) : enriched, numPredict: analysis.numPredict };
 }
 
@@ -2148,12 +2169,14 @@ async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch,
       ? baseMessages
       : require('./brain/influence-glue').stripBrainHints(baseMessages);
     try {
-      const text = await llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict }, send, signal);
+      const generate = () => llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict }, send, signal);
+      const needsSwap = cfg.provider === 'ollama' && model && (isAuxiliaryModel(model) || brains.auxiliary);
+      const text = needsSwap ? await brains.withModel(model, generate, signal) : await generate();
       if (opts?.persistFallback !== false && model !== pickModel(cfg)) updateConfig({ chatModel: model });
       try { opts?.onSuccess?.({ model, local: attemptLocal, text }); } catch {}
       return text;
     } catch (err) {
-      if (signal.aborted || streamed() || !['busy', 'gone', 'signin'].includes(err.code)) {
+      if (opts?.strictModel || isAuxiliaryModel(model) || signal.aborted || streamed() || !['busy', 'gone', 'signin'].includes(err.code)) {
         try { opts?.onAttemptError?.({ model, local: attemptLocal, err }); } catch {}
         throw err;
       }
@@ -2163,7 +2186,8 @@ async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch,
       }
       try { opts?.onAttemptError?.({ model, local: attemptLocal, err }); } catch {}
       tried.add(model);
-      const next = pickSafeFallbackModel({ cfg, chatModels, tried, ollama, llm, localOnly: isLocalOnly() });
+      const fallbackModels = chatModels?.filter((entry) => !isAuxiliaryModel(entry));
+      const next = pickSafeFallbackModel({ cfg, chatModels: fallbackModels, tried, ollama, llm, localOnly: isLocalOnly() });
       if (!next || opts?.model || tried.size >= 3) throw err;
       model = next;
       busy = 0;
@@ -2643,7 +2667,7 @@ function registerIpc() {
     if (!models) return { ok: false, error: chatError || 'offline', code: chatErrorCode, provider };
     if (!models.length) return { ok: false, error: 'nomodel', provider };
     const model = pickModel();
-    if (!brains.visionRunning) llm.warm(provider, model); // loading while you type your first message
+    if (!brains.visionRunning && !isAuxiliaryModel(model) && !brains.auxiliary) llm.warm(provider, model);
     const local = llm.isLocal(provider, cfg, model);
     return { ok: true, provider, model, agent: provider === 'claude', local, warmup: provider === 'ollama' && local };
   });
