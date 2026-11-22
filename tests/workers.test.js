@@ -180,24 +180,26 @@ test('askCodex resolves immediately on turn.completed JSONL event without waitin
     child.stdin.on('finish', () => {
       child.stdout.write(`${JSON.stringify({ type: 'thread.started' })}\n`);
       child.stdout.write(`${JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'OK' } })}\n`);
-      child.stdout.write(`${JSON.stringify({ type: 'turn.completed' })}\n`);
+      child.stdout.write(`${JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1420, cached_input_tokens: 200, output_tokens: 35 } })}\n`);
       // Intentionally do NOT emit 'close' to prove immediate resolution on turn.completed
     });
     return child;
   };
 
   const deltas = [];
+  const usages = [];
   const res = await askCodex(
     { workDir: tmpWorkDir },
     [{ role: 'user', content: 'Ответь словом OK' }],
     (d) => deltas.push(d),
     new AbortController().signal,
-    { model: 'gpt-6.2-sol', effort: 'low' },
+    { model: 'gpt-6.2-sol', effort: 'low', onUsage: (u) => usages.push(u) },
     () => 'codex-mock',
     mockSpawn,
   );
   assert.strictEqual(res, 'OK');
   assert.deepStrictEqual(deltas, ['OK']);
+  assert.deepStrictEqual(usages, [{ promptTokens: 1420, evalTokens: 35 }]);
   assert.ok(spawnedArgs.includes('--ephemeral'));
   assert.ok(spawnedArgs.includes('--json'));
   assert.ok(spawnedArgs.includes('mcp_servers.capri-web.enabled=false'));

@@ -5,6 +5,7 @@ const { randomUUID } = require('node:crypto');
 const path = require('node:path');
 const { fingerprint } = require('./agent-import');
 const { FAST, MAIN } = require('./brains');
+const { buildContextStats } = require('./context-stats');
 
 const MODELS = {
   claude: [
@@ -640,6 +641,12 @@ class AgentSessions {
       const fallback = typeof result === 'object' ? result?.fallback : undefined;
       const webChatId = typeof result === 'object' ? result?.webChatId : undefined;
       if (typeof content !== 'string' || !content.trim()) throw new Error('Агент вернул пустой ответ.');
+      const contextStats = (typeof result === 'object' && result?.context)
+        || (includeReply ? buildContextStats({
+          model: actualModel,
+          provider: targetAgent,
+          messages: [...context, { role: 'assistant', content }],
+        }) : undefined);
       commit(
         [...messages, {
           role: 'assistant',
@@ -664,6 +671,7 @@ class AgentSessions {
           actualModel,
           ...(finalEffort && { effort: finalEffort }),
           ...(fallback && { fallback }),
+          ...(contextStats && { context: contextStats }),
         }
         : { ok: true };
     } catch (err) {

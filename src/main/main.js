@@ -30,6 +30,7 @@ const agent = require('./agent');
 const chatLog = require('./chats');
 const { AgentSessions, MODELS: SESSION_MODELS, CATALOG: SESSION_CATALOG, isAllowedModel } = require('./agent-sessions');
 const { isAuxiliaryModel, mobileAutoOverride, resolveRequestedModel } = require('./phone-model');
+const { LOCAL_CONTEXT_DEFAULTS, getContextLimits, buildContextStats, resolveContextLimit } = require('./context-stats');
 const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
 const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('./hub-artifacts');
@@ -104,7 +105,8 @@ const harnessManager = harness.createHarnessManager();
 const brains = new brainsLib.Brains({ ollama });
 ollama.pin(brains.fast);
 ollama.pin(brains.main);
-ollama.setContextFor(brains.main, 16384);
+ollama.setContextFor(brains.fast, LOCAL_CONTEXT_DEFAULTS.fast);
+ollama.setContextFor(brains.main, LOCAL_CONTEXT_DEFAULTS.main);
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'capri', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
@@ -436,6 +438,13 @@ async function hubQuota(agent, model, refresh) {
   return { group, windows: [] };
 }
 
+function lastUserSuffix(before, after) {
+  const b = Array.isArray(before) ? before.findLast((m) => m?.role === 'user')?.content : '';
+  const a = Array.isArray(after) ? after.findLast((m) => m?.role === 'user')?.content : '';
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length <= b.length || !a.startsWith(b)) return '';
+  return a.slice(b.length).trim();
+}
+
 function ensureAgentSessions() {
   agentSessions ??= new AgentSessions(path.join(app.getPath('userData'), 'agent-sessions.json'),
     async (agent, model, messages, signal, delta, meta = {}) => {
@@ -462,6 +471,8 @@ function ensureAgentSessions() {
         mode: meta?.mode,
       });
       const cloudLastUser = cloudMessages.findLast((m) => m.role === 'user')?.content || lastUser;
+      const memoryText = lastUserSuffix(messages, cloudMessages);
+      const baseHistory = messages.filter((m) => m?.role !== 'system');
       if (agent === 'gemini-web') {
         const webModel = model === 'gemini-web-hydrogen' ? 'code' : 'research';
         const expectedActual = model === 'gemini-web-hydrogen' ? 'gemini-4-hydrogen' : 'gemini-4-neon';
@@ -475,20 +486,32 @@ function ensureAgentSessions() {
           && (prevAssistant.model === model || prevAssistant.actualModel === expectedActual),
         );
         const existingChatId = canContinueWebChat ? meta.session.webChatId : null;
+        const cwd = workers.workDir(cfg);
         const prompt = existingChatId
           ? cloudLastUser
-          : workers.codexBrief([{ role: 'system', content: hints }, ...cloudMessages], workers.workDir(cfg));
+          : workers.codexBrief([{ role: 'system', content: hints }, ...cloudMessages], cwd);
         const res = await agentWeb.askGemini({ prompt, chat: existingChatId, model: webModel, task: true });
         signal?.throwIfAborted();
         const text = String(res?.answer || '').trim();
         if (text) delta(text);
         const agentLabel = model in workers.WORKER_LABELS ? model : 'gemini-web';
         setImmediate(() => toVault(cfg, agentLabel, lastUser, text, []));
+        const context = buildContextStats({
+          model: expectedActual,
+          provider: 'gemini-web',
+          maxTokens: resolveContextLimit(expectedActual, 'gemini-web', { ctxFor: ollama.ctxFor }),
+          systemPrompt: '',
+          skillsText: hints,
+          memoryText,
+          toolsText: existingChatId ? '' : workers.folderNote(cwd),
+          messages: [...baseHistory, { role: 'assistant', content: text }],
+        });
         return {
           text,
           artifacts: [],
           actualModel: expectedActual,
           effort: 'task',
+          context,
           ...(res?.fellBack && { fallback: res.fellBack }),
           ...(res?.chat && { webChatId: res.chat }),
         };
@@ -499,18 +522,20 @@ function ensureAgentSessions() {
         const root = hubArtifactRoot(cfg);
         const destination = path.join(root, output);
         const since = Date.now();
-        const instruction = [
+        const baseInstruction = [
           'Отвечай средствами выбранного облачного агента. Не запускай локальные ComfyUI, Wan или другие локальные генераторы.',
           `Если текущая задача требует файл и твои инструменты это поддерживают, создай каталог "${destination}" и положи туда только готовые файлы непосредственно, без подпапок (для Word пиши NAME.docx.md, для PDF — NAME.pdf.md, для PNG-схемы — NAME.png.svg, они автоматически сконвертируются).`,
           'Если у тебя нет нужного инструмента, скажи об этом. Не выдавай ссылку или описание за созданный файл.',
-          hints,
         ].join('\n');
+        const instruction = [baseInstruction, hints].filter(Boolean).join('\n');
+        let usage = null;
         let text = await run(cfg, [{ role: 'system', content: instruction }, ...cloudMessages], delta, signal, {
           model,
           ...(meta?.effort && { effort: meta.effort }),
           sessionId: meta?.sessionId || meta?.session?.id || null,
           sameProviderContiguous: Boolean(meta?.sameProviderContiguous),
           onQuota: recordClaudeQuota,
+          onUsage: (u) => { usage = u; },
         });
         let hasDestFiles = false;
         try {
@@ -529,19 +554,53 @@ function ensureAgentSessions() {
             telegramBot?.send(telegram.hubNotice({ agent: workers.WORKER_LABELS[agentLabel] || agentLabel, model: actualModel, task: lastUser, text, artifacts })).catch(() => {});
           }
         });
+        const context = buildContextStats({
+          model: actualModel,
+          provider: agent,
+          maxTokens: usage?.maxTokens || resolveContextLimit(actualModel, agent, { ctxFor: ollama.ctxFor }),
+          systemPrompt: baseInstruction,
+          skillsText: hints,
+          memoryText,
+          toolsText: workers.folderNote(workers.workDir(cfg)),
+          messages: [...baseHistory, { role: 'assistant', content: text }],
+          actualPromptTokens: usage?.promptTokens,
+          actualEvalTokens: usage?.evalTokens,
+        });
         return {
           text,
           artifacts,
           actualModel,
+          context,
           ...(meta?.effort && { effort: meta.effort }),
         };
       }
       const rp = agent === 'faun' && !brainsLib.isEmergency(lastUser);
-      const generate = () => ollama.chat({ model, messages: [
-        { role: 'system', content: rp ? `Веди ролевую сцену на русском, следуя сеттингу пользователя. ${brainsLib.RP_PROMPT}` : `Ты Альта (ALTAI:RE). Отвечай по-русски, точно и без воды. ${hints}` },
-        ...cloudMessages,
-      ] }, delta, signal);
-      return brains.isRole(model) ? brains.withModel(model, generate, signal) : generate();
+      const localSystem = rp
+        ? `Веди ролевую сцену на русском, следуя сеттингу пользователя. ${brainsLib.RP_PROMPT}`
+        : 'Ты Альта (ALTAI:RE). Отвечай по-русски, точно и без воды.';
+      let usage = null;
+      const generate = () => ollama.chat({
+        model,
+        messages: [
+          { role: 'system', content: rp ? localSystem : `${localSystem} ${hints}`.trim() },
+          ...cloudMessages,
+        ],
+        onUsage: (u) => { usage = u; },
+      }, delta, signal);
+      const text = await (brains.isRole(model) ? brains.withModel(model, generate, signal) : generate());
+      const context = buildContextStats({
+        model,
+        provider: 'ollama',
+        maxTokens: usage?.numCtx || resolveContextLimit(model, 'ollama', { ctxFor: ollama.ctxFor }),
+        systemPrompt: localSystem,
+        skillsText: rp ? '' : hints,
+        memoryText,
+        toolsText: '',
+        messages: [...baseHistory, { role: 'assistant', content: text }],
+        actualPromptTokens: usage?.promptTokens,
+        actualEvalTokens: usage?.evalTokens,
+      });
+      return { text, artifacts: [], actualModel: model, context };
     }, (id, delta) => chatsWin?.webContents.send('agents:update', { id, delta }));
   return agentSessions;
 }
@@ -1780,6 +1839,7 @@ async function applyPhone() {
     phoneBridge = new phone.PhoneBridge({
       token: phoneToken,
       persona: phonePersona,
+      contextLimits: () => getContextLimits({ ctxFor: ollama.ctxFor }),
       savePrivateChat: (id, messages, options) => {
         if (torState.isQuarantined() || (Array.isArray(messages) && messagesHaveTor(messages.filter(row => row && typeof row.content === 'string')))) {
           throw Object.assign(new Error('Сохранение в приватный Vault недоступно во время Tor-изоляции.'), { status: 403 });
@@ -1841,16 +1901,24 @@ async function applyPhone() {
           if (cfg.provider !== 'ollama' || !brains.ready(chatModels)) throw new Error('Локальная модель для задач недоступна.');
           model = await brains.use('main');
         }
-        if (opts.localMode === 'nsfw' && !brainsLib.isEmergency(said)) messages = brainsLib.withRp(messages);
+        const isRp = opts.localMode === 'nsfw' && !brainsLib.isEmergency(said);
+        if (isRp) messages = brainsLib.withRp(messages);
+        const withVault = (opts.ephemeral || torSensitive) && opts.source === 'vault' && !hasTor && !torState.isQuarantined()
+          ? withNotes(messages, { vaultOnly: true })
+          : messages;
         const prepared = (opts.ephemeral || torSensitive)
-          ? { messages: opts.source === 'vault' && !hasTor && !torState.isQuarantined()
-            ? withNotes(messages, { vaultOnly: true }) : messages }
+          ? {
+            messages: withVault,
+            memoryText: lastUserSuffix(messages, withVault),
+            toolsText: '',
+          }
           : await prepLocal(cfg, messages, { explicitModel: requestedModel, mobile: opts.mobile, useVault: opts.useVault });
         prepared.numPredict = opts.numPredict ?? prepared.numPredict;
         const torAfterPrep = torSensitive || messagesHaveTor(prepared.messages);
         const autoOverride = !model ? pickMobileAutoOverride() : undefined;
         model ||= autoOverride;
         let usedModel = model || pickModel(cfg);
+        let usage = null;
         const generate = () => chatWithFallback(
           cfg,
           prepared,
@@ -1863,13 +1931,29 @@ async function applyPhone() {
             persistFallback: !opts.localOnly && !model,
             strictModel: Boolean(requestedModel),
             model,
+            onUsage: (u) => { usage = u; },
             onSuccess: ({ model: okModel }) => { usedModel = okModel; },
           },
         );
         const directRole = requestedModel || autoOverride;
         const text = brains.isRole(directRole) ? await brains.withModel(directRole, generate, signal)
           : (model || pickModel(cfg)) === brains.main ? await brains.runMain(generate) : await generate();
-        return { text, brain: usedModel || cfg.provider };
+        const finalModel = usedModel || cfg.provider;
+        const baseSys = opts.contextParts?.systemPrompt ?? messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
+        const systemPrompt = [baseSys, isRp ? brainsLib.RP_PROMPT : ''].filter(Boolean).join('\n\n');
+        const context = buildContextStats({
+          model: finalModel,
+          provider: cfg.provider || 'ollama',
+          maxTokens: usage?.numCtx || resolveContextLimit(finalModel, cfg.provider || 'ollama', { ctxFor: ollama.ctxFor }),
+          systemPrompt,
+          skillsText: opts.contextParts?.skillsText || '',
+          memoryText: prepared.memoryText || '',
+          toolsText: prepared.toolsText || '',
+          messages: [...messages.filter((m) => m.role !== 'system'), { role: 'assistant', content: text }],
+          actualPromptTokens: usage?.promptTokens,
+          actualEvalTokens: usage?.evalTokens,
+        });
+        return { text, brain: finalModel, context };
       },
       saveObsidianResearch: async ({ query, markdown }) => {
         const dir = notesDir();
@@ -1953,6 +2037,7 @@ async function applyPhone() {
         sessions: ensureAgentSessions().summaries(),
         models: SESSION_MODELS,
         catalog: SESSION_CATALOG,
+        contextLimits: getContextLimits({ ctxFor: ollama.ctxFor }),
       }),
       agentSessions: async (agent) => {
         const all = ensureAgentSessions().summaries();
@@ -2409,8 +2494,11 @@ async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = 
   }
   const includeRecentPhone = Boolean(mobile && Array.isArray(messages) && messages.filter((m) => m.role !== 'system').length <= 2);
   const skipNotes = !useVault || (shortTalk && !includeRecentPhone);
-  const enriched = skipNotes ? messages : await withPim(withNotes(messages, { matchedOnly: mobile, includeRecentPhone }), said);
-  return { messages: rp ? brainsLib.withRp(enriched) : enriched, numPredict: analysis.numPredict };
+  const withMemory = skipNotes ? messages : withNotes(messages, { matchedOnly: mobile, includeRecentPhone });
+  const memoryText = skipNotes ? '' : lastUserSuffix(messages, withMemory);
+  const enriched = skipNotes ? messages : await withPim(withMemory, said);
+  const toolsText = skipNotes ? '' : lastUserSuffix(withMemory, enriched);
+  return { messages: rp ? brainsLib.withRp(enriched) : enriched, numPredict: analysis.numPredict, memoryText, toolsText };
 }
 
 async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch, opts) {
@@ -2430,7 +2518,7 @@ async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch,
       ? baseMessages
       : require('./brain/influence-glue').stripBrainHints(baseMessages);
     try {
-      const generate = () => llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict }, send, signal);
+      const generate = () => llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict, onUsage: opts?.onUsage }, send, signal);
       const needsSwap = cfg.provider === 'ollama' && model && (isAuxiliaryModel(model) || brains.auxiliary);
       const text = needsSwap ? await brains.withModel(model, generate, signal) : await generate();
       if (opts?.persistFallback !== false && model !== pickModel(cfg)) updateConfig({ chatModel: model });

@@ -34,9 +34,13 @@ test('mobile chat carries model and isolated context, and retries one PC turn', 
   try {
     const input = { text: 'продолжим', history: [{ role: 'user', content: 'контекст' }], model: '26b',
       requestId: 'a2345678-abcd-abcd-abcd-123456789012' };
-    assert.deepStrictEqual(await Promise.all([post(input), post(input)]), [
-      { reply: 'готово', brain: '26b', pose: '' }, { reply: 'готово', brain: '26b', pose: '' },
-    ]);
+    const [firstReply, secondReply] = await Promise.all([post(input), post(input)]);
+    assert.deepStrictEqual(firstReply, secondReply);
+    assert.strictEqual(firstReply.reply, 'готово');
+    assert.strictEqual(firstReply.brain, '26b');
+    assert.strictEqual(firstReply.pose, '');
+    assert.strictEqual(firstReply.context.maxTokens, 32768);
+    assert.strictEqual(firstReply.context.source, 'estimated');
     assert.strictEqual(calls.length, 1);
     assert.strictEqual(calls[0].messages.at(-2).content, 'контекст');
     assert.strictEqual(calls[0].options.numPredict, -1);
@@ -92,7 +96,11 @@ test('mobile chat recovers private and temporary replies after an HTTP disconnec
       assert.strictEqual((await api('/chat', { ...input, text: 'другой запрос' })).status, 409);
       const retry = api('/chat', input);
       finish();
-      assert.deepStrictEqual(await (await retry).json(), { reply: 'синтетический ответ', brain: 'e4b', pose: '' });
+      const recovered = await (await retry).json();
+      assert.strictEqual(recovered.reply, 'синтетический ответ');
+      assert.strictEqual(recovered.brain, 'e4b');
+      assert.strictEqual(recovered.pose, '');
+      assert.strictEqual(recovered.context.maxTokens, 32768);
       assert.deepStrictEqual(await (await api(statusPath)).json(), { state: 'complete' });
       token = 'new-token';
       assert.strictEqual((await api(statusPath)).status, 404);
@@ -178,7 +186,21 @@ test('bridge: token, chat with the phone note, voice, events, control', async ()
   try {
     assert.strictEqual((await fetch(url('/ping'))).status, 401);
     assert.strictEqual((await post('/chat', { text: 'hi' }, 'wrong')).status, 401);
-    assert.deepStrictEqual(await (await fetch(url('/ping?token=k'))).json(), { ok: true, pose: '', sprites: '', isolatedChat: true, modelSelection: true, chatRecovery: true, privateVaultSave: false });
+    const ping = await (await fetch(url('/ping?token=k'))).json();
+    assert.strictEqual(ping.ok, true);
+    assert.strictEqual(ping.pose, '');
+    assert.strictEqual(ping.sprites, '');
+    assert.strictEqual(ping.isolatedChat, true);
+    assert.strictEqual(ping.modelSelection, true);
+    assert.strictEqual(ping.chatRecovery, true);
+    assert.strictEqual(ping.privateVaultSave, false);
+    assert.strictEqual(ping.contextLimits.e4b, 32768);
+    assert.strictEqual(ping.contextLimits['26b'], 32768);
+    assert.strictEqual(ping.contextLimits.qwen36, 16384);
+    assert.strictEqual(ping.contextLimits['gpt-6.2-sol'], 500000);
+    assert.strictEqual(ping.contextLimits['gpt-6.2-astra'], 272000);
+    assert.strictEqual(ping.contextLimits['claude-opus-5-5'], 1000000);
+    assert.strictEqual(ping.contextLimits['gemini-4-neon-high'], 1048576);
 
     const chat = await (await post('/chat', { text: 'привет', voice: true })).json();
     assert.strictEqual(chat.reply, 'йо');
@@ -783,6 +805,89 @@ test('bridge: /agents/send propagates useVault and blocks Tor/secrets/private/ep
     assert.strictEqual((await post({ id: 's1', model: 'm', text: 'HZ-1', mode: 'private' })).status, 403);
     assert.strictEqual((await post({ id: 's1', model: 'm', text: 'HZ-1', ephemeral: true })).status, 403);
     assert.strictEqual((await post({ id: 's1', model: 'm', text: 'HZ-1', mode: 'nsfw' })).status, 403);
+  } finally {
+    await bridge.stop();
+  }
+});
+
+test('bridge: /ping, /agents, /chat and /agents/send expose contextLimits and adaptive context stats', async () => {
+  const { buildContextStats } = require('../src/main/context-stats');
+  let seenContextParts = null;
+  const bridge = new PhoneBridge({
+    token: () => 'ctx-key',
+    persona: () => 'Ты Альта.',
+    contextLimits: () => ({ e4b: 24576, 'gpt-6.2-sol': 500000 }),
+    agentsList: async () => ({ sessions: [], models: { codex: [['gpt-6.2-sol', 'Sol']] } }),
+    chat: async (messages, _signal, opts) => {
+      seenContextParts = opts.contextParts;
+      const reply = 'Ответ с фактическими токенами.';
+      return {
+        text: reply,
+        brain: 'capri-e4b-stage9-v2:latest',
+        context: buildContextStats({
+          model: 'capri-e4b-stage9-v2:latest',
+          provider: 'ollama',
+          maxTokens: 32768,
+          systemPrompt: opts.contextParts.systemPrompt,
+          skillsText: opts.contextParts.skillsText,
+          memoryText: 'Заметка Obsidian по HZ-1',
+          toolsText: '',
+          messages: [...messages.filter((m) => m.role !== 'system'), { role: 'assistant', content: reply }],
+          actualPromptTokens: 640,
+          actualEvalTokens: 60,
+        }),
+      };
+    },
+    agentSend: async () => ({
+      ok: true,
+      text: 'Облачный ответ',
+      provider: 'codex',
+      model: 'gpt-6.2-sol',
+      actualModel: 'gpt-6.2-sol',
+      context: buildContextStats({
+        model: 'gpt-6.2-sol',
+        provider: 'codex',
+        systemPrompt: 'Инструкция агента',
+        memoryText: 'Фрагмент Obsidian',
+        toolsText: 'Your working folder is D:\\Capri.',
+        messages: [{ role: 'user', content: 'Запрос' }, { role: 'assistant', content: 'Облачный ответ' }],
+        actualPromptTokens: 1500,
+        actualEvalTokens: 500,
+      }),
+    }),
+  });
+  const port = await bridge.start(0, '127.0.0.1');
+  const get = (route) => fetch(`http://127.0.0.1:${port}${route}`, { headers: { 'x-capri-token': 'ctx-key' } });
+  const post = (route, body) => fetch(`http://127.0.0.1:${port}${route}`, {
+    method: 'POST',
+    headers: { 'x-capri-token': 'ctx-key' },
+    body: JSON.stringify(body),
+  });
+
+  try {
+    const ping = await (await get('/ping')).json();
+    assert.deepStrictEqual(ping.contextLimits, { e4b: 24576, 'gpt-6.2-sol': 500000 });
+
+    const agents = await (await get('/agents')).json();
+    assert.deepStrictEqual(agents.contextLimits, { e4b: 24576, 'gpt-6.2-sol': 500000 });
+
+    const chatRes = await (await post('/chat', { text: 'Привет', skills: ['caveman'], model: 'e4b' })).json();
+    assert.ok(seenContextParts.systemPrompt.includes('Ты Альта.'));
+    assert.ok(seenContextParts.skillsText.includes('Режим caveman'));
+    assert.strictEqual(chatRes.context.source, 'actual');
+    assert.strictEqual(chatRes.context.usedTokens, 700);
+    assert.strictEqual(chatRes.context.freeTokens, 32768 - 700);
+    assert.strictEqual(chatRes.context.breakdown.free, 32768 - 700);
+    assert.ok(chatRes.context.breakdown.skills > 0);
+    assert.ok(chatRes.context.breakdown.memory > 0);
+
+    const agentRes = await (await post('/agents/send', { id: 's1', model: 'gpt-6.2-sol', text: 'Запрос' })).json();
+    assert.strictEqual(agentRes.ok, true);
+    assert.strictEqual(agentRes.context.source, 'actual');
+    assert.strictEqual(agentRes.context.maxTokens, 500000);
+    assert.strictEqual(agentRes.context.usedTokens, 2000);
+    assert.strictEqual(agentRes.context.freeTokens, 498000);
+    assert.ok(agentRes.context.breakdown.memory > 0);
   } finally {
     await bridge.stop();
   }

@@ -353,7 +353,7 @@ const UTF8_ENV = { PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', CAPRI_WORKER_SUBP
 // Claude: one-shot `claude -p` in her folder; edits there go through without asking (acceptEdits),
 // anything needing a yes (a command) is refused, and it says so. With `desktop`, agent-desktop is the one
 // command it may run.
-function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = null, model = null, effort = null, onQuota } = {}, find = findClaude) {
+function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = null, model = null, effort = null, onQuota, onUsage } = {}, find = findClaude) {
   const exe = find();
   if (!exe) return Promise.reject(new Error('Claude Code не найден на этом ПК: поставь его и войди.'));
   const cwd = workDir(cfg);
@@ -398,6 +398,18 @@ function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = nul
           }
         } else if (msg.type === 'result') {
           result = msg;
+          if (onUsage && (msg.usage || msg.modelUsage)) {
+            const u = msg.usage || {};
+            const promptTokens = (Number(u.input_tokens) || 0)
+              + (Number(u.cache_creation_input_tokens) || 0)
+              + (Number(u.cache_read_input_tokens) || 0);
+            const evalTokens = Number(u.output_tokens) || 0;
+            const entries = msg.modelUsage && typeof msg.modelUsage === 'object' ? Object.values(msg.modelUsage) : [];
+            const contextWindow = entries.map((e) => Number(e?.contextWindow) || 0).find((v) => v > 0) || null;
+            if (promptTokens > 0 || evalTokens > 0 || contextWindow) {
+              try { onUsage({ promptTokens, evalTokens, ...(contextWindow && { maxTokens: contextWindow }) }); } catch {}
+            }
+          }
         }
       }
     });
@@ -422,7 +434,7 @@ function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = nul
 
 // Codex: `codex exec` in its workspace-write sandbox. With `desktop` (a computer task, after your yes in
 // main.js handsFor): out of the sandbox, which can't see your windows, with agent-desktop to drive them.
-function askCodex(cfg, messages, onDelta, signal, { desktop = false, home = null, effort: picked = null, model = null } = {}, find = findCodex, spawnImpl = spawn) {
+function askCodex(cfg, messages, onDelta, signal, { desktop = false, home = null, effort: picked = null, model = null, onUsage } = {}, find = findCodex, spawnImpl = spawn) {
   const exe = find();
   if (!exe) return Promise.reject(new Error('Codex не найден на этом ПК: поставь Codex и войди в него.'));
   const cwd = workDir(cfg);
@@ -499,6 +511,13 @@ function askCodex(cfg, messages, onDelta, signal, { desktop = false, home = null
         } else if (msg.type === 'turn.failed' && msg.error?.message) {
           errors = `${errors}\n${msg.error.message}`.slice(-4000);
         } else if (msg.type === 'turn.completed') {
+          if (onUsage && msg.usage && typeof msg.usage === 'object') {
+            const promptTokens = Number(msg.usage.input_tokens) || 0;
+            const evalTokens = Number(msg.usage.output_tokens) || 0;
+            if (promptTokens > 0 || evalTokens > 0) {
+              try { onUsage({ promptTokens, evalTokens }); } catch {}
+            }
+          }
           if (signal?.aborted) {
             settled = true;
             clearTimeout(timer);
@@ -716,6 +735,7 @@ function askGemini(cfg, messages, onDelta, signal, {
   tier = 'routine',
   sessionId = null,
   sameProviderContiguous = false,
+  onUsage = null,
 } = {}, find = findAgy, spawnImpl = spawn) {
   if (forcedModel === 'gemini-cli-free') return askGeminiCli(cfg, messages, onDelta, signal);
   const exe = find();
@@ -793,6 +813,13 @@ function askGemini(cfg, messages, onDelta, signal, {
             return reject(new Error('stopped'));
           }
           const text = String(result?.response || '').trim();
+          if (onUsage && result?.usage && typeof result.usage === 'object') {
+            const promptTokens = Number(result.usage.input_tokens ?? result.usage.prompt_tokens) || 0;
+            const evalTokens = Number(result.usage.output_tokens ?? result.usage.completion_tokens) || 0;
+            if (promptTokens > 0 || evalTokens > 0) {
+              try { onUsage({ promptTokens, evalTokens }); } catch {}
+            }
+          }
           if (result?.status === 'SUCCESS' && text) {
             entry.turns++;
             touchAgyEntryIdle(entry);
@@ -858,6 +885,13 @@ function askGemini(cfg, messages, onDelta, signal, {
         return;
       }
       const text = String(resObj?.response || '').trim();
+      if (onUsage && resObj?.usage && typeof resObj.usage === 'object') {
+        const promptTokens = Number(resObj.usage.input_tokens ?? resObj.usage.prompt_tokens) || 0;
+        const evalTokens = Number(resObj.usage.output_tokens ?? resObj.usage.completion_tokens) || 0;
+        if (promptTokens > 0 || evalTokens > 0) {
+          try { onUsage({ promptTokens, evalTokens }); } catch {}
+        }
+      }
       if (resObj?.status === 'SUCCESS' && text) {
         settled = true;
         clearTimeout(timer);
@@ -986,4 +1020,4 @@ function isWorkerEvent(evt, cfg) {
   return cwd === dir || cwd.startsWith(dir + path.sep);
 }
 
-module.exports = { isWorkerEvent, route, handsWorker, workerChain, runWorker, WORKER_LABELS, isStop, findClaude, findCodex, findAgy, findGeminiCli, askClaude, askCodex, askGemini, askGeminiCli, stopAgyWorkers, agyModel, parseAgyEvent, codexBrief, codexEffort, transcript, workDir, convertDocs, skillHints, cheatsheet };
+module.exports = { isWorkerEvent, route, handsWorker, workerChain, runWorker, WORKER_LABELS, isStop, findClaude, findCodex, findAgy, findGeminiCli, askClaude, askCodex, askGemini, askGeminiCli, stopAgyWorkers, agyModel, parseAgyEvent, codexBrief, codexEffort, transcript, workDir, folderNote, convertDocs, skillHints, cheatsheet };

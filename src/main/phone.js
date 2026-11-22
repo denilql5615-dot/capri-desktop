@@ -29,6 +29,7 @@ const ISOLATED_CHAT_REQUEST_TTL_MS = 2 * 60 * 1000;
 const CHAT_STOPPED = { reply: 'Запрос остановлен.', brain: 'stopped', pose: '' };
 const CHAT_ABORTED = { ...CHAT_STOPPED, brain: 'error' };
 const { PHONE_MODEL_KEYS } = require('./phone-model');
+const { getContextLimits, buildContextStats } = require('./context-stats');
 const SUGGESTIONS_TTL_MS = 45 * 60 * 1000; // 45 минут кэша подсказок от E4B
 const WORKER_COOLDOWN_MS = 30 * 60 * 1000; // 30 минут кулдауна для уставших воркеров Deep Research
 const RESEARCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -702,7 +703,19 @@ class PhoneBridge {
     if (!tokenMatches(got, this.d.token())) return this.send(res, 401, { error: 'bad token' });
     try {
       const pack = this.d.sprites?.() || null;
-      if (req.method === 'GET' && url.pathname === '/ping') return this.send(res, 200, { ok: true, pose: '', sprites: pack?.version || '', isolatedChat: true, modelSelection: true, chatRecovery: true, privateVaultSave: Boolean(this.d.savePrivateChat) });
+      if (req.method === 'GET' && url.pathname === '/ping') {
+        const contextLimits = typeof this.d.contextLimits === 'function' ? this.d.contextLimits() : getContextLimits();
+        return this.send(res, 200, {
+          ok: true,
+          pose: '',
+          sprites: pack?.version || '',
+          isolatedChat: true,
+          modelSelection: true,
+          chatRecovery: true,
+          privateVaultSave: Boolean(this.d.savePrivateChat),
+          contextLimits,
+        });
+      }
       if (req.method === 'GET' && url.pathname === '/suggestions') {
         const mode = url.searchParams.get('mode') || 'chat';
         const force = url.searchParams.get('refresh') === 'true';
@@ -950,8 +963,9 @@ class PhoneBridge {
         return;
       }
       if (req.method === 'GET' && url.pathname === '/agents') {
-        const data = await this.d.agentsList?.();
-        return this.send(res, 200, data || { agents: [] });
+        const data = (await this.d.agentsList?.()) || { agents: [] };
+        const contextLimits = data.contextLimits || (typeof this.d.contextLimits === 'function' ? this.d.contextLimits() : getContextLimits());
+        return this.send(res, 200, { ...data, contextLimits });
       }
       if (req.method === 'GET' && url.pathname === '/agents/sessions') {
         const agent = url.searchParams.get('agent') || '';
@@ -1068,7 +1082,7 @@ class PhoneBridge {
       }
     }
 
-    const sysParts = [this.d.persona({
+    const baseSysParts = [this.d.persona({
       isolated,
       ephemeral,
       privateMode,
@@ -1076,17 +1090,21 @@ class PhoneBridge {
       useVault: flags.useVault !== false,
       requestedModel: flags.requestedModel,
     }), PHONE_NOTE];
-    sysParts.push('Поддерживай тему текущего диалога. Не упоминай личные факты, числа, расписание и технические детали из памяти без прямой связи с вопросом. Если данных не хватает, скажи об этом.');
-    if (ephemeral) sysParts.push('Временный чат: не ссылайся на долговременную память и не сохраняй факты.');
-    if (privateMode) sysParts.push('Режим Приват (Vault): строго локальная обработка, данные и контекст только из Vault, выход в облако запрещён.');
+    baseSysParts.push('Поддерживай тему текущего диалога. Не упоминай личные факты, числа, расписание и технические детали из памяти без прямой связи с вопросом. Если данных не хватает, скажи об этом.');
+    if (ephemeral) baseSysParts.push('Временный чат: не ссылайся на долговременную память и не сохраняй факты.');
+    if (privateMode) baseSysParts.push('Режим Приват (Vault): строго локальная обработка, данные и контекст только из Vault, выход в облако запрещён.');
+    const skillParts = [];
     for (const sk of skills) {
-      if (SKILL_NOTES[sk]) sysParts.push(SKILL_NOTES[sk]);
+      if (SKILL_NOTES[sk]) skillParts.push(SKILL_NOTES[sk]);
     }
+    const baseSystemPrompt = baseSysParts.filter(Boolean).join('\n');
+    const skillsText = skillParts.join('\n');
+    const sysContent = [baseSystemPrompt, skillsText].filter(Boolean).join('\n');
 
     const historySlice = flags.history ?? (isolated ? [] : this.turns.slice(-TURNS * 2));
     const userMsg = { role: 'user', content: text, ...(flags.images?.length ? { images: flags.images } : {}) };
     const messages = [
-      { role: 'system', content: sysParts.filter(Boolean).join('\n') },
+      { role: 'system', content: sysContent },
       ...historySlice,
       userMsg,
     ];
@@ -1102,18 +1120,26 @@ class PhoneBridge {
         useVault: flags.useVault !== false,
         mobile: true,
         numPredict: -1,
+        contextParts: { systemPrompt: baseSystemPrompt, skillsText },
         ...(flags.requireVision && { requireVision: true }),
         ...(flags.localMode && { localMode: flags.localMode }),
       };
       const requestSignal = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
-      const { text: said, brain } = await this.d.chat(messages, requestSignal, opts);
+      const { text: said, brain, context } = await this.d.chat(messages, requestSignal, opts);
       requestSignal.throwIfAborted();
       const reply = String(said || '').trim();
       if (!reply) return { reply: 'Модель промолчала. Спроси ещё раз, покороче.', brain };
       if (!isolated && flags.history === undefined) {
         this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
       }
-      return { reply, brain };
+      const contextStats = context || buildContextStats({
+        model: brain || flags.requestedModel || 'auto',
+        provider: 'ollama',
+        systemPrompt: baseSystemPrompt,
+        skillsText,
+        messages: [...historySlice, userMsg, { role: 'assistant', content: reply }],
+      });
+      return { reply, brain, context: contextStats };
     } catch (err) {
       return { reply: `Не вышло ответить: ${err.message}`, brain: 'error' };
     } finally {
@@ -1140,7 +1166,7 @@ class PhoneBridge {
       }
     }
     const media = !isolated && !flags.deepResearch && this.d.photo && this.d.mediaKind?.(text);
-    const { reply, brain, image } = media ? await this.media(text, media, flags)
+    const { reply, brain, image, context } = media ? await this.media(text, media, flags)
       : (!isolated && !flags.deepResearch && (!flags.requestedModel || flags.requestedModel === 'auto') && await this.switchModel(text))
         || await this.reply(flags, signal);
     if (signal?.aborted) return CHAT_ABORTED;
@@ -1149,7 +1175,7 @@ class PhoneBridge {
     if (brain !== 'error' && !isolated && flags.useVault !== false && !/^новый разговор/i.test(text)) {
       this.d.log?.({ said: text, answer: image ? `${reply}\n[[photo:${image}]]` : reply });
     }
-    const out = { reply, brain, pose: '', ...(image && { image: `/gallery/${image}` }) };
+    const out = { reply, brain, pose: '', ...(image && { image: `/gallery/${image}` }), ...(context && { context }) };
     if (voice && brain !== 'error') {
       const data = await this.d.speak(reply).catch(() => null);
       if (signal?.aborted) return CHAT_ABORTED;

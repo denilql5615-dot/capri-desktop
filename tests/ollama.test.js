@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  findSpokenModel, screenModel, unload, retryEmptyVision, visionPrompt, chat, jsonChat, pick, warm, setContextFor, ctxFor,
+  findSpokenModel, screenModel, unload, retryEmptyVision, visionPrompt, chat, jsonChat, pick, warm, setContextFor, ctxFor, getLastUsage,
 } = require('../src/main/ollama');
 const llm = require('../src/main/llm');
 
@@ -84,9 +84,38 @@ test('chat accepts a larger prediction budget for vision and keeps selected Qwen
     assert.equal(body.model, model);
     assert.equal(body.think, false);
     assert.equal(body.keep_alive, -1);
-    assert.equal(body.options.num_ctx, 4096);
+    assert.equal(body.options.num_ctx, 16384);
     assert.equal(body.options.num_predict, -1);
   }
+});
+
+test('chat reports prompt_eval_count and eval_count via onUsage and getLastUsage without changing string return', async (t) => {
+  const before = global.fetch;
+  global.fetch = async () => {
+    const bytes = new TextEncoder().encode(
+      '{"message":{"content":"привет"},"done":false}\n'
+      + '{"message":{"content":" мир"},"done":true,"prompt_eval_count":1234,"eval_count":56}\n',
+    );
+    return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(bytes); c.close(); } }) };
+  };
+  t.after(() => { global.fetch = before; });
+
+  const usages = [];
+  const text = await chat({
+    model: 'capri-qwen36-heretic:latest',
+    messages: [{ role: 'user', content: 'hi' }],
+    onUsage: (u) => usages.push(u),
+  }, () => {});
+
+  assert.equal(text, 'привет мир');
+  assert.equal(usages.length, 1);
+  assert.deepEqual(usages[0], {
+    model: 'capri-qwen36-heretic:latest',
+    promptTokens: 1234,
+    evalTokens: 56,
+    numCtx: 16384,
+  });
+  assert.deepEqual(getLastUsage(), usages[0]);
 });
 
 test('chat requires a terminal frame but accepts one without a trailing newline', async (t) => {

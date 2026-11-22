@@ -38,9 +38,11 @@ const pinned = new Set();
 const pin = (model) => model && pinned.add(model);
 const keepFor = (model, usual) => (pinned.has(model) || isAuxiliaryModel(model) ? -1 : usual);
 
-// Per-model context window rule (e.g. 26B = 16384): applied uniformly across chat, jsonChat, pick, and
-// warm so Ollama never reloads the model in VRAM due to mismatched num_ctx between callers.
+// Per-model context window rule (e.g. FAST/MAIN = 32768, auxiliary Qwen = 16384): applied uniformly
+// across chat, jsonChat, pick, and warm so Ollama never reloads the model in VRAM due to mismatched num_ctx.
+const AUX_DEFAULT_CTX = 16384;
 const contexts = new Map();
+let lastUsage = null;
 function setContextFor(model, numCtx) {
   if (!model) return;
   const n = Number(numCtx);
@@ -50,7 +52,10 @@ function setContextFor(model, numCtx) {
 function ctxFor(model, explicitCtx = null) {
   if (model && contexts.has(model)) return contexts.get(model);
   const n = Number(explicitCtx);
-  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : isAuxiliaryModel(model) ? 4096 : null;
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : isAuxiliaryModel(model) ? AUX_DEFAULT_CTX : null;
+}
+function getLastUsage() {
+  return lastUsage ? { ...lastUsage } : null;
 }
 
 // The models installed, by name ("llama3.2:latest", "beam:cloud"...).
@@ -142,7 +147,7 @@ async function unloadAll() {
 }
 
 // Her answer, streamed: onDelta(piece) as it comes, resolves with all of it.
-async function chat({ model, messages, numPredict = 240, keepAlive = '5m', numCtx = null }, onDelta, signal) {
+async function chat({ model, messages, numPredict = 240, keepAlive = '5m', numCtx = null, onUsage = null }, onDelta, signal) {
   // cloud models think before they answer, and that counts in num_predict: kept short, with room for it
   const thinking = canThink(model);
   const thinks = isCloud(model) && thinking;
@@ -175,6 +180,18 @@ async function chat({ model, messages, numPredict = 240, keepAlive = '5m', numCt
       onDelta(piece);
     }
     if (!msg.done) return false;
+    const hasPrompt = Number.isFinite(msg.prompt_eval_count) && msg.prompt_eval_count >= 0;
+    const hasEval = Number.isFinite(msg.eval_count) && msg.eval_count >= 0;
+    if (hasPrompt || hasEval) {
+      const usage = {
+        model,
+        promptTokens: hasPrompt ? Math.trunc(msg.prompt_eval_count) : null,
+        evalTokens: hasEval ? Math.trunc(msg.eval_count) : null,
+        numCtx: effectiveCtx,
+      };
+      lastUsage = usage;
+      try { onUsage?.(usage); } catch {}
+    }
     if (!text.trim()) console.warn('[capri] empty Ollama answer', model, {
       thinkingChars, doneReason: msg.done_reason || '', evalCount: msg.eval_count || 0,
     });
@@ -292,4 +309,4 @@ function screenModel(list = []) {
 const retryEmptyVision = (text, attempt) => attempt === 0 && !String(text || '').trim();
 const visionPrompt = (text) => String(text || '');
 
-module.exports = { base, models, loadedModels, isCloud, pin, setContextFor, ctxFor, account, freeModels, warm, unload, unloadAll, chat, jsonChat, pick, canSee, findSpokenModel, screenModel, retryEmptyVision, visionPrompt };
+module.exports = { AUX_DEFAULT_CTX, base, models, loadedModels, isCloud, pin, setContextFor, ctxFor, getLastUsage, account, freeModels, warm, unload, unloadAll, chat, jsonChat, pick, canSee, findSpokenModel, screenModel, retryEmptyVision, visionPrompt };

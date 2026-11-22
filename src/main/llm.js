@@ -217,13 +217,13 @@ function restoreClaude(saved) {
 
 const isChatSession = (id) => Boolean(id) && id === claudeSession;
 
-async function chat(id, cfg, { model, messages, numPredict, numCtx }, onDelta, signal) {
+async function chat(id, cfg, { model, messages, numPredict, numCtx, onUsage }, onDelta, signal) {
   const p = endpoint(id, cfg);
   // Stop hints apply strictly to local Ollama turns; filter them out for Ollama cloud/remote or other providers.
   const cleaned = p.kind === 'ollama' && isLocal(id, cfg, model)
     ? (Array.isArray(messages) ? messages : [])
     : stripBrainHints(messages);
-  if (p.kind === 'ollama') return ollama.chat({ model, messages: cleaned, numPredict, numCtx }, onDelta, signal);
+  if (p.kind === 'ollama') return ollama.chat({ model, messages: cleaned, numPredict, numCtx, onUsage }, onDelta, signal);
   // Claude Code keeps its own memory of the conversation: only her persona and your last message go
   if (p.kind === 'claude') return claudeChat(cfg, cleaned.at(-1)?.content || '', cleaned[0]?.content || '', onDelta, signal);
   return openaiChat(p, { model, messages: cleaned }, onDelta, signal);

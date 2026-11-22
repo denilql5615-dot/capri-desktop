@@ -5,7 +5,7 @@ const QWEN_MODELS = Object.freeze({
   qwen38: 'capri-qwen38-heretic:latest',
 });
 const PHONE_MODEL_KEYS = ['auto', 'e4b', '26b', ...Object.keys(QWEN_MODELS)];
-const isAuxiliaryModel = (model) => /(?:^|\/)capri-qwen3[68]-heretic(?::|$)|^hf\.co\/[^/]+\/qwen3\.[68][^:]*heretic/i.test(model || '');
+const isAuxiliaryModel = (model) => /(?:^|\/)capri-qwen3[68]-heretic(?::|$)|(?:^|\/)qwen3\.[68][^:/]*heretic/i.test(model || '');
 const mobileAutoOverride = (model, fast) => isAuxiliaryModel(model) ? fast : undefined;
 
 function resolveRequestedModel(selection, { fast, large }) {
@@ -16,4 +16,4 @@ function resolveRequestedModel(selection, { fast, large }) {
   throw new RangeError('Выбранная модель недоступна на ПК.');
 }
 
-module.exports = { PHONE_MODEL_KEYS, isAuxiliaryModel, mobileAutoOverride, resolveRequestedModel };
+module.exports = { QWEN_MODELS, PHONE_MODEL_KEYS, isAuxiliaryModel, mobileAutoOverride, resolveRequestedModel };

@@ -226,3 +226,42 @@ test('AgentSessions forwards useVault flag through send, enqueue and drain metad
   await reopened.drain();
   assert.deepEqual(seenMeta.at(-1), { useVault: false });
 });
+
+test('AgentSessions.send returns context stats when includeReply is true (runner actual or estimated fallback)', async () => {
+  const { buildContextStats } = require('../src/main/context-stats');
+  let mode = 'actual';
+  const { hub } = make(async (agent, _model, messages, _signal, _delta, meta) => {
+    const text = 'Облачный ответ с контекстом.';
+    if (mode === 'actual') {
+      return {
+        text,
+        actualModel: meta.actualModel,
+        context: buildContextStats({
+          model: meta.actualModel,
+          provider: agent,
+          memoryText: 'Заметка из Obsidian',
+          messages: [...messages, { role: 'assistant', content: text }],
+          actualPromptTokens: 900,
+          actualEvalTokens: 100,
+        }),
+      };
+    }
+    return { text, actualModel: meta.actualModel };
+  });
+
+  const id = hub.create('codex');
+  const withActual = await hub.send(id, 'gpt-6.2-astra', 'первый ход', false, false, true, {});
+  assert.equal(withActual.ok, true);
+  assert.equal(withActual.context.source, 'actual');
+  assert.equal(withActual.context.maxTokens, 272000);
+  assert.equal(withActual.context.usedTokens, 1000);
+  assert.equal(withActual.context.freeTokens, 271000);
+
+  mode = 'fallback';
+  const withFallback = await hub.send(id, 'sonnet', 'второй ход', false, false, true, { agent: 'claude' });
+  assert.equal(withFallback.ok, true);
+  assert.equal(withFallback.context.source, 'estimated');
+  assert.equal(withFallback.context.maxTokens, 1000000);
+  assert.ok(withFallback.context.usedTokens > 0);
+  assert.equal(withFallback.context.breakdown.free, withFallback.context.freeTokens);
+});
