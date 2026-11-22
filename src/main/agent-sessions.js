@@ -521,7 +521,13 @@ class AgentSessions {
         ...item,
         agent: targetAgent,
         messages: nextMessages,
-        queued: { agent: targetAgent, model, effort: resolved.effort, text: text.trim() },
+        queued: {
+          agent: targetAgent,
+          model,
+          effort: resolved.effort,
+          text: text.trim(),
+          ...(opts?.useVault === false && { useVault: false }),
+        },
         queueCancelled: undefined,
         updated: Date.now(),
       } : item));
@@ -547,6 +553,7 @@ class AgentSessions {
         await this.send(next.id, next.queued.model, next.queued.text, false, true, false, {
           effort: next.queued.effort,
           agent: next.queued.agent,
+          useVault: next.queued.useVault !== false,
         });
       }
     } catch (err) {
@@ -623,6 +630,7 @@ class AgentSessions {
         privateMode: opts?.privateMode,
         localOnly: opts?.localOnly,
         mode: opts?.mode,
+        useVault: opts?.useVault !== false,
       });
       abort.signal.throwIfAborted();
       const content = typeof result === 'string' ? result : result.text;

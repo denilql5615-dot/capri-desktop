@@ -971,6 +971,9 @@ class PhoneBridge {
       if (req.method === 'POST' && url.pathname === '/agents/send') {
         const body = await this.readJson(req, MAX_BODY * 4 + Math.ceil(MAX_UPLOAD_BYTES / 3) * 4);
         const rawText = typeof body.text === 'string' ? body.text : '';
+        if (body.useVault !== undefined && typeof body.useVault !== 'boolean') {
+          return this.send(res, 400, { ok: false, error: 'Некорректный режим чата.' });
+        }
         if (body.ephemeral === true || body.privateMode === true || body.localOnly === true
             || body.mode === 'private' || body.mode === 'nsfw'
             || /\[VAULT_LOCAL_ONLY\]|\[NO_MEMORY\]/i.test(rawText)) {
@@ -990,7 +993,7 @@ class PhoneBridge {
             || (Array.isArray(body.history) && body.history.some((row) => this.d.externalBlocked?.(String(row?.content || ''))))) {
           return this.send(res, 403, { ok: false, error: 'Облачные модели недоступны для этого запроса.' });
         }
-        const result = await this.d.agentSend?.(body);
+        const result = await this.d.agentSend?.({ ...body, useVault: body.useVault !== false });
         return this.send(res, 200, result || { ok: false });
       }
       if (req.method === 'POST' && url.pathname === '/agents/stop') {

@@ -450,6 +450,18 @@ function ensureAgentSessions() {
           throw new Error(TOR_CLOUD_BLOCK_MSG);
         }
       }
+      const cloudMessages = notes.prepareCloudObsidianMessages(messages, {
+        dir: notesDir(),
+        useVault: meta?.useVault !== false,
+        torQuarantined: torState.isQuarantined(),
+        messagesHaveTor,
+        hasSecret,
+        ephemeral: meta?.ephemeral,
+        privateMode: meta?.privateMode,
+        localOnly: meta?.localOnly,
+        mode: meta?.mode,
+      });
+      const cloudLastUser = cloudMessages.findLast((m) => m.role === 'user')?.content || lastUser;
       if (agent === 'gemini-web') {
         const webModel = model === 'gemini-web-hydrogen' ? 'code' : 'research';
         const expectedActual = model === 'gemini-web-hydrogen' ? 'gemini-4-hydrogen' : 'gemini-4-neon';
@@ -464,8 +476,8 @@ function ensureAgentSessions() {
         );
         const existingChatId = canContinueWebChat ? meta.session.webChatId : null;
         const prompt = existingChatId
-          ? lastUser
-          : workers.codexBrief([{ role: 'system', content: hints }, ...messages], workers.workDir(cfg));
+          ? cloudLastUser
+          : workers.codexBrief([{ role: 'system', content: hints }, ...cloudMessages], workers.workDir(cfg));
         const res = await agentWeb.askGemini({ prompt, chat: existingChatId, model: webModel, task: true });
         signal?.throwIfAborted();
         const text = String(res?.answer || '').trim();
@@ -493,7 +505,7 @@ function ensureAgentSessions() {
           'Если у тебя нет нужного инструмента, скажи об этом. Не выдавай ссылку или описание за созданный файл.',
           hints,
         ].join('\n');
-        let text = await run(cfg, [{ role: 'system', content: instruction }, ...messages], delta, signal, {
+        let text = await run(cfg, [{ role: 'system', content: instruction }, ...cloudMessages], delta, signal, {
           model,
           ...(meta?.effort && { effort: meta.effort }),
           sessionId: meta?.sessionId || meta?.session?.id || null,
@@ -527,7 +539,7 @@ function ensureAgentSessions() {
       const rp = agent === 'faun' && !brainsLib.isEmergency(lastUser);
       const generate = () => ollama.chat({ model, messages: [
         { role: 'system', content: rp ? `Веди ролевую сцену на русском, следуя сеттингу пользователя. ${brainsLib.RP_PROMPT}` : `Ты Альта (ALTAI:RE). Отвечай по-русски, точно и без воды. ${hints}` },
-        ...messages,
+        ...cloudMessages,
       ] }, delta, signal);
       return brains.isRole(model) ? brains.withModel(model, generate, signal) : generate();
     }, (id, delta) => chatsWin?.webContents.send('agents:update', { id, delta }));
@@ -1948,13 +1960,18 @@ async function applyPhone() {
       },
       agentCreate: async (agent) => ensureAgentSessions().create(agent),
       agentHistory: async (id) => ensureAgentSessions().history(id),
-      agentSend: async ({ id, agent, model, effort, text, retry, files, queue, history, ephemeral, privateMode, localOnly, mode, signal }) => {
+      agentSend: async ({ id, agent, model, effort, text, retry, files, queue, history, ephemeral, privateMode, localOnly, mode, useVault, signal }) => {
         signal?.throwIfAborted();
         if (ephemeral === true || privateMode === true || localOnly === true || mode === 'private' || mode === 'nsfw') {
           throw new Error('Облачные модели недоступны в этом режиме.');
         }
-        if (torState.isQuarantined() || (Array.isArray(history) && messagesHaveTor(history))) {
+        if (torState.isQuarantined()
+            || messagesHaveTor([{ role: 'user', content: String(text || '') }])
+            || (Array.isArray(history) && messagesHaveTor(history))) {
           throw new Error(TOR_CLOUD_BLOCK_MSG);
+        }
+        if (hasSecret(text) || (Array.isArray(history) && history.some((row) => hasSecret(row?.content)))) {
+          throw new Error('Облачные модели недоступны для этого запроса.');
         }
         const mgr = ensureAgentSessions();
         const session = mgr.sessions.find((item) => item.id === id);
@@ -1971,7 +1988,7 @@ async function applyPhone() {
         const baseText = String(text || '').trim() || (Array.isArray(files) && files.length ? 'Разбери прикреплённое вложение.' : '');
         const promptText = await withUploadedFiles(id, baseText, files);
         signal?.throwIfAborted();
-        const sendOpts = { effort, agent: targetAgent, history, ephemeral, privateMode, localOnly, mode };
+        const sendOpts = { effort, agent: targetAgent, history, ephemeral, privateMode, localOnly, mode, useVault: useVault !== false };
         if (queue === true && retry !== true) return mgr.enqueue(id, chosenModel, promptText, sendOpts);
         return mgr.send(id, chosenModel, promptText, retry === true, false, true, sendOpts);
       },
@@ -2379,7 +2396,7 @@ async function isMainBrainLoaded(signal, timeoutMs = 300) {
 async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = false, useVault = true } = {}) {
   const said = yourWords(messages);
   const hasImages = Array.isArray(messages) && messages.some((m) => Array.isArray(m?.images) && m.images.length > 0);
-  const shortTalk = String(said || '').trim().length < 15 && !hasImages;
+  const shortTalk = !hasImages && notes.isSmallTalk(said);
   const rp = !mobile && cfg.rp === true && !brainsLib.isEmergency(said);
   const rolesReady = cfg.provider === 'ollama' && brains.ready(chatModels);
   const auto = rolesReady && brains.isAuto(cfg.chatModel, chatModels);

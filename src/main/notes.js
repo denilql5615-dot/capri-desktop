@@ -18,7 +18,7 @@ const MAX_TEXT = 600;
 const ALWAYS = 6; // notes about you she always has in mind
 const MATCHED = 5; // and the ones that fit what you just said
 const VAULT_MATCHED = 3;
-const VAULT_TEXT = 360;
+const VAULT_TEXT = 900;
 const PENDING_REVIEW_DIR = 'pending_review';
 const MEMORY_ARCHIVE_DIR = '90_архив';
 const ACTIVE_MEMORY_DIRS = new Set(['10_ствол', '20_крона']);
@@ -83,7 +83,130 @@ function list(dir) {
   }).filter((n) => n?.text);
 }
 
-function markdownCandidate(parsed, title, relative, { privateRoot = false, history = false, fallbackDate = '' } = {}) {
+const NAV_OR_DIVIDER_RE = /^(?:[-_=]{3,}|(?:[-*]\s*)?(?:\[\[[^\]]+\]\](?:\s*[·|,]\s*)?)+)$/;
+
+function sliceLineAroundMatch(line, said, maxLen) {
+  if (line.length <= maxLen) return line;
+  const lineNorm = memoryRag.normalizeText(line);
+  const terms = [...memoryRag.exactTokens(said), ...memoryRag.stems(said)];
+  let matchPos = -1;
+  for (const term of terms) {
+    if (!term) continue;
+    const idx = lineNorm.indexOf(term);
+    if (idx !== -1 && (matchPos === -1 || idx < matchPos)) {
+      matchPos = idx;
+    }
+  }
+  if (matchPos === -1) return line.slice(0, maxLen).trim();
+  let start = Math.max(0, matchPos - Math.floor(maxLen / 4));
+  if (start > 0) {
+    const space = line.indexOf(' ', start);
+    if (space !== -1 && space - start < 24 && matchPos - space > 16) {
+      start = space + 1;
+    }
+  }
+  return line.slice(start, start + maxLen).trim();
+}
+
+function extractRelevantExcerpt(text, said = '', maxLen = VAULT_TEXT) {
+  const lines = String(text || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) return '';
+  const joined = lines.join(' ');
+  if (joined.length <= maxLen) return joined;
+
+  const queryStems = stems(said);
+  const exactQ = memoryRag.exactTokens(said);
+  const phrase = exactQ.join(' ');
+
+  let bestIdx = -1;
+  let bestScore = 0;
+
+  if (queryStems.size > 0 || exactQ.length > 0) {
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      const lineStems = stems(line);
+      const lineExact = new Set(memoryRag.exactTokens(line));
+      const lineNorm = memoryRag.normalizeText(line);
+
+      let score = 0;
+      for (const qw of queryStems) {
+        if (lineStems.has(qw)) score += 2;
+      }
+      for (const tok of exactQ) {
+        if (lineExact.has(tok)) score += 2;
+      }
+      if (phrase.length >= 3 && lineNorm.includes(phrase)) {
+        score += 3;
+      }
+      if (score > 0 && NAV_OR_DIVIDER_RE.test(line)) {
+        score -= 0.5;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+  }
+
+  if (bestIdx === -1) {
+    const firstProse = lines.findIndex((line) => !NAV_OR_DIVIDER_RE.test(line));
+    bestIdx = firstProse !== -1 ? firstProse : 0;
+  }
+
+  if (lines[bestIdx].length >= maxLen) {
+    return sliceLineAroundMatch(lines[bestIdx], said, maxLen);
+  }
+
+  let start = bestIdx;
+  let end = bestIdx;
+  let totalLen = lines[bestIdx].length;
+
+  // Include up to 2 preceding context lines (e.g. section heading) without crowding out the match
+  for (let steps = 0; steps < 2 && start > 0; steps += 1) {
+    const prev = lines[start - 1];
+    if (NAV_OR_DIVIDER_RE.test(prev)) break;
+    const candidateLen = totalLen + 1 + prev.length;
+    if (candidateLen > Math.floor(maxLen * 0.65) && !prev.startsWith('#')) break;
+    if (candidateLen > maxLen) break;
+    start -= 1;
+    totalLen = candidateLen;
+  }
+
+  while (end + 1 < lines.length) {
+    const next = lines[end + 1];
+    const candidateLen = totalLen + 1 + next.length;
+    if (candidateLen <= maxLen) {
+      end += 1;
+      totalLen = candidateLen;
+    } else {
+      break;
+    }
+  }
+
+  if (end === lines.length - 1) {
+    while (start > 0) {
+      const prev = lines[start - 1];
+      if (NAV_OR_DIVIDER_RE.test(prev)) break;
+      const candidateLen = totalLen + 1 + prev.length;
+      if (candidateLen <= maxLen) {
+        start -= 1;
+        totalLen = candidateLen;
+      } else {
+        break;
+      }
+    }
+  }
+
+  let excerpt = lines.slice(start, end + 1).join(' ');
+  if (end + 1 < lines.length && excerpt.length + 60 < maxLen) {
+    const remaining = maxLen - excerpt.length - 1;
+    const tail = lines[end + 1].slice(0, remaining).replace(/\s+\S*$/, '').trim();
+    if (tail) excerpt = `${excerpt} ${tail}`;
+  }
+  return excerpt.slice(0, maxLen).trim();
+}
+
+function markdownCandidate(parsed, title, relative, { privateRoot = false, history = false, fallbackDate = '', said = '' } = {}) {
   const layer = relative.split(path.sep)[0].toLowerCase();
   const status = unquote(parsed.meta.status);
   if (status === 'conflicted') return null;
@@ -92,11 +215,11 @@ function markdownCandidate(parsed, title, relative, { privateRoot = false, histo
     if (status !== requiredStatus) return null;
   }
   const { text } = parsed;
-  const excerpt = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 4).join(' ').slice(0, VAULT_TEXT);
+  const excerpt = extractRelevantExcerpt(text, said, VAULT_TEXT);
   return {
     title,
     text: excerpt,
-    body: text.slice(0, 4000),
+    body: text.slice(0, 12000),
     file: relative,
     layer: unquote(parsed.meta.layer) || layer,
     status,
@@ -155,7 +278,7 @@ function searchVault(dir, said, limit = VAULT_MATCHED, { history = false, journa
     try { parsed = parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
     const relative = path.relative(root, file);
     const title = path.basename(file, path.extname(file));
-    return markdownCandidate(parsed, title, relative, { history });
+    return markdownCandidate(parsed, title, relative, { history, said });
   }).filter(Boolean);
   return rankAndFormat(candidates, said, { limit, vaultOnly });
 }
@@ -265,7 +388,7 @@ function searchPrivateVault(dir, commonNotesDir, said, { key = null } = {}) {
       let parsed;
       try { parsed = parse(fs.readFileSync(file, 'utf8')); } catch { throw new Error('Приватный Vault недоступен.'); }
       const title = path.basename(file, path.extname(file));
-      return markdownCandidate(parsed, title, relative, { privateRoot: true });
+      return markdownCandidate(parsed, title, relative, { privateRoot: true, said });
     }
     let raw;
     try { raw = fs.readFileSync(file); } catch { throw new Error('Приватный Vault недоступен.'); }
@@ -273,7 +396,7 @@ function searchPrivateVault(dir, commonNotesDir, said, { key = null } = {}) {
     if (kind === 'md.enc') {
       const parsed = parse(decrypted);
       const title = unquote(parsed.meta.title) || path.basename(file).slice(0, -'.md.enc'.length);
-      return markdownCandidate(parsed, title, relative, { privateRoot: true, fallbackDate: mtimeDate });
+      return markdownCandidate(parsed, title, relative, { privateRoot: true, fallbackDate: mtimeDate, said });
     }
     let rows;
     try { rows = JSON.parse(decrypted); } catch { throw new Error('Приватный Vault недоступен.'); }
@@ -504,8 +627,69 @@ function writeOutput(dir, { worker, task, answer, folder: workFolder, artifacts 
   return `${OUT_DIR}/${name}.md`;
 }
 
-// Russian words are matched on their first five letters ("проекта", "проекту" -> "проек")
-const stems = (s) => new Set(String(s || '').toLowerCase().replace(/ё/g, 'е').match(/[a-zа-я0-9]{3,}/g)?.map((w) => w.slice(0, 5)) || []);
+// Unified tokenizer shared with memory-rag.js (keeps short codes and hyphenated ids like HZ-1, v3)
+const stems = memoryRag.stems;
+
+const SMALL_TALK_WORDS = new Set([
+  'привет', 'приветик', 'хай', 'хелло', 'хеллоу', 'hello', 'hi', 'hey', 'здравствуй', 'здравствуйте',
+  'доброе', 'добрый', 'утро', 'день', 'вечер', 'спокойной', 'ночи', 'пока', 'свидания', 'bye',
+  'ок', 'окей', 'ok', 'okay', 'хорошо', 'ладно', 'ясно', 'понял', 'поняла', 'понятно', 'принято',
+  'угу', 'ага', 'да', 'нет', 'неа', 'нормально', 'норм', 'отлично', 'супер', 'класс', 'круто', 'молодец',
+  'спасибо', 'спс', 'благодарю', 'пожалуйста', 'извини', 'прости', 'сорян', 'ку', 'мяу', 'тест', 'test', 'ping',
+  'как', 'дела', 'ты', 'что', 'нового', 'до', 'ну', 'а', 'и', 'в', 'на', 'по',
+]);
+
+function isSmallTalk(said) {
+  const raw = String(said || '').trim();
+  if (!raw) return true;
+  const cleaned = memoryRag.normalizeText(raw)
+    .replace(/[!?.,:;…—–\-()[\]"'«»`~/*+]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return true;
+  if (stems(raw).size === 0) return true;
+  const words = cleaned.split(' ').filter(Boolean);
+  return words.length <= 4 && words.every((w) => SMALL_TALK_WORDS.has(w));
+}
+
+const ISOLATED_MSG_RE = /\[VAULT_LOCAL_ONLY\]|\[NO_MEMORY\]/i;
+
+function prepareCloudObsidianMessages(messages, {
+  dir,
+  useVault = true,
+  torQuarantined = false,
+  messagesHaveTor = null,
+  hasSecret = null,
+  ephemeral = false,
+  privateMode = false,
+  localOnly = false,
+  mode = '',
+} = {}) {
+  if (!Array.isArray(messages) || !messages.length) return messages;
+  if (useVault === false || ephemeral === true || privateMode === true || localOnly === true || mode === 'private' || mode === 'nsfw') {
+    return messages;
+  }
+  if (torQuarantined === true) return messages;
+  if (typeof messagesHaveTor === 'function' && messagesHaveTor(messages)) return messages;
+  if (messages.some((m) => !m || m.ephemeral === true || m.private === true || m.privateMode === true || m.localOnly === true
+      || m.mode === 'private' || m.mode === 'nsfw' || ISOLATED_MSG_RE.test(String(m.content || '')))) {
+    return messages;
+  }
+  if (typeof hasSecret === 'function' && messages.some((m) => hasSecret(m?.content))) return messages;
+  const at = messages.map((m) => m?.role).lastIndexOf('user');
+  const said = at >= 0 ? messages[at]?.content : '';
+  if (typeof said !== 'string' || !said.trim() || isSmallTalk(said) || !dir) return messages;
+
+  const recalled = [
+    prompt(recall(list(dir), said, { matchedOnly: true })),
+    vaultPrompt(searchVault(dir, said)),
+  ].filter(Boolean).join('\n\n');
+  if (!recalled) return messages;
+  if (typeof hasSecret === 'function' && hasSecret(recalled)) return messages;
+  if (typeof messagesHaveTor === 'function' && messagesHaveTor([{ role: 'user', content: recalled }])) return messages;
+
+  return messages.map((m, i) => (i === at ? { ...m, content: `${said}\n\n(${recalled})` } : m));
+}
 
 // What she has in mind for this message: her notes about you, and the ones that share words with it
 function recall(notes, said, { matchedOnly = false } = {}) {
@@ -657,4 +841,5 @@ module.exports = {
   INDEX, TYPES, EXTRACT_SCHEMA, PLAN_DIR, RAW_DIR, OUT_DIR, PENDING_REVIEW_DIR, dirOf, fileName, list, searchVault, searchPrivateVault, savePrivateChat, savePrivateNote, write, writePendingCandidate, writeIndex, writePlanNote,
   appendChat, appendSearch, writeOutput,
   recall, prompt, vaultPrompt, extractMessages, parseFacts,
+  isSmallTalk, prepareCloudObsidianMessages, extractRelevantExcerpt,
 };

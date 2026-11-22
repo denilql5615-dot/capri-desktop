@@ -11,18 +11,60 @@ const WEIGHTS = Object.freeze({
 const TRUNK_SOURCES = new Set(['local_nomad', 'nomad', 'genesis_doc', 'kiwix', 'docs', 'reference']);
 const TRUNK_LINK_PREFIXES = ['http://', 'https://', 'nomad://', 'kiwix://'];
 
+const STOP_WORDS_2 = new Set([
+  'по', 'на', 'из', 'от', 'до', 'за', 'не', 'да', 'но', 'то', 'же', 'ли', 'бы', 'он', 'мы', 'вы', 'ты',
+  'во', 'со', 'ко', 'об', 'ни', 'ну', 'уж', 'их', 'ее', 'ей', 'им', 'ту', 'та', 'те', 'ти', 'ох', 'эх',
+  'ах', 'ой', 'ай', 'эй', 'ок', 'гм', 'ау',
+  'in', 'on', 'at', 'to', 'of', 'or', 'by', 'as', 'is', 'it', 'no', 'if', 'so', 'we', 'he', 'me', 'my',
+  'an', 'do', 'go', 'up', 'us', 'be', 'am', 'ok', 'hi', 'oh', 'ah', 'ha',
+]);
+
+const STOP_WORDS_3 = new Set([
+  'что', 'как', 'для', 'при', 'без', 'под', 'над', 'про', 'или', 'уже', 'еще', 'все', 'его', 'она', 'они',
+  'оно', 'так', 'вот', 'тут', 'там', 'где', 'кто', 'чем', 'кем', 'это', 'эта', 'эти', 'эту', 'нет',
+  'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'his', 'was', 'one', 'our',
+  'out', 'has', 'who', 'how', 'why', 'did', 'she', 'its', 'too',
+]);
+
 function normalizeText(s) {
   return String(s || '').toLowerCase().replace(/ё/g, 'е');
 }
 
+function isUsefulShortToken(tok) {
+  if (tok.length >= 3) return !STOP_WORDS_3.has(tok);
+  if (tok.length === 2) return /\d/.test(tok) || !STOP_WORDS_2.has(tok);
+  return false;
+}
+
 function stems(s) {
   const normalized = normalizeText(s);
-  const matches = normalized.match(/[a-zа-я0-9]{3,}/g) || [];
+  const matches = normalized.match(/[a-zа-я0-9]+(?:-[a-zа-я0-9]+)*/g) || [];
   const out = new Set();
   for (const w of matches) {
-    out.add(w.slice(0, 5));
+    if (w.includes('-')) {
+      if (w.length >= 2) out.add(w.slice(0, 32));
+      for (const part of w.split('-')) {
+        if (part.length >= 3 && !STOP_WORDS_3.has(part)) {
+          out.add(part.slice(0, 5));
+        } else if (part.length === 2 && /\d/.test(part)) {
+          out.add(part);
+        }
+      }
+      continue;
+    }
+    if (w.length >= 3) {
+      if (!STOP_WORDS_3.has(w)) out.add(w.slice(0, 5));
+    } else if (w.length === 2 && (/\d/.test(w) || !STOP_WORDS_2.has(w))) {
+      out.add(w);
+    }
   }
   return out;
+}
+
+function exactTokens(s) {
+  const normalized = normalizeText(s);
+  const matches = normalized.match(/[a-zа-я0-9_]+(?:-[a-zа-я0-9_]+)*/g) || [];
+  return matches.filter((tok) => (tok.includes('-') ? tok.length >= 2 : isUsefulShortToken(tok)));
 }
 
 function normalizeLayer(layer) {
@@ -66,52 +108,86 @@ function computeLexical(card, queryWords, rawQuery) {
   if (!qSet.size) return 0;
 
   const titleText = [card.title, card.topic].filter(Boolean).join(' ');
+  const fileText = String(card.file || '').replace(/\.md(?:\.enc)?$/i, '').replace(/[\\/._]+/g, ' ');
+  const titleFileText = [titleText, fileText].filter(Boolean).join(' ');
   const bodyText = [card.body, card.text].filter(Boolean).join(' ');
   const quoteText = String(card.quote || '');
 
   const titleStems = stems(titleText);
+  const fileStems = stems(fileText);
   const bodyStems = stems(bodyText);
   const quoteStems = stems(quoteText);
 
-  let weightedHits = 0;
   let matchedWords = 0;
+  let titleMatched = 0;
+  let titleFileMatched = 0;
+  let bodyMatched = 0;
 
   for (const qw of qSet) {
-    let wordWeight = 0;
-    if (titleStems.has(qw)) wordWeight += 2.0;
-    if (bodyStems.has(qw)) wordWeight += 1.0;
-    if (quoteStems.has(qw)) wordWeight += 0.8;
+    const inTitle = titleStems.has(qw);
+    const inFile = fileStems.has(qw);
+    const inBody = bodyStems.has(qw);
+    const inQuote = quoteStems.has(qw);
 
-    if (wordWeight > 0) {
-      matchedWords += 1;
-      weightedHits += wordWeight;
-    }
+    if (inTitle) titleMatched += 1;
+    if (inTitle || inFile) titleFileMatched += 1;
+    if (inBody || inQuote) bodyMatched += 1;
+    if (inTitle || inFile || inBody || inQuote) matchedWords += 1;
   }
 
   if (matchedWords === 0) return 0;
 
-  const maxPossiblePerWord = 2.0;
-  const coverage = matchedWords / qSet.size;
-  const weightedDensity = Math.min(1, weightedHits / (qSet.size * maxPossiblePerWord));
+  const overallCoverage = matchedWords / qSet.size;
+  const titleCoverage = titleMatched / qSet.size;
+  const titleFileCoverage = titleFileMatched / qSet.size;
+  const bodyCoverage = bodyMatched / qSet.size;
 
-  let exactCoverage = coverage;
+  let exactCoverage = overallCoverage;
+  let titleFileExactCoverage = titleFileCoverage;
   let phraseBonus = 0;
-  const cleanQuery = normalizeText(rawQuery).trim();
-  const fullHaystack = normalizeText(`${titleText} ${bodyText} ${quoteText}`);
-  if (cleanQuery.length >= 4 && fullHaystack.includes(cleanQuery)) {
-    phraseBonus = 0.15;
+
+  const cleanQuery = normalizeText(rawQuery).replace(/\s+/g, ' ').trim();
+  const exactQ = exactTokens(rawQuery);
+  const effectivePhrase = exactQ.length > 0 ? exactQ.join(' ') : cleanQuery;
+
+  const normTitle = normalizeText(card.title).replace(/\s+/g, ' ').trim();
+  const normTitleFile = normalizeText(titleFileText).replace(/\s+/g, ' ').trim();
+  const normBodyQuote = normalizeText(`${bodyText} ${quoteText}`).replace(/\s+/g, ' ').trim();
+
+  if (effectivePhrase) {
+    if (normTitle === cleanQuery || normTitle === effectivePhrase) {
+      phraseBonus = 0.22;
+    } else if (effectivePhrase.length >= 3 && (normTitle.includes(effectivePhrase) || normTitleFile.includes(effectivePhrase))) {
+      phraseBonus = 0.14;
+    } else if (cleanQuery.length >= 3 && (normTitle.includes(cleanQuery) || normTitleFile.includes(cleanQuery))) {
+      phraseBonus = 0.12;
+    } else if (cleanQuery.length >= 4 && normBodyQuote.includes(cleanQuery)) {
+      phraseBonus = 0.04;
+    }
   }
-  const exactQ = cleanQuery.match(/[a-zа-я0-9_]+/g) || [];
+
   if (exactQ.length > 0) {
-    const exactHay = new Set(fullHaystack.match(/[a-zа-я0-9_]+/g) || []);
+    const fullHaystack = `${normTitleFile} ${normBodyQuote}`;
+    const exactHay = new Set(exactTokens(fullHaystack));
+    const titleFileExactHay = new Set(exactTokens(normTitleFile));
     let exactHits = 0;
+    let titleFileExactHits = 0;
     for (const tok of exactQ) {
       if (exactHay.has(tok)) exactHits += 1;
+      if (titleFileExactHay.has(tok)) titleFileExactHits += 1;
     }
     exactCoverage = exactHits / exactQ.length;
+    titleFileExactCoverage = titleFileExactHits / exactQ.length;
   }
 
-  const rawScore = 0.35 * coverage + 0.30 * weightedDensity + 0.35 * exactCoverage + phraseBonus;
+  const rawScore =
+    0.22 * overallCoverage +
+    0.22 * exactCoverage +
+    0.22 * titleFileCoverage +
+    0.14 * titleCoverage +
+    0.12 * titleFileExactCoverage +
+    0.08 * bodyCoverage +
+    phraseBonus;
   return Math.max(0, Math.min(1, Number(rawScore.toFixed(6))));
 }
 
@@ -302,6 +378,8 @@ function rankCards(cards, query, { limit = 3, nowMs = Date.now(), minScore = 0.1
 
 module.exports = {
   WEIGHTS,
+  normalizeText,
+  exactTokens,
   stems,
   scoreCard,
   rankCards,

@@ -205,3 +205,24 @@ test('multi-provider cloud session preserves full history across Codex -> Antigr
     /Изолированная история/,
   );
 });
+
+test('AgentSessions forwards useVault flag through send, enqueue and drain metadata', async () => {
+  const seenMeta = [];
+  const { hub, file } = make(async (_agent, _model, _messages, _signal, _delta, meta) => {
+    seenMeta.push({ useVault: meta.useVault });
+    return { text: 'ok', actualModel: meta.actualModel };
+  });
+  const id = hub.create('codex');
+  await hub.send(id, 'gpt-6.2-sol', 'default vault', false, false, true, {});
+  await hub.send(id, 'gpt-6.2-sol', 'disabled vault', false, false, true, { useVault: false });
+  assert.deepEqual(seenMeta, [{ useVault: true }, { useVault: false }]);
+
+  hub.active.set('blocker', new AbortController());
+  hub.enqueue(id, 'gpt-6.2-sol', 'queued without vault', { useVault: false });
+  const reopened = new AgentSessions(file, async (_a, _m, _msgs, _s, _d, meta) => {
+    seenMeta.push({ useVault: meta.useVault });
+    return { text: 'ok-queued', actualModel: meta.actualModel };
+  }, () => {});
+  await reopened.drain();
+  assert.deepEqual(seenMeta.at(-1), { useVault: false });
+});

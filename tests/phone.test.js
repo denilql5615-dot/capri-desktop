@@ -751,3 +751,39 @@ test('suggestions: 3 x 10 x 5 pool rotates sets without repeats and keeps privat
   assert.strictEqual(chatCalls.at(-1).ephemeral, true);
   assert.strictEqual(chatCalls.at(-1).source, 'vault');
 });
+
+test('bridge: /agents/send propagates useVault and blocks Tor/secrets/private/ephemeral/nsfw', async () => {
+  const seen = [];
+  const bridge = new PhoneBridge({
+    token: () => 'agent-key',
+    externalBlocked: (q) => /\btor\b|SECRET_123/i.test(String(q || '')),
+    agentSend: async (body) => {
+      seen.push({ text: body.text, useVault: body.useVault });
+      return { ok: true, text: 'ok' };
+    },
+  });
+  const port = await bridge.start(0, '127.0.0.1');
+  const post = (body) => fetch(`http://127.0.0.1:${port}/agents/send`, {
+    method: 'POST',
+    headers: { 'x-capri-token': 'agent-key' },
+    body: JSON.stringify(body),
+  });
+
+  try {
+    assert.strictEqual((await post({ id: 's1', model: 'm', text: 'HZ-1' })).status, 200);
+    assert.strictEqual((await post({ id: 's1', model: 'm', text: 'HZ-1', useVault: false })).status, 200);
+    assert.deepStrictEqual(seen, [
+      { text: 'HZ-1', useVault: true },
+      { text: 'HZ-1', useVault: false },
+    ]);
+
+    assert.strictEqual((await post({ id: 's1', model: 'm', text: 'HZ-1', useVault: 'no' })).status, 400);
+    assert.strictEqual((await post({ id: 's1', model: 'm', text: 'HZ-1 через tor' })).status, 403);
+    assert.strictEqual((await post({ id: 's1', model: 'm', text: 'HZ-1 SECRET_123' })).status, 403);
+    assert.strictEqual((await post({ id: 's1', model: 'm', text: 'HZ-1', mode: 'private' })).status, 403);
+    assert.strictEqual((await post({ id: 's1', model: 'm', text: 'HZ-1', ephemeral: true })).status, 403);
+    assert.strictEqual((await post({ id: 's1', model: 'm', text: 'HZ-1', mode: 'nsfw' })).status, 403);
+  } finally {
+    await bridge.stop();
+  }
+});

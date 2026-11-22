@@ -300,3 +300,45 @@ test('scoreCard поддерживает строку query вторым арг�
   assert.equal(byString.score, bySet.score);
   assert.deepEqual(byString.factors, bySet.factors);
 });
+
+test('stems сохраняет короткие коды и дефисные идентификаторы (HZ-1, ALTA, 26B, E4B, v3, API, MCP, CLI, 13T)', () => {
+  for (const code of ['HZ-1', 'ALTA', '26B', 'E4B', 'v3', 'API', 'MCP', 'CLI', '13T']) {
+    const out = memoryRag.stems(code);
+    assert.ok(out.size >= 1, `Ожидался токен для ${code}`);
+  }
+  assert.ok(memoryRag.stems('HZ-1').has('hz-1'));
+  assert.ok(memoryRag.stems('v3').has('v3'));
+  assert.deepEqual([...memoryRag.stems('что по альта')], ['альта']);
+});
+
+test('rankCards ставит совпадение в title/file выше более свежих совпадений только в теле заметки', () => {
+  const planAlta = {
+    id: 'plan-alta',
+    title: 'План ALTA',
+    file: 'ALTA\\План ALTA.md',
+    body: 'Дорожная карта переговоров со студиями.',
+    created: '',
+    updated: '',
+  };
+  const songOfAshes = {
+    id: 'soa-1',
+    title: 'GDD демо — костяк',
+    file: 'Song of Ashes\\GDD демо — костяк.md',
+    body: 'Учебный план демонстрации на встрече ALTA Alliance.',
+    updated: '2026-11-18',
+  };
+  const hzNote = {
+    id: 'hz-1-doc',
+    title: 'Паспорт теста',
+    file: 'GENESIS\\Altair\\HZ-1\\Паспорт теста.md',
+    body: 'Проверки мобильного чата.',
+    updated: '2026-11-18',
+  };
+
+  const planHits = memoryRag.rankCards([songOfAshes, planAlta], 'План ALTA', { limit: 2, nowMs: NOW_MS });
+  assert.equal(planHits[0].id, 'plan-alta');
+
+  const hzHits = memoryRag.rankCards([songOfAshes, hzNote], 'HZ-1', { limit: 2, nowMs: NOW_MS });
+  assert.equal(hzHits.length, 1);
+  assert.equal(hzHits[0].id, 'hz-1-doc');
+});

@@ -60,7 +60,7 @@ test('she reads only the best matching excerpts from the Obsidian vault', () => 
   fs.mkdirSync(path.join(vault, 'GENESIS'));
   fs.mkdirSync(path.join(vault, '.obsidian'));
   fs.mkdirSync(dir);
-  fs.writeFileSync(path.join(vault, 'GENESIS', 'Решения.md'), '# Решения\n\nРендерер Капри — Electron и Canvas.\nСледующая строка.\nЕщё строка.\nЛишняя строка.');
+  fs.writeFileSync(path.join(vault, 'GENESIS', 'Решения.md'), `# Решения\n\nРендерер Капри — Electron и Canvas.\nСледующая строка.\nЕщё строка.\n${'Подробности архива. '.repeat(55)}\nЛишняя строка.`);
   fs.writeFileSync(path.join(vault, 'Главная.md'), '# C.A.P.R.I\n\nКарта базы проекта Капри.');
   fs.writeFileSync(path.join(vault, '.obsidian', 'Секрет.md'), 'Рендерер секретный.');
   fs.writeFileSync(path.join(dir, 'Проект.md'), 'Капри использует другой рендерер.');
@@ -251,4 +251,109 @@ test('searchVault and vaultPrompt preserve source file, date and recency priorit
   const formatted = notes.vaultPrompt(hits);
   assert.match(formatted, /Fresh user corrections in the current chat and newer dated notes take priority/);
   assert.match(formatted, /\[источник: GENESIS[\\/]Архитектура\.md, дата: 2026-11-22\]/);
+});
+
+test('searchVault finds HZ-1 notes, prioritizes План ALTA title over Song of Ashes, and extracts up to 900 chars around match in middle of file', (t) => {
+  const vault = tmp();
+  t.after(() => fs.rmSync(vault, { recursive: true, force: true }));
+  const capri = path.join(vault, 'Capri');
+  fs.mkdirSync(capri, { recursive: true });
+  fs.mkdirSync(path.join(vault, 'GENESIS', 'Altair', 'HZ-1'), { recursive: true });
+  fs.mkdirSync(path.join(vault, 'ALTA'), { recursive: true });
+  fs.mkdirSync(path.join(vault, 'Song of Ashes'), { recursive: true });
+
+  const navHeader = Array.from({ length: 12 }, (_, idx) => `- [[Навигация ${idx + 1}]]`).join('\n');
+  const paddingBefore = Array.from({ length: 12 }, (_, idx) => `Вводный абзац ${idx + 1}: общий контекст разработки без целевого кода.`).join('\n');
+  const middleSection = [
+    '## Целевой раздел HZ-1',
+    'Мобильный чат Altair проходит ручную проверку HZ-1 на Xiaomi 13T Pro: облачный каталог моделей, история между провайдерами и переключение усилия.',
+    'Дополнительная строка деталей для проверки расширенного окна сниппета до 900 знаков.',
+  ].join('\n');
+  const paddingAfter = Array.from({ length: 15 }, (_, idx) => `Хвостовой абзац ${idx + 1}: завершение документа.`).join('\n');
+
+  fs.writeFileSync(
+    path.join(vault, 'GENESIS', 'Altair', 'HZ-1', 'HZ-1 — паспорт.md'),
+    `${navHeader}\n\n${paddingBefore}\n\n${middleSection}\n\n${paddingAfter}\n`,
+  );
+  fs.writeFileSync(
+    path.join(vault, 'ALTA', 'План ALTA.md'),
+    '# План ALTA\n\nОсновной план работы с игровыми студиями ALTA Alliance.\n',
+  );
+  fs.writeFileSync(
+    path.join(vault, 'Song of Ashes', 'GDD демо.md'),
+    '---\nupdated: 2026-11-22\n---\n# GDD демо\n\nПлан демонстрации игры упоминает партнёра ALTA в теле документа.\n',
+  );
+
+  const hzHits = notes.searchVault(capri, 'HZ-1', 3);
+  assert.equal(hzHits.length, 1);
+  assert.match(hzHits[0].file, /GENESIS[\\/]Altair[\\/]HZ-1[\\/]HZ-1 — паспорт\.md$/);
+  assert.match(hzHits[0].text, /Целевой раздел HZ-1/);
+  assert.match(hzHits[0].text, /Xiaomi 13T Pro/);
+  assert.doesNotMatch(hzHits[0].text, /Навигация 1\]\]/);
+  assert.ok(hzHits[0].text.length > 360 && hzHits[0].text.length <= 900);
+
+  const altaHits = notes.searchVault(capri, 'План ALTA', 3);
+  assert.equal(altaHits[0].file, path.join('ALTA', 'План ALTA.md'));
+});
+
+test('isSmallTalk skips only trivial replies and keeps short meaningful queries for Obsidian', () => {
+  for (const trivial of ['', '   ', 'привет', 'привет!', 'ок', 'да', 'нет', 'спасибо', 'понял', 'ага', 'ладно', 'привет, как дела?']) {
+    assert.equal(notes.isSmallTalk(trivial), true, `Expected small talk for "${trivial}"`);
+  }
+  for (const meaningful of ['HZ-1', 'План ALTA', 'v3', 'API', 'Altair', 'что по альта', '26B', 'E4B']) {
+    assert.equal(notes.isSmallTalk(meaningful), false, `Expected meaningful query for "${meaningful}"`);
+  }
+});
+
+test('prepareCloudObsidianMessages injects shared Obsidian only when safe and blocks private/useVault=false/Tor/secrets', (t) => {
+  const vault = tmp();
+  t.after(() => fs.rmSync(vault, { recursive: true, force: true }));
+  const capri = path.join(vault, 'Capri');
+  fs.mkdirSync(path.join(vault, 'GENESIS', 'Altair', 'HZ-1'), { recursive: true });
+  fs.mkdirSync(capri, { recursive: true });
+  fs.writeFileSync(
+    path.join(vault, 'GENESIS', 'Altair', 'HZ-1', 'HZ-1 — паспорт.md'),
+    '# HZ-1 — паспорт\n\nОбщий факт из базы по коду HZ-1.\n',
+  );
+  fs.writeFileSync(
+    path.join(capri, 'Секрет.md'),
+    '---\nsource: "vault"\n---\nПриватная заметка HZ-1 не должна уходить в облако.\n',
+  );
+
+  const baseMessages = [{ role: 'user', content: 'Что по HZ-1?' }];
+  const enriched = notes.prepareCloudObsidianMessages(baseMessages, {
+    dir: capri,
+    useVault: true,
+    hasSecret: (s) => /SECRET_TOKEN/.test(String(s || '')),
+    messagesHaveTor: (rows) => rows.some((r) => /\.onion|\btor\b/i.test(String(r?.content || ''))),
+  });
+  assert.match(enriched[0].content, /Что по HZ-1\?/);
+  assert.match(enriched[0].content, /Общий факт из базы по коду HZ-1/);
+  assert.doesNotMatch(enriched[0].content, /Приватная заметка HZ-1/);
+
+  assert.deepEqual(
+    notes.prepareCloudObsidianMessages(baseMessages, { dir: capri, useVault: false }),
+    baseMessages,
+  );
+  assert.deepEqual(
+    notes.prepareCloudObsidianMessages(baseMessages, { dir: capri, torQuarantined: true }),
+    baseMessages,
+  );
+  assert.deepEqual(
+    notes.prepareCloudObsidianMessages([{ role: 'user', content: 'HZ-1 через tor' }], {
+      dir: capri,
+      messagesHaveTor: (rows) => rows.some((r) => /\btor\b/i.test(String(r?.content || ''))),
+    }),
+    [{ role: 'user', content: 'HZ-1 через tor' }],
+  );
+  for (const isolated of [{ ephemeral: true }, { privateMode: true }, { localOnly: true }, { mode: 'private' }, { mode: 'nsfw' }]) {
+    assert.deepEqual(notes.prepareCloudObsidianMessages(baseMessages, { dir: capri, ...isolated }), baseMessages);
+  }
+  assert.deepEqual(
+    notes.prepareCloudObsidianMessages([{ role: 'user', content: 'HZ-1 SECRET_TOKEN' }], {
+      dir: capri,
+      hasSecret: (s) => /SECRET_TOKEN/.test(String(s || '')),
+    }),
+    [{ role: 'user', content: 'HZ-1 SECRET_TOKEN' }],
+  );
 });
