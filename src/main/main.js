@@ -46,6 +46,7 @@ const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota 
 const { QuotaHub, groupFor, GROUPS: QUOTA_GROUPS } = require('./quota-hub');
 const { readAgyLive, readSnapshot: readAgyStatusLineSnapshot, poolsToGroups } = require('./quota-agy');
 const { readClaudeUsage, mergeClaudeWindows } = require('./quota-claude');
+const { duringActivity } = require('./activity-phase');
 const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('./hub-artifacts');
 const notes = require('./notes');
 const privateVaultCrypto = require('./private-vault-crypto');
@@ -396,6 +397,28 @@ let demoWin = null;
 const chatsFile = () => path.join(app.getPath('userData'), 'chats.json');
 let chatsWin = null;
 let agentSessions;
+function sendActivity(channel, payload) {
+  if (chatsWin && !chatsWin.isDestroyed()) chatsWin.webContents.send(channel, payload);
+}
+
+function chatActivity(id, signal) {
+  const runId = randomUUID();
+  let started = false;
+  const send = (event) => sendActivity('chats:activity', { id, runId, event });
+  return {
+    publish: id ? (event) => {
+      if (signal.aborted) return;
+      if (!started) {
+        started = true;
+        send({ kind: 'turn', state: 'running' });
+      }
+      send(event);
+    } : undefined,
+    finish(state) {
+      if (started) send({ kind: 'turn', state: signal.aborted ? 'stopped' : state });
+    },
+  };
+}
 const hubArtifactRoot = (cfg = config.load()) => path.join(workers.workDir(cfg), 'hub-artifacts');
 let codexQuota;
 let codexQuotaPending;
@@ -602,7 +625,7 @@ function ensureAgentSessions() {
           throw new Error(TOR_CLOUD_BLOCK_MSG);
         }
       }
-      const cloudMessages = notes.prepareCloudObsidianMessages(messages, {
+      const prepareMemory = () => notes.prepareCloudObsidianMessages(messages, {
         dir: notesDir(),
         useVault: meta?.useVault !== false,
         torQuarantined: torState.isQuarantined(),
@@ -613,6 +636,8 @@ function ensureAgentSessions() {
         localOnly: meta?.localOnly,
         mode: meta?.mode,
       });
+      const cloudMessages = meta?.useVault === false
+        ? prepareMemory() : await duringActivity(meta?.onActivity, 'memory', prepareMemory);
       const cloudLastUser = cloudMessages.findLast((m) => m.role === 'user')?.content || lastUser;
       const memoryText = lastUserSuffix(messages, cloudMessages);
       const baseHistory = messages.filter((m) => m?.role !== 'system');
@@ -633,7 +658,7 @@ function ensureAgentSessions() {
         const prompt = existingChatId
           ? cloudLastUser
           : workers.codexBrief([{ role: 'system', content: combinedHints }, ...cloudMessages], cwd);
-        const res = await agentWeb.askGemini({ prompt, chat: existingChatId, model: webModel, task: true });
+        const res = await agentWeb.askGemini({ prompt, chat: existingChatId, model: webModel, task: true, signal, onActivity: meta?.onActivity });
         signal?.throwIfAborted();
         const text = String(res?.answer || '').trim();
         if (text) delta(text);
@@ -723,14 +748,14 @@ function ensureAgentSessions() {
         ? `Веди ролевую сцену на русском, следуя сеттингу пользователя. ${brainsLib.RP_PROMPT}`
         : 'Ты Альта (ALTAI:RE). Отвечай по-русски, точно и без воды.';
       let usage = null;
-      const generate = () => ollama.chat({
+      const generate = () => duringActivity(meta?.onActivity, 'generation', () => ollama.chat({
         model,
         messages: [
           { role: 'system', content: rp ? localSystem : `${localSystem} ${combinedHints}`.trim() },
           ...cloudMessages,
         ],
         onUsage: (u) => { usage = u; },
-      }, delta, signal);
+      }, delta, signal));
       const text = await (brains.isRole(model) ? brains.withModel(model, generate, signal) : generate());
       const context = buildContextStats({
         model,
@@ -746,9 +771,7 @@ function ensureAgentSessions() {
       });
       return { text, artifacts: [], actualModel: model, context };
     }, (id, delta) => chatsWin?.webContents.send('agents:update', { id, delta }), {
-      notifyActivity: (payload) => {
-        if (chatsWin && !chatsWin.isDestroyed()) chatsWin.webContents.send('agents:activity', payload);
-      },
+      notifyActivity: (payload) => sendActivity('agents:activity', payload),
       skillsEngine: ensureSkillsEngine(),
       pluginsEngine: ensurePluginsEngine(),
       connectorsEngine: ensureConnectorsEngine(),
@@ -2605,7 +2628,7 @@ async function applyPhone() {
             memoryText: lastUserSuffix(messages, withVault),
             toolsText: '',
           }
-          : await prepLocal(cfg, messages, { explicitModel: requestedModel, mobile: opts.mobile, useVault: opts.useVault });
+          : await prepLocal(cfg, messages, { explicitModel: requestedModel, mobile: opts.mobile, useVault: opts.useVault, onActivity: opts.onActivity });
         prepared.numPredict = opts.numPredict ?? prepared.numPredict;
         const torAfterPrep = torSensitive || messagesHaveTor(prepared.messages);
         const autoOverride = !model ? pickMobileAutoOverride() : undefined;
@@ -2624,6 +2647,7 @@ async function applyPhone() {
             persistFallback: !opts.localOnly && !model,
             strictModel: Boolean(requestedModel),
             model,
+            onActivity: opts.onActivity,
             onUsage: (u) => { usage = u; },
             onSuccess: ({ model: okModel }) => { usedModel = okModel; },
           },
@@ -2738,7 +2762,7 @@ async function applyPhone() {
       },
       agentCreate: async (agent) => ensureAgentSessions().create(agent),
       agentHistory: async (id) => ensureAgentSessions().history(id),
-      agentSend: async ({ id, agent, model, effort, text, retry, files, queue, history, ephemeral, privateMode, localOnly, mode, useVault, signal, quotaScope }) => {
+      agentSend: async ({ id, agent, model, effort, text, retry, files, queue, history, ephemeral, privateMode, localOnly, mode, useVault, signal, quotaScope, notifyActivity }) => {
         signal?.throwIfAborted();
         if (ephemeral === true || privateMode === true || localOnly === true || mode === 'private' || mode === 'nsfw') {
           throw new Error('Облачные модели недоступны в этом режиме.');
@@ -2766,7 +2790,7 @@ async function applyPhone() {
         const baseText = String(text || '').trim() || (Array.isArray(files) && files.length ? 'Разбери прикреплённое вложение.' : '');
         const promptText = await withUploadedFiles(id, baseText, files);
         signal?.throwIfAborted();
-        const sendOpts = { effort, agent: targetAgent, history, ephemeral, privateMode, localOnly, mode, useVault: useVault !== false };
+        const sendOpts = { effort, agent: targetAgent, history, ephemeral, privateMode, localOnly, mode, useVault: useVault !== false, notifyActivity };
         if (queue === true && retry !== true) return mgr.enqueue(id, chosenModel, promptText, sendOpts);
         return withQuota(groupFor(targetAgent, chosenModel), quotaScope, () =>
           mgr.send(id, chosenModel, promptText, retry === true, false, true, sendOpts));
@@ -3228,7 +3252,7 @@ async function isMainBrainLoaded(signal, timeoutMs = 300) {
   }
 }
 
-async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = false, useVault = true, skills = [] } = {}) {
+async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = false, useVault = true, skills = [], onActivity } = {}) {
   const said = yourWords(messages);
   const hasImages = Array.isArray(messages) && messages.some((m) => Array.isArray(m?.images) && m.images.length > 0);
   const shortTalk = !hasImages && notes.isSmallTalk(said);
@@ -3244,9 +3268,11 @@ async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = 
   }
   const includeRecentPhone = Boolean(mobile && Array.isArray(messages) && messages.filter((m) => m.role !== 'system').length <= 2);
   const skipNotes = !useVault || (shortTalk && !includeRecentPhone);
-  const withMemory = skipNotes ? messages : withNotes(messages, { matchedOnly: mobile, includeRecentPhone });
+  const withMemory = skipNotes ? messages : await duringActivity(onActivity, 'memory', () =>
+    withNotes(messages, { matchedOnly: mobile, includeRecentPhone }));
   const memoryText = skipNotes ? '' : lastUserSuffix(messages, withMemory);
-  const enriched = skipNotes ? messages : await withPim(withMemory, said);
+  const pimActivity = quick.isQuickMail(said) || pim.isCalendarQuestion(said) ? onActivity : null;
+  const enriched = skipNotes ? messages : await duringActivity(pimActivity, 'tools', () => withPim(withMemory, said));
   const toolsText = skipNotes ? '' : lastUserSuffix(withMemory, enriched);
   let finalMessages = rp ? brainsLib.withRp(enriched) : enriched;
   let skillsText = '';
@@ -3292,6 +3318,7 @@ async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = 
       ephemeral: false,
       isCloud: cfg.provider !== 'ollama',
       torQuarantined: torCtx,
+      onActivity,
     });
     if (lastUserIdx >= 0 && connCtx.cleanedText && connCtx.cleanedText !== cleanSaid) {
       finalMessages = finalMessages.map((m, idx) => (idx === lastUserIdx ? { ...m, content: connCtx.cleanedText } : m));
@@ -3334,8 +3361,9 @@ async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch,
       ? baseMessages
       : require('./brain/influence-glue').stripBrainHints(baseMessages);
     try {
-      const generate = () => withQuota(cfg.provider === 'claude' ? 'claude' : null, 'chat', () =>
-        llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict, onUsage: opts?.onUsage }, send, signal));
+      const generate = () => duringActivity(opts?.onActivity, 'generation', () =>
+        withQuota(cfg.provider === 'claude' ? 'claude' : null, 'chat', () =>
+          llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict, onUsage: opts?.onUsage }, send, signal)));
       const needsSwap = cfg.provider === 'ollama' && model && (isAuxiliaryModel(model) || brains.auxiliary);
       const text = needsSwap ? await brains.withModel(model, generate, signal) : await generate();
       if (opts?.persistFallback !== false && model !== pickModel(cfg)) updateConfig({ chatModel: model });
@@ -3960,11 +3988,15 @@ function registerIpc() {
     randomUUID,
   });
   let verifiedNomadSource = null;
-  ipcMain.handle('chat:send', async (_e, { id, messages, voice }) => {
+  ipcMain.handle('chat:send', async (_e, { id, messages, voice, showActivity }) => {
     if (brains.visionRunning) return { ok: false, error: brainsLib.VISION_BUSY };
     verifiedNomadSource = null;
     const abort = new AbortController();
     chats.set(id, abort);
+    const contextHasTor = messagesHaveTor(messages);
+    const activity = chatActivity(showActivity === true && !contextHasTor && !torState.isQuarantined()
+      ? chatLog.read(chatsFile()).current : null, abort.signal);
+    let activityState = 'done';
     const turnId = randomUUID();
     const turnStartedAt = Date.now();
     try {
@@ -3978,7 +4010,6 @@ function registerIpc() {
       const turnAb = require('./brain/influence-glue').resolveInfluenceAb(cfg, turnStartedAt);
       const lastUserMsg = Array.isArray(messages) ? messages.findLast((m) => m?.role === 'user') : null;
       const lastUserHasTor = lastUserMsg ? messagesHaveTor([lastUserMsg]) : false;
-      const contextHasTor = messagesHaveTor(messages);
       if (lastUserHasTor) touchTor({ inChat: true });
       const rootQuestion = yourWords(messages);
       if (cfg.memoryRootLookup === 'on' && memoryRoot.parseNomadRootCommand(rootQuestion)) {
@@ -4055,7 +4086,11 @@ function registerIpc() {
       if (['claude', 'codex', 'gemini'].includes(worker)) router.hold(route.tier || 'routine');
       let actualWorker = worker;
       let endWorkerQuota;
+      let workerRun = 0;
+      let workerAgent;
       const onStep = (step, prev = []) => {
+        workerRun += 1;
+        workerAgent = ['claude', 'codex'].includes(step) ? step : 'gemini';
         endWorkerQuota?.();
         const group = groupFor(['claude', 'codex'].includes(step) ? step : 'gemini', step);
         endWorkerQuota = startQuotaActivity(group, 'chat');
@@ -4068,7 +4103,9 @@ function registerIpc() {
         const tag = step === 'claude' ? 'claude-code' : step === 'codex' ? 'codex' : step.replace(/-(low|medium|high|xhigh)$/, '');
         overlay?.webContents.send('chat:delta', { id, status: chainText, tag, worker: skinWorker });
       };
-      const desktopOpts = { desktop: hands === 'yes', home: desktopCli.home, model: tierOpts.claudeModel, effort: tierOpts.codexEffort, codexModel: codexModelFor(tierOpts.tier, yourWords(messages)), tier: tierOpts.tier, onStep, onQuota: recordClaudeQuota };
+      const desktopOpts = { desktop: hands === 'yes', home: desktopCli.home, model: tierOpts.claudeModel, effort: tierOpts.codexEffort, codexModel: codexModelFor(tierOpts.tier, yourWords(messages)), tier: tierOpts.tier, onStep, onQuota: recordClaudeQuota,
+        onActivity: activity.publish && ((event) => activity.publish({ ...event, id: `${workerRun}:${event.id}`, source: workerAgent })),
+      };
       // a plain question about your schedule: answered from the calendar at once, no model (quick.js)
       const fast = !worker ? await quickAnswer(yourWords(messages)) : null;
       abort.signal.throwIfAborted();
@@ -4132,7 +4169,8 @@ function registerIpc() {
           overlay?.webContents.send('chat:delta', { id, status: 'Облачные агенты не ответили — делаю сама, на основной модели…', tag: 'local' });
           const note = '(облако не ответило — отвечаю сама, локально)\n\n';
           send(note);
-          return note + await chatWithFallback(cfg, await prepLocal(cfg, messages, { main: true }), send, abort.signal, () => false, null, {
+          return note + await chatWithFallback(cfg, await prepLocal(cfg, messages, { main: true, onActivity: activity.publish }), send, abort.signal, () => false, null, {
+            onActivity: activity.publish,
             localOnly: torState.isQuarantined() || contextHasTor,
           });
         }
@@ -4304,7 +4342,7 @@ function registerIpc() {
         };
         try {
           const prepStart = Date.now();
-          const prepared = await prepLocal(cfg, messages, { main: !torState.isQuarantined() && influence.main });
+          const prepared = await prepLocal(cfg, messages, { main: !torState.isQuarantined() && influence.main, onActivity: activity.publish });
           swapLatencyMs = Math.max(0, Date.now() - prepStart);
           const torAfterPrep = torState.isQuarantined() || messagesHaveTor(messages) || messagesHaveTor(prepared?.messages);
           if (torAfterPrep) {
@@ -4345,6 +4383,7 @@ function registerIpc() {
             },
             {
               localOnly: torAfterPrep || prepared?.stylesLocalOnly === true,
+              onActivity: activity.publish,
               onSuccess: ({ model, local }) => {
                 answeredModel = model;
                 answeredLocal = Boolean(local);
@@ -4401,8 +4440,10 @@ function registerIpc() {
       }
       return { ok: true, text };
     } catch (err) {
+      activityState = 'failed';
       return { ok: false, error: abort.signal.aborted ? 'stopped' : err.message, code: err.code || null };
     } finally {
+      activity.finish(activityState);
       chats.delete(id);
       try { brainChatGlue?.afterTurn(); } catch {}
     }
@@ -4870,18 +4911,26 @@ function registerIpc() {
     }
     const abort = new AbortController();
     const stop = () => abort.abort();
+    const activity = chatActivity(`tool:${mode}${ephemeral ? '-temporary' : ''}`, abort.signal);
+    let activityState = 'failed';
     hubWork = abort;
     sender.once('destroyed', stop);
     try {
       let result;
       if (mode === 'research') {
-        result = await phoneBridge.runDeepResearch(text, { signal: abort.signal });
+        result = await phoneBridge.runDeepResearch(text, {
+          signal: abort.signal,
+          notifyActivity: ({ runId, agent, event }) => {
+            const worker = event.kind === 'turn';
+            activity.publish({ ...event, kind: worker ? 'worker' : event.kind, id: worker ? runId : `${runId}:${event.id}`, source: agent });
+          },
+        });
       } else if (mode === 'search') {
-        result = await phoneBridge.turn({
+        result = await duringActivity(activity.publish, 'tools', () => phoneBridge.turn({
           text: `найди в сети: ${text.trim()}`, deepResearch: false, skills: [],
-        }, false);
+        }, false, abort.signal));
       } else if (mode === 'pim') {
-        result = await readPimTool(text);
+        result = await duringActivity(activity.publish, 'tools', () => readPimTool(text));
       } else {
         const parsedFlags = phone.parsePromptFlags(text.trim(), {
           mode: mode === 'capri' ? 'chat' : mode,
@@ -4894,13 +4943,16 @@ function registerIpc() {
           privateMode: mode === 'private', ephemeral, deepResearch: false, skills: parsedFlags.skills, images,
           requireVision: images.length > 0,
           localOnly: true, localMode: mode,
+          onActivity: activity.publish,
         }, false, abort.signal);
       }
+      activityState = result?.brain === 'error' || result?.brain === 'guard' ? 'failed' : 'done';
       return abort.signal.aborted ? { stopped: true } : result;
     } catch (err) {
       if (abort.signal.aborted) return { stopped: true };
       throw err;
     } finally {
+      activity.finish(activityState);
       sender.removeListener('destroyed', stop);
       hubWork = null;
     }

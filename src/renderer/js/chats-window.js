@@ -104,6 +104,7 @@ const modeLabels = {
   research: 'Deep Research', search: t.webTool, pim: t.pimTool,
 };
 const modeLabel = () => modeLabels[chatMode];
+const attachActivity = connectAgentActivity(host, linesEl, () => usesTool() ? `tool:${toolKey()}` : current, host.onChatActivity);
 let streamed = '';    // her answer as it comes
 let asking = null;    // her question before an action on your PC: { line, grantable }
 let sure = false;     // delete clicked once
@@ -287,6 +288,7 @@ function renderLog({ keepScroll = false } = {}) {
   const welcomeEl = $('.log__welcome');
   if (welcomeEl) welcomeEl.hidden = separate || !isEmpty;
   linesEl.replaceChildren(...lines);
+  attachActivity();
   if (q) linesEl.querySelector('mark')?.scrollIntoView({ block: 'center' });
   else if (!keepScroll || atBottom) linesEl.scrollTop = linesEl.scrollHeight;
 }
@@ -1028,3 +1030,4 @@ renderControls();
 load();
 input.focus();
 import { mountQuotaStrip } from './quota-view.js';
+import { connectAgentActivity } from './agent-activity.js';

@@ -15,6 +15,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { readUsageIn } = require('./gemini-usage');
+const { activityPhase } = require('./activity-phase');
 
 const GEMINI_URL = 'https://gemini.google.com/app';
 const GEMINI_TAB = /^https:\/\/gemini\.google\.com\/app(?:[/?#]|$)/i; // its chat, not its hidden helper frames
@@ -130,7 +131,8 @@ async function inlineFiles(files, { extract, read = (f) => fs.readFileSync(f, 'u
   return parts.join('\n\n');
 }
 
-async function askIn(page, prompt, { chat = null, model = null, task = null, files = [], clipboard = null, extract = null, timeoutMs = 300000, pollMs = 1500, requireSignIn = true, stableTicks = 2 } = {}) {
+async function askIn(page, prompt, { chat = null, model = null, task = null, files = [], clipboard = null, extract = null, timeoutMs = 300000, pollMs = 1500, requireSignIn = true, stableTicks = 2, signal, onActivity } = {}) {
+  signal?.throwIfAborted();
   const text = String(prompt || '').trim();
   if (!text) throw new Error('пустой вопрос');
   const attach = checkFiles(files);
@@ -219,6 +221,7 @@ async function askIn(page, prompt, { chat = null, model = null, task = null, fil
   // Ctrl+V from the Windows clipboard (what was on it is put back after); text, code and documents go
   // into the question itself (documents as text, through MarkItDown)
   const { images, inline } = splitFiles(attach);
+  const endAttachments = activityPhase(attach.length ? onActivity : null, 'attachments');
   let full = text;
   if (inline.length) full = `${text}\n\n${await inlineFiles(inline, { extract })}`;
   if (images.length) {
@@ -248,6 +251,7 @@ async function askIn(page, prompt, { chat = null, model = null, task = null, fil
   // sent, then checked: your question must show up in the chat, else it is put in and sent once more
   // Gemini keeps a draft in its box across reloads: whatever is there that isn't this question goes first
   const send = async () => {
+    signal?.throwIfAborted();
     await page.click('rich-textarea .ql-editor');
     await page.evaluate((t) => {
       const ed = document.querySelector('rich-textarea .ql-editor');
@@ -266,12 +270,25 @@ async function askIn(page, prompt, { chat = null, model = null, task = null, fil
     });
     if (!clicked) await page.keyboard.press('Enter');
   };
+  endAttachments();
+  const endGeneration = activityPhase(onActivity, 'generation');
   await send();
+  const checkStop = async (busy) => {
+    if (!signal?.aborted) return;
+    if (busy) {
+      await page.evaluate(() => {
+        [...document.querySelectorAll('button[aria-label]')]
+          .find((button) => /stop response|остановить/i.test(button.getAttribute('aria-label') || ''))?.click();
+      }).catch(() => {});
+    }
+    signal.throwIfAborted();
+  };
   let went = false;
   for (let i = 0; i < 3 && !went; i++) {
     for (let w = 0; w < 8 && !went; w++) {
       await pause(pollMs);
       const s = await state();
+      await checkStop(s.busy && s.asked > before.asked);
       went = s.asked > before.asked || s.busy || s.count > before.count;
     }
     if (!went && i < 2) await send();
@@ -284,9 +301,11 @@ async function askIn(page, prompt, { chat = null, model = null, task = null, fil
   let prev = null;
   let same = 0;
   let seen = false;
+  let endVerification;
   while (Date.now() - started < timeoutMs) {
     await pause(pollMs);
     const s = await state();
+    await checkStop(s.busy && (seen || s.asked > before.asked));
     if (s.asked > before.asked || s.busy) seen = true;
     if (seen && !s.busy && s.asked <= before.asked && s.count <= before.count) {
       const err = new Error(`Gemini сбросил вопрос без ответа (${s.model || want || 'модель'})`);
@@ -294,9 +313,14 @@ async function askIn(page, prompt, { chat = null, model = null, task = null, fil
       throw err;
     }
     if (s.count > before.count && !s.busy && s.text.trim()) {
+      if (!endVerification) {
+        endGeneration();
+        endVerification = activityPhase(onActivity, 'responseReady');
+      }
       same = s.text === prev ? same + 1 : 0;
       if (same >= stableTicks - 1 && s.text === prev) {
         const answer = s.text.replace(/(?:\s*\n\s*image_[0-9a-f]+\.\w+)+\s*$/i, '').trim(); // pasted images' names, shown under it
+        endVerification();
         return { answer, chat: chatId(s.path), model: s.model, signedIn: s.signedIn };
       }
     }
@@ -311,13 +335,14 @@ async function askIn(page, prompt, { chat = null, model = null, task = null, fil
  */
 function ask(prompt, { open, chat, model, files, minGapMs = 4000, onQuota, ...rest } = {}) {
   const run = async () => {
+    rest.signal?.throwIfAborted();
     const wait = lastAt + minGapMs - Date.now();
     if (wait > 0) await pause(wait);
     const s = await open();
     const inTab = (m) => {
       const go = async (page) => {
         const said = await askIn(page, prompt, { chat, model: m, files, ...rest });
-        if (onQuota && s.attached) {
+        if (onQuota && s.attached && !rest.signal?.aborted) {
           const windows = await readUsageIn(page).catch(() => []);
           if (windows.length) onQuota(windows);
         }

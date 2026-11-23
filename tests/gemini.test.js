@@ -29,10 +29,19 @@ function fakePage({ signedIn = true, polls = 3, reply = 'Париж' } = {}) {
 
 test('askIn: one insert of the whole prompt, sent, waits for "Stop" to go and the text to settle', async () => {
   const { page, seen } = fakePage();
-  const r = await gemini.askIn(page, 'Оцени план:\n1) …', { pollMs: 1 });
+  const activity = [];
+  const r = await gemini.askIn(page, 'Оцени план:\n1) …', { pollMs: 1, onActivity: (step) => activity.push([step.name, step.state]) });
   assert.deepEqual({ answer: r.answer, chat: r.chat, signedIn: r.signedIn }, { answer: 'Париж', chat: 'ccfa5ca0a07a98a5', signedIn: true });
   assert.equal(seen.url, 'https://gemini.google.com/app');
   assert.equal(seen.inserted, 'Оцени план:\n1) …');
+  assert.deepEqual(activity, [['generation', 'running'], ['generation', 'done'], ['responseReady', 'running'], ['responseReady', 'done']]);
+});
+
+test('a cancelled Web Gemini request waiting in the queue never opens a tab', async () => {
+  const signal = AbortSignal.abort();
+  let opened = false;
+  await assert.rejects(gemini.ask('fixture', { signal, open: async () => { opened = true; } }), { name: 'AbortError' });
+  assert.equal(opened, false);
 });
 
 test('askIn: a chat id continues that conversation; signed out → told to sign in, nothing sent', async () => {

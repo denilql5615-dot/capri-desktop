@@ -843,7 +843,7 @@ class PhoneBridge {
       signal?.addEventListener('abort', stop, { once: true });
       let response;
       try {
-        response = await this.d.agentSend({ ...request, signal, quotaScope: 'swarm' });
+        response = await this.d.agentSend({ ...request, signal, quotaScope: 'swarm', notifyActivity: opts.notifyActivity });
       } finally {
         signal?.removeEventListener('abort', stop);
       }
@@ -1638,7 +1638,7 @@ class PhoneBridge {
             || (Array.isArray(body.history) && body.history.some((row) => this.d.externalBlocked?.(String(row?.content || ''))))) {
           return this.send(res, 403, { ok: false, error: 'Облачные модели недоступны для этого запроса.' });
         }
-        let sendPayload = { ...body, quotaScope: undefined, useVault: body.useVault !== false };
+        let sendPayload = { ...body, quotaScope: undefined, notifyActivity: undefined, useVault: body.useVault !== false };
         if (rawText.trim().startsWith('/')) {
           const parsedSlash = parseSlashInput(rawText, this.slashEngine().registry());
           if (parsedSlash.chain.length > 0) {
@@ -1816,6 +1816,7 @@ class PhoneBridge {
         ...(flags.requireVision && { requireVision: true }),
         ...(flags.localMode && { localMode: flags.localMode }),
       };
+      opts.onActivity = flags.onActivity;
       const requestSignal = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
       const firstChat = await this.d.chat(messages, requestSignal, opts);
       requestSignal.throwIfAborted();

@@ -1,4 +1,6 @@
-const stepNames = { thinking: 'Обработка запроса', command: 'Команда', tool: 'Инструмент', file: 'Изменение файлов' };
+const stepNames = { thinking: 'Обработка запроса', command: 'Команда', tool: 'Инструмент', file: 'Изменение файлов', worker: 'Работа агента' };
+const phases = { memory: 'Память', tools: 'Инструменты', connectors: 'Коннекторы', attachments: 'Вложения', generation: 'Генерация', responseReady: 'Проверка готовности ответа' };
+const agents = { claude: 'Claude', codex: 'Codex', gemini: 'Antigravity', 'gemini-web': 'Web Gemini' };
 const states = { running: 'В работе', done: 'Готово', failed: 'Ошибка', stopped: 'Остановлено' };
 
 function turnRow() {
@@ -23,7 +25,8 @@ function render(turn) {
   const nodes = [...turn.steps.values()].map((step) => {
     const item = document.createElement('li');
     const caption = document.createElement('span');
-    caption.textContent = [stepNames[step.kind], step.name, step.files?.join(', ')].filter(Boolean).join(' · ');
+    const title = step.kind === 'phase' ? phases[step.name] : stepNames[step.kind];
+    caption.textContent = [agents[step.source], title, step.kind !== 'phase' && step.name, step.files?.join(', ')].filter(Boolean).join(' · ');
     const status = document.createElement('span');
     status.className = 'agent-activity__status';
     status.textContent = step.state === 'running' && turn.state !== 'running'
@@ -35,13 +38,13 @@ function render(turn) {
   turn.list.replaceChildren(...nodes);
 }
 
-export function connectAgentActivity(host, lines, currentId) {
+export function connectAgentActivity(host, lines, currentId, subscribe = host.onAgentActivity) {
   const turns = new Map();
   const attach = () => {
     const row = turns.get(currentId())?.row;
     if (row && row.parentNode !== lines) lines.append(row);
   };
-  host.onAgentActivity(({ id, runId, event }) => {
+  subscribe(({ id, runId, event }) => {
     let turn = turns.get(id);
     if (event.kind === 'turn' && event.state === 'running') {
       turn?.row.remove();
@@ -53,9 +56,12 @@ export function connectAgentActivity(host, lines, currentId) {
     if (!turn || turn.runId !== runId) return;
     if (event.kind === 'turn') {
       turn.state = event.state;
-    } else if (Object.hasOwn(stepNames, event.kind)) {
+    } else if (Object.hasOwn(stepNames, event.kind) || (event.kind === 'phase' && Object.hasOwn(phases, event.name))) {
       turn.steps.set(event.id, event);
-      if (turn.steps.size > 20) turn.steps.delete(turn.steps.keys().next().value);
+      if (turn.steps.size > 20) {
+        const oldestFinished = [...turn.steps].find(([, step]) => step.state !== 'running');
+        turn.steps.delete(oldestFinished?.[0] ?? turn.steps.keys().next().value);
+      }
     }
     render(turn);
     if (id === currentId()) attach();

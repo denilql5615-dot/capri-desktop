@@ -783,8 +783,8 @@ class AgentSessions {
     const currentSession = this.sessions.find((item) => item.id === id) || session;
     this.active.set(id, abort);
     this.notify(id);
-    const activity = this.notifyActivity && ['claude', 'codex'].includes(targetAgent) ? randomUUID() : null;
-    const publish = activity ? (event) => this.notifyActivity({ id, runId: activity, agent: targetAgent, event }) : null;
+    const activity = this.notifyActivity || opts.notifyActivity ? randomUUID() : null;
+    const publish = activity ? (event) => (opts.notifyActivity || this.notifyActivity)({ id, runId: activity, agent: targetAgent, event }) : null;
     let activityState = 'failed';
     try {
       publish?.({ kind: 'turn', state: 'running' });
@@ -795,6 +795,7 @@ class AgentSessions {
           mode: opts?.mode || 'agent',
           ephemeral: Boolean(opts?.ephemeral),
           isCloud: !isLocal(targetAgent),
+          ...(publish && { onActivity: publish }),
         });
       }
       const context = messages.slice(-60);

@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { estimateTokens } = require('./context-stats');
+const { activityPhase } = require('./activity-phase');
 
 const SLUG_RE = /^[a-z0-9][a-z0-9_-]{1,40}$/;
 const HEALTH_TTL_MS = 30 * 1000;
@@ -2029,6 +2030,7 @@ class ConnectorsEngine {
     isCloud = false,
     torQuarantined = false,
     timeoutMs = TURN_CONNECTOR_TIMEOUT_MS,
+    onActivity,
   } = {}) {
     const { ids: mentionedIds, cleanedText } = this.parseConnectorMentions(text);
     const catalog = this.listConnectors({ mode, ephemeral, torQuarantined });
@@ -2054,6 +2056,7 @@ class ConnectorsEngine {
     const usedConnectorIds = [];
 
     if (selectedIds.length > 0) {
+      const endActivity = activityPhase(onActivity, 'connectors');
       const queryInput = cleanedText || text;
       const results = await Promise.all(selectedIds.map(async (id) => {
         const def = this.findDefinition(id);
@@ -2080,6 +2083,7 @@ class ConnectorsEngine {
         usedConnectorIds.push(r.id);
         blocks.push(`[Коннектор ${r.id} (${r.name})]\n${r.body}`);
       }
+      endActivity();
     }
 
     const contextBlock = blocks.length

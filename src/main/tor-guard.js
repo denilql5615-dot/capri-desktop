@@ -376,7 +376,7 @@ function createAgentWeb({
         open: () => browser.openSession(browserOpts(cfg)),
       });
     },
-    async askGemini({ prompt, chat, model, files, task } = {}) {
+    async askGemini({ prompt, chat, model, files, task, signal, onActivity } = {}) {
       if (torState && (torState.inCooldown() || torState.isChatTainted())) {
         touchTor({ extendCooldown: false });
         throw new Error('Gemini временно недоступен: в этом чате использовался Tor или ещё идёт карантин после Tor (5 минут).');
@@ -393,6 +393,8 @@ function createAgentWeb({
         model,
         ...(task !== undefined && { task }),
         files,
+        signal,
+        onActivity,
         clipboard: gemini.electronClipboard(),
         open: () => browser.openSession(browserOpts(cfg)),
       });

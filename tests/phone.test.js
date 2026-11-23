@@ -398,20 +398,23 @@ test('bridge: research saves the full synthesis artifact from completed agent hi
 
 test('bridge: research completes with another worker when one reaches quota', async () => {
   const calls = [];
+  const workersWithActivity = [];
   const bridge = new PhoneBridge({
     agentsList: async () => ({
       models: { gemini: [['gemini-default']], codex: [['codex-default']] },
     }),
     agentCreate: async (agent) => agent,
-    agentSend: async ({ id, text }) => {
+    agentSend: async ({ id, text, notifyActivity }) => {
       calls.push(id);
+      notifyActivity?.(id);
       if (id === 'gemini') return { ok: false, error: 'quota reached' };
       return { ok: true, text: text.startsWith('Тема') ? 'combined report' : 'backup report' };
     },
   });
-  const first = await bridge.runDeepResearch('public question');
+  const first = await bridge.runDeepResearch('public question', { notifyActivity: (id) => workersWithActivity.push(id) });
   assert.deepStrictEqual(first.workers, ['codex']);
   assert.equal(first.reply, 'combined report');
+  assert.ok(workersWithActivity.includes('gemini') && workersWithActivity.includes('codex'));
   await bridge.runDeepResearch('next public question');
   assert.equal(calls.filter((id) => id === 'gemini').length, 1);
 });
