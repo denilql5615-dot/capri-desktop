@@ -704,7 +704,8 @@ class PcToolsEngine {
     }
   }
 
-  async convertDocument({ inputPath, targetFormat = 'docx', outDir } = {}) {
+  async convertDocument({ inputPath, targetFormat = 'docx', outDir, docStyle = null } = {}) {
+    let styleFile = '';
     try {
       const cleanIn = validateLocalPath(inputPath, { mustExist: true });
       const fmt = String(targetFormat || 'docx').trim().toLowerCase().replace(/^\./, '');
@@ -717,11 +718,15 @@ class PcToolsEngine {
       const outPath = path.join(resolvedOutDir, `${stem}.${fmt}`);
 
       if (fmt === 'docx' || fmt === 'txt') {
-        const res = await this.execFileImpl(
-          this.paths.pythonBin,
-          [this.paths.convertScript, cleanIn, '--to', fmt, '--out', outPath],
-          { timeout: EXEC_TIMEOUT_MS },
-        );
+        const args = [this.paths.convertScript, cleanIn, '--to', fmt, '--out', outPath];
+        // 2.7a: a style's fonts and colours (styles-engine docStyle) go to the script as a small JSON file
+        if (fmt === 'docx' && docStyle && typeof docStyle === 'object') {
+          styleFile = path.join(os.tmpdir(), `capri-doc-style-${process.pid}-${Date.now()}.json`);
+          const { fontHeading = '', fontBody = '', colorHeading = '', colorAccent = '' } = docStyle;
+          fs.writeFileSync(styleFile, JSON.stringify({ fontHeading, fontBody, colorHeading, colorAccent }), 'utf8');
+          args.push('--style', styleFile);
+        }
+        const res = await this.execFileImpl(this.paths.pythonBin, args, { timeout: EXEC_TIMEOUT_MS });
         const parsed = JSON.parse(String(res.stdout || '{}').trim());
         return { ...parsed, format: fmt };
       }
@@ -758,6 +763,8 @@ class PcToolsEngine {
       return { ok: false, error: `Формат ${fmt} не поддерживается.` };
     } catch (err) {
       return { ok: false, error: String(err?.message || 'Ошибка конвертации документа') };
+    } finally {
+      if (styleFile) { try { fs.rmSync(styleFile, { force: true }); } catch {} }
     }
   }
 

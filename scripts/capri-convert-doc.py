@@ -45,12 +45,51 @@ def _read_text_file(path: str) -> str:
         return f.read()
 
 
-def _markdown_to_docx(md_text: str, output_path: str) -> None:
+def _hex_rgb(value):
+    m = re.match(r"^#([0-9a-fA-F]{6})$", str(value or "").strip())
+    if not m:
+        return None
+    h = m.group(1)
+    return RGBColor(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+def _apply_style(doc, style: dict) -> None:
+    """ALTAI:RE style (styles-engine docStyle): fonts and colours of body text and headings."""
+    if not style:
+        return
+    body_font = str(style.get("fontBody") or "").strip()
+    head_font = str(style.get("fontHeading") or "").strip() or body_font
+    head_color = _hex_rgb(style.get("colorHeading"))
+    accent = _hex_rgb(style.get("colorAccent")) or head_color
+    if body_font:
+        doc.styles["Normal"].font.name = body_font
+    for level in range(1, 5):
+        try:
+            st = doc.styles[f"Heading {level}"]
+        except KeyError:
+            continue
+        if head_font:
+            st.font.name = head_font
+        color = head_color if level == 1 else accent
+        if color is not None:
+            st.font.color.rgb = color
+    try:
+        title = doc.styles["Title"]
+        if head_font:
+            title.font.name = head_font
+        if head_color is not None:
+            title.font.color.rgb = head_color
+    except KeyError:
+        pass
+
+
+def _markdown_to_docx(md_text: str, output_path: str, style: dict = None) -> None:
     doc = Document()
     normal_style = doc.styles["Normal"]
     normal_style.font.name = "Calibri"
     normal_style.font.size = Pt(11)
     normal_style.font.color.rgb = RGBColor(0x1F, 0x1F, 0x1F)
+    _apply_style(doc, style)
 
     lines = md_text.splitlines()
     para_buf = []
@@ -145,14 +184,14 @@ def _to_txt(input_path: str, output_path: str) -> None:
         f.write(text)
 
 
-def convert(input_path: str, target_format: str, output_path: str) -> dict:
+def convert(input_path: str, target_format: str, output_path: str, style: dict = None) -> dict:
     if not os.path.isfile(input_path):
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
     fmt = target_format.strip().lower().lstrip(".")
     if fmt == "docx":
         raw = _read_text_file(input_path)
-        _markdown_to_docx(raw, output_path)
+        _markdown_to_docx(raw, output_path, style)
     elif fmt == "txt":
         _to_txt(input_path, output_path)
     else:
@@ -177,10 +216,15 @@ def main() -> int:
     parser.add_argument("input_path", help="Path to source document (.md, .txt, .docx)")
     parser.add_argument("--to", required=True, choices=["docx", "txt"], help="Target format")
     parser.add_argument("--out", required=True, help="Output file path")
+    parser.add_argument("--style", default="", help="JSON file with an ALTAI:RE style (fonts, colours)")
     args = parser.parse_args()
 
     try:
-        result = convert(args.input_path, args.to, args.out)
+        style = None
+        if args.style:
+            with open(args.style, "r", encoding="utf-8") as f:
+                style = json.load(f)
+        result = convert(args.input_path, args.to, args.out, style)
     except Exception as exc:
         result = {"ok": False, "error": str(exc)}
 

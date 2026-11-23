@@ -35,6 +35,7 @@ const { SlashCommandEngine, compactHistory, isIsolatedMode } = require('./slash-
 const { SkillsEngine } = require('./skills-engine');
 const { PluginsEngine } = require('./plugins-engine');
 const { ConnectorsEngine } = require('./connectors-engine');
+const { StylesEngine } = require('./styles-engine');
 const { DockerEngine } = require('./docker-engine');
 const { PcToolsEngine } = require('./pc-tools-engine');
 const { PhoneControlEngine } = require('./phone-control-engine');
@@ -486,7 +487,12 @@ function ensureAgentSessions() {
             isCloud: isCloudAgent,
             torQuarantined: torState.isQuarantined(),
           })).contextBlock);
-      const combinedHints = isRp ? '' : [skillsCtx.text, pluginsCtx.text, connectorContext, hints].filter(Boolean).join('\n\n');
+      // 2.7a styles: anything that isn't a local model counts as cloud, so a local-only style never leaks
+      const styleBlock = isRp ? '' : ensureStylesEngine().resolveTurn({
+        text: lastUser,
+        isCloud: !['gemma', 'faun'].includes(agent),
+      }).block;
+      const combinedHints = isRp ? '' : [styleBlock, skillsCtx.text, pluginsCtx.text, connectorContext, hints].filter(Boolean).join('\n\n');
       if (meta?.ephemeral || meta?.privateMode || meta?.localOnly || meta?.mode === 'private' || meta?.mode === 'nsfw') {
         throw new Error('Облачные модели недоступны в этом режиме.');
       }
@@ -1879,6 +1885,7 @@ let slashEngine = null;
 let skillsEngine = null;
 let pluginsEngine = null;
 let connectorsEngine = null;
+let stylesEngine = null;
 let dockerEngine = null;
 let pcToolsEngine = null;
 let phoneControlEngine = null;
@@ -2019,6 +2026,31 @@ async function compactDesktopChat({ mode = 'chat', ephemeral = false, agent = nu
     sendCommand('memory');
   }
   return result;
+}
+
+// 2.7a: voices and styles (styles-engine.js). Voice cards are distilled only by a local model: samples are private.
+function ensureStylesEngine() {
+  if (stylesEngine) return stylesEngine;
+  stylesEngine = new StylesEngine({
+    getConfig: () => config.load(),
+    saveConfig: (patch) => config.save(patch),
+    isNameTaken: (id) => Boolean(ensureConnectorsEngine().findDefinition(id)),
+    decodeImage: (file) => {
+      const img = nativeImage.createFromPath(file);
+      if (img.isEmpty()) return null;
+      const small = img.resize({ width: 96 });
+      return { data: small.toBitmap(), order: 'BGRA' };
+    },
+    chat: async (messages) => {
+      const cfg = config.load();
+      if (cfg.provider !== 'ollama') throw new Error('Карточку голоса собирает только локальная модель (Ollama).');
+      if (!chatModels) await refreshModels();
+      const model = pickModel(cfg);
+      if (!llm.isLocal(cfg.provider, cfg, model)) throw new Error('Выбранная модель не локальная.');
+      return llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict: 1500 }, () => {}, AbortSignal.timeout(5 * 60 * 1000));
+    },
+  });
+  return stylesEngine;
 }
 
 function ensureSlashEngine() {
@@ -2865,6 +2897,60 @@ async function photoTask(said, history = [], signal) {
   return `${plan.caption || 'Держи.'}\n[[photo:${name}]]`;
 }
 
+/**
+ * 2.7a: a style applied in a tool. tool: image (local ComfyUI) | gemini-image (web Gemini, cloud-allowed styles
+ * only) | penpot (colours and text styles into the open Penpot file) | docx (styled Word from .md/.txt) |
+ * upscale (Upscayl model picked by the style) | slides (theme and instructions for a slide generator).
+ */
+async function applyStyleTool({ id, tool, prompt = '', inputPath = '' } = {}) {
+  const styles = ensureStylesEngine();
+  const style = styles.getStyle(id);
+  if (!style) return { ok: false, error: `Стиля @${id} нет.` };
+  switch (tool) {
+    case 'image': {
+      const guard = guardMediaGeneration({ torState, messages: [{ role: 'user', content: prompt }], tor });
+      if (!guard.ok) return { ok: false, error: guard.error };
+      if (!comfy.installed) return { ok: false, error: 'ComfyUI на этом ПК не нашла.' };
+      const recipe = styles.comfyRecipe(style.id);
+      if (!recipe.ok) return recipe;
+      const { png, prompt: drawn } = await comfy.draw({ prompt, style: recipe });
+      const name = photo.galleryName();
+      fs.mkdirSync(galleryDir(), { recursive: true });
+      fs.writeFileSync(path.join(galleryDir(), name), png);
+      fs.writeFileSync(path.join(galleryDir(), photo.metaName(name)), JSON.stringify({ said: prompt, prompt: drawn, style: style.id, at: Date.now() }, null, 2));
+      chatsWin?.webContents.send('gallery:changed');
+      return { ok: true, tool, file: path.join(galleryDir(), name), photo: name, thumb: nativeImage.createFromBuffer(png).resize({ width: 480 }).toDataURL() };
+    }
+    case 'gemini-image': {
+      if (torState.isQuarantined()) return { ok: false, error: TOR_CLOUD_BLOCK_MSG };
+      const req = styles.geminiImageRequest(style.id, prompt);
+      if (!req.ok) return req;
+      const cfg = config.load();
+      const res = await gemini.ask(req.text, { model: 'everyday', files: req.attachments, clipboard: gemini.electronClipboard(), open: () => capriBrowser.openSession(browserOpts(cfg)) });
+      return { ok: true, tool, answer: res.answer, note: 'Картинка — во вкладке Gemini в «Окне Капри».' };
+    }
+    case 'penpot': {
+      const lib = styles.penpotLibrary(style.id);
+      if (!lib.ok) return lib;
+      if (!lib.colors.length && !lib.typographies.length) return { ok: false, error: 'В стиле нет ни цветов, ни шрифтов — Penpot нечего добавить.' };
+      const out = await require('./penpot-mcp').callTool('execute_code', { code: lib.code });
+      return { ok: true, tool, colors: lib.colors.length, typographies: lib.typographies.length, result: out };
+    }
+    case 'docx': {
+      const docStyle = styles.docStyle(style.id);
+      return ensurePcToolsEngine().convertDocument({ inputPath, targetFormat: 'docx', docStyle });
+    }
+    case 'upscale': {
+      const pick = styles.upscaylModel(style.id);
+      return ensurePcToolsEngine().upscaleImage({ inputPath, model: pick.model });
+    }
+    case 'slides':
+      return { ...styles.slidesTheme(style.id), tool };
+    default:
+      return { ok: false, error: `Неизвестный инструмент: ${tool}` };
+  }
+}
+
 /** "Скинь видео": a still of her drawn, then brought to life (comfy.js animate); the clip into her gallery,
  * her line with [[photo:<file>.webm]], which her chats play. A few minutes: she says so first. */
 async function videoTask(said, history = [], signal) {
@@ -2968,6 +3054,7 @@ async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = 
   let blocked = false;
   let blockReason = '';
   let pluginWarnings = [];
+  let stylesLocalOnly = false;
   if (!mobile) {
     const explicitSkills = new Set(Array.isArray(skills) ? skills : []);
     const lastUserIdx = finalMessages.map((m) => m?.role).lastIndexOf('user');
@@ -3010,7 +3097,13 @@ async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = 
     if (lastUserIdx >= 0 && connCtx.cleanedText && connCtx.cleanedText !== cleanSaid) {
       finalMessages = finalMessages.map((m, idx) => (idx === lastUserIdx ? { ...m, content: connCtx.cleanedText } : m));
     }
-    skillsText = [skillCtx.text, pluginCtx.text, connCtx.contextBlock, connCtx.hintsBlock].filter(Boolean).join('\n\n');
+    // 2.7a: style and voice; a local-only one pins the whole turn to local models (no cloud fallback)
+    const styleTurn = rp ? null : ensureStylesEngine().resolveTurn({ text: cleanSaid, isCloud: cfg.provider !== 'ollama' });
+    if (styleTurn?.block) {
+      const used = [styleTurn.styleId && ensureStylesEngine().getStyle(styleTurn.styleId), styleTurn.voiceId && ensureStylesEngine().getVoice(styleTurn.voiceId)];
+      stylesLocalOnly = used.some((item) => item && item.privacy === 'localOnly');
+    }
+    skillsText = [styleTurn?.block, skillCtx.text, pluginCtx.text, connCtx.contextBlock, connCtx.hintsBlock].filter(Boolean).join('\n\n');
     if (skillsText) {
       const firstSysIdx = finalMessages.findIndex((m) => m?.role === 'system');
       if (firstSysIdx >= 0) {
@@ -3022,7 +3115,7 @@ async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = 
       }
     }
   }
-  return { messages: finalMessages, numPredict: analysis.numPredict, memoryText, toolsText, skillsText, blocked, blockReason, pluginWarnings };
+  return { messages: finalMessages, numPredict: analysis.numPredict, memoryText, toolsText, skillsText, blocked, blockReason, pluginWarnings, stylesLocalOnly };
 }
 
 async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch, opts) {
@@ -3816,7 +3909,8 @@ function registerIpc() {
           isCloud: true,
           torQuarantined: torState.isQuarantined(),
         });
-        const combinedWorkerRules = [skillCtx.text, pluginCtx.text, connCtx.contextBlock].filter(Boolean).join('\n\n');
+        const workerStyle = ensureStylesEngine().resolveTurn({ text: userNow, isCloud: true }).block;
+        const combinedWorkerRules = [workerStyle, skillCtx.text, pluginCtx.text, connCtx.contextBlock].filter(Boolean).join('\n\n');
         const workerMessages = combinedWorkerRules
           ? [{ role: 'system', content: combinedWorkerRules }, ...baseWorkerMessages]
           : baseWorkerMessages;
@@ -4041,7 +4135,7 @@ function registerIpc() {
               try { brainChatGlue?.onModelSwitch(shadowTurn); } catch {}
             },
             {
-              localOnly: torAfterPrep,
+              localOnly: torAfterPrep || prepared?.stylesLocalOnly === true,
               onSuccess: ({ model, local }) => {
                 answeredModel = model;
                 answeredLocal = Boolean(local);
@@ -4251,6 +4345,63 @@ function registerIpc() {
     ensurePluginsEngine().reload();
     return ensurePluginsEngine().listPlugins(params || {});
   });
+  // ---- 2.7a: Library of styles and writing voices
+  const styleThumb = (file, width = 320) => {
+    try {
+      const img = nativeImage.createFromPath(file);
+      return img.isEmpty() ? '' : img.resize({ width }).toDataURL();
+    } catch { return ''; }
+  };
+  const withThumbs = (style) => (style ? {
+    ...style,
+    coverThumb: (style.cover || style.objects?.[0] || style.refs?.[0]) ? styleThumb(style.cover || style.objects[0] || style.refs[0], 480) : '',
+    refThumbs: (style.refs || []).map((f) => ({ file: f, thumb: styleThumb(f) })),
+    objectThumbs: (style.objects || []).map((f) => ({ file: f, thumb: styleThumb(f) })),
+  } : style);
+  const stylesResult = (res) => (res && res.style ? { ...res, style: withThumbs(res.style) } : res);
+  ipcMain.handle('styles:library', () => {
+    const lib = ensureStylesEngine().library();
+    return { ...lib, styles: lib.styles.map(withThumbs) };
+  });
+  ipcMain.handle('styles:get', (_e, { id } = {}) => {
+    const style = ensureStylesEngine().getStyle(id);
+    return style ? { ok: true, style: withThumbs(style) } : { ok: false, error: `Стиля @${id} нет.` };
+  });
+  ipcMain.handle('styles:save', (_e, payload = {}) => stylesResult(ensureStylesEngine().saveStyle(payload || {})));
+  ipcMain.handle('styles:remove', (_e, payload = {}) => ensureStylesEngine().removeStyle(payload || {}));
+  ipcMain.handle('styles:voice-save', (_e, payload = {}) => ensureStylesEngine().saveVoice(payload || {}));
+  ipcMain.handle('styles:voice-remove', (_e, payload = {}) => ensureStylesEngine().removeVoice(payload || {}));
+  ipcMain.handle('styles:voice-sample', (_e, payload = {}) => ensureStylesEngine().addVoiceSample(payload || {}));
+  ipcMain.handle('styles:voice-sample-pick', async (e, { id } = {}) => {
+    const { canceled, filePaths } = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), {
+      title: 'Образцы текста', properties: ['openFile', 'multiSelections'], filters: [{ name: 'Текст', extensions: ['md', 'txt'] }],
+    });
+    if (canceled || !filePaths.length) return { ok: false, canceled: true };
+    const results = filePaths.map((sourcePath) => ensureStylesEngine().addVoiceSample({ id, sourcePath }));
+    const failed = results.find((r) => !r.ok);
+    return failed ? { ...failed, added: results.filter((r) => r.ok).length } : { ok: true, added: results.length, voice: ensureStylesEngine().getVoice(id) };
+  });
+  ipcMain.handle('styles:voice-card', (_e, payload = {}) => ensureStylesEngine().buildVoiceCard(payload || {}).catch((err) => ({ ok: false, error: String(err?.message || err) })));
+  ipcMain.handle('styles:asset-pick', async (e, { id, kind } = {}) => {
+    const { canceled, filePaths } = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), {
+      title: kind === 'objects' ? 'Объекты стиля' : 'Референсы стиля', properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'Картинки', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+    });
+    if (canceled || !filePaths.length) return { ok: false, canceled: true };
+    let last = null;
+    for (const sourcePath of filePaths) {
+      last = ensureStylesEngine().addAsset({ id, kind, sourcePath });
+      if (!last.ok) return last;
+    }
+    return stylesResult(last);
+  });
+  ipcMain.handle('styles:asset-add', (_e, payload = {}) => stylesResult(ensureStylesEngine().addAsset(payload || {})));
+  ipcMain.handle('styles:asset-remove', (_e, payload = {}) => stylesResult(ensureStylesEngine().removeAsset(payload || {})));
+  ipcMain.handle('styles:palette', (_e, payload = {}) => ensureStylesEngine().extractPalette(payload || {}));
+  ipcMain.handle('styles:active', (_e, payload) => (payload && typeof payload === 'object'
+    ? ensureStylesEngine().setActive(payload)
+    : { ok: true, active: ensureStylesEngine().getActive() }));
+  ipcMain.handle('styles:apply', (_e, payload = {}) => applyStyleTool(payload || {}).catch((err) => ({ ok: false, error: String(err?.message || err) })));
   ipcMain.handle('connectors:list', async (_e, params = {}) => {
     const engine = ensureConnectorsEngine();
     if (params?.refresh) await engine.checkAll(params || {});

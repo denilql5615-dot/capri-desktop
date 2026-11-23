@@ -44,6 +44,7 @@ const home = os.homedir();
 const ALLOWED_ROOTS = [
   path.join(home, 'Documents'), path.join(home, 'Downloads'), path.join(home, 'Desktop'), path.join(home, 'Pictures'),
   'D:\\Capri\\capri-desktop', 'D:\\Capri\\genesis-src', 'D:\\Capri\\capri-android-ref', 'D:\\Capri\\reports', 'D:\\Obsidian\\C.A.P.R.I',
+  'D:\\Capri\\styles', // 2.7a: only cloud-allowed styles are sent (styles-engine geminiImageRequest checks it)
 ].map((p) => path.resolve(p).toLowerCase());
 const SECRET = /(^|[\\/])(\.ssh|\.gnupg|\.capri|\.aws|\.azure|\.kube|node_modules|\.git)([\\/]|$)|\.(pem|key|p12|pfx|kdbx|dpapi|ovpn|conf|env|cookies?|sqlite)$|(^|[\\/])(id_[a-z0-9]+|\.env[^\\/]*|credentials[^\\/]*|secrets?[^\\/]*|token[^\\/]*|config\.json|pim-mcp[^\\/]*)$|протон/i;
 const MAX_FILES = 10;

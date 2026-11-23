@@ -81,6 +81,51 @@ function workflow({ prompt, her = true, seed = Math.floor(Math.random() * 2 ** 4
   return { graph, positive };
 }
 
+/**
+ * A picture in a saved style (styles-engine comfyRecipe): NoobAI with the style's words; its reference pictures
+ * through IP-Adapter Plus "style transfer" (the way Brigade's Claude got Monet's look) and its object picture
+ * at a lower plain weight for who/what is drawn. `images`: names in ComfyUI's input folder, refs then object.
+ */
+function styledWorkflow({ prompt, recipe = {}, refImages = [], objectImages = [], seed = Math.floor(Math.random() * 2 ** 48), width = 832, height = 1216 }) {
+  const positive = [String(prompt || '').trim(), String(recipe.positive || '').trim(), 'masterpiece, best quality'].filter(Boolean).join(', ');
+  const negative = [String(recipe.negative || '').trim(), 'blurry, text, watermark, signature, worst quality, low quality, bad anatomy, bad hands'].filter(Boolean).join(', ');
+  const graph = {
+    1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: CHECKPOINT } },
+    2: { class_type: 'CLIPTextEncode', inputs: { text: positive, clip: ['1', 1] } },
+    3: { class_type: 'CLIPTextEncode', inputs: { text: negative, clip: ['1', 1] } },
+    4: { class_type: 'EmptyLatentImage', inputs: { width, height, batch_size: 1 } },
+    6: { class_type: 'VAEDecode', inputs: { samples: ['5', 0], vae: ['1', 2] } },
+    7: { class_type: 'SaveImage', inputs: { filename_prefix: 'capri_style', images: ['6', 0] } },
+  };
+  let model = ['1', 0];
+  const adapters = [
+    ...refImages.slice(0, 2).map((image) => ({ image, weight: recipe.refWeight ?? 0.8, type: 'style transfer', end: 0.6 })),
+    ...objectImages.slice(0, 1).map((image) => ({ image, weight: recipe.objectWeight ?? 0.55, type: 'linear', end: 1 })),
+  ];
+  if (adapters.length) {
+    graph[20] = { class_type: 'IPAdapterUnifiedLoader', inputs: { model, preset: 'PLUS (high strength)' } };
+    model = ['20', 0];
+    adapters.forEach((a, i) => {
+      const load = 30 + i * 2;
+      const apply = load + 1;
+      graph[load] = { class_type: 'LoadImage', inputs: { image: a.image } };
+      graph[apply] = {
+        class_type: 'IPAdapterAdvanced',
+        inputs: {
+          model, ipadapter: ['20', 1], image: [String(load), 0], weight: a.weight, weight_type: a.type,
+          combine_embeds: 'concat', start_at: 0, end_at: a.end, embeds_scaling: 'V only',
+        },
+      };
+      model = [String(apply), 0];
+    });
+  }
+  graph[5] = {
+    class_type: 'KSampler',
+    inputs: { seed, steps: 30, cfg: 6.5, sampler_name: 'euler_ancestral', scheduler: 'normal', denoise: 1, model, positive: ['2', 0], negative: ['3', 0], latent_image: ['4', 0] },
+  };
+  return { graph, positive };
+}
+
 // Your own workflow (her menu, "Фото: свой воркфлоу ComfyUI…"): built and tried in ComfyUI with your LoRAs,
 // saved with Workflow → Export (API), {prompt} written where her tags go in the positive prompt. Pictures of
 // her are drawn with it as it is; only {prompt} is filled and the seed is new each time. Pictures that aren't
@@ -414,7 +459,16 @@ class Comfy {
     return job;
   }
 
-  async picture({ prompt, her = true }) {
+  async picture({ prompt, her = true, style = null }) {
+    if (style) {
+      const up = async (file) => this.upload(fs.readFileSync(file));
+      const refImages = [];
+      for (const f of style.refs || []) refImages.push(await up(f));
+      const objectImages = [];
+      for (const f of style.objects || []) objectImages.push(await up(f));
+      const { graph, positive } = styledWorkflow({ prompt, recipe: style, refImages, objectImages });
+      return { png: await this.submit(graph), prompt: positive };
+    }
     const yours = her ? loadWorkflow(this.d.workflowFile?.()) : null;
     const { graph, positive } = yours ? fillWorkflow(yours, { prompt }) : workflow({ prompt, her });
     return { png: await this.submit(graph), prompt: positive };
@@ -423,7 +477,9 @@ class Comfy {
   /** A picture into ComfyUI's input folder (for LoadImage): its name there. */
   async upload(png) {
     const form = new FormData();
-    form.append('image', new Blob([png], { type: 'image/png' }), `capri_still_${Date.now()}.png`);
+    // unique even for several uploads in one millisecond (a style's refs go up one after another)
+    this.uploadSeq = (this.uploadSeq || 0) + 1;
+    form.append('image', new Blob([png], { type: 'image/png' }), `capri_still_${Date.now()}_${this.uploadSeq}.png`);
     form.append('overwrite', 'true');
     const res = await fetch(`${this.base}/upload/image`, { method: 'POST', body: form, signal: AbortSignal.timeout(30000) });
     if (!res.ok) throw new Error(`ComfyUI /upload/image: ${res.status}`);
@@ -475,5 +531,5 @@ class Comfy {
 }
 
 module.exports = {
-  Comfy, locate, workflow, checkWorkflow, fillWorkflow, loadWorkflow, videoGraph, missingVideoModels, has14BVideoModels, VIDEO_MODELS, VIDEO_MODELS_14B, PLACEHOLDER, PORT, HER,
+  Comfy, locate, workflow, styledWorkflow, checkWorkflow, fillWorkflow, loadWorkflow, videoGraph, missingVideoModels, has14BVideoModels, VIDEO_MODELS, VIDEO_MODELS_14B, PLACEHOLDER, PORT, HER,
 };
