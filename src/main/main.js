@@ -2904,6 +2904,7 @@ async function photoTask(said, history = [], signal) {
  */
 async function applyStyleTool({ id, tool, prompt = '', inputPath = '' } = {}) {
   const styles = ensureStylesEngine();
+  if (!styles.visualOn) return { ok: false, error: 'Визуальные стили — отдельный этап, пока выключены.' };
   const style = styles.getStyle(id);
   if (!style) return { ok: false, error: `Стиля @${id} нет.` };
   switch (tool) {

@@ -9,7 +9,7 @@ const { StylesEngine, parseFrontmatter, dominantColors, makeId } = require('../s
 
 function setup(extra = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'styles-'));
-  let cfg = {};
+  let cfg = { stylesVisual: extra.visual !== false };
   const engine = new StylesEngine({
     stylesDir: dir,
     getConfig: () => cfg,
@@ -241,4 +241,24 @@ test('slash commands /стили, /стиль and /образ drive the active c
   assert.match((await slash.run({ text: '/стиль нету' })).reply, /Нет такого/);
   await slash.run({ text: '/стиль выкл' });
   assert.equal(styles.getActive().style, '');
+});
+
+test('with visual styles off (the default) only voices work', async () => {
+  const { SlashCommandEngine } = require('../src/main/slash-commands');
+  const { engine } = setup({ visual: false });
+  assert.equal(new StylesEngine({ stylesDir: engine.dir }).visualOn, false);
+  engine.saveVoice({ name: 'Голос' });
+  engine.saveStyle({ name: 'Claude', voice: 'голос' });
+  const lib = engine.library();
+  assert.equal(lib.visual, false);
+  assert.equal(lib.styles.length, 0);
+  assert.equal(lib.voices.length, 1);
+  const turn = engine.resolveTurn({ text: '@claude @голос привет', isCloud: false });
+  assert.equal(turn.styleId, '');
+  assert.equal(turn.voiceId, 'голос');
+  assert.match(turn.cleanedText, /@claude/);
+  assert.ok(engine.comfyRecipe('claude').error);
+  const slash = new SlashCommandEngine({ skillRoots: [], stylesEngine: engine });
+  assert.match((await slash.run({ text: '/стиль @claude' })).reply, /отдельный этап/);
+  assert.match((await slash.run({ text: '/образ голос' })).reply, /включён/);
 });

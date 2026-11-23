@@ -382,15 +382,18 @@ function renderVoices() {
 function render() {
   if (!root || !state.lib) return;
   const panel = root.querySelector('.sl-panel');
+  // Visual styles are a later stage: until the stylesVisual flag is on, the window holds only writing voices.
+  const visual = state.lib.visual !== false;
+  if (!visual) { state.tab = 'voices'; state.styleId = null; }
   const back = state.styleId && state.tab === 'styles'
     ? el('button', { class: 'sl-icon-btn', 'aria-label': 'Назад', title: 'Назад', text: '←', onclick: () => { state.styleId = null; render(); } })
     : null;
-  const tabs = el('div', { class: 'sl-tabs', role: 'tablist' },
+  const tabs = !visual ? null : el('div', { class: 'sl-tabs', role: 'tablist' },
     ...[['styles', 'Стили'], ['voices', 'Образы письма']].map(([id, t]) => el('button', {
       class: `sl-tab${state.tab === id ? ' sl-tab-on' : ''}`, role: 'tab', 'aria-selected': String(state.tab === id), text: t,
       onclick: () => { state.tab = id; state.styleId = null; render(); },
     })));
-  const header = el('div', { class: 'sl-header' }, back, el('h2', { text: 'Библиотека' }), tabs,
+  const header = el('div', { class: 'sl-header' }, back, el('h2', { text: visual ? 'Библиотека' : 'Образы письма' }), tabs,
     el('button', { class: 'sl-icon-btn sl-close', 'aria-label': 'Закрыть', title: 'Закрыть', text: '×', onclick: closeStylesLibrary }));
   const body = state.tab === 'voices' ? renderVoices() : (state.styleId ? renderStyle() : renderGrid());
   panel.replaceChildren(header, body);

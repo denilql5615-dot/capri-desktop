@@ -1537,13 +1537,14 @@ class SlashCommandEngine {
       }
 
       case 'styles':
-        return { handled: true, instant: true, action: 'open-styles', reply: 'Открываю Библиотеку стилей.' };
+        return { handled: true, instant: true, action: 'open-styles', reply: this.stylesEngine && !this.stylesEngine.visualOn ? 'Открываю Образы письма.' : 'Открываю Библиотеку стилей.' };
 
       case 'style':
       case 'voice': {
         const eng = this.stylesEngine;
         if (!eng) return { handled: true, instant: true, reply: 'Библиотека стилей недоступна.' };
         const isStyle = id === 'style';
+        if (isStyle && !eng.visualOn) return { handled: true, instant: true, reply: 'Визуальные стили — отдельный этап на будущее. Сейчас работают Образы письма: /образ.' };
         const what = isStyle ? 'Стиль' : 'Образ письма';
         const items = isStyle ? eng.listStyles() : eng.listVoices();
         const active = eng.getActive()[isStyle ? 'style' : 'voice'];

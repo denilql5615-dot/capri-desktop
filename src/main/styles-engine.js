@@ -135,6 +135,11 @@ class StylesEngine {
     return this.fixedDir || this.getConfig()?.stylesDir || DEFAULT_STYLES_DIR;
   }
 
+  /** Visual styles are a later stage (Danyal, 2026-11-23): off unless `stylesVisual: true`. Voices always work. */
+  get visualOn() {
+    return this.getConfig()?.stylesVisual === true;
+  }
+
   styleDir(id) { return path.join(this.dir, id); }
   voiceDir(id) { return path.join(this.dir, VOICES_DIR, id); }
 
@@ -237,12 +242,12 @@ class StylesEngine {
 
   /** The whole library for the UI: styles, voices, what is active. */
   library() {
-    const styles = this.listStyles().map((s) => ({
+    const styles = (this.visualOn ? this.listStyles() : []).map((s) => ({
       ...s,
       cover: s.objects[0] || s.refs[0] || '',
       voiceName: s.voice ? (this.getVoice(s.voice)?.name || s.voice) : '',
     }));
-    return { ok: true, dir: this.dir, styles, voices: this.listVoices(), active: this.getActive(), types: TYPE_TITLES };
+    return { ok: true, dir: this.dir, visual: this.visualOn, styles, voices: this.listVoices(), active: this.getActive(), types: TYPE_TITLES };
   }
 
   // ------------------------------------------------------------ names
@@ -490,7 +495,7 @@ class StylesEngine {
     let voiceId = '';
     const cleaned = String(text || '').replace(MENTION_RE, (full, ws, tok) => {
       const key = tok.toLowerCase();
-      if (this.getStyle(key)) { styleId = styleId || key; return ws; }
+      if (this.visualOn && this.getStyle(key)) { styleId = styleId || key; return ws; }
       if (this.getVoice(key)) { voiceId = voiceId || key; return ws; }
       return full;
     }).replace(/[ \t]{2,}/g, ' ').trim();
@@ -502,7 +507,7 @@ class StylesEngine {
   pick({ text = '', styleId, voiceId } = {}) {
     const m = this.parseMentions(text);
     const active = this.getActive();
-    const style = this.getStyle(styleId || m.styleId || active.style);
+    const style = this.visualOn ? this.getStyle(styleId || m.styleId || active.style) : null;
     const explicitVoice = voiceId || m.voiceId || active.voice;
     const voice = this.getVoice(explicitVoice || style?.voice);
     return { style, voice, cleanedText: m.cleanedText, mentioned: Boolean(m.styleId || m.voiceId) };
@@ -528,7 +533,9 @@ class StylesEngine {
 
   voiceBlock(voice) {
     const card = voice.card || 'Карточка голоса пока пустая: пиши нейтрально.';
-    return `[Образ письма «${voice.name}»]\nПиши в этой манере (содержание бери из запроса, не из карточки):\n${card}`;
+    // The rule goes after the card too: small local models otherwise retell the card instead of answering.
+    return `[Образ письма «${voice.name}» — как писать, а не о чём]\n<<<манера\n${card}\nманера>>>\n`
+      + 'Выполни запрос пользователя в этой манере. Карточку не пересказывай и не упоминай; тему и факты бери только из запроса, ничего не выдумывай.';
   }
 
   /** What a turn adds to the system prompt. Cloud models never get `localOnly` styles or voices. */
@@ -553,6 +560,7 @@ class StylesEngine {
   // ------------------------------------------------------------ adapters: tools
 
   _requireStyle(id, { cloud = false } = {}) {
+    if (!this.visualOn) return { error: 'Визуальные стили — отдельный этап, пока выключены.' };
     const style = this.getStyle(id);
     if (!style) return { error: `Стиля @${id} нет.` };
     if (cloud && style.privacy === 'localOnly') return { error: `Стиль «${style.name}» только для локальных инструментов.` };
