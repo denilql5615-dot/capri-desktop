@@ -31,6 +31,9 @@ test('bars: micro-labels, order, seconds or ms resets, a rolled-over window read
   assert.equal(bars[0].rolledOver, true);
   assert.equal(bars[1].remaining, 12.3);
   assert.equal(bars[1].resetsAt, now + 3600e3);
+  const unknownReset = toBars('claude', [{ remaining: 40, minutes: 300, resetsAt: null }], now)[0];
+  assert.equal(unknownReset.remaining, 40);
+  assert.equal(unknownReset.resetsAt, null);
   // Argon ignores a 5-hour window
   assert.deepEqual(toBars('agy-argon', [{ remaining: 50, minutes: 300 }, { remaining: 70, minutes: 10080 }], now).map((b) => b.label), ['Antigravity Argon Неделя']);
 });

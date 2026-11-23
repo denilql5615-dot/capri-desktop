@@ -14,10 +14,10 @@ const OUT = path.join(os.homedir(), '.capri', 'quota', 'claude-statusline.json')
 
 function pick(limit) {
   if (!limit || typeof limit !== 'object') return null;
-  const used = Number(limit.used_percentage);
+  const used = limit.used_percentage;
   if (!Number.isFinite(used)) return null;
-  const resetsAt = Number(limit.resets_at);
-  return { used: Math.max(0, Math.min(100, used)), resetsAt: Number.isFinite(resetsAt) ? resetsAt : null };
+  const resetsAt = limit.resets_at;
+  return { used: Math.max(0, Math.min(100, used)), resetsAt: Number.isFinite(resetsAt) && resetsAt > 0 ? resetsAt : null };
 }
 
 function snapshot(input) {
@@ -49,7 +49,7 @@ if (require.main === module) {
     if (snap) {
       try {
         fs.mkdirSync(path.dirname(OUT), { recursive: true });
-        const tmp = `${OUT}.tmp`;
+        const tmp = `${OUT}.${process.pid}.tmp`;
         fs.writeFileSync(tmp, JSON.stringify(snap), 'utf8');
         fs.renameSync(tmp, OUT);
       } catch {}

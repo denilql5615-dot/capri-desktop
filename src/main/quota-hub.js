@@ -55,7 +55,7 @@ function toBars(groupId, windows = [], now = Date.now()) {
     const remaining = Number(w.remaining);
     if (!Number.isFinite(remaining)) continue;
     // resetsAt may come in seconds or milliseconds
-    let resetsAt = Number(w.resetsAt);
+    let resetsAt = w.resetsAt == null ? NaN : Number(w.resetsAt);
     if (Number.isFinite(resetsAt) && resetsAt < 1e12) resetsAt *= 1000;
     if (!Number.isFinite(resetsAt)) resetsAt = null;
     const reset = resetsAt !== null && resetsAt <= now; // the window has rolled over since the reading

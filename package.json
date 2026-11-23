@@ -67,6 +67,7 @@
       "src/main/windows.ps1",
       "src/main/whisper-server.py",
       "scripts/md2docx.py",
+      "scripts/claude-statusline.js",
       "vendor/**"
     ],
     "win": {
