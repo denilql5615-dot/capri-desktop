@@ -125,19 +125,26 @@ function normalizeHealthSummary(raw, fallbackIso) {
   const sleepHours = toBoundedNumber(raw.sleepHours, 0, 24);
   const avgHr = toBoundedNumber(raw.avgHr ?? raw.heartRate, 25, 240);
   const restingHr = toBoundedNumber(raw.restingHr, 25, 200);
+  // 2.7d: HRV, SpO2, calories, distance and weight from Health Connect.
+  const hrvMs = toBoundedNumber(raw.hrvMs, 1, 400);
+  const spo2 = toBoundedNumber(raw.spo2, 50, 100);
+  const activeKcal = toBoundedNumber(raw.activeKcal, 0, 20000);
+  const totalKcal = toBoundedNumber(raw.totalKcal, 0, 30000);
+  const distanceKm = toBoundedNumber(raw.distanceKm, 0, 500);
+  const weightKg = toBoundedNumber(raw.weightKg, 20, 400);
   const workouts = Array.isArray(raw.workouts)
     ? raw.workouts.slice(0, 20).map((w) => ({
       title: sanitizeText(w?.title || w?.type || 'Тренировка', 80) || 'Тренировка',
+      type: w?.type ? sanitizeText(w.type, 40) : null,
       minutes: toBoundedNumber(w?.minutes ?? w?.durationMin, 0, 1440),
       kcal: toBoundedNumber(w?.kcal ?? w?.calories, 0, 10000),
+      distanceKm: toBoundedNumber(w?.distanceKm, 0, 500),
       at: w?.at ? sanitizeText(w.at, 32) : null,
     }))
     : [];
 
-  const hasNumeric = steps !== null
-    || sleepHours !== null
-    || avgHr !== null
-    || restingHr !== null
+  const hasNumeric = [steps, sleepHours, avgHr, restingHr, hrvMs, spo2, activeKcal, totalKcal, distanceKm, weightKg]
+    .some((v) => v !== null)
     || workouts.some((w) => w.minutes !== null || w.kcal !== null);
 
   if (!hasNumeric) {
@@ -151,6 +158,12 @@ function normalizeHealthSummary(raw, fallbackIso) {
       sleepHours,
       avgHr,
       restingHr,
+      hrvMs,
+      spo2,
+      activeKcal,
+      totalKcal,
+      distanceKm,
+      weightKg,
       workouts,
       notes: sanitizeText(raw.notes || '', 300),
       source: sanitizeText(raw.source || 'health-connect', 60) || 'health-connect',

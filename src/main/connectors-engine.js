@@ -1519,8 +1519,10 @@ class ConnectorsEngine {
     const workouts = Array.isArray(payload.workouts)
       ? payload.workouts.slice(0, 20).map((w) => ({
         title: String(w?.title || w?.type || 'Тренировка').slice(0, 80),
+        type: w?.type ? String(w.type).slice(0, 40) : null,
         minutes: toNum(w?.minutes ?? w?.durationMin, 0, 1440),
         kcal: toNum(w?.kcal ?? w?.calories, 0, 10000),
+        distanceKm: toNum(w?.distanceKm, 0, 500),
         at: w?.at ? String(w.at).slice(0, 32) : null,
       }))
       : [];
@@ -1530,6 +1532,12 @@ class ConnectorsEngine {
       sleepHours: toNum(payload.sleepHours, 0, 24),
       avgHr: toNum(payload.avgHr, 25, 240),
       restingHr: toNum(payload.restingHr, 25, 200),
+      hrvMs: toNum(payload.hrvMs, 1, 400),
+      spo2: toNum(payload.spo2, 50, 100),
+      activeKcal: toNum(payload.activeKcal, 0, 20000),
+      totalKcal: toNum(payload.totalKcal, 0, 30000),
+      distanceKm: toNum(payload.distanceKm, 0, 500),
+      weightKg: toNum(payload.weightKg, 20, 400),
       workouts,
       notes: String(payload.notes || '').replace(/\0/g, '').trim().slice(0, 600),
       source: String(payload.source || 'health-connect').slice(0, 60),
@@ -1923,14 +1931,25 @@ class ConnectorsEngine {
       case 'health-connect': {
         const data = readJsonSafe(this.healthSummaryFile());
         if (!data) return { fenced: false, text: 'Локальные данные здоровья ещё не синхронизированы с телефона.' };
+        const has = (v) => v !== null && v !== undefined;
         const lines = [
           `Локальная сводка здоровья (${data.updatedAt || 'без даты'}):`,
           data.steps !== null && data.steps !== undefined ? `- Шаги: ${data.steps}` : null,
           data.sleepHours !== null && data.sleepHours !== undefined ? `- Сон: ${data.sleepHours} ч` : null,
           data.avgHr !== null && data.avgHr !== undefined ? `- Средний пульс: ${data.avgHr} уд/мин` : null,
           data.restingHr !== null && data.restingHr !== undefined ? `- Пульс покоя: ${data.restingHr} уд/мин` : null,
+          has(data.hrvMs) ? `- Вариабельность пульса (HRV, RMSSD): ${data.hrvMs} мс` : null,
+          has(data.spo2) ? `- Кислород в крови (SpO2): ${data.spo2}%` : null,
+          has(data.activeKcal) || has(data.totalKcal)
+            ? `- Калории за сутки: ${[has(data.activeKcal) ? `активные ${data.activeKcal}` : '', has(data.totalKcal) ? `всего ${data.totalKcal}` : ''].filter(Boolean).join(', ')} ккал`
+            : null,
+          has(data.distanceKm) ? `- Дистанция за сутки: ${data.distanceKm} км` : null,
+          has(data.weightKg) ? `- Вес (последний замер за 30 дней): ${data.weightKg} кг` : null,
           Array.isArray(data.workouts) && data.workouts.length
-            ? `- Тренировки: ${data.workouts.map((w) => `${w.title}${w.minutes ? ` (${w.minutes} мин)` : ''}`).join(', ')}`
+            ? `- Тренировки за 7 дней: ${data.workouts.map((w) => {
+              const bits = [w.minutes ? `${w.minutes} мин` : '', has(w.distanceKm) ? `${w.distanceKm} км` : '', has(w.kcal) ? `${w.kcal} ккал` : '', w.at ? String(w.at).slice(0, 10) : ''].filter(Boolean);
+              return `${w.title}${bits.length ? ` (${bits.join(', ')})` : ''}`;
+            }).join('; ')}`
             : null,
           data.notes ? `- Заметка: ${data.notes}` : null,
         ].filter(Boolean);
