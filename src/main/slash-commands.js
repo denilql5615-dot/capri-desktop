@@ -187,7 +187,8 @@ const BUILTIN_COMMANDS = Object.freeze([
   // --- Antigravity (6) ---
   CMD('btw', { kind: 'prompt', icon: 'message-square', argsHint: '<вопрос>', description: 'Боковой вопрос по текущему контексту без записи в историю' }),
   CMD('grill-me', { kind: 'prompt', icon: 'flame', chainable: true, argsHint: '[тема]', description: 'Жёсткое интервью и разбор слабых мест плана до реализации' }),
-  CMD('learn', { kind: 'prompt', icon: 'graduation-cap', argsHint: '[вывод]', description: 'Зафиксировать усвоенный урок и правило в память проекта' }),
+  CMD('learn', { icon: 'graduation-cap', argsHint: '[что закрепить]', description: 'Удачную задачу из этого чата — в свой навык (рецепт делает локальная модель)' }),
+  CMD('skill-files', { aliases: ['навык-файлы'], icon: 'paperclip', argsHint: '<навык>', description: 'Приложить к своему навыку справочные файлы (md, txt, json, csv…)' }),
   CMD('schedule', { kind: 'prompt', icon: 'clock', argsHint: '<расписание>', description: 'Спроектировать периодическую фоновую задачу по расписанию' }),
   CMD('goal', { kind: 'prompt', icon: 'target', argsHint: '<цель>', description: 'Автономный режим до полного достижения цели без ранней остановки' }),
   CMD('council', { kind: 'prompt', icon: 'layers', cloudOnly: true, argsHint: '<вопрос>', description: 'Созвать совет моделей с перекрёстной критикой и вердиктом' }),
@@ -493,7 +494,6 @@ const PROMPT_INSTRUCTIONS = Object.freeze({
   'simplify': 'Режим /simplify: упрости решение или текст, убери лишние абстракции, повторы и воду, сохранив корректность и краевые проверки.',
   'ultrareview': 'Режим /ultrareview: выполни глубокое многопроходное ревью архитектуры, безопасности, производительности и всех пограничных сценариев.',
   'recap': 'Режим /recap: дай краткую структурированную сводку текущего разговора — цель, что уже решено, на чём остановились и какой следующий шаг.',
-  'learn': 'Режим /learn: сформулируй чёткий, переносимый урок/правило из текущего контекста в виде короткой памятки без воды.',
   'schedule': 'Режим /schedule: помоги спроектировать надёжную периодическую задачу или расписание с учётом интервала, условий остановки и безопасности.',
   'goal': 'Режим /goal: работай последовательно до полного и проверяемого достижения поставленной цели, не обрываясь на полумерах.',
   'loop': 'Режим /loop: опиши и выполни повторяемый шаг/проверку до выполнения явного критерия выхода.',
@@ -925,7 +925,6 @@ function buildChainPrompt({ chain, remainder, state, mode, skipSkillHints = fals
     'grill-me': 'Разбери наш текущий план и задай самые сложные вопросы.',
     verify: 'Проверь утверждения и детали из последнего контекста.',
     simplify: 'Упрости текущее решение без потери корректности.',
-    learn: 'Сформулируй ключевой урок и правило из текущего контекста.',
     goal: 'Продолжай шаг за шагом до полного достижения цели.',
     loop: 'Выполни повторяемую проверку текущего состояния.',
   };
@@ -1847,6 +1846,32 @@ class SlashCommandEngine {
           context: compacted.context,
           reply,
         };
+      }
+
+      case 'learn': {
+        if (isolated) return { handled: true, instant: true, error: 'В изолированном режиме навыки из диалога не сохраняю.', reply: 'В изолированном режиме навыки из диалога не сохраняю.' };
+        if (typeof deps.learnSkill !== 'function') return { handled: true, instant: true, reply: '/learn недоступен.' };
+        const res = await deps.learnSkill({ mode, ephemeral, agent, sessionId, history, hint: args });
+        if (!res?.ok) return { handled: true, instant: false, error: res?.error, reply: res?.error || 'Навык не сохранён.' };
+        return {
+          handled: true,
+          instant: false,
+          action: 'skills-changed',
+          learned: { id: res.id, name: res.name, path: res.path },
+          reply: `Выучила навык /${res.id} — «${res.name}»: ${res.description || ''}\n`
+            + `Теперь он подбирается сам, когда запрос похож; вызвать вручную — /${res.id}. Файл: ${res.path}\n`
+            + `Приложить справочные файлы — /навык-файлы ${res.id}.`,
+        };
+      }
+
+      case 'skill-files': {
+        const id = args.trim().replace(/^\//, '');
+        if (!id) return { handled: true, instant: true, reply: 'Укажи навык: /навык-файлы <имя>.' };
+        if (typeof deps.attachSkillFiles !== 'function') return { handled: true, instant: true, reply: 'Приложить файлы можно только на ПК.' };
+        const res = await deps.attachSkillFiles({ id });
+        const tail = res?.skipped?.length ? `\nПропущено: ${res.skipped.join('; ')}.` : '';
+        if (!res?.ok) return { handled: true, instant: true, error: res?.error, reply: `${res?.error || 'Не вышло.'}${tail}` };
+        return { handled: true, instant: true, action: 'skills-changed', reply: `К /${id} приложено: ${res.added.join(', ')}. Всего файлов: ${res.files.length}.${tail}` };
       }
 
       case 'remember': {

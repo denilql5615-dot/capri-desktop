@@ -455,6 +455,9 @@ async function executeAgentSlashCommand(rawText, { confirm = false } = {}) {
   const act = normalizeSlashAction(result.action);
   const actType = act?.type || '';
 
+  // /learn and /навык-файлы change the skills on disk: the slash menu re-reads them, the reply still shows.
+  if (actType === 'skills-changed') window.dispatchEvent(new CustomEvent('capri:skills-changed', { detail: null }));
+
   if (actType === 'open-styles') {
     openStylesLibrary();
     return true;

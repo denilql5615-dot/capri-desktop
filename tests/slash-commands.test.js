@@ -45,10 +45,10 @@ function makeTempSkillRoots() {
   return { base, roots: [geminiRoot, codexRoot] };
 }
 
-test('registry contains all 65 built-in commands with required aliases and sections', () => {
-  assert.equal(BUILTIN_COMMANDS.length, 65);
+test('registry contains all 66 built-in commands with required aliases and sections', () => {
+  assert.equal(BUILTIN_COMMANDS.length, 66);
   const ids = new Set(BUILTIN_COMMANDS.map((c) => c.id));
-  assert.equal(ids.size, 65);
+  assert.equal(ids.size, 66);
 
   const byId = new Map(BUILTIN_COMMANDS.map((c) => [c.id, c]));
   assert.ok(byId.get('new').aliases.includes('clear'));

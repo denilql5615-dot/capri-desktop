@@ -2041,16 +2041,19 @@ function ensureStylesEngine() {
       const small = img.resize({ width: 96 });
       return { data: small.toBitmap(), order: 'BGRA' };
     },
-    chat: async (messages) => {
-      const cfg = config.load();
-      if (cfg.provider !== 'ollama') throw new Error('Карточку голоса собирает только локальная модель (Ollama).');
-      if (!chatModels) await refreshModels();
-      const model = pickModel(cfg);
-      if (!llm.isLocal(cfg.provider, cfg, model)) throw new Error('Выбранная модель не локальная.');
-      return llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict: 1500 }, () => {}, AbortSignal.timeout(5 * 60 * 1000));
-    },
+    chat: (messages) => localModelChat(messages, { purpose: 'Карточку голоса' }),
   });
   return stylesEngine;
+}
+
+/** One answer from the local model only (Ollama): for things built from private chats — voice cards, /learn. */
+async function localModelChat(messages, { purpose = 'Это', numPredict = 1500 } = {}) {
+  const cfg = config.load();
+  if (cfg.provider !== 'ollama') throw new Error(`${purpose} собирает только локальная модель (Ollama).`);
+  if (!chatModels) await refreshModels();
+  const model = pickModel(cfg);
+  if (!llm.isLocal(cfg.provider, cfg, model)) throw new Error('Выбранная модель не локальная.');
+  return llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict }, () => {}, AbortSignal.timeout(5 * 60 * 1000));
 }
 
 function ensureSlashEngine() {
@@ -2225,6 +2228,22 @@ function ensureSlashEngine() {
         sendCommand('stop');
       },
       compact: (opts) => compactDesktopChat(opts),
+      learnSkill: async ({ mode, ephemeral, sessionId, history, hint }) => {
+        if (torState.isQuarantined()) return { ok: false, error: 'Пока чат в Tor-карантине, навыки из него не сохраняю.' };
+        const isolated = isIsolatedMode({ mode, ephemeral });
+        const rows = Array.isArray(history) && history.length ? history
+          : (sessionId && !isolated ? ensureAgentSessions().history(sessionId) : (isolated ? [] : (readMemory().history || [])));
+        return ensureSkillsEngine().learnFromHistory({
+          history: rows, hint, mode, ephemeral,
+          chat: (messages) => localModelChat(messages, { purpose: 'Навык из диалога', numPredict: 1200 }),
+        });
+      },
+      attachSkillFiles: async ({ id }) => {
+        const picked = await dialog.showOpenDialog({ title: `Файлы для навыка /${id}`, properties: ['openFile', 'multiSelections'],
+          filters: [{ name: 'Текст', extensions: ['md', 'txt', 'json', 'csv', 'yaml', 'yml', 'xml', 'html'] }] });
+        if (picked.canceled || !picked.filePaths.length) return { ok: false, error: 'Файлы не выбраны.' };
+        return ensureSkillsEngine().attachFiles({ id, paths: picked.filePaths });
+      },
       forkSession: ({ sessionId, chatId }) => {
         if (sessionId) return ensureAgentSessions().fork(sessionId);
         const store = chatLog.read(chatsFile());
