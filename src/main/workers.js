@@ -12,7 +12,7 @@ const path = require('node:path');
 const { spawn, execFile } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { PROTON_MAIL } = require('./desktop');
-const { claudeActivity, codexActivity } = require('./cloud-activity');
+const { claudeActivity, codexActivity, agyActivity } = require('./cloud-activity');
 
 // how speech-to-text spells them too; a letter just before is another word ("телеклод")
 const CLAUDE_RE = /(?<![а-яёa-z])(клод|клауд|клоуд|claude|антропик|anthropic)/i;
@@ -579,13 +579,19 @@ function askCodex(cfg, messages, onDelta, signal, { desktop = false, home = null
   });
 }
 
-const parseAgyEvent = (line) => {
+const parseAgyEvent = (line, onActivity, cwd) => {
+  let event;
   try {
-    const event = JSON.parse(line);
-    return event.event === 'result' ? event.result : null;
+    event = JSON.parse(line);
   } catch {
     return null;
   }
+  if (event?.event === 'result') return event.result;
+  if (onActivity) {
+    const step = agyActivity(event, cwd);
+    if (step) onActivity(step);
+  }
+  return null;
 };
 
 function askGeminiCli(cfg, messages, onDelta, signal, find = findGeminiCli) {
@@ -705,7 +711,7 @@ function createAgyPoolEntry({ key, sessionId, model, exe, cwd, spawnImpl = spawn
       const line = entry.buffer.slice(0, nl).trim();
       entry.buffer = entry.buffer.slice(nl + 1);
       if (!line) continue;
-      const result = parseAgyEvent(line);
+      const result = parseAgyEvent(line, entry.currentTurn?.onActivity, cwd);
       if (result && entry.currentTurn) {
         entry.currentTurn.onResult(result);
       }
@@ -744,6 +750,7 @@ function askGemini(cfg, messages, onDelta, signal, {
   sessionId = null,
   sameProviderContiguous = false,
   onUsage = null,
+  onActivity,
 } = {}, find = findAgy, spawnImpl = spawn) {
   if (forcedModel === 'gemini-cli-free') return askGeminiCli(cfg, messages, onDelta, signal);
   const exe = find();
@@ -812,6 +819,7 @@ function askGemini(cfg, messages, onDelta, signal, {
         entry.currentTurn = null;
       };
       entry.currentTurn = {
+        onActivity: (step) => { if (!signal?.aborted) onActivity?.(step); },
         onResult: (result) => {
           if (settled) return;
           settled = true;
@@ -915,7 +923,7 @@ function askGemini(cfg, messages, onDelta, signal, {
       buffer += chunk;
       let nl;
       while ((nl = buffer.indexOf('\n')) >= 0) {
-        const parsed = parseAgyEvent(buffer.slice(0, nl).trim());
+        const parsed = parseAgyEvent(buffer.slice(0, nl).trim(), signal?.aborted ? null : onActivity, cwd);
         buffer = buffer.slice(nl + 1);
         if (parsed) {
           result = parsed;
@@ -1006,7 +1014,7 @@ async function runWorker(start, cfg, messages, onDelta, signal, opts = {}, runne
       if (step === 'claude') return await runners.claude(cfg, messages, onDelta, signal, opts);
       // Codex gets its own model for the tier (opts.model is Claude's: haiku/sonnet/opus)
       if (step === 'codex') return await runners.codex(cfg, messages, onDelta, signal, { ...opts, model: opts.codexModel || null });
-      return await runners.gemini(cfg, messages, onDelta, signal, { model: step, tier: opts.tier });
+      return await runners.gemini(cfg, messages, onDelta, signal, { model: step, tier: opts.tier, onActivity: opts.onActivity });
     } catch (err) {
       if (signal?.aborted || err?.message === 'stopped') throw err;
       if (useCooldown && LIMIT_ERR_RE.test(err?.message || '')) {

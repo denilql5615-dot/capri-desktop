@@ -223,6 +223,7 @@ test('askGemini reuses warm persistent stream-json process for contiguous sessio
 
   let spawnCount = 0;
   const receivedPrompts = [];
+  const steps = [];
   const mockSpawn = () => {
     spawnCount++;
     const procId = spawnCount;
@@ -245,6 +246,7 @@ test('askGemini reuses warm persistent stream-json process for contiguous sessio
         const payload = JSON.parse(line);
         receivedPrompts.push(payload.message.content);
         setImmediate(() => {
+          child.stdout.write(`${JSON.stringify({ event: 'step_update', step_update: { step_index: turnNum, state: 'DONE', step_type: 'tool', tool_name: 'read_file' } })}\n`);
           child.stdout.write(`${JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: `proc${procId}-turn${turnNum}` } })}\n`);
         });
       }
@@ -259,7 +261,7 @@ test('askGemini reuses warm persistent stream-json process for contiguous sessio
       [{ role: 'user', content: 'first question' }],
       () => {},
       sig,
-      { model: 'gemini-3.8-flash-high', sessionId: 'sess-1', sameProviderContiguous: false },
+      { model: 'gemini-3.8-flash-high', sessionId: 'sess-1', sameProviderContiguous: false, onActivity: (step) => steps.push(['first', step.id]) },
       () => 'agy-mock',
       mockSpawn,
     );
@@ -276,11 +278,12 @@ test('askGemini reuses warm persistent stream-json process for contiguous sessio
       ],
       () => {},
       sig,
-      { model: 'gemini-3.8-flash-high', sessionId: 'sess-1', sameProviderContiguous: true },
+      { model: 'gemini-3.8-flash-high', sessionId: 'sess-1', sameProviderContiguous: true, onActivity: (step) => steps.push(['second', step.id]) },
       () => 'agy-mock',
       mockSpawn,
     );
     assert.strictEqual(r2, 'proc1-turn2');
+    assert.deepEqual(steps, [['first', 'agy-1'], ['second', 'agy-2']]);
     assert.strictEqual(spawnCount, 1);
     assert.ok(!receivedPrompts[1].includes('Conversation so far:'));
     assert.match(receivedPrompts[1], /Task: second question$/);

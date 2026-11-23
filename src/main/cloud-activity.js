@@ -4,6 +4,11 @@ const path = require('node:path');
 const identifier = /^[\w.-]{1,96}$/;
 const privateFile = /(?:^|[\\/])(?:\.git|\.ssh|\.aws|\.capri|\.env(?:\.[^\\/]*)?|auth\.json|credentials?[^\\/]*)(?:[\\/]|$)|\.(?:pem|pfx|key|dpapi)$/i;
 const validId = (value) => typeof value === 'string' && identifier.test(value);
+const executable = /^(?:&\s*)?(?:["'][^"']*[\\/])?(pwsh|powershell|cmd|bash|sh|git|rg|node|npm|python|py|cat|ls|Get-Content|Get-ChildItem)(?:\.exe)?(?=["'\s]|$)/i;
+
+function commandName(command) {
+  return typeof command === 'string' ? executable.exec(command.trim())?.[1] : undefined;
+}
 
 function workspaceFile(file, cwd) {
   if (typeof file !== 'string' || !file || privateFile.test(file)) return null;
@@ -22,8 +27,10 @@ function codexActivity(msg, cwd) {
   switch (item.type) {
     case 'reasoning':
       return { ...event, kind: 'thinking' };
-    case 'command_execution':
-      return { ...event, kind: 'command' };
+    case 'command_execution': {
+      const name = commandName(item.command);
+      return { ...event, kind: 'command', ...(name && { name }) };
+    }
     case 'mcp_tool_call':
       return { ...event, kind: 'tool', name: validId(item.tool) ? item.tool : 'MCP' };
     case 'web_search':
@@ -46,6 +53,7 @@ function claudeActivity(cwd, publish) {
     if (block?.type !== 'tool_use' || !validId(block.id) || !validId(block.name)) return;
     const previous = tools.get(block.id);
     const event = previous || { id: block.id, kind: block.name === 'Bash' ? 'command' : 'tool', name: block.name };
+    if (event.kind === 'command') event.name = commandName(block.input?.command) || event.name;
     if (['Edit', 'Write', 'MultiEdit'].includes(block.name)) {
       const file = workspaceFile(block.input?.file_path, cwd);
       if (file) event.file = file;
@@ -84,4 +92,29 @@ function claudeActivity(cwd, publish) {
   };
 }
 
-module.exports = { codexActivity, claudeActivity };
+function agyActivity(message, cwd) {
+  if (message?.event !== 'step_update') return null;
+  const step = message.step_update;
+  if (!Number.isSafeInteger(step?.step_index) || step.step_index < 0) return null;
+  const states = { ACTIVE: 'running', DONE: 'done', ERROR: 'failed', CANCELLED: 'stopped' };
+  const state = typeof step.state === 'string' && Object.hasOwn(states, step.state) ? states[step.state] : null;
+  if (!state) return null;
+  const id = `agy-${step.step_index}`;
+  if (step.step_type === 'agent_response') {
+    return state === 'done' && step.usage?.thinking_tokens > 0
+      ? { id, state, kind: 'thinking' } : { id, state, kind: 'phase', name: 'generation' };
+  }
+  if (step.step_type !== 'tool' || !validId(step.tool_name)) return null;
+  const name = step.tool_name;
+  if (state === 'done' && ['write_file', 'edit_file', 'write_to_file', 'replace_file_content', 'multi_replace_file_content', 'apply_patch'].includes(name)) {
+    const input = step.tool_info?.parameters;
+    const file = workspaceFile(input?.TargetFile ?? input?.Path, cwd);
+    if (file) return { id, state, kind: 'file', name, files: [file] };
+  }
+  if (name === 'run_command') {
+    return { id, state, kind: 'command', name: commandName(step.tool_info?.parameters?.CommandLine) || name };
+  }
+  return { id, state, kind: 'tool', name };
+}
+
+module.exports = { codexActivity, claudeActivity, agyActivity };
