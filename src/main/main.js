@@ -493,7 +493,7 @@ function ensureQuotaHub() {
         const saved = live || poolsToGroups(readAgyStatusLineSnapshot());
         const snaps = agyQuotaSnapshots();
         const out = { checkedAt: {} };
-        for (const g of ['agy-gemini', 'agy-argon', 'agy-third-party']) {
+        for (const g of ['agy-gemini', 'agy-third-party']) {
           if (saved[g].length && (live || saved.checkedAt[g] >= (snaps[g]?.checkedAt || 0))) {
             out[g] = saved[g];
             out.checkedAt[g] = saved.checkedAt[g];
@@ -4775,8 +4775,7 @@ function registerIpc() {
     hubSessions(event);
     if (!SESSION_MODELS.gemini.some(([id]) => id === model) || !Array.isArray(values)) throw new Error('Неверная квота Antigravity.');
     const group = quotaGroup('gemini', model);
-    const periods = group === 'agy-argon' ? [10080] : [300, 10080];
-    const windows = periods.map((minutes, i) => normalizeWindow(values[i], minutes, null));
+    const windows = [300, 10080].map((minutes, i) => normalizeWindow(values[i], minutes, null));
     if (windows.some((window) => !window)) throw new Error('Укажи остаток от 0 до 100%.');
     const data = { ...agyQuotaSnapshots(), [group]: { windows, checkedAt: Date.now() } };
     fs.writeFileSync(agyQuotaFile(), JSON.stringify(data), 'utf8');

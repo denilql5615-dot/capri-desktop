@@ -1,15 +1,15 @@
 'use strict';
 
-// 2.8a: one place for the plan limits of every cloud model. Each group has its bars (5 hours, week; Argon
-// only the week), every bar is "remaining %" with its reset time and a micro-label ("Claude 5 часов").
+// 2.8a: one place for the plan limits of every cloud model. Each group has its bars (5 hours, week; Argon shares
+// the Neon/Hydrogen pool since 2026-11-24), every bar is "remaining %" with its reset time and a micro-label ("Claude 5 часов").
 // Sources stay where they are (agent-quotas.js, the Claude status line, the Antigravity status line, the
 // web Gemini /usage page); this hub only asks them at their own pace, merges and tells the windows.
 
 const GROUPS = Object.freeze([
   { id: 'claude', label: 'Claude', kinds: ['5h', 'week'] },
   { id: 'codex', label: 'Codex', kinds: ['5h', 'week'] },
-  { id: 'agy-gemini', label: 'Antigravity Neon/Hydro/Flash', kinds: ['5h', 'week'] },
-  { id: 'agy-argon', label: 'Antigravity Argon', kinds: ['week'] },
+  // 2026-11-24: Google moved Argon into the shared Neon/Hydrogen pool (no separate weekly Argon quota)
+  { id: 'agy-gemini', label: 'Antigravity Neon/Hydrogen/Argon', kinds: ['5h', 'week'] },
   { id: 'agy-third-party', label: 'Antigravity Opus/Sonnet', kinds: ['5h', 'week'] },
   { id: 'web-gemini', label: 'Web Gemini', kinds: ['5h', 'week'] },
 ]);
@@ -37,7 +37,6 @@ function groupFor(agent, model = '') {
   if (agent === 'codex') return 'codex';
   if (agent === 'gemini-web' || agent === 'web-gemini') return 'web-gemini';
   if (agent === 'gemini' || agent === 'antigravity' || agent === 'agy') {
-    if (/argon|orchestrator-g1-pro/i.test(model)) return 'agy-argon';
     if (/claude|opus|sonnet|gpt|oss/i.test(model)) return 'agy-third-party';
     return 'agy-gemini';
   }
@@ -146,7 +145,7 @@ class QuotaHub {
     if (force) return true;
     const interval = INTERVAL_MS[source];
     if (!interval) return false;
-    const groups = source === 'agy' ? ['agy-gemini', 'agy-argon', 'agy-third-party'] : [source];
+    const groups = source === 'agy' ? ['agy-gemini', 'agy-third-party'] : [source];
     const visible = [...this.shown.values(), ...Object.values(this.activity())];
     const shown = visible.some((list) => groups.some((g) => list.includes(g)));
     return this.now() - (this.lastAsked.get(source) || 0) >= (shown ? interval.shown : interval.hidden);

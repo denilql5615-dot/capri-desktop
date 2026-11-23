@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const { snapshot } = require('../scripts/agy-statusline');
 const { poolsToGroups } = require('../src/main/quota-agy');
 
-test('AGY status line maps the three pools and ignores disabled or absent quotas', () => {
+test('AGY status line maps the Gemini and 3P pools (Argon shares Gemini) and ignores disabled or absent quotas', () => {
   const reset = '2026-11-24T00:00:00Z';
   const snap = snapshot({ quota: {
     'gemini-5h': { remaining_fraction: 0, reset_time: reset },
@@ -16,8 +16,7 @@ test('AGY status line maps the three pools and ignores disabled or absent quotas
   } });
   assert.deepEqual(poolsToGroups(snap), {
     'agy-gemini': [{ remaining: 0, minutes: 300, resetsAt: Date.parse(reset) }],
-    'agy-argon': [{ remaining: 75.4, minutes: 10080, resetsAt: null }],
     'agy-third-party': [{ remaining: 50, minutes: 10080, resetsAt: null }],
-    checkedAt: { 'agy-gemini': snap.checkedAt, 'agy-argon': snap.checkedAt, 'agy-third-party': snap.checkedAt },
+    checkedAt: { 'agy-gemini': snap.checkedAt, 'agy-third-party': snap.checkedAt },
   });
 });

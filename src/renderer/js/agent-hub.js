@@ -89,9 +89,9 @@ function loadQuota() {
   quotaStrip.select(agent, model);
   $('quota').hidden = agent !== 'gemini';
   $('quota-edit').hidden = agent !== 'gemini';
-  const argon = /^gemini-4-argon/.test(model);
-  $('quota-short-label').hidden = argon;
-  $('quota-short').required = !argon;
+  // Argon shares the Neon/Hydrogen pool (5 hours + week) since 2026-11-24
+  $('quota-short-label').hidden = false;
+  $('quota-short').required = true;
 }
 
 const current = () => sessions.find((session) => session.id === selected.get(agent));
@@ -788,7 +788,7 @@ $('quota-form').onsubmit = async (event) => {
   event.preventDefault();
   const model = $('model').value;
   const week = $('quota-week').valueAsNumber;
-  const values = /^gemini-4-argon/.test(model) ? [week] : [$('quota-short').valueAsNumber, week];
+  const values = [$('quota-short').valueAsNumber, week];
   try {
     await host.agentsQuotaSnapshot({ model, values });
     $('quota-edit').open = false;

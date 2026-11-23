@@ -22,7 +22,7 @@ test('quota groups map to recognisable provider logos', async () => {
   const { quotaBrand } = await load('quota-scale.js');
   const { brandSvg } = await load('brand-logos.js');
   assert.equal(quotaBrand('agy-third-party'), 'antigravity');
-  assert.equal(quotaBrand('agy-argon'), 'antigravity');
+  assert.equal(quotaBrand('agy-gemini'), 'antigravity');
   assert.equal(quotaBrand('web-gemini'), 'gemini');
   assert.equal(quotaBrand('claude'), 'claude');
   assert.equal(quotaBrand('ollama'), '');

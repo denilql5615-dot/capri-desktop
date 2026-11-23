@@ -22,11 +22,10 @@ function poolsToGroups(snap) {
   };
   const out = {
     'agy-gemini': [win('gemini-5h', 300), win('gemini-weekly', 10080)].filter(Boolean),
-    'agy-argon': [win('gemini-argon-wtu-weekly', 10080)].filter(Boolean),
     'agy-third-party': [win('3p-5h', 300), win('3p-weekly', 10080)].filter(Boolean),
   };
   const checkedAt = Number(snap?.checkedAt) || null;
-  return { ...out, checkedAt: { 'agy-gemini': checkedAt, 'agy-argon': checkedAt, 'agy-third-party': checkedAt } };
+  return { ...out, checkedAt: { 'agy-gemini': checkedAt, 'agy-third-party': checkedAt } };
 }
 
 function readSnapshot(file = OUT) {

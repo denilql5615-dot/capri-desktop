@@ -7,13 +7,14 @@ const assert = require('node:assert/strict');
 const { QuotaHub, GROUPS, groupFor, toBars } = require('../src/main/quota-hub');
 const { snapshot: statusSnapshot, line: statusLine } = require('../scripts/claude-statusline');
 
-test('groups: Argon has only the week; Opus/Sonnet in Antigravity is its own group', () => {
+test('groups: Argon shares the Neon/Hydrogen pool; Opus/Sonnet in Antigravity is its own group', () => {
   const byId = Object.fromEntries(GROUPS.map((g) => [g.id, g]));
-  assert.deepEqual(byId['agy-argon'].kinds, ['week']);
+  assert.equal(byId['agy-argon'], undefined);
+  assert.equal(byId['agy-gemini'].label, 'Antigravity Neon/Hydrogen/Argon');
   assert.equal(byId['agy-third-party'].label, 'Antigravity Opus/Sonnet');
   assert.equal(groupFor('claude'), 'claude');
   assert.equal(groupFor('codex', 'gpt-6.2-sol'), 'codex');
-  assert.equal(groupFor('gemini', 'gemini-4-argon-high'), 'agy-argon');
+  assert.equal(groupFor('gemini', 'gemini-4-argon-high'), 'agy-gemini');
   assert.equal(groupFor('gemini', 'claude-opus-5-5'), 'agy-third-party');
   assert.equal(groupFor('gemini', 'gemini-4-hydrogen'), 'agy-gemini');
   assert.equal(groupFor('gemini-web'), 'web-gemini');
@@ -34,8 +35,8 @@ test('bars: micro-labels, order, seconds or ms resets, a rolled-over window read
   const unknownReset = toBars('claude', [{ remaining: 40, minutes: 300, resetsAt: null }], now)[0];
   assert.equal(unknownReset.remaining, 40);
   assert.equal(unknownReset.resetsAt, null);
-  // Argon ignores a 5-hour window
-  assert.deepEqual(toBars('agy-argon', [{ remaining: 50, minutes: 300 }, { remaining: 70, minutes: 10080 }], now).map((b) => b.label), ['Antigravity Argon Неделя']);
+  assert.deepEqual(toBars('agy-gemini', [{ remaining: 50, minutes: 300 }, { remaining: 70, minutes: 10080 }], now).map((b) => b.label),
+    ['Antigravity Neon/Hydrogen/Argon 5 часов', 'Antigravity Neon/Hydrogen/Argon Неделя']);
 });
 
 function hub({ shown = [] } = {}) {
@@ -48,7 +49,7 @@ function hub({ shown = [] } = {}) {
     readers: {
       claude: async () => { asked.claude += 1; return { windows: [{ remaining: 66, minutes: 300 }, { remaining: 88, minutes: 10080 }], checkedAt: now - 1000 }; },
       codex: async () => { asked.codex += 1; return [{ remaining: 50, minutes: 300 }, { remaining: 75, minutes: 10080 }]; },
-      agy: async () => { asked.agy += 1; return { 'agy-argon': [{ remaining: 30, minutes: 10080 }], checkedAt: {} }; },
+      agy: async () => { asked.agy += 1; return { 'agy-gemini': [{ remaining: 30, minutes: 10080 }], checkedAt: {} }; },
       webGemini: async () => { asked.webGemini += 1; return null; },
     },
   });
@@ -83,20 +84,20 @@ test('live push and the swarm plate: active groups stay 6 s after the end', asyn
   const { h, tick } = hub();
   assert.equal(h.push('codex', [{ remaining: 20, minutes: 300 }], 'live'), true);
   assert.equal(h.push('nope', [{ remaining: 20, minutes: 300 }]), false);
-  h.track('agy-argon', 'swarm');
+  h.track('agy-gemini', 'swarm');
   const finishCodex = h.track('codex', 'swarm');
   const finishOtherCodex = h.track('codex', 'swarm');
   h.track('claude', 'chat');
-  assert.deepEqual(h.snapshot().active.sort(), ['agy-argon', 'codex']);
+  assert.deepEqual(h.snapshot().active.sort(), ['agy-gemini', 'codex']);
   assert.deepEqual(h.snapshot().activity.chat, ['claude']);
   finishCodex();
   tick(7000);
-  assert.deepEqual(h.snapshot().active.sort(), ['agy-argon', 'codex']);
+  assert.deepEqual(h.snapshot().active.sort(), ['agy-gemini', 'codex']);
   finishOtherCodex();
   tick(5000);
-  assert.deepEqual(h.snapshot().active.sort(), ['agy-argon', 'codex']);
+  assert.deepEqual(h.snapshot().active.sort(), ['agy-gemini', 'codex']);
   tick(1500);
-  assert.deepEqual(h.snapshot().active, ['agy-argon']);
+  assert.deepEqual(h.snapshot().active, ['agy-gemini']);
 });
 
 test('a failing source does not break the snapshot; old data is marked stale', async () => {

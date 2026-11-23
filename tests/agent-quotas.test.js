@@ -3,8 +3,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { quotaGroup, codexWindows, claudeWindow, parseAgyStatusLineQuota } = require('../src/main/agent-quotas');
 
-test('Antigravity keeps Argon, Gemini Flash/Pro and Claude/GPT separate', () => {
-  assert.equal(quotaGroup('gemini', 'gemini-4-argon-medium'), 'agy-argon');
+test('Antigravity: Argon shares the Gemini pool, Claude/GPT are separate', () => {
+  assert.equal(quotaGroup('gemini', 'gemini-4-argon-medium'), 'agy-gemini');
+  assert.equal(quotaGroup('gemini', 'gemini-pro-orchestrator-g1-pro'), 'agy-gemini');
   assert.equal(quotaGroup('gemini', 'gemini-3.8-flash-high'), 'agy-gemini');
   assert.equal(quotaGroup('gemini', 'claude-opus-5-5-medium'), 'agy-third-party');
   assert.equal(quotaGroup('claude', 'opus'), 'claude');
@@ -20,7 +21,7 @@ test('provider telemetry preserves zero, weekly reset and optional Claude model 
   assert.equal(claudeWindow(event({ rateLimitType: 'five_hour', status: 'allowed' })), null);
 });
 
-test('Antigravity statusLine quota parsing maps Argon, Gemini, and 3P windows correctly', () => {
+test('Antigravity statusLine quota parsing maps Gemini and 3P windows; an old Argon pool is ignored', () => {
   const samplePayload = {
     quota: {
       'gemini-argon-wtu-weekly': { remaining_fraction: 0.42, reset_time: 1794333000 },
@@ -31,9 +32,7 @@ test('Antigravity statusLine quota parsing maps Argon, Gemini, and 3P windows co
     },
   };
   const parsed = parseAgyStatusLineQuota(samplePayload);
-  assert.deepEqual(parsed['agy-argon'], [
-    { remaining: 42, minutes: 10080, resetsAt: 1794333000 },
-  ]);
+  assert.equal(parsed['agy-argon'], undefined);
   assert.deepEqual(parsed['agy-gemini'], [
     { remaining: 85, minutes: 300, resetsAt: 1793976000 },
     { remaining: 60, minutes: 10080, resetsAt: 1794333000 },

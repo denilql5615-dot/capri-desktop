@@ -5,7 +5,6 @@ const { createInterface } = require('node:readline');
 
 function quotaGroup(agent, model) {
   if (agent !== 'gemini') return agent;
-  if (/^gemini-4-argon(?:-|$)|^gemini-pro-orchestrator-g1-pro$/.test(model)) return 'agy-argon';
   if (/^gemini-/.test(model)) return 'agy-gemini';
   return 'agy-third-party';
 }
@@ -84,7 +83,6 @@ function parseAgyStatusLineQuota(payload) {
   };
 
   return {
-    'agy-argon': [toWindow(quota['gemini-argon-wtu-weekly'], 10080)].filter(Boolean),
     'agy-gemini': [toWindow(quota['gemini-5h'], 300), toWindow(quota['gemini-weekly'], 10080)].filter(Boolean),
     'agy-third-party': [toWindow(quota['3p-5h'], 300), toWindow(quota['3p-weekly'], 10080)].filter(Boolean),
   };
