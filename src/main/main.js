@@ -1997,7 +1997,13 @@ function ensureMemorySlices() {
     connectors: ensureConnectorsEngine(),
     drive: ensureRcloneDrive(),
     sanitize: sanitizeDigestMarkdown,
-    notesRoot: () => path.join(notesDir(), 'GENESIS'),
+    // Capri's own notes live in <vault>\Capri, the GENESIS notes next to it at <vault>\GENESIS.
+    notesRoot: () => {
+      const own = config.load().notebookSlices?.notesRoot;
+      if (own) return own;
+      const candidates = [path.join(path.dirname(notesDir()), 'GENESIS'), path.join(notesDir(), 'GENESIS')];
+      return candidates.find((d) => fs.existsSync(d)) || candidates[0];
+    },
     archiveDir: path.join(app.getPath('userData'), 'notebook-digests', 'slices'),
   });
   return memorySlices;
