@@ -2856,6 +2856,11 @@ async function applyPhone() {
       'Адрес 100.x.x.x — это Tailscale (работает откуда угодно), остальные — только в домашней сети.', '',
     ].join('\n'));
     console.log(`[capri] phone bridge on port ${port}`);
+    // 2.95c: the same bridge as an onion service with client auth, a transport only (tor-bridge.js)
+    if (config.load().torBridge !== false) {
+      const tb = require('./tor-bridge').start({ exe: 'D:\\Capri\\tools\\tor\\tor\\tor.exe', root: 'D:\\Capri\\tools\\tor-bridge', port });
+      console.log(`[capri] tor bridge: ${tb.ok ? (tb.started ? 'started' : 'running') : tb.error}`);
+    }
   } catch (err) {
     console.warn(`[capri] phone bridge could not start on port ${p.port}:`, err.message); // GENESIS still running?
   }
