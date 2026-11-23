@@ -424,7 +424,7 @@ class PhoneBridge {
     this.workerCooldowns = new Map(); // workerId -> untilMs
     this.researchRequests = new Map();
     this.researchActivity = new Map();
-    this.earlyResearchStops = new Map();
+    this.researchResults = new Map();
     this.queue = Promise.resolve();
     this.chatRequests = new Map();
     this._fallbackSlash = null;
@@ -702,8 +702,24 @@ class PhoneBridge {
       entry.abort?.abort();
     }
     this.chatRequests.clear();
+    for (const active of this.researchRequests.values()) active.abort();
     if (!s) return Promise.resolve();
     return new Promise((r) => { s.closeAllConnections(); s.close(() => r()); });
+  }
+
+  researchStatus(id) {
+    const running = this.researchRequests.get(id);
+    if (running) return { state: running.signal.aborted ? 'stopping' : 'running' };
+    return this.researchResults.get(id) || { state: 'missing' };
+  }
+
+  rememberResearch(id, result, status = 200) {
+    const state = result.stopped ? 'stopped' : result.error ? 'failed' : 'done';
+    const entry = { state, result, status };
+    this.researchResults.set(id, entry);
+    setTimeout(() => {
+      if (this.researchResults.get(id) === entry) this.researchResults.delete(id);
+    }, 24 * 60 * 60 * 1000).unref();
   }
 
   expireChatRequest(id, entry, ttl) {
@@ -1413,17 +1429,18 @@ class PhoneBridge {
         const active = this.researchRequests.get(requestId);
         if (active) {
           active.abort();
-        } else {
-          const now = Date.now();
-          for (const [id, expires] of this.earlyResearchStops) {
-            if (expires <= now) this.earlyResearchStops.delete(id);
+        } else if (!this.researchResults.has(requestId)) {
+          if (this.researchResults.size + this.researchRequests.size >= 128) {
+            return this.send(res, 429, { error: 'Хранилище недавних задач заполнено.' });
           }
-          if (this.earlyResearchStops.size >= 64) {
-            this.earlyResearchStops.delete(this.earlyResearchStops.keys().next().value);
-          }
-          this.earlyResearchStops.set(requestId, now + 15_000);
+          this.rememberResearch(requestId, { stopped: true });
         }
-        return this.send(res, 200, { ok: true });
+        return this.send(res, 200, { ok: true, state: active ? 'stopping' : this.researchResults.get(requestId).state });
+      }
+      if (req.method === 'GET' && url.pathname === '/deep-research/result') {
+        const id = url.searchParams.get('requestId') || '';
+        if (!RESEARCH_ID.test(id)) return this.send(res, 400, { error: 'Неверный идентификатор исследования.' });
+        return this.send(res, 200, this.researchStatus(id));
       }
       if (req.method === 'GET' && url.pathname === '/deep-research/activity') {
         const id = url.searchParams.get('requestId') || '';
@@ -1445,11 +1462,15 @@ class PhoneBridge {
         if (requestId !== undefined && (typeof requestId !== 'string' || !RESEARCH_ID.test(requestId))) {
           return this.send(res, 400, { error: 'Неверный идентификатор исследования.' });
         }
-        if (this.researchRequests.has(requestId)) return this.send(res, 409, { error: 'Исследование уже выполняется.' });
-        if (requestId) {
-          const expires = this.earlyResearchStops.get(requestId);
-          this.earlyResearchStops.delete(requestId);
-          if (expires > Date.now()) return this.send(res, 200, { stopped: true });
+        const background = body.background === true;
+        if (background && !requestId) return this.send(res, 400, { error: 'Требуется идентификатор исследования.' });
+        if (requestId && this.researchStatus(requestId).state !== 'missing') {
+          const current = this.researchStatus(requestId);
+          if (background || !current.result) return this.send(res, 200, current);
+          return this.send(res, current.status, current.result);
+        }
+        if (requestId && this.researchResults.size + this.researchRequests.size >= 128) {
+          return this.send(res, 429, { error: 'Хранилище недавних задач заполнено.' });
         }
         const abort = new AbortController();
         if (requestId) this.researchRequests.set(requestId, abort);
@@ -1471,18 +1492,23 @@ class PhoneBridge {
           if (trace.steps.size > 32) trace.steps.delete(trace.steps.keys().next().value);
         };
         const disconnect = () => { if (!res.writableEnded) abort.abort(); };
-        res.once('close', disconnect);
-        if (res.destroyed) disconnect();
-        try {
-          const options = { ...flags, signal: abort.signal, notifyActivity };
-          const result = kind === 'council'
-            ? await this.runMobileCouncil(flags.text, options)
-            : await this.runDeepResearch(flags.text, options);
-          if (!res.destroyed) return this.send(res, 200, abort.signal.aborted ? { stopped: true } : result);
-        } catch (error) {
-          if (!abort.signal.aborted) throw error;
-          if (!res.destroyed) return this.send(res, 200, { stopped: true });
-        } finally {
+        if (!requestId) res.once('close', disconnect);
+        const run = async () => {
+          let result;
+          let status = 200;
+          try {
+            const options = { ...flags, signal: abort.signal, notifyActivity };
+            result = kind === 'council'
+              ? await this.runMobileCouncil(flags.text, options)
+              : await this.runDeepResearch(flags.text, options);
+          } catch (error) {
+            status = Number.isInteger(error.status) ? error.status : 500;
+            result = { error: status === 500 ? 'Исследование завершилось ошибкой.' : error.message };
+          }
+          if (abort.signal.aborted) {
+            result = { stopped: true };
+            status = 200;
+          }
           trace.until = Date.now() + 6000;
           for (const [group, until] of trace.groups) {
             if (until > Date.now()) trace.groups.set(group, trace.until);
@@ -1499,8 +1525,18 @@ class PhoneBridge {
             expiry.unref();
           }
           res.off('close', disconnect);
-          if (requestId) this.researchRequests.delete(requestId);
+          if (requestId) {
+            this.rememberResearch(requestId, result, status);
+            this.researchRequests.delete(requestId);
+          }
+          return { result, status };
+        };
+        if (background) {
+          void run();
+          return this.send(res, 202, this.researchStatus(requestId));
         }
+        const { result, status } = await run();
+        if (!res.destroyed) return this.send(res, status, result);
         return;
       }
       if (req.method === 'POST' && url.pathname === '/chat/private/save') {

@@ -535,6 +535,51 @@ test('bridge: Android read tools and scoped research stop use authenticated, sep
   }
 });
 
+test('background research runs once, restores its result, and confirms stop only after the worker exits', async () => {
+  let runs = 0;
+  let pending = Promise.withResolvers();
+  const entered = Promise.withResolvers();
+  const bridge = new PhoneBridge({ token: () => 'fixture', deepResearch: async () => {
+    runs++;
+    entered.resolve();
+    return pending.promise;
+  } });
+  const port = await bridge.start(0, '127.0.0.1');
+  const headers = { 'x-capri-token': 'fixture' };
+  const base = `http://127.0.0.1:${port}/deep-research`;
+  const start = (requestId) => fetch(base, { method: 'POST', headers, body: JSON.stringify({ requestId, query: 'fixture', background: true }) });
+  const read = (id) => fetch(`${base}/result?requestId=${id}`, { headers }).then((r) => r.json());
+  try {
+    const id = randomUUID();
+    const disconnect = new AbortController();
+    const oldConnection = fetch(base, { method: 'POST', headers, signal: disconnect.signal,
+      body: JSON.stringify({ requestId: id, query: 'fixture' }) }).catch((error) => error);
+    await entered.promise;
+    disconnect.abort();
+    assert.equal((await oldConnection).name, 'AbortError');
+    assert.equal((await read(id)).state, 'running');
+    assert.equal((await (await start(id)).json()).state, 'running');
+    assert.equal(runs, 1);
+    pending.resolve({ reply: 'saved result' });
+    assert.deepEqual(await read(id), { state: 'done', result: { reply: 'saved result' }, status: 200 });
+    assert.equal((await (await start(id)).json()).state, 'done');
+    assert.equal(runs, 1);
+
+    const next = randomUUID();
+    pending = Promise.withResolvers();
+    assert.equal((await start(next)).status, 202);
+    const stopping = await (await fetch(`${base}/stop`, { method: 'POST', headers, body: JSON.stringify({ requestId: next }) })).json();
+    assert.equal(stopping.state, 'stopping');
+    assert.equal((await read(next)).state, 'stopping');
+    pending.resolve({ reply: 'late answer' });
+    assert.equal((await read(next)).state, 'stopped');
+    assert.equal(runs, 2);
+  } finally {
+    pending.resolve({ reply: 'fixture' });
+    await bridge.stop();
+  }
+});
+
 test('bridge: explicit web search uses the adapter and reports unavailable sources honestly', async () => {
   const calls = [];
   const bridge = new PhoneBridge({

@@ -80,7 +80,7 @@ function runCli(exe, args, prompt, { cwd, timeoutMs = 15 * 60 * 1000, outFile = 
   return new Promise((resolve, reject) => {
     signal?.throwIfAborted();
     const child = spawn(exe, args, { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    const stop = () => { killTree(child); reject(signal.reason); };
+    const stop = () => killTree(child);
     signal?.addEventListener('abort', stop, { once: true });
     const timer = setTimeout(() => { killTree(child); reject(new Error('не уложился во время')); }, timeoutMs);
     let out = '';
@@ -95,6 +95,7 @@ function runCli(exe, args, prompt, { cwd, timeoutMs = 15 * 60 * 1000, outFile = 
       signal?.removeEventListener('abort', stop);
       let text = out;
       if (outFile) { try { text = fs.readFileSync(outFile, 'utf8'); } catch { text = ''; } fs.rm(outFile, { force: true }, () => {}); }
+      if (signal?.aborted) return reject(signal.reason);
       if (parse) text = parse(text);
       text = String(text || '').trim();
       if (text) resolve(text);
