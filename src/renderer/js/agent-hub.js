@@ -1,6 +1,7 @@
 import { appendHubText } from './hub-links.js';
 import { openStylesLibrary } from './styles-library.js';
 import { mountQuotaStrip } from './quota-view.js';
+import { connectAgentActivity } from './agent-activity.js';
 import {
   attachSlashMenu,
   openCatalogModal,
@@ -94,6 +95,7 @@ function loadQuota() {
 }
 
 const current = () => sessions.find((session) => session.id === selected.get(agent));
+const attachActivity = connectAgentActivity(host, $('lines'), () => current()?.id);
 const title = (session) => session.title || 'Новый разговор';
 
 function button(text, action, current = false) {
@@ -213,6 +215,7 @@ function renderLines() {
     }
     return item;
   }));
+  attachActivity();
   lines.scrollTop = lines.scrollHeight;
 }
 

@@ -1,0 +1,33 @@
+.agent-activity {
+  list-style: none;
+  color: var(--hub-text);
+  font: 400 13px/1.45 var(--gem-font-sans, system-ui);
+}
+
+.agent-activity details {
+  border: 1px solid var(--hub-rule);
+  border-radius: 12px;
+  padding: 8px 12px;
+}
+
+.agent-activity summary { cursor: pointer; }
+.agent-activity__status { color: var(--hub-muted); }
+.agent-activity summary .agent-activity__status { margin-inline-start: 8px; }
+
+.agent-activity ol {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 192px;
+  overflow-y: auto;
+}
+
+.agent-activity ol li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-activity ol .agent-activity__status { flex: none; }
