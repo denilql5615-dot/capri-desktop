@@ -1,3 +1,6 @@
+import { quotaLevel, quotaBrand } from './quota-scale.js';
+import { brandSvg } from './brand-logos.js';
+
 const host = window.host;
 const number = new Intl.NumberFormat('ru', { maximumFractionDigits: 1 });
 const date = new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
@@ -14,6 +17,7 @@ function bar(group, kind, full) {
   const label = data?.label || `${group.label} ${kind === 'week' ? 'Неделя' : group.id === 'web-gemini' ? 'Текущий лимит' : '5 часов'}`;
   const value = data ? `${number.format(data.remaining)}%` : 'Нет данных';
   const node = element('div', 'quota-bar');
+  node.dataset.level = quotaLevel(data?.remaining);
   const caption = element('div', 'quota-bar__caption');
   caption.append(element('span', '', label), element('span', 'quota-bar__value', value));
   node.append(caption);
@@ -38,6 +42,13 @@ function bar(group, kind, full) {
 function groupBars(group, full = false) {
   const block = element('section', 'quota-group');
   block.setAttribute('aria-label', group.label);
+  if (full) {
+    const title = element('h2', 'quota-group__title');
+    const logo = brandSvg(quotaBrand(group.id));
+    if (logo) title.append(Object.assign(element('span', 'quota-logo'), { innerHTML: logo }));
+    title.append(group.label);
+    block.append(title);
+  }
   block.append(...group.kinds.map((kind) => bar(group, kind, full)));
   if (group.checkedAt) {
     const stale = group.stale || Date.now() - group.checkedAt > 30 * 60e3;
@@ -95,7 +106,13 @@ export function mountQuotaStrip(header, { local = false } = {}) {
     direct.hidden = !shown.length;
     direct.replaceChildren(...shown.map((group) => groupBars(group)));
     swarm.hidden = !swarmGroups.length;
-    summary.textContent = `Рой · ${swarmGroups.map((group) => group.label).join(', ')}`;
+    summary.replaceChildren('Рой');
+    for (const group of swarmGroups) {
+      summary.append(' · ');
+      const logo = brandSvg(quotaBrand(group.id));
+      if (logo) summary.append(Object.assign(element('span', 'quota-logo'), { innerHTML: logo }));
+      summary.append(group.label);
+    }
     agents.replaceChildren(...swarmGroups.map((group) => groupBars(group)));
   };
   const apply = subscribe((next) => { snapshot = next; render(); });

@@ -35,6 +35,20 @@
   background: var(--quota-track);
 }
 
+/* Agreed remaining-quota scale (2026-11-24), same values as Android QuotaLevel. */
+.quota-bar[data-level="green"] { --quota-fill: #5bd08a; }
+.quota-bar[data-level="blue"] { --quota-fill: #7aa7ff; }
+.quota-bar[data-level="yellow"] { --quota-fill: #f2c94c; }
+.quota-bar[data-level="orange"] { --quota-fill: #f2994a; }
+.quota-bar[data-level="red"] { --quota-fill: #eb5757; }
+.quota-bar[data-level="bordeaux"] { --quota-fill: #b0263f; --quota-track: #b0263f66; }
+.quota-bar:not([data-level="unknown"]) .quota-bar__value { color: var(--quota-fill); font-weight: 600; }
+.quota-bar[data-level="unknown"] .quota-bar__track { background: repeating-linear-gradient(90deg, var(--quota-track) 0 6px, transparent 6px 10px); }
+
+.quota-logo { display: inline-flex; width: 1.1em; height: 1.1em; margin-right: .35em; vertical-align: -.18em; }
+.quota-logo svg { width: 100%; height: 100%; }
+.quota-group__title { display: flex; align-items: center; margin: 0 0 2px; font-size: 13px; font-weight: 500; }
+
 .quota-bar__meter::-webkit-meter-bar { border: 0; background: transparent; }
 .quota-bar__meter::-webkit-meter-optimum-value { background: var(--quota-fill); border-radius: 2px; }
 .quota-note { color: var(--quota-muted); font-size: 11px; }
