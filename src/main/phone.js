@@ -42,6 +42,7 @@ const { PluginsEngine } = require('./plugins-engine');
 const { ConnectorsEngine, parseModelUseTag, stripModelUseTags } = require('./connectors-engine');
 const { DockerEngine } = require('./docker-engine');
 const { PcToolsEngine } = require('./pc-tools-engine');
+const { PhoneControlEngine } = require('./phone-control-engine');
 const SUGGESTIONS_TTL_MS = 45 * 60 * 1000; // 45 минут кэша подсказок от E4B
 const WORKER_COOLDOWN_MS = 30 * 60 * 1000; // 30 минут кулдауна для уставших воркеров Deep Research
 const RESEARCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -430,6 +431,7 @@ class PhoneBridge {
     this._fallbackPlugins = null;
     this._fallbackConnectors = null;
     this._fallbackDocker = null;
+    this._fallbackPhoneControl = null;
   }
 
   skillsEngine() {
@@ -482,6 +484,21 @@ class PhoneBridge {
     return this._fallbackPcTools;
   }
 
+  phoneControlEngine() {
+    if (this.d.phoneControlEngine) return this.d.phoneControlEngine;
+    if (this.d.slashEngine?.phoneControlEngine) return this.d.slashEngine.phoneControlEngine;
+    if (!this._fallbackPhoneControl) {
+      this._fallbackPhoneControl = new PhoneControlEngine({
+        onHealthSummary: (summary) => {
+          try {
+            this.connectorsEngine().saveHealthSummary(summary);
+          } catch {}
+        },
+      });
+    }
+    return this._fallbackPhoneControl;
+  }
+
   slashEngine() {
     if (this.d.slashEngine) return this.d.slashEngine;
     if (!this._fallbackSlash) {
@@ -492,6 +509,7 @@ class PhoneBridge {
         connectorsEngine: this.connectorsEngine(),
         dockerEngine: this.dockerEngine(),
         pcToolsEngine: this.pcToolsEngine(),
+        phoneControlEngine: this.phoneControlEngine(),
       });
     }
     return this._fallbackSlash;
@@ -963,6 +981,7 @@ class PhoneBridge {
           connectorsEngine: true,
           dockerEngine: true,
           pcToolsEngine: true,
+          phoneControlEngine: true,
           privateVaultSave: Boolean(this.d.savePrivateChat),
           contextLimits,
         });
@@ -1210,6 +1229,48 @@ class PhoneBridge {
           payload: body.payload,
         });
         return this.send(res, result.ok ? 200 : (result.blocked ? 403 : 400), result);
+      }
+      if (req.method === 'GET' && url.pathname === '/phone-control/status') {
+        return this.send(res, 200, this.phoneControlEngine().getStatus());
+      }
+      if (req.method === 'POST' && url.pathname === '/phone-control/state') {
+        const body = await this.readJson(req, MAX_BODY * 2);
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          return this.send(res, 400, { ok: false, error: 'Некорректное тело запроса.' });
+        }
+        const updated = this.phoneControlEngine().updateState(body);
+        if (!updated.ok) return this.send(res, 400, updated);
+        const pendingActions = this.phoneControlEngine().drainPendingActions();
+        return this.send(res, 200, {
+          ok: true,
+          status: updated.status,
+          pendingActions,
+        });
+      }
+      if (req.method === 'POST' && url.pathname === '/phone-control/action') {
+        const body = await this.readJson(req, MAX_BODY * 2);
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          return this.send(res, 400, { ok: false, error: 'Некорректное тело запроса.' });
+        }
+        const result = this.phoneControlEngine().queueAction({
+          moduleId: body.moduleId,
+          action: body.action,
+          payload: body.payload,
+          confirmed: body.confirmed === true,
+        });
+        return this.send(res, (result.ok || result.confirmRequired) ? 200 : 400, result);
+      }
+      if (req.method === 'POST' && url.pathname === '/phone-control/action-result') {
+        const body = await this.readJson(req, MAX_BODY);
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          return this.send(res, 400, { ok: false, error: 'Некорректное тело запроса.' });
+        }
+        const result = this.phoneControlEngine().reportActionResult({
+          actionId: body.actionId,
+          ok: body.ok,
+          message: body.message,
+        });
+        return this.send(res, result.ok ? 200 : 400, result);
       }
       if (req.method === 'GET' && url.pathname === '/commands') {
         const mode = url.searchParams.get('mode') || 'chat';

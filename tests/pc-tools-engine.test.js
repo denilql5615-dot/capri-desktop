@@ -131,7 +131,7 @@ test('PcToolsEngine catalog has exact 11 PC tools and 4 Lenovo bridges with 20s 
 
   const penpot = st1.pc.tools.find((t) => t.id === 'tool-penpot-mcp');
   assert.equal(penpot.status, 'running');
-  assert.equal(penpot.url, 'http://127.0.0.1:9001');
+  assert.equal(penpot.url, 'http://localhost:9001');
 
   const countAfterFirst = execCalls.length;
   await engine.getStatus({ refresh: false });

@@ -196,7 +196,7 @@ test('bridge: token, chat with the phone note, voice, events, control', async ()
     assert.strictEqual(ping.privateVaultSave, false);
     assert.strictEqual(ping.contextLimits.e4b, 32768);
     assert.strictEqual(ping.contextLimits['26b'], 32768);
-    assert.strictEqual(ping.contextLimits.qwen36, 16384);
+    assert.strictEqual(ping.contextLimits.qwen36, 32768);
     assert.strictEqual(ping.contextLimits['gpt-6.2-sol'], 500000);
     assert.strictEqual(ping.contextLimits['gpt-6.2-astra'], 272000);
     assert.strictEqual(ping.contextLimits['claude-opus-5-5'], 1000000);

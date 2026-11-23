@@ -386,7 +386,7 @@ async function executeAgentSlashCommand(rawText, { confirm = false } = {}) {
       await runAgentCompact(id, parsed.rest, null);
       return true;
     }
-    if (cmdName === 'help' || cmdName === 'skills' || cmdName === 'plugins' || cmdName === 'plugin' || cmdName === 'hookify' || cmdName === 'connectors' || cmdName === 'connector' || cmdName === 'docker' || cmdName === 'tools' || cmdName === 'pc' || cmdName === 'инструменты') {
+    if (cmdName === 'help' || cmdName === 'skills' || cmdName === 'plugins' || cmdName === 'plugin' || cmdName === 'hookify' || cmdName === 'connectors' || cmdName === 'connector' || cmdName === 'docker' || cmdName === 'tools' || cmdName === 'pc' || cmdName === 'инструменты' || cmdName === 'phone' || cmdName === 'телефон' || cmdName === 'xiaomi') {
       const targetTab = cmdName === 'skills'
         ? 'skills'
         : (['plugins', 'plugin', 'hookify'].includes(cmdName)
@@ -395,7 +395,9 @@ async function executeAgentSlashCommand(rawText, { confirm = false } = {}) {
             ? 'connectors'
             : (cmdName === 'docker'
               ? 'docker'
-              : (['tools', 'pc', 'инструменты'].includes(cmdName) ? 'tools' : 'commands'))));
+              : (['tools', 'pc', 'инструменты'].includes(cmdName)
+                ? 'tools'
+                : (['phone', 'телефон', 'xiaomi'].includes(cmdName) ? 'phone' : 'commands')))));
       openCatalogModal({
         initialTab: targetTab,
         focusPluginId: cmdName === 'hookify' ? 'hookify' : null,
@@ -481,6 +483,18 @@ async function executeAgentSlashCommand(rawText, { confirm = false } = {}) {
   if ((cmdName === 'tools' || cmdName === 'pc' || cmdName === 'инструменты') && !result.handled) {
     openCatalogModal({
       initialTab: 'tools',
+      getContext: getAgentSlashContext,
+      onRunCommand: handleAgentCatalogSelect,
+      onSkillsChanged: handleAgentSkillsChanged,
+      onPluginsChanged: handleAgentPluginsChanged,
+      onConnectorsChanged: handleAgentConnectorsChanged,
+    });
+    return true;
+  }
+
+  if ((cmdName === 'phone' || cmdName === 'телефон' || cmdName === 'xiaomi') && !result.handled) {
+    openCatalogModal({
+      initialTab: 'phone',
       getContext: getAgentSlashContext,
       onRunCommand: handleAgentCatalogSelect,
       onSkillsChanged: handleAgentSkillsChanged,

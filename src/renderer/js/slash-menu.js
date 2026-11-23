@@ -5,6 +5,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 
 export const INSTANT_COMMANDS = new Set([
   'status', 'usage', 'quota', 'context', 'tasks', 'tools', 'pc', 'инструменты', 'mcp',
+  'phone', 'телефон', 'xiaomi',
   'skills', 'reload-skills', 'plugin', 'plugins', 'hookify',
   'connector', 'connectors', 'docker',
   'doctor', 'storage', 'permissions',
@@ -251,6 +252,21 @@ const ICON_PATHS = {
     ['circle', { cx: 8.5, cy: 9.5, r: 1.5 }],
     ['path', { d: 'M20.5 15.5l-4.5-4.5-6 6-2.5-2.5-4 4' }],
   ],
+  smartphone: [
+    ['rect', { x: 6.5, y: 2.5, width: 11, height: 19, rx: 2.2 }],
+    ['path', { d: 'M10.5 18.5h3' }],
+  ],
+  'map-pin': [
+    ['path', { d: 'M12 21s-6.5-5.3-6.5-10.5a6.5 6.5 0 1 1 13 0C18.5 15.7 12 21 12 21z' }],
+    ['circle', { cx: 12, cy: 10.5, r: 2.2 }],
+  ],
+  'phone-call': [
+    ['path', { d: 'M6.6 3.5h3l1.4 3.7-1.9 1.6a12.5 12.5 0 0 0 6.1 6.1l1.6-1.9 3.7 1.4v3a2 2 0 0 1-2.2 2A15.8 15.8 0 0 1 4.6 5.7 2 2 0 0 1 6.6 3.5z' }],
+  ],
+  shell: [
+    ['path', { d: 'M4 17l6-5-6-5' }],
+    ['path', { d: 'M12 19h8' }],
+  ],
 };
 
 const ICON_ALIAS = {
@@ -332,6 +348,9 @@ const ICON_ALIAS = {
   convert: 'file-text',
   transcribe: 'mic',
   upscale: 'image',
+  phone: 'smartphone',
+  'телефон': 'smartphone',
+  xiaomi: 'smartphone',
 };
 
 export function createIconSvg(name, size = 18) {
@@ -915,7 +934,7 @@ export const FALLBACK_DOCKER_STATUS = {
           'penpot-penpot-mailpit-1', 'penpot-penpot-valkey-1',
         ],
         port: 9001,
-        url: 'http://127.0.0.1:9001',
+        url: 'http://localhost:9001',
         alwaysOn: true,
       }),
       makeFallbackDockerStack('pc-opennotebook', 'pc', 'OpenNotebook', 'Локальный NotebookLM и источник срезов памяти', {
@@ -1320,7 +1339,7 @@ export const FALLBACK_TOOLS_STATUS = {
       }),
       makeFallbackPcTool('tool-penpot-mcp', 'Penpot MCP', 'Локальный дизайн-редактор Penpot и MCP-мост :4401', {
         category: 'creative',
-        url: 'http://127.0.0.1:9001',
+        url: 'http://localhost:9001',
         actions: ['probe', 'open'],
         offlineSafe: true,
         privacySafe: true,
@@ -1532,6 +1551,233 @@ async function fetchToolsStatus({ refresh = false } = {}) {
   return fb;
 }
 
+const PHONE_MODULE_ICON_BY_ID = {
+  'phone-health': 'heart',
+  'phone-shizuku': 'shield',
+  'phone-habits': 'check',
+  'phone-maps': 'map-pin',
+  'phone-fossify': 'phone-call',
+  'phone-wger': 'activity',
+  'phone-fmd': 'target',
+  'phone-termux': 'shell',
+};
+
+function phoneModuleIconName(mod) {
+  return PHONE_MODULE_ICON_BY_ID[mod?.id] || 'smartphone';
+}
+
+function phoneStatusDotClass(mod) {
+  const st = String(mod?.status || '').toLowerCase();
+  if (st === 'ready' || st === 'running' || st === 'online' || st === 'connected' || st === 'installed') return 'is-connected';
+  if (st === 'needs_setup' || st === 'idle' || st === 'partial' || st === 'starting' || st === 'unknown') return 'is-auth';
+  if (st === 'missing' || st === 'offline' || st === 'error' || st === 'unavailable') return 'is-offline';
+  return mod?.installed ? 'is-connected' : 'is-offline';
+}
+
+function phoneStatusFallbackLabel(mod) {
+  const st = String(mod?.status || '').toLowerCase();
+  if (st === 'installed') return 'Установлено';
+  if (st === 'unknown') return 'Неизвестно';
+  return toolStatusFallbackLabel(mod);
+}
+
+function makeFallbackPhoneModule(id, name, description, opts = {}) {
+  return {
+    id,
+    name,
+    description,
+    installed: Boolean(opts.installed),
+    status: opts.status || 'offline',
+    detail: opts.detail || 'Ожидание синхронизации с телефоном',
+    url: opts.url || '',
+    actions: Array.isArray(opts.actions) ? [...opts.actions] : ['open'],
+    confirmRequired: Boolean(opts.confirmRequired),
+    privacySafe: opts.privacySafe !== false,
+  };
+}
+
+export const FALLBACK_PHONE_STATUS = {
+  online: false,
+  deviceName: 'Xiaomi 13T Pro',
+  androidVersion: 'Android 16',
+  syncedAt: null,
+  readyCount: 0,
+  totalCount: 8,
+  healthSummary: null,
+  pendingCount: 0,
+  error: '',
+  modules: [
+    makeFallbackPhoneModule(
+      'phone-health',
+      'Health Connect',
+      'Локальный сон, шаги и пульс с Android 16 (без облаков)',
+      { actions: ['sync', 'open'], privacySafe: true },
+    ),
+    makeFallbackPhoneModule(
+      'phone-shizuku',
+      'Shizuku',
+      'Системный API Android без root для управления приложениями',
+      { actions: ['check', 'open'], privacySafe: true },
+    ),
+    makeFallbackPhoneModule(
+      'phone-habits',
+      'Loop Habits',
+      'Офлайн-трекер привычек и локальный экспорт',
+      { actions: ['open'], privacySafe: true },
+    ),
+    makeFallbackPhoneModule(
+      'phone-maps',
+      'Organic Maps',
+      'Офлайн-навигация и маршруты geo:',
+      { actions: ['navigate', 'open'], privacySafe: true },
+    ),
+    makeFallbackPhoneModule(
+      'phone-fossify',
+      'Fossify (Звонки и SMS)',
+      'Звонки и SMS только через подтверждение',
+      { actions: ['dial', 'sms', 'open'], confirmRequired: true, privacySafe: true },
+    ),
+    makeFallbackPhoneModule(
+      'phone-wger',
+      'Wger Тренировки',
+      'Тренировки и питание с сервером .107:8085',
+      { actions: ['open'], url: 'http://192.168.0.107:8085', privacySafe: true, detail: 'Веб-сервис .107:8085' },
+    ),
+    makeFallbackPhoneModule(
+      'phone-fmd',
+      'Find My Device',
+      'Поиск и прозвон телефона через .107:8083',
+      { actions: ['locate', 'open'], url: 'http://192.168.0.107:8083', privacySafe: true, detail: 'Веб-сервис .107:8083' },
+    ),
+    makeFallbackPhoneModule(
+      'phone-termux',
+      'Termux + TermuxHub',
+      'Локальный Linux-терминал на телефоне',
+      { actions: ['open'], privacySafe: true },
+    ),
+  ],
+};
+
+function normalizePhoneModule(raw, fallback = null) {
+  const base = fallback || {};
+  const actions = Array.isArray(raw?.actions)
+    ? raw.actions.map((a) => String(a))
+    : (Array.isArray(base.actions) ? [...base.actions] : ['open']);
+  return {
+    id: raw?.id || base.id || '',
+    name: raw?.name || base.name || raw?.id || '',
+    description: raw?.description ?? base.description ?? '',
+    installed: typeof raw?.installed === 'boolean' ? raw.installed : Boolean(base.installed),
+    status: raw?.status || base.status || 'offline',
+    detail: raw?.detail !== undefined && raw?.detail !== null ? String(raw.detail) : (base.detail || ''),
+    url: raw?.url !== undefined && raw?.url !== null ? String(raw.url) : (base.url || ''),
+    actions,
+    confirmRequired: typeof raw?.confirmRequired === 'boolean' ? raw.confirmRequired : Boolean(base.confirmRequired),
+    privacySafe: typeof raw?.privacySafe === 'boolean' ? raw.privacySafe : (base.privacySafe !== false),
+  };
+}
+
+function normalizePhoneHealthSummary(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const toNum = (v) => {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const steps = toNum(raw.steps);
+  const sleepHours = toNum(raw.sleepHours ?? raw.sleep);
+  const heartRate = toNum(raw.heartRate ?? raw.avgHr ?? raw.hr);
+  if (steps === null && sleepHours === null && heartRate === null) return null;
+  return {
+    steps,
+    sleepHours,
+    heartRate,
+    updatedAt: raw.updatedAt || null,
+  };
+}
+
+function normalizePhoneStatus(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      online: false,
+      deviceName: FALLBACK_PHONE_STATUS.deviceName,
+      androidVersion: FALLBACK_PHONE_STATUS.androidVersion,
+      syncedAt: null,
+      readyCount: 0,
+      totalCount: FALLBACK_PHONE_STATUS.modules.length,
+      healthSummary: null,
+      pendingCount: 0,
+      error: '',
+      modules: FALLBACK_PHONE_STATUS.modules.map((m) => ({ ...m, actions: [...m.actions] })),
+      isFallback: true,
+    };
+  }
+
+  const fbMap = new Map(FALLBACK_PHONE_STATUS.modules.map((m) => [m.id, m]));
+  const rawModules = Array.isArray(raw.modules) && raw.modules.length
+    ? raw.modules
+    : FALLBACK_PHONE_STATUS.modules;
+  const modules = rawModules.map((m) => normalizePhoneModule(m, fbMap.get(m?.id)));
+  const readyCount = Number.isFinite(Number(raw.readyCount))
+    ? Number(raw.readyCount)
+    : modules.filter((m) => {
+      const st = String(m.status || '').toLowerCase();
+      return st === 'ready' || st === 'running' || st === 'online' || st === 'connected';
+    }).length;
+  const totalCount = Number.isFinite(Number(raw.totalCount))
+    ? Number(raw.totalCount)
+    : modules.length;
+
+  return {
+    online: Boolean(raw.online),
+    deviceName: raw.deviceName ? String(raw.deviceName) : FALLBACK_PHONE_STATUS.deviceName,
+    androidVersion: raw.androidVersion ? String(raw.androidVersion) : FALLBACK_PHONE_STATUS.androidVersion,
+    syncedAt: raw.syncedAt || null,
+    readyCount,
+    totalCount,
+    healthSummary: normalizePhoneHealthSummary(raw.healthSummary),
+    pendingCount: Number.isFinite(Number(raw.pendingCount)) ? Number(raw.pendingCount) : 0,
+    error: raw.error ? String(raw.error) : '',
+    modules,
+    isFallback: false,
+  };
+}
+
+function formatPhoneDeviceTitle(phoneData) {
+  const name = phoneData?.deviceName || 'Xiaomi 13T Pro';
+  const verRaw = String(phoneData?.androidVersion || 'Android 16').trim();
+  const ver = /^android\b/i.test(verRaw) ? verRaw : `Android ${verRaw}`;
+  return `${name} · ${ver}`;
+}
+
+function formatPhoneSyncTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '';
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+async function fetchPhoneStatus() {
+  const host = window.host;
+  if (typeof host?.phoneControlStatus === 'function') {
+    try {
+      const res = await host.phoneControlStatus();
+      if (res && typeof res === 'object') {
+        return normalizePhoneStatus(res);
+      }
+    } catch (err) {
+      const fb = normalizePhoneStatus(null);
+      fb.error = err?.message || 'Не удалось получить статус телефона';
+      return fb;
+    }
+  }
+  const fb = normalizePhoneStatus(null);
+  fb.error = 'Модуль управления телефоном ещё не подключён в приложении';
+  return fb;
+}
+
 function openExternalUrl(url) {
   if (!url) return;
   try {
@@ -1627,6 +1873,7 @@ export const FALLBACK_SECTIONS = [
       item('usage', 'Остаток квот и лимиты моделей', { aliases: ['quota'], category: 'system' }),
       item('free', 'Выгрузить модели из VRAM', { category: 'system' }),
       item('tools', 'Инструменты ПК и мосты .107: локальные движки и сервисы', { aliases: ['pc', 'инструменты'], category: 'system', icon: 'wrench' }),
+      item('phone', 'Телефон (Xiaomi 13T Pro): Health Connect, Shizuku, Organic Maps, Fossify и FMD', { aliases: ['телефон', 'xiaomi'], category: 'system', icon: 'smartphone' }),
       item('analyze', 'Анализ CSV/Excel/JSON с расчётом метрик и графиком PNG', { kind: 'prompt', category: 'system', icon: 'chart', argsHint: '<файл> [вопрос]' }),
       item('convert', 'Конвертация документов (MD → DOCX, Office → PDF, SVG → PNG)', { kind: 'prompt', category: 'system', icon: 'file-text', argsHint: '<файл> [docx|pdf|png]' }),
       item('transcribe', 'Расшифровка и конспект аудио/видео через локальный Whisper', { kind: 'prompt', category: 'system', icon: 'mic', argsHint: '<файл или ссылка>' }),
@@ -1714,6 +1961,10 @@ const CATALOG_HERO = {
   tools: {
     title: 'Инструменты ПК и мосты .107',
     subtitle: 'Локальные движки анализа, медиа, документов, поиска и живые сервисы домашнего сервера',
+  },
+  phone: {
+    title: 'Телефон (Xiaomi 13T Pro)',
+    subtitle: 'Локальный контроль Android 16: Health Connect, Shizuku, Loop Habits, Organic Maps, Fossify и Find My Device',
   },
   styles: {
     title: 'Стили',
@@ -2645,7 +2896,7 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
     }
 
     for (const sec of data.sections || []) {
-      if (sec.id === 'docker' || sec.id === 'tools') continue;
+      if (sec.id === 'docker' || sec.id === 'tools' || sec.id === 'phone') continue;
       let items = Array.isArray(sec.items) ? sec.items : [];
       if (sec.id === 'skills' || sec.id === 'plugins' || sec.id === 'connectors') {
         items = items.filter((it) => it.enabled !== false);
@@ -2877,6 +3128,14 @@ export async function openCatalogModal({
   let toolsLoading = false;
   let toolsRefreshing = false;
   const pendingToolOps = new Set();
+  let phoneData = normalizePhoneStatus(null);
+  let phoneLoaded = false;
+  let phoneLoading = false;
+  let phoneRefreshing = false;
+  const pendingPhoneOps = new Set();
+  let phoneMapsFormOpen = false;
+  let phoneMapsQuery = '';
+  let phoneFossifyDraft = null; // { mode: 'dial' | 'sms', number: string, body: string, step: 'input' | 'confirm' }
   let activeTab = initialTab || 'commands';
   let searchQuery = '';
   let noticeText = '';
@@ -2997,7 +3256,7 @@ export async function openCatalogModal({
   const searchInput = document.createElement('input');
   searchInput.type = 'search';
   searchInput.className = 'slash-catalog__search';
-  searchInput.placeholder = 'Поиск по командам, навыкам, плагинам, коннекторам, Docker и инструментам…';
+  searchInput.placeholder = 'Поиск по командам, навыкам, плагинам, коннекторам, Docker, инструментам и телефону…';
   searchInput.setAttribute('aria-label', 'Поиск по каталогу');
   searchWrap.appendChild(searchInput);
 
@@ -3121,8 +3380,31 @@ export async function openCatalogModal({
     }
   }
 
+  function ensurePhoneSectionInCatalog() {
+    if (!Array.isArray(catalog.sections)) catalog.sections = [];
+    if (catalog.sections.some((s) => s.id === 'phone')) return;
+    const phoneSec = {
+      id: 'phone',
+      title: 'Телефон',
+      allLabel: 'Телефон (Xiaomi 13T Pro)',
+      items: [],
+    };
+    const toolsIdx = catalog.sections.findIndex((s) => s.id === 'tools');
+    if (toolsIdx >= 0) {
+      catalog.sections.splice(toolsIdx + 1, 0, phoneSec);
+    } else {
+      const stylesIdx = catalog.sections.findIndex((s) => s.id === 'styles');
+      if (stylesIdx >= 0) {
+        catalog.sections.splice(stylesIdx, 0, phoneSec);
+      } else {
+        catalog.sections.push(phoneSec);
+      }
+    }
+  }
+
   ensureDockerSectionInCatalog();
   ensureToolsSectionInCatalog();
+  ensurePhoneSectionInCatalog();
 
   function emitSkillsChanged(nextData) {
     skillsData = normalizeSkillsResponse(nextData, skillsData.items);
@@ -3191,6 +3473,12 @@ export async function openCatalogModal({
       }
       if (dockerConfirmStop) {
         dockerConfirmStop = null;
+        renderModal();
+        return;
+      }
+      if (phoneMapsFormOpen || phoneFossifyDraft) {
+        phoneMapsFormOpen = false;
+        phoneFossifyDraft = null;
         renderModal();
         return;
       }
@@ -3284,6 +3572,7 @@ export async function openCatalogModal({
   function renderTabs() {
     ensureDockerSectionInCatalog();
     ensureToolsSectionInCatalog();
+    ensurePhoneSectionInCatalog();
     const sections = catalog.sections || [];
     if (!sections.some((s) => s.id === activeTab) && sections.length) {
       activeTab = sections[0].id;
@@ -3322,6 +3611,10 @@ export async function openCatalogModal({
         const tot = pcTot + brTot;
         const ready = pcReady + brReady;
         countText = toolsLoaded && !toolsData?.isFallback ? `${ready}/${tot}` : String(tot);
+      } else if (sec.id === 'phone') {
+        const phReady = Number(phoneData?.readyCount) || 0;
+        const phTot = Number(phoneData?.totalCount) || (phoneData?.modules?.length || 8);
+        countText = phoneLoaded && !phoneData?.isFallback ? `${phReady}/${phTot}` : String(phTot);
       } else {
         countText = String((sec.items || []).length);
       }
@@ -3335,6 +3628,8 @@ export async function openCatalogModal({
         activeForm = null;
         confirmRemoveConnectorId = null;
         dockerConfirmStop = null;
+        phoneMapsFormOpen = false;
+        phoneFossifyDraft = null;
         formError = '';
         hookifyError = '';
         renderModal();
@@ -3342,6 +3637,8 @@ export async function openCatalogModal({
           loadDockerStatus({ refresh: false });
         } else if (sec.id === 'tools' && !toolsLoaded && !toolsLoading) {
           loadToolsStatus({ refresh: false });
+        } else if (sec.id === 'phone' && !phoneLoaded && !phoneLoading) {
+          loadPhoneStatus({ refresh: false });
         }
       });
       return btn;
@@ -7831,6 +8128,605 @@ export async function openCatalogModal({
     return section;
   }
 
+  async function loadPhoneStatus({ refresh = false } = {}) {
+    if (refresh) {
+      if (phoneRefreshing) return;
+      phoneRefreshing = true;
+    } else {
+      if (phoneLoading) return;
+      phoneLoading = true;
+    }
+    renderModal();
+    try {
+      const next = await fetchPhoneStatus();
+      if (!document.body.contains(backdrop)) return;
+      phoneData = next;
+      phoneLoaded = true;
+      if (refresh && !next.isFallback) {
+        noticeText = next.online
+          ? 'Статус телефона обновлён.'
+          : 'Телефон сейчас офлайн — показан последний снимок.';
+      }
+    } finally {
+      phoneLoading = false;
+      phoneRefreshing = false;
+      if (document.body.contains(backdrop)) renderModal();
+    }
+  }
+
+  async function handlePhoneAction({ moduleId, action, payload = {}, confirmed = false, label = '' }) {
+    if (!moduleId || !action || pendingPhoneOps.has(moduleId)) return false;
+    const hostApi = window.host;
+    if (typeof hostApi?.phoneControlAction !== 'function') {
+      noticeText = 'Управление телефоном пока не подключено в приложении.';
+      renderModal();
+      return false;
+    }
+
+    pendingPhoneOps.add(moduleId);
+    noticeText = '';
+    renderModal();
+
+    try {
+      const req = { moduleId, action, payload };
+      if (confirmed === true) req.confirmed = true;
+      const res = await hostApi.phoneControlAction(req);
+      if (!document.body.contains(backdrop)) return false;
+      if (res?.ok) {
+        if (res.url && action === 'open') {
+          openExternalUrl(res.url);
+        }
+        if (res.status && Array.isArray(res.status.modules)) {
+          phoneData = normalizePhoneStatus(res.status);
+          phoneLoaded = true;
+        } else {
+          const fresh = await fetchPhoneStatus();
+          if (document.body.contains(backdrop)) {
+            phoneData = fresh;
+            phoneLoaded = true;
+          }
+        }
+        noticeText = res.message || res.detail || `${label || moduleId}: команда отправлена на телефон.`;
+        return true;
+      }
+      noticeText = res?.error || res?.message || `Не удалось выполнить действие для ${label || moduleId}.`;
+      return false;
+    } catch (err) {
+      if (document.body.contains(backdrop)) {
+        noticeText = err?.message || `Ошибка при обращении к ${label || moduleId}.`;
+      }
+      return false;
+    } finally {
+      pendingPhoneOps.delete(moduleId);
+      if (document.body.contains(backdrop)) renderModal();
+    }
+  }
+
+  function matchesPhoneModule(mod, q) {
+    if (!q) return true;
+    const hay = [
+      mod.name,
+      mod.description,
+      mod.id,
+      mod.detail,
+      mod.url,
+      mod.privacySafe ? 'приват' : '',
+      phoneData.deviceName,
+      phoneData.androidVersion,
+    ].join(' ').toLowerCase();
+    return hay.includes(q);
+  }
+
+  function buildPhoneHealthBar(summary) {
+    const barEl = document.createElement('div');
+    barEl.className = 'slash-phone-health-bar';
+
+    const left = document.createElement('div');
+    left.className = 'slash-phone-health-bar__main';
+
+    const icon = document.createElement('span');
+    icon.className = 'slash-phone-health-bar__icon';
+    icon.appendChild(createIconSvg('heart', 15));
+    left.appendChild(icon);
+
+    if (summary) {
+      const metricsWrap = document.createElement('div');
+      metricsWrap.className = 'slash-phone-health-bar__metrics';
+
+      const parts = [];
+      parts.push(`Шаги: ${summary.steps !== null ? Math.round(summary.steps).toLocaleString('ru-RU') : '—'}`);
+      parts.push(`Сон: ${summary.sleepHours !== null ? `${Number(summary.sleepHours).toFixed(1)} ч` : '—'}`);
+      parts.push(`Пульс: ${summary.heartRate !== null ? `${Math.round(summary.heartRate)} уд/мин` : '—'}`);
+
+      const metricsText = document.createElement('span');
+      metricsText.className = 'slash-phone-health-bar__values';
+      metricsText.textContent = parts.join(' · ');
+      metricsWrap.appendChild(metricsText);
+
+      const syncTime = formatPhoneSyncTime(summary.updatedAt);
+      if (syncTime) {
+        const timeEl = document.createElement('span');
+        timeEl.className = 'slash-phone-health-bar__time';
+        timeEl.textContent = `обновлено ${syncTime}`;
+        metricsWrap.appendChild(timeEl);
+      }
+
+      left.appendChild(metricsWrap);
+    } else {
+      const hintEl = document.createElement('span');
+      hintEl.className = 'slash-phone-health-bar__hint';
+      hintEl.textContent = 'Откройте Капри на телефоне для синхронизации Health Connect';
+      left.appendChild(hintEl);
+    }
+
+    const syncBusy = pendingPhoneOps.has('phone-health');
+    const syncBtn = document.createElement('button');
+    syncBtn.type = 'button';
+    syncBtn.className = 'slash-docker-btn';
+    syncBtn.disabled = syncBusy;
+    syncBtn.append(
+      createIconSvg('refresh', 13),
+      document.createTextNode(syncBusy ? 'Синхр…' : 'Синхр.'),
+    );
+    syncBtn.addEventListener('click', () => {
+      handlePhoneAction({ moduleId: 'phone-health', action: 'sync', label: 'Health Connect' });
+    });
+
+    barEl.append(left, syncBtn);
+    return barEl;
+  }
+
+  function buildPhoneModuleRow(mod) {
+    const isBusy = pendingPhoneOps.has(mod.id);
+    const st = String(mod.status || '').toLowerCase();
+    const isInactive = st === 'missing' || st === 'offline' || st === 'error' || st === 'unavailable';
+    const isConfirming = mod.id === 'phone-fossify' && Boolean(phoneFossifyDraft)
+      || (mod.id === 'phone-maps' && phoneMapsFormOpen);
+
+    const itemEl = document.createElement('div');
+    itemEl.className = `slash-docker-item${isInactive ? ' is-stopped' : ''}${isConfirming ? ' is-confirming' : ''}`;
+    itemEl.dataset.phoneModuleId = mod.id;
+
+    const row = document.createElement('div');
+    row.className = 'slash-docker-row';
+
+    const iconWrap = document.createElement('span');
+    iconWrap.className = 'slash-docker-item__icon';
+    iconWrap.appendChild(createIconSvg(phoneModuleIconName(mod), 17));
+
+    const main = document.createElement('div');
+    main.className = 'slash-docker-item__main';
+
+    const topLine = document.createElement('div');
+    topLine.className = 'slash-docker-item__top';
+
+    const dot = document.createElement('span');
+    dot.className = `slash-status-dot ${phoneLoading && phoneData.isFallback ? 'is-auth' : phoneStatusDotClass(mod)}`;
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'slash-docker-item__name';
+    nameEl.textContent = mod.name || mod.id;
+
+    topLine.append(dot, nameEl);
+
+    if (mod.privacySafe !== false) {
+      const privPill = document.createElement('span');
+      privPill.className = 'slash-docker-pill slash-docker-pill--always';
+      privPill.textContent = 'Приват OK';
+      topLine.appendChild(privPill);
+    }
+
+    main.appendChild(topLine);
+    if (mod.description) {
+      const descEl = document.createElement('span');
+      descEl.className = 'slash-docker-item__desc';
+      descEl.textContent = mod.description;
+      main.appendChild(descEl);
+    }
+
+    const controls = document.createElement('div');
+    controls.className = 'slash-docker-item__controls';
+
+    const detailText = isBusy
+      ? 'Отправляю…'
+      : (mod.detail || phoneStatusFallbackLabel(mod));
+    const detailTone = isBusy ? '' : toolDetailToneClass(mod);
+    const detailPill = document.createElement('span');
+    detailPill.className = `slash-docker-pill slash-tools-pill--detail${detailTone ? ` ${detailTone}` : ''}`;
+    detailPill.textContent = detailText;
+    detailPill.title = detailText;
+    controls.appendChild(detailPill);
+
+    if (mod.id === 'phone-health') {
+      const syncBtn = document.createElement('button');
+      syncBtn.type = 'button';
+      syncBtn.className = 'slash-docker-btn slash-tools-btn--primary';
+      syncBtn.disabled = isBusy;
+      syncBtn.append(createIconSvg('refresh', 13), document.createTextNode('Синхр.'));
+      syncBtn.addEventListener('click', () => {
+        handlePhoneAction({ moduleId: 'phone-health', action: 'sync', label: mod.name });
+      });
+      controls.appendChild(syncBtn);
+    } else if (mod.id === 'phone-fmd' || mod.id === 'phone-wger') {
+      const targetUrl = mod.url || (mod.id === 'phone-fmd' ? 'http://192.168.0.107:8083' : 'http://192.168.0.107:8085');
+      if (mod.id === 'phone-fmd') {
+        const locateBtn = document.createElement('button');
+        locateBtn.type = 'button';
+        locateBtn.className = 'slash-docker-btn';
+        locateBtn.disabled = isBusy;
+        locateBtn.append(createIconSvg('target', 13), document.createTextNode('Найти'));
+        locateBtn.addEventListener('click', () => {
+          handlePhoneAction({ moduleId: 'phone-fmd', action: 'locate', label: mod.name });
+        });
+        controls.appendChild(locateBtn);
+      }
+      const openBtn = document.createElement('button');
+      openBtn.type = 'button';
+      openBtn.className = 'slash-docker-btn';
+      openBtn.append(createIconSvg('external', 13), document.createTextNode('Открыть'));
+      openBtn.addEventListener('click', () => openExternalUrl(targetUrl));
+      controls.appendChild(openBtn);
+    } else if (mod.id === 'phone-maps') {
+      const routeBtn = document.createElement('button');
+      routeBtn.type = 'button';
+      routeBtn.className = `slash-docker-btn${phoneMapsFormOpen ? ' slash-tools-btn--primary' : ''}`;
+      routeBtn.disabled = isBusy;
+      routeBtn.append(createIconSvg('map-pin', 13), document.createTextNode('Маршрут'));
+      routeBtn.addEventListener('click', () => {
+        phoneMapsFormOpen = !phoneMapsFormOpen;
+        phoneFossifyDraft = null;
+        noticeText = '';
+        renderModal();
+        if (phoneMapsFormOpen) {
+          const inp = body.querySelector('.slash-phone-inline-input[data-phone-maps-input]');
+          inp?.focus();
+        }
+      });
+      controls.appendChild(routeBtn);
+    } else if (mod.id === 'phone-fossify') {
+      const dialBtn = document.createElement('button');
+      dialBtn.type = 'button';
+      dialBtn.className = `slash-docker-btn${phoneFossifyDraft?.mode === 'dial' ? ' slash-tools-btn--primary' : ''}`;
+      dialBtn.disabled = isBusy;
+      dialBtn.append(createIconSvg('phone-call', 13), document.createTextNode('Звонок'));
+      dialBtn.addEventListener('click', () => {
+        if (phoneFossifyDraft?.mode === 'dial') {
+          phoneFossifyDraft = null;
+        } else {
+          phoneFossifyDraft = { mode: 'dial', number: '', body: '', step: 'input' };
+          phoneMapsFormOpen = false;
+        }
+        noticeText = '';
+        renderModal();
+        const inp = body.querySelector('.slash-phone-inline-input[data-fossify-number]');
+        inp?.focus();
+      });
+
+      const smsBtn = document.createElement('button');
+      smsBtn.type = 'button';
+      smsBtn.className = `slash-docker-btn${phoneFossifyDraft?.mode === 'sms' ? ' slash-tools-btn--primary' : ''}`;
+      smsBtn.disabled = isBusy;
+      smsBtn.append(createIconSvg('message', 13), document.createTextNode('SMS'));
+      smsBtn.addEventListener('click', () => {
+        if (phoneFossifyDraft?.mode === 'sms') {
+          phoneFossifyDraft = null;
+        } else {
+          phoneFossifyDraft = { mode: 'sms', number: '', body: '', step: 'input' };
+          phoneMapsFormOpen = false;
+        }
+        noticeText = '';
+        renderModal();
+        const inp = body.querySelector('.slash-phone-inline-input[data-fossify-number]');
+        inp?.focus();
+      });
+
+      controls.append(dialBtn, smsBtn);
+    } else {
+      const openPhoneBtn = document.createElement('button');
+      openPhoneBtn.type = 'button';
+      openPhoneBtn.className = 'slash-docker-btn';
+      openPhoneBtn.disabled = isBusy;
+      openPhoneBtn.append(createIconSvg('smartphone', 13), document.createTextNode('Открыть на телефоне'));
+      openPhoneBtn.addEventListener('click', () => {
+        handlePhoneAction({ moduleId: mod.id, action: 'open', label: mod.name });
+      });
+      controls.appendChild(openPhoneBtn);
+    }
+
+    row.append(iconWrap, main, controls);
+    itemEl.appendChild(row);
+
+    if (mod.id === 'phone-maps' && phoneMapsFormOpen) {
+      const form = document.createElement('form');
+      form.className = 'slash-phone-inline-form';
+
+      const queryInput = document.createElement('input');
+      queryInput.type = 'text';
+      queryInput.className = 'slash-phone-inline-input';
+      queryInput.dataset.phoneMapsInput = '1';
+      queryInput.placeholder = 'Адрес, место или координаты для Organic Maps…';
+      queryInput.value = phoneMapsQuery;
+      queryInput.addEventListener('input', () => {
+        phoneMapsQuery = queryInput.value;
+      });
+
+      const actionsWrap = document.createElement('div');
+      actionsWrap.className = 'slash-phone-inline-actions';
+
+      const submitBtn = document.createElement('button');
+      submitBtn.type = 'submit';
+      submitBtn.className = 'slash-docker-btn slash-tools-btn--primary';
+      submitBtn.disabled = isBusy;
+      submitBtn.textContent = 'Построить';
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'slash-docker-btn';
+      cancelBtn.textContent = 'Отмена';
+      cancelBtn.addEventListener('click', () => {
+        phoneMapsFormOpen = false;
+        renderModal();
+      });
+
+      actionsWrap.append(submitBtn, cancelBtn);
+      form.append(queryInput, actionsWrap);
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const qVal = phoneMapsQuery.trim();
+        if (!qVal) {
+          noticeText = 'Укажите адрес или место для маршрута.';
+          renderModal();
+          return;
+        }
+        const ok = await handlePhoneAction({
+          moduleId: 'phone-maps',
+          action: 'navigate',
+          payload: { query: qVal },
+          label: mod.name,
+        });
+        if (ok) {
+          phoneMapsFormOpen = false;
+          phoneMapsQuery = '';
+          if (document.body.contains(backdrop)) renderModal();
+        }
+      });
+
+      itemEl.appendChild(form);
+    }
+
+    if (mod.id === 'phone-fossify' && phoneFossifyDraft) {
+      if (phoneFossifyDraft.step === 'input') {
+        const form = document.createElement('form');
+        form.className = 'slash-phone-inline-form';
+
+        const numInput = document.createElement('input');
+        numInput.type = 'tel';
+        numInput.className = 'slash-phone-inline-input';
+        numInput.dataset.fossifyNumber = '1';
+        numInput.placeholder = 'Номер телефона (например, +7…)';
+        numInput.value = phoneFossifyDraft.number;
+        numInput.addEventListener('input', () => {
+          if (phoneFossifyDraft) phoneFossifyDraft.number = numInput.value;
+        });
+        form.appendChild(numInput);
+
+        if (phoneFossifyDraft.mode === 'sms') {
+          const bodyInput = document.createElement('input');
+          bodyInput.type = 'text';
+          bodyInput.className = 'slash-phone-inline-input slash-phone-inline-input--wide';
+          bodyInput.placeholder = 'Текст SMS (необязательно)';
+          bodyInput.value = phoneFossifyDraft.body;
+          bodyInput.addEventListener('input', () => {
+            if (phoneFossifyDraft) phoneFossifyDraft.body = bodyInput.value;
+          });
+          form.appendChild(bodyInput);
+        }
+
+        const actionsWrap = document.createElement('div');
+        actionsWrap.className = 'slash-phone-inline-actions';
+
+        const nextBtn = document.createElement('button');
+        nextBtn.type = 'submit';
+        nextBtn.className = 'slash-docker-btn slash-tools-btn--primary';
+        nextBtn.disabled = isBusy;
+        nextBtn.textContent = 'Далее';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'slash-docker-btn';
+        cancelBtn.textContent = 'Отмена';
+        cancelBtn.addEventListener('click', () => {
+          phoneFossifyDraft = null;
+          renderModal();
+        });
+
+        actionsWrap.append(nextBtn, cancelBtn);
+        form.appendChild(actionsWrap);
+        form.addEventListener('submit', (e) => {
+          e.preventDefault();
+          const cleaned = String(phoneFossifyDraft?.number || '').trim();
+          if (!cleaned) {
+            noticeText = 'Введите номер телефона.';
+            renderModal();
+            return;
+          }
+          phoneFossifyDraft.number = cleaned;
+          phoneFossifyDraft.body = String(phoneFossifyDraft.body || '').trim();
+          phoneFossifyDraft.step = 'confirm';
+          noticeText = '';
+          renderModal();
+        });
+
+        itemEl.appendChild(form);
+      } else {
+        const confirmBox = document.createElement('div');
+        confirmBox.className = 'slash-docker-confirm';
+
+        const textEl = document.createElement('span');
+        textEl.className = 'slash-docker-confirm__text';
+        if (phoneFossifyDraft.mode === 'dial') {
+          textEl.textContent = `Подтвердите действие: открыть набор номера ${phoneFossifyDraft.number} в Fossify на телефоне?`;
+        } else {
+          const preview = phoneFossifyDraft.body
+            ? ` («${phoneFossifyDraft.body.slice(0, 60)}${phoneFossifyDraft.body.length > 60 ? '…' : ''}»)`
+            : '';
+          textEl.textContent = `Подтвердите действие: открыть черновик SMS на ${phoneFossifyDraft.number}${preview} в Fossify на телефоне?`;
+        }
+
+        const confirmActions = document.createElement('div');
+        confirmActions.className = 'slash-docker-confirm__actions';
+
+        const backBtn = document.createElement('button');
+        backBtn.type = 'button';
+        backBtn.className = 'slash-docker-btn';
+        backBtn.disabled = isBusy;
+        backBtn.textContent = 'Назад';
+        backBtn.addEventListener('click', () => {
+          if (phoneFossifyDraft) {
+            phoneFossifyDraft.step = 'input';
+            renderModal();
+          }
+        });
+
+        const confirmBtn = document.createElement('button');
+        confirmBtn.type = 'button';
+        confirmBtn.className = 'slash-docker-btn slash-docker-btn--danger';
+        confirmBtn.disabled = isBusy;
+        confirmBtn.textContent = phoneFossifyDraft.mode === 'dial' ? 'Подтвердить звонок' : 'Подтвердить SMS';
+        confirmBtn.addEventListener('click', async () => {
+          if (!phoneFossifyDraft) return;
+          const { mode, number, body: smsBody } = phoneFossifyDraft;
+          const payload = mode === 'dial' ? { number } : { number, body: smsBody };
+          const ok = await handlePhoneAction({
+            moduleId: 'phone-fossify',
+            action: mode,
+            payload,
+            confirmed: true,
+            label: mod.name,
+          });
+          if (ok) {
+            phoneFossifyDraft = null;
+            if (document.body.contains(backdrop)) renderModal();
+          }
+        });
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'slash-docker-btn';
+        cancelBtn.disabled = isBusy;
+        cancelBtn.textContent = 'Отмена';
+        cancelBtn.addEventListener('click', () => {
+          phoneFossifyDraft = null;
+          renderModal();
+        });
+
+        confirmActions.append(backBtn, confirmBtn, cancelBtn);
+        confirmBox.append(textEl, confirmActions);
+        itemEl.appendChild(confirmBox);
+      }
+    }
+
+    return itemEl;
+  }
+
+  function buildPhoneDeviceBlock(data, q) {
+    const allModules = Array.isArray(data?.modules) ? data.modules : [];
+    const filtered = q ? allModules.filter((m) => matchesPhoneModule(m, q)) : allModules;
+    if (q && !filtered.length) return null;
+
+    const section = document.createElement('section');
+    section.className = 'slash-docker-server';
+    section.dataset.phoneDevice = 'xiaomi';
+
+    const head = document.createElement('div');
+    head.className = 'slash-docker-server__head';
+
+    const meta = document.createElement('div');
+    meta.className = 'slash-docker-server__meta';
+
+    const titleRow = document.createElement('div');
+    titleRow.className = 'slash-docker-server__title-row';
+
+    const readyCount = Number(data?.readyCount) || 0;
+    const totalCount = Number(data?.totalCount) || allModules.length || 8;
+    const isOnline = Boolean(data?.online);
+
+    const dot = document.createElement('span');
+    dot.className = `slash-status-dot ${phoneLoading && data.isFallback ? 'is-auth' : (isOnline ? 'is-connected' : 'is-offline')}`;
+
+    const icon = document.createElement('span');
+    icon.className = 'slash-docker-server__icon';
+    icon.appendChild(createIconSvg('smartphone', 18));
+
+    const h3 = document.createElement('h3');
+    h3.className = 'slash-docker-server__title';
+    h3.textContent = formatPhoneDeviceTitle(data);
+
+    const statusPill = document.createElement('span');
+    statusPill.className = `slash-docker-pill ${isOnline ? 'slash-docker-pill--always' : 'slash-docker-pill--off'}`;
+    statusPill.textContent = phoneLoading && !phoneLoaded
+      ? 'Проверка…'
+      : (isOnline ? 'Онлайн' : 'Офлайн');
+
+    const countPill = document.createElement('span');
+    countPill.className = 'slash-docker-server__count';
+    countPill.textContent = `${readyCount}/${totalCount}`;
+
+    titleRow.append(dot, icon, h3, statusPill, countPill);
+
+    const syncTime = formatPhoneSyncTime(data?.syncedAt);
+    if (syncTime) {
+      const syncPill = document.createElement('span');
+      syncPill.className = 'slash-docker-pill slash-docker-pill--quiet';
+      syncPill.textContent = `синхр. ${syncTime}`;
+      titleRow.appendChild(syncPill);
+    }
+
+    if (Number(data?.pendingCount) > 0) {
+      const queuePill = document.createElement('span');
+      queuePill.className = 'slash-docker-pill is-warn';
+      queuePill.textContent = `в очереди: ${Number(data.pendingCount)}`;
+      titleRow.appendChild(queuePill);
+    }
+
+    meta.appendChild(titleRow);
+
+    const actions = document.createElement('div');
+    actions.className = 'slash-docker-server__actions';
+
+    const refreshBtn = document.createElement('button');
+    refreshBtn.type = 'button';
+    refreshBtn.className = 'slash-docker-btn';
+    refreshBtn.disabled = phoneRefreshing || phoneLoading;
+    refreshBtn.append(
+      createIconSvg('refresh', 13),
+      document.createTextNode(phoneRefreshing || phoneLoading ? 'Обновляю…' : 'Обновить'),
+    );
+    refreshBtn.addEventListener('click', () => loadPhoneStatus({ refresh: true }));
+    actions.appendChild(refreshBtn);
+
+    head.append(meta, actions);
+    section.appendChild(head);
+
+    if (data?.error && !isOnline && !phoneLoading) {
+      const errEl = document.createElement('p');
+      errEl.className = 'slash-docker-server__error';
+      errEl.textContent = data.error;
+      section.appendChild(errEl);
+    }
+
+    section.appendChild(buildPhoneHealthBar(data?.healthSummary || null));
+
+    const list = document.createElement('div');
+    list.className = 'slash-docker-list';
+    for (const mod of filtered) {
+      list.appendChild(buildPhoneModuleRow(mod));
+    }
+    section.appendChild(list);
+
+    return section;
+  }
+
   function renderModal() {
     renderTabs();
     const sections = catalog.sections || [];
@@ -8061,6 +8957,36 @@ export async function openCatalogModal({
       actions.appendChild(refreshToolsBtn);
       heroRow.append(copy, actions);
       hero.appendChild(heroRow);
+    } else if (sec.id === 'phone') {
+      const heroRow = document.createElement('div');
+      heroRow.className = 'slash-catalog__hero-row';
+
+      const copy = document.createElement('div');
+      copy.className = 'slash-catalog__hero-copy';
+      const h2 = document.createElement('h2');
+      h2.className = 'slash-catalog__title';
+      h2.textContent = heroInfo.title;
+      const sub = document.createElement('p');
+      sub.className = 'slash-catalog__subtitle';
+      sub.textContent = heroInfo.subtitle;
+      copy.append(h2, sub);
+
+      const actions = document.createElement('div');
+      actions.className = 'slash-catalog__hero-actions';
+
+      const refreshPhoneBtn = document.createElement('button');
+      refreshPhoneBtn.type = 'button';
+      refreshPhoneBtn.className = 'slash-catalog__action-btn';
+      refreshPhoneBtn.disabled = phoneRefreshing || phoneLoading;
+      refreshPhoneBtn.append(
+        createIconSvg('refresh', 16),
+        document.createTextNode(phoneRefreshing || phoneLoading ? 'Обновляю…' : 'Обновить'),
+      );
+      refreshPhoneBtn.addEventListener('click', () => loadPhoneStatus({ refresh: true }));
+
+      actions.appendChild(refreshPhoneBtn);
+      heroRow.append(copy, actions);
+      hero.appendChild(heroRow);
     } else {
       const h2 = document.createElement('h2');
       h2.className = 'slash-catalog__title';
@@ -8140,6 +9066,26 @@ export async function openCatalogModal({
         const empty = document.createElement('div');
         empty.className = 'slash-catalog__empty';
         empty.textContent = q ? 'По запросу инструменты и мосты не нашлись.' : 'Инструменты не найдены.';
+        frag.appendChild(empty);
+      }
+
+      body.replaceChildren(frag);
+      return;
+    }
+
+    if (sec.id === 'phone') {
+      const phoneWrap = document.createElement('div');
+      phoneWrap.className = 'slash-docker-servers';
+
+      const deviceBlock = buildPhoneDeviceBlock(phoneData, q);
+      if (deviceBlock) phoneWrap.appendChild(deviceBlock);
+
+      if (phoneWrap.childElementCount) {
+        frag.appendChild(phoneWrap);
+      } else {
+        const empty = document.createElement('div');
+        empty.className = 'slash-catalog__empty';
+        empty.textContent = q ? 'По запросу модули телефона не нашлись.' : 'Модули телефона не найдены.';
         frag.appendChild(empty);
       }
 
@@ -8351,6 +9297,8 @@ export async function openCatalogModal({
     loadDockerStatus({ refresh: false });
   } else if (activeTab === 'tools') {
     loadToolsStatus({ refresh: false });
+  } else if (activeTab === 'phone') {
+    loadPhoneStatus({ refresh: false });
   }
 
   const [liveCatalog, liveSkills, livePlugins, liveConnectors] = await Promise.all([
@@ -8369,6 +9317,7 @@ export async function openCatalogModal({
     syncConnectorsIntoCatalog();
     ensureDockerSectionInCatalog();
     ensureToolsSectionInCatalog();
+    ensurePhoneSectionInCatalog();
     renderModal();
   }
 }

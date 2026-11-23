@@ -31,7 +31,7 @@ const OUTPUT_STYLE_HINTS = Object.freeze({
 });
 
 const INSTANT_COMMAND_IDS = new Set([
-  'status', 'usage', 'quota', 'context', 'tasks', 'tools', 'mcp', 'skills', 'reload-skills',
+  'status', 'usage', 'quota', 'context', 'tasks', 'tools', 'phone', 'mcp', 'skills', 'reload-skills',
   'plugins', 'hookify', 'connectors', 'docker',
   'analyze', 'convert', 'transcribe', 'upscale',
   'doctor', 'storage', 'permissions', 'memory', 'help', 'find', 'free', 'today', 'mail',
@@ -103,6 +103,7 @@ const COMMAND_CATEGORY_BY_ID = Object.freeze({
   storage: 'system',
   permissions: 'system',
   tools: 'system',
+  phone: 'system',
   mcp: 'system',
   skills: 'system',
   'reload-skills': 'system',
@@ -281,6 +282,14 @@ const TOOLS_COMMANDS = Object.freeze([
     icon: 'image',
     argsHint: '<изображение> [выход]',
     description: 'Локальный 4x апскейл изображения через Upscayl',
+  }),
+]);
+
+const PHONE_COMMANDS = Object.freeze([
+  CMD('phone', {
+    aliases: ['телефон', 'xiaomi'],
+    icon: 'smartphone',
+    description: 'Телефон (Xiaomi 13T Pro) — Health Connect, Shizuku, Organic Maps, Fossify и Find My Device',
   }),
 ]);
 
@@ -635,6 +644,7 @@ function buildRegistry(dynamicSkills = []) {
     ...PLUGIN_COMMANDS.map((c) => c.id),
     ...CONNECTOR_COMMANDS.map((c) => c.id),
     ...TOOLS_COMMANDS.map((c) => c.id),
+    ...PHONE_COMMANDS.map((c) => c.id),
   ]);
   const diskById = new Map();
   for (const sk of dynamicSkills) {
@@ -643,7 +653,7 @@ function buildRegistry(dynamicSkills = []) {
   }
 
   const items = [];
-  for (const c of [...BUILTIN_COMMANDS, ...PLUGIN_COMMANDS, ...CONNECTOR_COMMANDS, ...TOOLS_COMMANDS]) {
+  for (const c of [...BUILTIN_COMMANDS, ...PLUGIN_COMMANDS, ...CONNECTOR_COMMANDS, ...TOOLS_COMMANDS, ...PHONE_COMMANDS]) {
     if (c.id === 'genesis-techlead-reviewer' && diskById.has(c.id)) {
       const disk = diskById.get(c.id);
       items.push({ ...c, promptBody: disk.promptBody || '', skillPath: disk.skillPath || '' });
@@ -955,6 +965,7 @@ class SlashCommandEngine {
     this.connectorsEngine = opts.connectorsEngine || opts.deps?.connectorsEngine || null;
     this.dockerEngine = opts.dockerEngine || opts.deps?.dockerEngine || null;
     this.pcToolsEngine = opts.pcToolsEngine || opts.deps?.pcToolsEngine || null;
+    this.phoneControlEngine = opts.phoneControlEngine || opts.deps?.phoneControlEngine || null;
     this.getConfig = typeof opts.getConfig === 'function' ? opts.getConfig : () => ({});
     this.saveConfig = typeof opts.saveConfig === 'function' ? opts.saveConfig : () => {};
     this.deps = opts.deps || {};
@@ -1516,6 +1527,29 @@ class SlashCommandEngine {
         };
       }
 
+      case 'phone': {
+        if (this.phoneControlEngine && typeof this.phoneControlEngine.getStatus === 'function') {
+          const st = this.phoneControlEngine.getStatus();
+          const statusLine = st.online
+            ? `${st.deviceName} · Android ${st.androidVersion}: онлайн (${st.readyCount}/${st.totalCount} модулей готово)`
+            : `${st.deviceName} · Android ${st.androidVersion}: офлайн (${st.readyCount}/${st.totalCount} модулей)`;
+          return {
+            handled: true,
+            instant: true,
+            action: 'open-catalog',
+            tab: 'phone',
+            reply: statusLine,
+          };
+        }
+        return {
+          handled: true,
+          instant: true,
+          action: 'open-catalog',
+          tab: 'phone',
+          reply: 'Открываю панель управления телефоном (Xiaomi 13T Pro).',
+        };
+      }
+
       case 'analyze': {
         if (!args) {
           return {
@@ -1988,6 +2022,7 @@ module.exports = {
   PLUGIN_COMMANDS,
   CONNECTOR_COMMANDS,
   TOOLS_COMMANDS,
+  PHONE_COMMANDS,
   COMMAND_CATEGORIES,
   DRAFT_PLUGINS,
   DRAFT_CONNECTORS,

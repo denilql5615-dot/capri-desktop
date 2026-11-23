@@ -92,6 +92,8 @@ contextBridge.exposeInMainWorld('host', {
   dockerAction: (payload) => ipcRenderer.invoke('docker:action', payload),
   toolsStatus: (params) => ipcRenderer.invoke('tools:status', params),
   toolsAction: (payload) => ipcRenderer.invoke('tools:action', payload),
+  phoneControlStatus: () => ipcRenderer.invoke('phone-control:status'),
+  phoneControlAction: (payload) => ipcRenderer.invoke('phone-control:action', payload),
   chatCompact: (payload) => ipcRenderer.invoke('chat:compact', payload),
   agentsCompact: (payload) => ipcRenderer.invoke('agents:compact', payload),
   openChats: () => ipcRenderer.send('chats:open'),

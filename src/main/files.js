@@ -12,7 +12,7 @@ const { powershell } = require('./apps');
 const { extractDocumentText } = require('./hub-artifacts');
 const { parseKensakuResults } = require('./pc-tools-engine');
 const SNIPPET_EXTS = new Set(['.pdf', '.docx', '.xlsx', '.pptx', '.txt', '.md', '.csv']);
-const KENSAKU_CLI = 'D:\\Capri\\tools\\kensaku\\kensaku-cli-windows-x86_64.exe';
+const KENSAKU_CLI = 'D:\\Capri\\tools\\kensaku\\app\\kensaku-cli.exe';
 const KENSAKU_TIMEOUT_MS = 900;
 
 const LIMIT = 8;

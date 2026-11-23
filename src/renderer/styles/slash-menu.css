@@ -2619,6 +2619,111 @@
   color: #A8C7FA;
 }
 
+/* ---------- Phone Control (Xiaomi 13T Pro) ---------- */
+.slash-phone-health-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: #131314;
+}
+
+.slash-phone-health-bar__main {
+  flex: 1 1 260px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.slash-phone-health-bar__icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: #81C995;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.slash-phone-health-bar__metrics {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
+.slash-phone-health-bar__values {
+  font-size: 13px;
+  font-weight: 500;
+  color: #E3E3E3;
+  font-variant-numeric: tabular-nums;
+}
+
+.slash-phone-health-bar__time {
+  font-size: 12px;
+  font-weight: 400;
+  color: #8E918F;
+  font-variant-numeric: tabular-nums;
+}
+
+.slash-phone-health-bar__hint {
+  font-size: 12.5px;
+  font-weight: 400;
+  color: #8E918F;
+  line-height: 1.35;
+}
+
+.slash-phone-inline-form {
+  margin: 0 12px 10px 56px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: #131314;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.slash-phone-inline-input {
+  flex: 1 1 180px;
+  min-width: 0;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #1E1F20;
+  color: #E3E3E3;
+  font: 400 13px/1.2 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  outline: none;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.slash-phone-inline-input--wide {
+  flex: 2 1 220px;
+}
+
+.slash-phone-inline-input::placeholder {
+  color: #8E918F;
+}
+
+.slash-phone-inline-input:focus {
+  border-color: #8AB4F8;
+  background: #282A2C;
+}
+
+.slash-phone-inline-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
 @media (max-width: 640px) {
   .slash-plugin-drawer {
     padding-left: 12px;
@@ -2649,7 +2754,8 @@
     max-width: 100%;
   }
 
-  .slash-docker-confirm {
+  .slash-docker-confirm,
+  .slash-phone-inline-form {
     margin-left: 12px;
   }
 }

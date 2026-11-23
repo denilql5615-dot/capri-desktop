@@ -37,6 +37,7 @@ const { PluginsEngine } = require('./plugins-engine');
 const { ConnectorsEngine } = require('./connectors-engine');
 const { DockerEngine } = require('./docker-engine');
 const { PcToolsEngine } = require('./pc-tools-engine');
+const { PhoneControlEngine } = require('./phone-control-engine');
 const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
 const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('./hub-artifacts');
@@ -1880,6 +1881,7 @@ let pluginsEngine = null;
 let connectorsEngine = null;
 let dockerEngine = null;
 let pcToolsEngine = null;
+let phoneControlEngine = null;
 
 function ensureDockerEngine() {
   if (dockerEngine) return dockerEngine;
@@ -1893,6 +1895,20 @@ function ensurePcToolsEngine() {
     artifactsDir: path.join(app.getPath('userData'), 'tools-artifacts'),
   });
   return pcToolsEngine;
+}
+
+function ensurePhoneControlEngine() {
+  if (phoneControlEngine) return phoneControlEngine;
+  phoneControlEngine = new PhoneControlEngine({
+    statePath: path.join(app.getPath('userData'), 'phone-control-state.json'),
+    onHealthSummary: (summary) => {
+      try {
+        const res = ensureConnectorsEngine().saveHealthSummary(summary);
+        if (res?.ok) broadcastConnectorsChanged();
+      } catch {}
+    },
+  });
+  return phoneControlEngine;
 }
 
 function ensureSkillsEngine() {
@@ -2013,6 +2029,7 @@ function ensureSlashEngine() {
     connectorsEngine: ensureConnectorsEngine(),
     dockerEngine: ensureDockerEngine(),
     pcToolsEngine: ensurePcToolsEngine(),
+    phoneControlEngine: ensurePhoneControlEngine(),
     getConfig: () => config.load(),
     saveConfig: (patch) => config.save(patch),
     deps: {
@@ -2280,6 +2297,7 @@ async function applyPhone() {
       connectorsEngine: ensureConnectorsEngine(),
       dockerEngine: ensureDockerEngine(),
       pcToolsEngine: ensurePcToolsEngine(),
+      phoneControlEngine: ensurePhoneControlEngine(),
       onConnectorsChanged: (payload) => {
         if (payload?.id === 'telegram') applyTelegram();
         broadcastConnectorsChanged();
@@ -4297,6 +4315,13 @@ function registerIpc() {
     toolId: payload?.toolId,
     action: payload?.action,
     payload: payload?.payload,
+  }));
+  ipcMain.handle('phone-control:status', () => ensurePhoneControlEngine().getStatus());
+  ipcMain.handle('phone-control:action', (_e, payload = {}) => ensurePhoneControlEngine().queueAction({
+    moduleId: payload?.moduleId,
+    action: payload?.action,
+    payload: payload?.payload,
+    confirmed: payload?.confirmed === true,
   }));
   ipcMain.handle('chat:compact', (_e, payload = {}) => compactDesktopChat(payload || {}));
   ipcMain.handle('agents:compact', (event, { id, focus } = {}) => hubSessions(event).compact(id, { focus }));

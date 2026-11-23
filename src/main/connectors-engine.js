@@ -9,6 +9,15 @@ const { estimateTokens } = require('./context-stats');
 
 const SLUG_RE = /^[a-z0-9][a-z0-9_-]{1,40}$/;
 const HEALTH_TTL_MS = 30 * 1000;
+const HEALTH_DISPLAY_TTL_MS = 30 * 60 * 1000;
+const SYNC_ONLY_CONNECTORS = new Set([
+  'google-workspace',
+  'telegram',
+  'obsidian',
+  'github',
+  'health-connect',
+  'gemini-notebook',
+]);
 const PROBE_TIMEOUT_MS = 2500;
 const HTTP_TIMEOUT_MS = 6000;
 const TURN_CONNECTOR_TIMEOUT_MS = 5000;
@@ -810,9 +819,25 @@ class ConnectorsEngine {
     }
   }
 
+  async fetchWgerProbe(cleanUrl, plainToken, limit = 1, timeoutMs = PROBE_TIMEOUT_MS) {
+    const headers = plainToken ? { Authorization: `Token ${plainToken}` } : {};
+    let res = await this.fetchImpl(`${cleanUrl}/api/v2/routine/?limit=${limit}`, {
+      headers,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (res && res.status === 404) {
+      res = await this.fetchImpl(`${cleanUrl}/api/v2/workout/?limit=${limit}`, {
+        headers,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    }
+    return res;
+  }
+
   getCachedHealth(def) {
     const cached = this.healthCache.get(def.id);
-    if (cached && Date.now() - cached.checkedAt < HEALTH_TTL_MS) {
+    const ttl = SYNC_ONLY_CONNECTORS.has(def.id) ? HEALTH_TTL_MS : HEALTH_DISPLAY_TTL_MS;
+    if (cached && Date.now() - cached.checkedAt < ttl) {
       return cached;
     }
     const syncInfo = this.inspectSyncState(def);
@@ -942,10 +967,7 @@ class ConnectorsEngine {
             const cleanUrl = parsed.toString().replace(/\/+$/, '');
             const plainToken = wCfg?.token ? this.openKey(wCfg.token) : '';
             try {
-              const res = await this.fetchImpl(`${cleanUrl}/api/v2/workout/?limit=1`, {
-                headers: plainToken ? { Authorization: `Token ${plainToken}` } : {},
-                signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-              });
+              const res = await this.fetchWgerProbe(cleanUrl, plainToken, 1, PROBE_TIMEOUT_MS);
               latencyMs = Date.now() - started;
               if (res && res.ok) {
                 status = 'connected';
@@ -1292,10 +1314,7 @@ class ConnectorsEngine {
     let detail = '';
 
     try {
-      const res = await this.fetchImpl(`${cleanUrl}/api/v2/workout/?limit=1`, {
-        headers: plainToken ? { Authorization: `Token ${plainToken}` } : {},
-        signal: AbortSignal.timeout(5000),
-      });
+      const res = await this.fetchWgerProbe(cleanUrl, plainToken, 1, 5000);
       if (res && res.ok) {
         reachable = true;
         status = 'connected';
@@ -1916,11 +1935,7 @@ class ConnectorsEngine {
         const wCfg = cfg.connectorsConfig?.wger;
         const base = String(wCfg?.url || DEFAULT_WGER_URL).replace(/\/+$/, '');
         const token = wCfg?.token ? this.openKey(wCfg.token) : '';
-        const headers = token ? { Authorization: `Token ${token}` } : {};
-        const res = await this.fetchImpl(`${base}/api/v2/workout/?limit=5`, {
-          headers,
-          signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-        });
+        const res = await this.fetchWgerProbe(base, token, 5, HTTP_TIMEOUT_MS);
         if (res.status === 401 || res.status === 403) {
           return { fenced: false, text: `Wger отвечает (${base}), но нужен API Key (HTTP ${res.status}).` };
         }
