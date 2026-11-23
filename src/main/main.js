@@ -44,6 +44,7 @@ const { PhoneControlEngine } = require('./phone-control-engine');
 const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
 const { QuotaHub } = require('./quota-hub');
+const { readAgyLive, readSnapshot: readAgyStatusLineSnapshot, poolsToGroups } = require('./quota-agy');
 const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('./hub-artifacts');
 const notes = require('./notes');
 const privateVaultCrypto = require('./private-vault-crypto');
@@ -439,12 +440,20 @@ function ensureQuotaHub() {
     readers: {
       claude: async () => readClaudeQuotaWindows(),
       codex: async () => readCodexQuota(workers.findCodex()),
-      // 2.8b replaces the hand-entered snapshot with the live Antigravity status line
+      // 2.8b: the live Antigravity status line (a few seconds of hidden agy); the hand-entered snapshot is the fallback
       agy: async () => {
+        const live = await readAgyLive({ exe: workers.findAgy(), workDir: path.join(app.getPath('userData'), 'quota-agy') }).catch(() => null);
+        const saved = live || poolsToGroups(readAgyStatusLineSnapshot());
         const snaps = agyQuotaSnapshots();
         const out = { checkedAt: {} };
         for (const g of ['agy-gemini', 'agy-argon', 'agy-third-party']) {
-          if (snaps[g]?.windows?.length) { out[g] = snaps[g].windows; out.checkedAt[g] = snaps[g].checkedAt; }
+          if (saved[g].length && (live || saved.checkedAt[g] >= (snaps[g]?.checkedAt || 0))) {
+            out[g] = saved[g];
+            out.checkedAt[g] = saved.checkedAt[g];
+          } else if (snaps[g]?.windows?.length) {
+            out[g] = snaps[g].windows;
+            out.checkedAt[g] = snaps[g].checkedAt;
+          }
         }
         return Object.keys(out).length > 1 ? out : null;
       },
