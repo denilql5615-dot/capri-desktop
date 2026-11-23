@@ -34,7 +34,9 @@ const { LOCAL_CONTEXT_DEFAULTS, getContextLimits, buildContextStats, resolveCont
 const { SlashCommandEngine, compactHistory, isIsolatedMode } = require('./slash-commands');
 const { SkillsEngine } = require('./skills-engine');
 const { PluginsEngine } = require('./plugins-engine');
-const { ConnectorsEngine } = require('./connectors-engine');
+const { ConnectorsEngine, sanitizeDigestMarkdown } = require('./connectors-engine');
+const { RcloneDrive, SETUP_STEPS: RCLONE_SETUP_STEPS } = require('./rclone-drive');
+const { MemorySlices } = require('./memory-slices');
 const { StylesEngine } = require('./styles-engine');
 const { DockerEngine } = require('./docker-engine');
 const { PcToolsEngine } = require('./pc-tools-engine');
@@ -1964,9 +1966,41 @@ function ensureConnectorsEngine() {
       kiwixSearch: async (q) => kiwix.fromLocalFirst((url) => kiwix.search(q, { url, limit: 4 }), config.load().kiwixUrl),
       webSearch: async (q) => agentWeb.search({ query: q, read: 0 }),
       dockerEngine: ensureDockerEngine(),
+      rcloneStatus: () => ensureRcloneDrive().cachedStatus(),
+      refreshRclone: () => ensureRcloneDrive().status(),
+      rcloneSetupSteps: RCLONE_SETUP_STEPS,
+      googleWorkspaceQuery: async (q) => {
+        const drive = ensureRcloneDrive();
+        const st = await drive.status();
+        if (!st.configured) return `Google Диск через rclone не настроен: ${st.detail}.`;
+        const hits = await drive.search(q);
+        return hits.length
+          ? hits.map((h) => `- ${h.path} (${Math.round((h.size || 0) / 1024)} КБ, ${String(h.modTime || '').slice(0, 10)})`).join('\n')
+          : 'На Диске по этому запросу файлов не нашла.';
+      },
     },
   });
   return connectorsEngine;
+}
+
+let rcloneDrive = null;
+function ensureRcloneDrive() {
+  rcloneDrive ??= new RcloneDrive({ getConfig: () => config.load() });
+  return rcloneDrive;
+}
+
+let memorySlices = null;
+function ensureMemorySlices() {
+  memorySlices ??= new MemorySlices({
+    getConfig: () => config.load(),
+    saveConfig: (patch) => config.save(patch),
+    connectors: ensureConnectorsEngine(),
+    drive: ensureRcloneDrive(),
+    sanitize: sanitizeDigestMarkdown,
+    notesRoot: () => path.join(notesDir(), 'GENESIS'),
+    archiveDir: path.join(app.getPath('userData'), 'notebook-digests', 'slices'),
+  });
+  return memorySlices;
 }
 
 function broadcastConnectorsChanged() {
@@ -2228,6 +2262,7 @@ function ensureSlashEngine() {
         sendCommand('stop');
       },
       compact: (opts) => compactDesktopChat(opts),
+      memorySlices: () => ensureMemorySlices(),
       learnSkill: async ({ mode, ephemeral, sessionId, history, hint }) => {
         if (torState.isQuarantined()) return { ok: false, error: 'Пока чат в Tor-карантине, навыки из него не сохраняю.' };
         const isolated = isIsolatedMode({ mode, ephemeral });
@@ -5202,6 +5237,9 @@ function main() {
     });
     syncPlannerReminders();
     setInterval(() => morningBriefTick().catch((err) => console.warn('[capri] morning brief:', err.message)), 60 * 1000);
+    // 2.7c: memory slices at 09:00 and 21:00 (a missed slot runs once on the next tick); rclone status for the panel.
+    ensureRcloneDrive().status().catch(() => {});
+    setInterval(() => ensureMemorySlices().tick().catch((err) => console.warn('[capri] memory slice:', err.message)), 60 * 1000);
     setInterval(() => pollTelegramTick().catch((err) => console.warn('[capri] telegram poll:', err.message)), 15 * 1000);
     serveProtocol();
     registerIpc();

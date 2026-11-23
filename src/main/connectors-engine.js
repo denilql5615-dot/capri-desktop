@@ -715,6 +715,9 @@ class ConnectorsEngine {
   }
 
   inspectGoogleWorkspace() {
+    // 2.7c: rclone gives Drive without Antigravity; its last known status comes from deps.rcloneStatus().
+    const rc = typeof this.deps?.rcloneStatus === 'function' ? this.deps.rcloneStatus() : null;
+    if (rc?.configured) return { status: 'connected', detail: rc.detail || 'rclone' };
     const cfg = readJsonSafe(this.geminiConfigFile);
     const plugins = cfg?.plugins && typeof cfg.plugins === 'object' ? cfg.plugins : {};
     const installed = [];
@@ -1137,12 +1140,15 @@ class ConnectorsEngine {
         };
       }
       case 'google-workspace': {
+        if (typeof this.deps?.refreshRclone === 'function') {
+          try { await this.deps.refreshRclone(); } catch {}
+        }
         const checked = await this.checkConnector('google-workspace', { mode, ephemeral });
         return {
           ok: true,
           status: checked.connector?.status || 'auth_required',
           detail: checked.connector?.detail || '',
-          setupSteps: [...GOOGLE_SETUP_STEPS],
+          setupSteps: [...(this.deps?.rcloneSetupSteps || []), ...GOOGLE_SETUP_STEPS],
           connector: checked.connector,
           categories: checked.categories,
           items: checked.items,

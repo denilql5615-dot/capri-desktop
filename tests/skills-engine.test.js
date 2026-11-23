@@ -306,8 +306,8 @@ test('createSkill and 2-step installSkill validate inputs and persist UTF-8 SKIL
   }
 });
 
-test('All 66 BUILTIN_COMMANDS have semantic categories and SlashCommandEngine delegates skills to SkillsEngine', async () => {
-  assert.equal(BUILTIN_COMMANDS.length, 66);
+test('All 67 BUILTIN_COMMANDS have semantic categories and SlashCommandEngine delegates skills to SkillsEngine', async () => {
+  assert.equal(BUILTIN_COMMANDS.length, 67);
   assert.equal(COMMAND_CATEGORIES.length, 5);
   for (const cmd of BUILTIN_COMMANDS) {
     assert.ok(cmd.category, `Missing category on ${cmd.id}`);

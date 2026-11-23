@@ -247,7 +247,7 @@ test('PhoneControlEngine enforces allowlist, confirmRequired on dial/sms, saniti
 });
 
 test('/phone slash command, PhoneBridge endpoints, and IPC contracts in main.js & preload.js', async () => {
-  assert.equal(BUILTIN_COMMANDS.length, 66);
+  assert.equal(BUILTIN_COMMANDS.length, 67);
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'capri-phone-bridge-'));
   try {

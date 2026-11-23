@@ -80,6 +80,7 @@ const COMMAND_CATEGORY_BY_ID = Object.freeze({
   memory: 'memory',
   find: 'memory',
   learn: 'memory',
+  slice: 'memory',
   nomad: 'memory',
   alta: 'memory',
   web: 'modes',
@@ -189,6 +190,7 @@ const BUILTIN_COMMANDS = Object.freeze([
   CMD('grill-me', { kind: 'prompt', icon: 'flame', chainable: true, argsHint: '[тема]', description: 'Жёсткое интервью и разбор слабых мест плана до реализации' }),
   CMD('learn', { icon: 'graduation-cap', argsHint: '[что закрепить]', description: 'Удачную задачу из этого чата — в свой навык (рецепт делает локальная модель)' }),
   CMD('skill-files', { aliases: ['навык-файлы'], icon: 'paperclip', argsHint: '<навык>', description: 'Приложить к своему навыку справочные файлы (md, txt, json, csv…)' }),
+  CMD('slice', { aliases: ['срез', 'срезы'], icon: 'refresh-cw', argsHint: '[статус|диск вкл|диск выкл|вкл|выкл]', description: 'Срез памяти: освежить OpenNotebook и дайджест для Gemini Notebook (сам — в 09:00 и 21:00)' }),
   CMD('schedule', { kind: 'prompt', icon: 'clock', argsHint: '<расписание>', description: 'Спроектировать периодическую фоновую задачу по расписанию' }),
   CMD('goal', { kind: 'prompt', icon: 'target', argsHint: '<цель>', description: 'Автономный режим до полного достижения цели без ранней остановки' }),
   CMD('council', { kind: 'prompt', icon: 'layers', cloudOnly: true, argsHint: '<вопрос>', description: 'Созвать совет моделей с перекрёстной критикой и вердиктом' }),
@@ -1846,6 +1848,36 @@ class SlashCommandEngine {
           context: compacted.context,
           reply,
         };
+      }
+
+      case 'slice': {
+        const slices = typeof deps.memorySlices === 'function' ? deps.memorySlices() : null;
+        if (!slices) return { handled: true, instant: true, reply: 'Срезы памяти работают только на ПК.' };
+        const a = args.trim().toLowerCase();
+        if (/^(?:статус|status|\?)$/.test(a)) return { handled: true, instant: true, reply: slices.statusText() };
+        const drive = /^(?:диск|drive)\s+(вкл|on|выкл|off)$/.exec(a);
+        if (drive) {
+          const on = /^(?:вкл|on)$/.test(drive[1]);
+          slices.setDrive(on);
+          return { handled: true, instant: true, reply: on ? 'Выгрузка очищенного дайджеста на Google Диск включена (уйдёт со следующим срезом или /срез).' : 'Выгрузка на Google Диск выключена.' };
+        }
+        const sched = /^(вкл|on|выкл|off)$/.exec(a);
+        if (sched) {
+          const on = /^(?:вкл|on)$/.test(sched[1]);
+          slices._save({ enabled: on });
+          return { handled: true, instant: true, reply: on ? 'Срезы по расписанию включены.' : 'Срезы по расписанию выключены (/срез вручную работает).' };
+        }
+        if (a && !/^(?:сейчас|now)$/.test(a)) return { handled: true, instant: true, reply: 'Варианты: /срез, /срез статус, /срез диск вкл|выкл, /срез вкл|выкл.' };
+        const r = await slices.run({ reason: 'manual' });
+        const on = r.openNotebook || {};
+        const lines = [
+          on.ok === false && !on.refreshed?.length
+            ? `OpenNotebook: ${on.error}`
+            : `OpenNotebook «${on.notebook}»: обновлено ${on.refreshed?.length || 0}${on.refreshed?.length ? ` (${on.refreshed.slice(0, 6).join(', ')}${on.refreshed.length > 6 ? '…' : ''})` : ''}, без изменений ${on.unchanged || 0}${on.failed?.length ? `, ошибок ${on.failed.length}: ${on.failed[0]}` : ''}.`,
+          r.digest?.ok ? `Дайджест для Gemini Notebook: ${r.digest.chars} знаков (${(r.digest.includedFiles || []).join(', ')}).` : `Дайджест: ${r.digest?.error || 'не собран'}.`,
+          r.drive?.ok ? `Google Диск: ${r.drive.remotePath}.` : `Google Диск: ${r.drive?.skipped || r.drive?.error}.`,
+        ];
+        return { handled: true, instant: false, reply: lines.join('\n') };
       }
 
       case 'learn': {
