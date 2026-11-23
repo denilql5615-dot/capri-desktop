@@ -12,6 +12,7 @@ const path = require('node:path');
 const { spawn, execFile } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { PROTON_MAIL } = require('./desktop');
+const { claudeActivity, codexActivity } = require('./cloud-activity');
 
 // how speech-to-text spells them too; a letter just before is another word ("телеклод")
 const CLAUDE_RE = /(?<![а-яёa-z])(клод|клауд|клоуд|claude|антропик|anthropic)/i;
@@ -353,7 +354,7 @@ const UTF8_ENV = { PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', CAPRI_WORKER_SUBP
 // Claude: one-shot `claude -p` in her folder; edits there go through without asking (acceptEdits),
 // anything needing a yes (a command) is refused, and it says so. With `desktop`, agent-desktop is the one
 // command it may run.
-function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = null, model = null, effort = null, onQuota, onUsage } = {}, find = findClaude) {
+function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = null, model = null, effort = null, onQuota, onUsage, onActivity } = {}, find = findClaude) {
   const exe = find();
   if (!exe) return Promise.reject(new Error('Claude Code не найден на этом ПК: поставь его и войди.'));
   const cwd = workDir(cfg);
@@ -363,6 +364,7 @@ function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = nul
     ...(desktop ? [desktopNote('agent-desktop')] : [])].join('\n\n'));
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
     '--append-system-prompt-file', personaFile, '--no-session-persistence',
+    ...(onActivity ? ['--include-partial-messages'] : []),
     ...(model ? ['--model', model] : []), // the router's pick for how hard it is (router.js)
     ...(effort ? ['--effort', effort] : []),
     ...(desktop ? ['--allowedTools', 'Bash(agent-desktop:*)', 'Bash(agent-desktop.exe:*)'] : [])];
@@ -371,6 +373,7 @@ function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = nul
   const env = desktop
     ? { ...process.env, ...UTF8_ENV, PATH: `${AGENT_DESKTOP_DIR}${path.delimiter}${process.env.PATH || ''}`, ...(home && { AGENT_DESKTOP_HOME: home }) }
     : { ...process.env, ...UTF8_ENV };
+  const activity = onActivity && claudeActivity(cwd, onActivity);
   return new Promise((resolve, reject) => {
     const child = spawn(exe, args, { cwd, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     const kill = () => killTree(child);
@@ -389,6 +392,7 @@ function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = nul
         buffer = buffer.slice(nl + 1);
         let msg;
         try { msg = JSON.parse(line); } catch { continue; }
+        if (activity && !signal.aborted) activity(msg);
         if (msg.type === 'rate_limit_event') onQuota?.(msg);
         if (msg.type === 'assistant') {
           for (const block of msg.message?.content || []) {
@@ -434,7 +438,7 @@ function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = nul
 
 // Codex: `codex exec` in its workspace-write sandbox. With `desktop` (a computer task, after your yes in
 // main.js handsFor): out of the sandbox, which can't see your windows, with agent-desktop to drive them.
-function askCodex(cfg, messages, onDelta, signal, { desktop = false, home = null, effort: picked = null, model = null, onUsage } = {}, find = findCodex, spawnImpl = spawn) {
+function askCodex(cfg, messages, onDelta, signal, { desktop = false, home = null, effort: picked = null, model = null, onUsage, onActivity } = {}, find = findCodex, spawnImpl = spawn) {
   const exe = find();
   if (!exe) return Promise.reject(new Error('Codex не найден на этом ПК: поставь Codex и войди в него.'));
   const cwd = workDir(cfg);
@@ -504,6 +508,10 @@ function askCodex(cfg, messages, onDelta, signal, { desktop = false, home = null
         if (!line) continue;
         let msg;
         try { msg = JSON.parse(line); } catch { continue; }
+        if (onActivity && !signal?.aborted) {
+          const step = codexActivity(msg, cwd);
+          if (step) onActivity(step);
+        }
         if (msg.type === 'item.completed' && msg.item?.type === 'agent_message' && typeof msg.item.text === 'string' && msg.item.text.trim()) {
           agentMessages.push(msg.item.text.trim());
         } else if (msg.type === 'error' && msg.message) {

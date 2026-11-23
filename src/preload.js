@@ -145,6 +145,7 @@ contextBridge.exposeInMainWorld('host', {
   agentsArtifact: (request) => ipcRenderer.invoke('agents:artifact', request),
   agentsImport: (agent, local) => ipcRenderer.invoke('agents:import', agent, local),
   onAgentsUpdate: (fn) => ipcRenderer.on('agents:update', (_event, data) => fn(data)),
+  onAgentActivity: on('agents:activity'),
   chatsStop: () => ipcRenderer.send('chats:stop'),
   chatsAnswer: (answer) => ipcRenderer.send('chats:answer', answer),
   chatsListen: () => ipcRenderer.send('chats:listen'),

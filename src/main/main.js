@@ -678,6 +678,7 @@ function ensureAgentSessions() {
           sessionId: meta?.sessionId || meta?.session?.id || null,
           sameProviderContiguous: Boolean(meta?.sameProviderContiguous),
           onQuota: recordClaudeQuota,
+          onActivity: meta?.onActivity,
           onUsage: (u) => { usage = u; },
         });
         let hasDestFiles = false;
@@ -745,6 +746,9 @@ function ensureAgentSessions() {
       });
       return { text, artifacts: [], actualModel: model, context };
     }, (id, delta) => chatsWin?.webContents.send('agents:update', { id, delta }), {
+      notifyActivity: (payload) => {
+        if (chatsWin && !chatsWin.isDestroyed()) chatsWin.webContents.send('agents:activity', payload);
+      },
       skillsEngine: ensureSkillsEngine(),
       pluginsEngine: ensurePluginsEngine(),
       connectorsEngine: ensureConnectorsEngine(),

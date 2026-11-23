@@ -442,6 +442,7 @@ class AgentSessions {
     this.file = file;
     this.run = run;
     this.notify = notify;
+    this.notifyActivity = opts.notifyActivity;
     this.skillsEngine = opts?.skillsEngine || null;
     this.pluginsEngine = opts?.pluginsEngine || null;
     this.connectorsEngine = opts?.connectorsEngine || null;
@@ -782,7 +783,11 @@ class AgentSessions {
     const currentSession = this.sessions.find((item) => item.id === id) || session;
     this.active.set(id, abort);
     this.notify(id);
+    const activity = this.notifyActivity && ['claude', 'codex'].includes(targetAgent) ? randomUUID() : null;
+    const publish = activity ? (event) => this.notifyActivity({ id, runId: activity, agent: targetAgent, event }) : null;
+    let activityState = 'failed';
     try {
+      publish?.({ kind: 'turn', state: 'running' });
       let connectorCtx = { contextBlock: '', usedConnectorIds: [] };
       if (!retry && this.connectorsEngine && targetAgent !== 'faun') {
         connectorCtx = await this.connectorsEngine.resolveTurnContext({
@@ -802,6 +807,7 @@ class AgentSessions {
         requestedModel: model,
         session: currentSession,
         sessionId: id,
+        onActivity: publish ? (event) => { if (!abort.signal.aborted) publish(event); } : undefined,
         sameProviderContiguous,
         hydratedFromHistory,
         ephemeral: opts?.ephemeral,
@@ -848,6 +854,7 @@ class AgentSessions {
           webChatId ? { webChatId } : { webChatId: undefined },
         );
       }
+      activityState = 'done';
       return (includeReply || isBtw)
         ? {
           ok: true,
@@ -873,6 +880,7 @@ class AgentSessions {
       };
     } finally {
       this.active.delete(id);
+      publish?.({ kind: 'turn', state: abort.signal.aborted ? 'stopped' : activityState });
       this.notify(id);
       void this.drain();
     }

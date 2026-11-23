@@ -8,11 +8,32 @@ const path = require('node:path');
 const { AgentSessions } = require('../src/main/agent-sessions');
 const { parseTranscript } = require('../src/main/agent-import');
 
-function make(run) {
+function make(run, options) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'capri-session-test-'));
   const file = path.join(dir, 'sessions.json');
-  return { file, hub: new AgentSessions(file, run, () => {}) };
+  return { file, hub: new AgentSessions(file, run, () => {}, options) };
 }
+
+test('activity for a stopped turn ends once and drops late worker events', async () => {
+  const events = [];
+  const started = Promise.withResolvers();
+  const { hub } = make(async (_agent, _model, _messages, signal, _delta, meta) => {
+    meta.onActivity({ kind: 'thinking', state: 'running' });
+    started.resolve();
+    await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+    meta.onActivity({ kind: 'tool', state: 'done' });
+    return 'late answer';
+  }, { notifyActivity: (event) => events.push(event) });
+  const id = hub.create('claude');
+  const sending = hub.send(id, 'sonnet', 'fixture request');
+  await started.promise;
+  hub.stop(id);
+  assert.equal((await sending).stopped, true);
+  assert.deepEqual(events.map(({ event }) => [event.kind, event.state]), [
+    ['turn', 'running'], ['thinking', 'running'], ['turn', 'stopped'],
+  ]);
+  assert.ok(events.every((entry) => entry.id === id && entry.runId === events[0].runId));
+});
 
 test('queued work survives reopening and runs once when the bridge starts again', async () => {
   const { hub, file } = make(async () => 'unused');
