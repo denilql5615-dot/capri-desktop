@@ -43,6 +43,7 @@ const { ConnectorsEngine, parseModelUseTag, stripModelUseTags } = require('./con
 const { DockerEngine } = require('./docker-engine');
 const { PcToolsEngine } = require('./pc-tools-engine');
 const { PhoneControlEngine } = require('./phone-control-engine');
+const { ActivityJournal } = require('./activity-journal');
 const SUGGESTIONS_TTL_MS = 45 * 60 * 1000; // 45 минут кэша подсказок от E4B
 const WORKER_COOLDOWN_MS = 30 * 60 * 1000; // 30 минут кулдауна для уставших воркеров Deep Research
 const RESEARCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -425,6 +426,8 @@ class PhoneBridge {
     this.researchRequests = new Map();
     this.researchActivity = new Map();
     this.researchResults = new Map();
+    // the feed in the reply (2.9 part 3): kept apart from the model's context, read by GET /activity
+    this.journal = deps.activityJournal || new ActivityJournal();
     this.queue = Promise.resolve();
     this.chatRequests = new Map();
     this._fallbackSlash = null;
@@ -1442,6 +1445,13 @@ class PhoneBridge {
         if (!RESEARCH_ID.test(id)) return this.send(res, 400, { error: 'Неверный идентификатор исследования.' });
         return this.send(res, 200, this.researchStatus(id));
       }
+      if (req.method === 'GET' && url.pathname === '/activity') {
+        // the feed of one turn; `since`: the last version the phone has (a reconnect asks only the rest)
+        const id = url.searchParams.get('id') || '';
+        if (!RESEARCH_ID.test(id)) return this.send(res, 400, { error: 'Неверный идентификатор хода.' });
+        const feed = this.journal.read(id, url.searchParams.get('since') || 0);
+        return this.send(res, 200, feed || { id, version: 0, done: false, state: 'missing', entries: [] });
+      }
       if (req.method === 'GET' && url.pathname === '/deep-research/activity') {
         const id = url.searchParams.get('requestId') || '';
         if (!RESEARCH_ID.test(id)) return this.send(res, 400, { error: 'Неверный идентификатор исследования.' });
@@ -1478,10 +1488,15 @@ class PhoneBridge {
           if (trace.until <= Date.now()) this.researchActivity.delete(id);
         }
         const trace = { until: Infinity, steps: new Map(), groups: new Map(), workers: new Map() };
-        if (requestId) this.researchActivity.set(requestId, trace);
+        if (requestId) {
+          this.researchActivity.set(requestId, trace);
+          this.journal.begin(requestId, { isolated: Boolean(this.d.externalBlocked?.(flags.text)) });
+          this.journal.add(requestId, 'start', { kind: 'phase', name: kind === 'council' ? 'council' : 'research', state: 'running' });
+        }
         const notifyActivity = ({ runId, agent, model, event, pool }) => {
           if (!requestId || abort.signal.aborted) return;
           const group = pool || this.d.quotaGroup?.(agent, model);
+          this.journal.add(requestId, `${runId}:${event.kind === 'turn' ? 'turn' : event.id}`, { ...event, agent, group, model });
           if (group && event.kind === 'turn') {
             if (event.state === 'running') trace.workers.set(runId, group);
             else trace.workers.delete(runId);
@@ -1527,6 +1542,9 @@ class PhoneBridge {
           }
           res.off('close', disconnect);
           if (requestId) {
+            this.journal.add(requestId, 'start', { kind: 'phase', name: kind === 'council' ? 'council' : 'research',
+              state: abort.signal.aborted ? 'stopped' : status === 200 && !result?.rectorFailed ? 'done' : 'failed' });
+            this.journal.finish(requestId, abort.signal.aborted ? 'stopped' : status === 200 ? 'done' : 'failed');
             this.rememberResearch(requestId, result, status);
             this.researchRequests.delete(requestId);
           }
@@ -1666,6 +1684,11 @@ class PhoneBridge {
           this.chatRequests.set(requestId, entry);
         }
         const signal = entry?.abort.signal;
+        if (entry) {
+          // an isolated or Tor-touching turn keeps phases only, in memory (activity-journal.js)
+          this.journal.begin(requestId, { isolated: isolated || Boolean(this.d.externalBlocked?.(flags.text)) });
+          flags.onActivity = (event) => this.journal.add(requestId, `local:${event.id || event.name}`, { agent: 'altair', group: 'local', ...event });
+        }
         const turn = this.queue.then(() => {
           signal?.throwIfAborted();
           if (entry) entry.state = 'running';
@@ -1679,6 +1702,7 @@ class PhoneBridge {
           response = turn.catch(() => ({ reply: 'Не удалось завершить запрос.', brain: 'error', pose: '' })).then((result) => {
             const stopped = signal.aborted;
             entry.state = stopped ? 'stopped' : result.brain === 'error' ? 'error' : 'complete';
+            this.journal.finish(requestId, stopped ? 'stopped' : result.brain === 'error' ? 'failed' : 'done');
             entry.abort = null;
             this.expireChatRequest(requestId, entry, ttl);
             return stopped ? CHAT_STOPPED : result;
@@ -1756,7 +1780,19 @@ class PhoneBridge {
             };
           }
         }
-        const result = await this.d.agentSend?.(sendPayload);
+        const activityId = typeof body.activityId === 'string' && RESEARCH_ID.test(body.activityId) ? body.activityId : null;
+        if (activityId) {
+          this.journal.begin(activityId);
+          sendPayload.notifyActivity = ({ runId, agent, model, event }) => this.journal.add(activityId,
+            `${runId}:${event.kind === 'turn' ? 'turn' : event.id}`, { ...event, agent, model, group: this.d.quotaGroup?.(agent, model) });
+        }
+        delete sendPayload.activityId;
+        let result;
+        try {
+          result = await this.d.agentSend?.(sendPayload);
+        } finally {
+          if (activityId) this.journal.finish(activityId, result?.ok === false ? 'failed' : result?.stopped ? 'stopped' : 'done');
+        }
         return this.send(res, 200, result || { ok: false });
       }
       if (req.method === 'POST' && url.pathname === '/agents/stop') {
@@ -1878,6 +1914,12 @@ class PhoneBridge {
     });
     // 2.7a: the phone chat runs on local models only, so local-only styles and voices are fine here
     const styleTurn = this.d.stylesEngine?.resolveTurn({ text: connCtx.cleanedText || text, isCloud: false }) || null;
+    const act = flags.onActivity;
+    if (act) {
+      for (const id of skillCtx.activeSkillIds || []) act({ id: `skill-${id}`, kind: 'skill', name: id, state: 'done' });
+      for (const id of connCtx.usedConnectorIds || []) act({ id: `connector-${id}`, kind: 'connector', name: id, state: 'done' });
+      if (styleTurn?.block) act({ id: 'style', kind: 'skill', name: styleTurn.styleName || styleTurn.name || 'Writing Style', state: 'done' });
+    }
     const effectiveText = styleTurn?.cleanedText || connCtx.cleanedText || text;
     const missingFallback = (Array.isArray(flags.skills) ? flags.skills : [])
       .filter((sk) => !skillCtx.activeSkillIds.includes(sk) && !skillCtx.pausedSkillIds.includes(sk) && SKILL_NOTES[sk])
@@ -1928,6 +1970,8 @@ class PhoneBridge {
 
       const useTag = parseModelUseTag(reply);
       if (useTag) {
+        const step = { id: `connector-use-${useTag.id}`, kind: 'connector', name: useTag.id };
+        flags.onActivity?.({ ...step, state: 'running' });
         const followRes = await this.connectorsEngine().queryConnector({
           id: useTag.id,
           query: useTag.query || effectiveText,
@@ -1935,6 +1979,7 @@ class PhoneBridge {
           ephemeral: Boolean(ephemeral),
           isCloud: false,
         });
+        flags.onActivity?.({ ...step, state: followRes.ok ? 'done' : 'failed', ...(followRes.ok ? {} : { error: followRes.error }) });
         const followPayload = followRes.ok
           ? followRes.reply
           : `Коннектор ${useTag.id} не ответил: ${followRes.error || 'ошибка'}`;

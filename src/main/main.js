@@ -2534,6 +2534,16 @@ function ensureSlashEngine() {
   return slashEngine;
 }
 
+// the activity feed's journal (activity-journal.js): its own folder, never part of a model's context
+let activityJournal = null;
+function ensureActivityJournal() {
+  if (!activityJournal) {
+    const { ActivityJournal } = require('./activity-journal');
+    activityJournal = new ActivityJournal({ dir: path.join(app.getPath('userData'), 'activity-journal', 'v1') });
+  }
+  return activityJournal;
+}
+
 async function applyPhone() {
   const { phone: p } = config.load();
   if (!phoneBridge) {
@@ -2546,6 +2556,7 @@ async function applyPhone() {
       dockerEngine: ensureDockerEngine(),
       pcToolsEngine: ensurePcToolsEngine(),
       phoneControlEngine: ensurePhoneControlEngine(), stylesEngine: ensureStylesEngine(),
+      activityJournal: ensureActivityJournal(),
       quotaSnapshot: () => ensureQuotaHub().snapshot(),
       quotaRefresh: () => ensureQuotaHub().refresh({ force: true }),
       quotaGroup: groupFor,

@@ -67,6 +67,49 @@ test('phone research activity is scoped to the request and command kind', async 
   }
 });
 
+test('the reply feed: local phases and a cloud turn reach GET /activity by their ids, apart from the reply', async () => {
+  const requestId = randomUUID();
+  const activityId = randomUUID();
+  const bridge = new PhoneBridge({
+    token: () => 'k',
+    persona: () => 'Персона.',
+    quotaGroup: (agent) => agent,
+    chat: async (messages, _signal, options) => {
+      options.onActivity({ id: 'p1', kind: 'phase', name: 'memory', state: 'running' });
+      options.onActivity({ id: 'p1', kind: 'phase', name: 'memory', state: 'done' });
+      options.onActivity({ id: 'p2', kind: 'phase', name: 'generation', state: 'running' });
+      return { text: 'готово', brain: 'e4b' };
+    },
+    agentSend: async ({ notifyActivity }) => {
+      notifyActivity({ runId: 'r', agent: 'codex', event: { kind: 'turn', state: 'running' } });
+      notifyActivity({ runId: 'r', agent: 'codex', event: { id: 'c1', kind: 'command', name: 'git', state: 'failed', detail: { command: 'git push', output: 'denied' } } });
+      return { ok: true, text: 'ответ' };
+    },
+  });
+  const port = await bridge.start(0, '127.0.0.1');
+  const url = `http://127.0.0.1:${port}`;
+  const headers = { 'x-capri-token': 'k' };
+  const feed = (id, since = 0) => fetch(`${url}/activity?id=${id}&since=${since}`, { headers }).then((r) => r.json());
+  try {
+    const reply = await (await fetch(`${url}/chat`, { method: 'POST', headers, body: JSON.stringify({ text: 'привет', model: 'e4b', requestId }) })).json();
+    assert.strictEqual(reply.reply, 'готово');
+    assert.strictEqual(reply.entries, undefined); // the feed is never part of the reply or the model's context
+    const local = await feed(requestId);
+    assert.strictEqual(local.done, true);
+    assert.deepStrictEqual(local.entries.filter((e) => e.kind === 'phase').map((e) => [e.kind, e.name, e.state, e.agent]),
+      [['phase', 'memory', 'done', 'altair'], ['phase', 'generation', 'done', 'altair']]);
+    assert.ok(local.entries.filter((e) => e.kind === 'skill').every((e) => e.state === 'done' && e.name));
+    assert.deepStrictEqual((await feed(requestId, local.version)).entries, []);
+    await fetch(`${url}/agents/send`, { method: 'POST', headers, body: JSON.stringify({ id: 's', agent: 'codex', text: 'сделай', activityId }) });
+    const cloud = await feed(activityId);
+    assert.deepStrictEqual(cloud.entries.map((e) => [e.kind, e.state, e.group]), [['turn', 'done', 'codex'], ['command', 'failed', 'codex']]);
+    assert.deepStrictEqual(cloud.entries[1].detail, { command: 'git push', output: 'denied' });
+    assert.strictEqual((await feed(randomUUID())).state, 'missing');
+  } finally {
+    bridge.stop();
+  }
+});
+
 test('mobile chat carries model and isolated context, and retries one PC turn', async () => {
   const calls = [];
   const logged = [];
