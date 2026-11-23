@@ -44,6 +44,19 @@ test('a cancelled Web Gemini request waiting in the queue never opens a tab', as
   assert.equal(opened, false);
 });
 
+test('stopping Web Gemini after inserting a draft prevents sending it', async () => {
+  const { page, seen } = fakePage();
+  const abort = new AbortController();
+  const evaluate = page.evaluate;
+  page.evaluate = async (fn, arg) => {
+    const result = await evaluate(fn, arg);
+    if (String(fn).includes('insertText')) abort.abort();
+    return result;
+  };
+  await assert.rejects(gemini.askIn(page, 'fixture', { signal: abort.signal, pollMs: 1 }), { name: 'AbortError' });
+  assert.equal(seen.sent, false);
+});
+
 test('askIn: a chat id continues that conversation; signed out → told to sign in, nothing sent', async () => {
   const a = fakePage();
   await gemini.askIn(a.page, 'ещё', { chat: 'https://gemini.google.com/app/ccfa5ca0a07a98a5', pollMs: 1 });

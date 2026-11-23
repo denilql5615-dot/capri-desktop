@@ -263,12 +263,16 @@ async function askIn(page, prompt, { chat = null, model = null, task = null, fil
       document.execCommand('insertText', false, t);
     }, full);
     await pause(400);
+    signal?.throwIfAborted();
     const clicked = await page.evaluate(() => {
       const b = [...document.querySelectorAll('button[aria-label]')].find((x) => /send message|отправить/i.test(x.getAttribute('aria-label') || ''));
       if (b && !b.disabled) { b.click(); return true; }
       return false;
     });
-    if (!clicked) await page.keyboard.press('Enter');
+    if (!clicked) {
+      signal?.throwIfAborted();
+      await page.keyboard.press('Enter');
+    }
   };
   endAttachments();
   const endGeneration = activityPhase(onActivity, 'generation');
@@ -338,6 +342,7 @@ function ask(prompt, { open, chat, model, files, minGapMs = 4000, onQuota, ...re
     rest.signal?.throwIfAborted();
     const wait = lastAt + minGapMs - Date.now();
     if (wait > 0) await pause(wait);
+    rest.signal?.throwIfAborted();
     const s = await open();
     const inTab = (m) => {
       const go = async (page) => {
