@@ -43,6 +43,7 @@ const { PcToolsEngine } = require('./pc-tools-engine');
 const { PhoneControlEngine } = require('./phone-control-engine');
 const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
+const { QuotaHub } = require('./quota-hub');
 const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('./hub-artifacts');
 const notes = require('./notes');
 const privateVaultCrypto = require('./private-vault-crypto');
@@ -407,6 +408,55 @@ function recordClaudeQuota(event) {
   const quotas = getClaudeQuotas();
   quotas.set(`${window.scope || 'all'}:${window.minutes}`, { ...window, checkedAt: Date.now() });
   try { fs.writeFileSync(claudeQuotaFile(), JSON.stringify([...quotas.values()]), 'utf8'); } catch { /* Keep the live reading. */ }
+  quotaHub?.refresh({ force: true, groups: ['claude'] }).catch(() => {});
+}
+
+// 2.8: Claude Code's status line (scripts/claude-statusline.js) leaves its plan limits here.
+const claudeStatusLineFile = () => path.join(os.homedir(), '.capri', 'quota', 'claude-statusline.json');
+
+/** Claude's 5-hour and week windows: the newer of the status line file and the stream events. */
+function readClaudeQuotaWindows() {
+  let fromLine = null;
+  try {
+    const snap = JSON.parse(fs.readFileSync(claudeStatusLineFile(), 'utf8'));
+    const w = snap?.windows || {};
+    const windows = [
+      w.five_hour && { remaining: 100 - w.five_hour.used, minutes: 300, resetsAt: w.five_hour.resetsAt },
+      w.seven_day && { remaining: 100 - w.seven_day.used, minutes: 10080, resetsAt: w.seven_day.resetsAt },
+    ].filter(Boolean);
+    if (windows.length) fromLine = { windows, checkedAt: Number(snap.checkedAt) || 0 };
+  } catch { /* No status line reading yet. */ }
+  const events = [...getClaudeQuotas().values()].filter((w) => !w.scope);
+  const fromEvents = events.length ? { windows: events, checkedAt: Math.max(...events.map((w) => w.checkedAt || 0)) } : null;
+  if (!fromLine) return fromEvents;
+  if (!fromEvents) return fromLine;
+  return fromLine.checkedAt >= fromEvents.checkedAt ? fromLine : fromEvents;
+}
+
+let quotaHub = null;
+function ensureQuotaHub() {
+  quotaHub ??= new QuotaHub({
+    readers: {
+      claude: async () => readClaudeQuotaWindows(),
+      codex: async () => readCodexQuota(workers.findCodex()),
+      // 2.8b replaces the hand-entered snapshot with the live Antigravity status line
+      agy: async () => {
+        const snaps = agyQuotaSnapshots();
+        const out = { checkedAt: {} };
+        for (const g of ['agy-gemini', 'agy-argon', 'agy-third-party']) {
+          if (snaps[g]?.windows?.length) { out[g] = snaps[g].windows; out.checkedAt[g] = snaps[g].checkedAt; }
+        }
+        return Object.keys(out).length > 1 ? out : null;
+      },
+      webGemini: async () => null, // 2.8d: the /usage page in the Gemini tab
+    },
+    onUpdate: (snap) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('quotas:update', snap);
+      }
+    },
+  });
+  return quotaHub;
 }
 
 const agyQuotaFile = () => path.join(app.getPath('userData'), 'antigravity-quota.json');
@@ -4552,7 +4602,11 @@ function registerIpc() {
     if (windows.some((window) => !window)) throw new Error('Укажи остаток от 0 до 100%.');
     const data = { ...agyQuotaSnapshots(), [group]: { windows, checkedAt: Date.now() } };
     fs.writeFileSync(agyQuotaFile(), JSON.stringify(data), 'utf8');
+    ensureQuotaHub().refresh({ force: true, groups: [group] }).catch(() => {});
   });
+  ipcMain.handle('quotas:snapshot', () => ensureQuotaHub().refresh());
+  ipcMain.handle('quotas:refresh', () => ensureQuotaHub().refresh({ force: true }));
+  ipcMain.handle('quotas:shown', (_e, groups = []) => { ensureQuotaHub().setShown(groups); return ensureQuotaHub().refresh({ groups }); });
   ipcMain.handle('agents:history', (event, id) => hubSessions(event).history(id));
   ipcMain.handle('agents:create', (event, agent) => hubSessions(event).create(agent));
   ipcMain.handle('agents:send', async (event, { id, agent, model, effort, text, retry, files, history, skills }) => {
@@ -5246,6 +5300,8 @@ function main() {
     // 2.7c: memory slices at 09:00 and 21:00 (a missed slot runs once on the next tick); rclone status for the panel.
     ensureRcloneDrive().status().catch(() => {});
     setInterval(() => ensureMemorySlices().tick().catch((err) => console.warn('[capri] memory slice:', err.message)), 60 * 1000);
+    // 2.8: limits of all cloud models; each source keeps its own pace (quota-hub.js INTERVAL_MS)
+    setInterval(() => ensureQuotaHub().refresh().catch((err) => console.warn('[capri] quotas:', err.message)), 60 * 1000);
     setInterval(() => pollTelegramTick().catch((err) => console.warn('[capri] telegram poll:', err.message)), 15 * 1000);
     serveProtocol();
     registerIpc();

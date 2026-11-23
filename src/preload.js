@@ -121,6 +121,14 @@ contextBridge.exposeInMainWorld('host', {
   agentsList: () => ipcRenderer.invoke('agents:list'),
   agentsQuota: (request) => ipcRenderer.invoke('agents:quota', request),
   agentsQuotaSnapshot: (request) => ipcRenderer.invoke('agents:quota-snapshot', request),
+  quotasSnapshot: () => ipcRenderer.invoke('quotas:snapshot'),
+  quotasRefresh: () => ipcRenderer.invoke('quotas:refresh'),
+  quotasShown: (groups) => ipcRenderer.invoke('quotas:shown', groups),
+  onQuotasUpdate: (cb) => {
+    const handler = (_e, snap) => cb(snap);
+    ipcRenderer.on('quotas:update', handler);
+    return () => ipcRenderer.removeListener('quotas:update', handler);
+  },
   agentsHistory: (id) => ipcRenderer.invoke('agents:history', id),
   agentsCreate: (agent) => ipcRenderer.invoke('agents:create', agent),
   agentsSend: (request) => ipcRenderer.invoke('agents:send', request),
