@@ -6,7 +6,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 export const INSTANT_COMMANDS = new Set([
   'status', 'usage', 'quota', 'context', 'tasks', 'tools', 'mcp',
   'skills', 'reload-skills', 'plugin', 'plugins', 'hookify',
-  'connector', 'connectors',
+  'connector', 'connectors', 'docker',
   'doctor', 'storage', 'permissions',
   'memory', 'help', 'find', 'free', 'today', 'mail', 'clip',
   'alta', 'agents', 'harness', 'nomad', 'web', 'tor', 'copy',
@@ -223,6 +223,19 @@ const ICON_PATHS = {
   terminal: [
     ['path', { d: 'M7 19l10-14' }],
   ],
+  box: [
+    ['path', { d: 'M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z' }],
+    ['path', { d: 'M12 12l8-4.5M12 12v9M12 12L4 7.5' }],
+  ],
+  external: [
+    ['path', { d: 'M14 4h6v6' }],
+    ['path', { d: 'M10 14L20 4' }],
+    ['path', { d: 'M19 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5' }],
+  ],
+  monitor: [
+    ['rect', { x: 3, y: 4, width: 18, height: 12, rx: 2 }],
+    ['path', { d: 'M8 20h8M12 16v4' }],
+  ],
 };
 
 const ICON_ALIAS = {
@@ -297,6 +310,7 @@ const ICON_ALIAS = {
   harness: 'clock',
   subtask: 'branch',
   pet: 'sparkles',
+  docker: 'box',
 };
 
 export function createIconSvg(name, size = 18) {
@@ -789,6 +803,422 @@ export const FALLBACK_CONNECTORS = [
   ),
 ];
 
+const DOCKER_STACK_ICON_BY_ID = {
+  'pc-nomad': 'book',
+  'pc-tor': 'shield',
+  'pc-penpot': 'palette',
+  'pc-opennotebook': 'file-text',
+  'pc-presenton': 'layers',
+  'pc-postiz': 'send',
+  'pc-aperisolve': 'eye',
+  'srv-searxng': 'search',
+  'srv-fmd': 'target',
+  'srv-kuma': 'activity',
+  'srv-freshrss': 'globe',
+  'srv-homeassistant': 'sliders',
+  'srv-amnezia': 'shield',
+  'srv-wger': 'heart',
+  'srv-nomad-pack': 'layers',
+  'srv-nomad-admin': 'server',
+  'srv-kolibri': 'book',
+  'srv-meshtastic': 'globe',
+};
+
+function dockerStackIconName(stack) {
+  return DOCKER_STACK_ICON_BY_ID[stack?.id] || 'box';
+}
+
+function makeFallbackDockerStack(id, host, name, description, opts = {}) {
+  const containers = Array.isArray(opts.containers) ? opts.containers : [];
+  const subItems = Array.isArray(opts.subItems) ? opts.subItems : undefined;
+  const totalCount = subItems ? subItems.length : Math.max(1, containers.length);
+  return {
+    id,
+    host,
+    name,
+    description,
+    containers,
+    running: false,
+    runningCount: 0,
+    totalCount,
+    memMb: 0,
+    cpuPct: 0,
+    port: opts.port ?? null,
+    url: opts.url || '',
+    alwaysOn: Boolean(opts.alwaysOn),
+    critical: Boolean(opts.critical),
+    expandable: Boolean(opts.expandable),
+    ...(subItems ? { subItems } : {}),
+  };
+}
+
+function makeFallbackNomadSub(id, container, name, description, port) {
+  return {
+    id,
+    container,
+    name,
+    description,
+    running: false,
+    memMb: 0,
+    cpuPct: 0,
+    port,
+    url: port ? `http://192.168.0.107:${port}` : '',
+  };
+}
+
+export const FALLBACK_DOCKER_STATUS = {
+  pc: {
+    online: false,
+    hostMem: null,
+    totalContainerMb: 0,
+    runningCount: 0,
+    totalCount: 7,
+    error: 'Ожидание связи с Docker на ПК',
+    stacks: [
+      makeFallbackDockerStack('pc-nomad', 'pc', 'NOMAD Библиотека', '63 офлайн-книги Kiwix, работает без сети и в Приват', {
+        containers: ['capri-nomad-local'],
+        port: 8090,
+        url: 'http://127.0.0.1:8090',
+        alwaysOn: true,
+        critical: true,
+      }),
+      makeFallbackDockerStack('pc-tor', 'pc', 'Tor-изолятор Альты', 'Сетевая изоляция Tor v0 без утечек', {
+        containers: ['capri-tor-netns', 'capri-tor-gw'],
+        alwaysOn: true,
+        critical: true,
+      }),
+      makeFallbackDockerStack('pc-penpot', 'pc', 'Penpot + MCP', 'Open-source замена Figma + встроенный MCP', {
+        containers: [
+          'penpot-penpot-frontend-1', 'penpot-penpot-backend-1', 'penpot-penpot-exporter-1',
+          'penpot-penpot-admin-console-1', 'penpot-penpot-postgres-1', 'penpot-penpot-mcp-1',
+          'penpot-penpot-mailpit-1', 'penpot-penpot-valkey-1',
+        ],
+        port: 9001,
+        url: 'http://127.0.0.1:9001',
+        alwaysOn: true,
+      }),
+      makeFallbackDockerStack('pc-opennotebook', 'pc', 'OpenNotebook', 'Локальный NotebookLM и источник срезов памяти', {
+        containers: ['opennotebook-open_notebook-1', 'opennotebook-surrealdb-1'],
+        port: 8502,
+        url: 'http://127.0.0.1:8502',
+        alwaysOn: true,
+      }),
+      makeFallbackDockerStack('pc-presenton', 'pc', 'Presenton', 'Локальный AI-генератор презентаций (по требованию)', {
+        containers: ['presenton-presenton-1'],
+        port: 5000,
+        url: 'http://127.0.0.1:5000',
+      }),
+      makeFallbackDockerStack('pc-postiz', 'pc', 'Postiz + Temporal', 'SMM-планировщик и автопостинг (по требованию, ~2.4 ГБ)', {
+        containers: [
+          'postiz', 'temporal', 'temporal-ui', 'temporal-admin-tools',
+          'temporal-postgresql', 'temporal-elasticsearch', 'postiz-postgres', 'postiz-redis',
+        ],
+        port: 4007,
+        url: 'http://127.0.0.1:4007',
+      }),
+      makeFallbackDockerStack('pc-aperisolve', 'pc', 'AperiSolve + MCP', 'Анализ и стеганография изображений + MCP :5001 (по требованию)', {
+        containers: ['aperisolve-web', 'aperisolve-mcp', 'aperisolve-worker-1', 'aperisolve-cron', 'rq-dashboard', 'postgres', 'redis'],
+        port: 5000,
+        url: 'http://127.0.0.1:5000',
+      }),
+    ],
+  },
+  lenovo: {
+    online: false,
+    hostMem: null,
+    hostSwap: null,
+    hostDisk: null,
+    totalContainerMb: 0,
+    runningCount: 0,
+    totalCount: 11,
+    error: 'Ожидание связи с сервером Lenovo (.107)',
+    stacks: [
+      makeFallbackDockerStack('srv-searxng', 'lenovo', 'SearXNG Поиск', 'Локальный метапоиск для веба Капри', {
+        containers: ['searxng-searxng-1'],
+        port: 8888,
+        url: 'http://192.168.0.107:8888',
+        alwaysOn: true,
+        critical: true,
+      }),
+      makeFallbackDockerStack('srv-fmd', 'lenovo', 'Find My Device', 'Поиск устройств в локальной сети', {
+        containers: ['capri-stack-fmd-server-1'],
+        port: 8083,
+        url: 'http://192.168.0.107:8083',
+        alwaysOn: true,
+      }),
+      makeFallbackDockerStack('srv-kuma', 'lenovo', 'Uptime Kuma', 'Мониторинг доступности сервисов сервера', {
+        containers: ['capri-stack-uptime-kuma-1'],
+        port: 3001,
+        url: 'http://192.168.0.107:3001',
+        alwaysOn: true,
+      }),
+      makeFallbackDockerStack('srv-freshrss', 'lenovo', 'FreshRSS Новости', 'Агрегатор RSS-лент и источников', {
+        containers: ['capri-stack-freshrss-1'],
+        port: 8082,
+        url: 'http://192.168.0.107:8082',
+        alwaysOn: true,
+      }),
+      makeFallbackDockerStack('srv-homeassistant', 'lenovo', 'Home Assistant', 'Управление умным домом и датчиками', {
+        containers: ['capri-stack-homeassistant-1'],
+        port: 8123,
+        url: 'http://192.168.0.107:8123',
+        alwaysOn: true,
+      }),
+      makeFallbackDockerStack('srv-amnezia', 'lenovo', 'AmneziaWG VPN', 'Защищённый VPN-шлюз сервера', {
+        containers: ['hub-awg-1'],
+        alwaysOn: true,
+        critical: true,
+      }),
+      makeFallbackDockerStack('srv-wger', 'lenovo', 'Wger Тренировки', 'Дневник тренировок и питания (self-hosted)', {
+        containers: ['capri-wger'],
+        port: 8085,
+        url: 'http://192.168.0.107:8085',
+        alwaysOn: true,
+      }),
+      makeFallbackDockerStack('srv-nomad-pack', 'lenovo', 'Пакет NOMAD (10 сервисов)', 'Резервная офлайн-библиотека и утилиты сервера', {
+        containers: [
+          'nomad_kiwix_server', 'nomad_stirling_pdf', 'nomad_calibreweb', 'nomad_homebox',
+          'nomad_translate', 'nomad_filebrowser', 'nomad_cyberchef', 'nomad_it_tools',
+          'nomad_qdrant', 'nomad_dozzle',
+        ],
+        alwaysOn: true,
+        expandable: true,
+        subItems: [
+          makeFallbackNomadSub('kiwix', 'nomad_kiwix_server', 'Kiwix Резерв', '63 офлайн-книги и справочники на сервере', 8090),
+          makeFallbackNomadSub('stirling-pdf', 'nomad_stirling_pdf', 'Stirling-PDF', 'Сборка, конвертация и OCR PDF-файлов', 8400),
+          makeFallbackNomadSub('calibre-web', 'nomad_calibreweb', 'Calibre-Web', 'Каталог и чтение электронных книг', 8420),
+          makeFallbackNomadSub('homebox', 'nomad_homebox', 'Homebox', 'Домашний учёт вещей и инвентаря', 8470),
+          makeFallbackNomadSub('translate', 'nomad_translate', 'Translate', 'Локальный офлайн-переводчик', 8460),
+          makeFallbackNomadSub('filebrowser', 'nomad_filebrowser', 'FileBrowser', 'Веб-менеджер файлов сервера', 8410),
+          makeFallbackNomadSub('cyberchef', 'nomad_cyberchef', 'CyberChef', 'Кодирование, разбор и преобразование данных', 8100),
+          makeFallbackNomadSub('it-tools', 'nomad_it_tools', 'IT-Tools', 'Набор утилит для разработчиков', 8430),
+          makeFallbackNomadSub('qdrant', 'nomad_qdrant', 'Qdrant', 'Векторная база данных для поиска', 6333),
+          makeFallbackNomadSub('dozzle', 'nomad_dozzle', 'Dozzle Логи', 'Просмотр живых логов контейнеров Docker', 9999),
+        ],
+      }),
+      makeFallbackDockerStack('srv-nomad-admin', 'lenovo', 'NOMAD Admin + MySQL', 'Панель управления NOMAD и база данных', {
+        containers: ['nomad_admin', 'nomad_mysql', 'nomad_redis', 'nomad_disk_collector', 'nomad_updater'],
+        port: 8080,
+        url: 'http://192.168.0.107:8080',
+      }),
+      makeFallbackDockerStack('srv-kolibri', 'lenovo', 'Kolibri Курсы', 'Офлайн-курсы и учебные материалы', {
+        containers: ['nomad_kolibri_2'],
+        port: 8310,
+        url: 'http://192.168.0.107:8310',
+      }),
+      makeFallbackDockerStack('srv-meshtastic', 'lenovo', 'Meshtastic Web', 'Веб-клиент LoRa-сети Meshtastic', {
+        containers: ['nomad_meshtastic_web'],
+        port: 8450,
+        url: 'http://192.168.0.107:8450',
+      }),
+    ],
+  },
+  checkedAt: null,
+};
+
+function formatDockerMem(mb) {
+  const n = Number(mb);
+  if (!Number.isFinite(n) || n <= 0) return '0 МБ';
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} ГБ`;
+  return `${Math.round(n)} МБ`;
+}
+
+function formatDockerCpu(cpuPct) {
+  const n = Number(cpuPct);
+  if (!Number.isFinite(n) || n < 0) return '0.0%';
+  return `${n < 10 ? n.toFixed(1) : Math.round(n)}%`;
+}
+
+function formatDockerStackStat(memMb, cpuPct, running) {
+  if (!running) return 'Выкл';
+  return `${formatDockerMem(memMb)} · ${formatDockerCpu(cpuPct)}`;
+}
+
+function formatHostMetric(metric, label, { warnPct = 80, isSwap = false } = {}) {
+  if (!metric) return null;
+  if (typeof metric === 'string') {
+    const trimmed = metric.trim();
+    if (!trimmed) return null;
+    const pctMatch = trimmed.match(/(\d+(?:\.\d+)?)\s*%/);
+    const pct = pctMatch ? Number(pctMatch[1]) : null;
+    const warn = pct !== null ? pct >= warnPct : false;
+    return {
+      text: trimmed.toLowerCase().startsWith(label.toLowerCase()) ? trimmed : `${label}: ${trimmed}`,
+      warn,
+    };
+  }
+  if (typeof metric === 'object') {
+    let pct = Number.isFinite(Number(metric.pct))
+      ? Math.round(Number(metric.pct))
+      : (Number.isFinite(Number(metric.usedPct)) ? Math.round(Number(metric.usedPct)) : null);
+    let valueText = '';
+    if (typeof metric.text === 'string' && metric.text.trim()) {
+      valueText = metric.text.trim();
+    } else if (Number.isFinite(Number(metric.usedMb)) && Number.isFinite(Number(metric.totalMb)) && Number(metric.totalMb) > 0) {
+      const usedMb = Number(metric.usedMb);
+      const totalMb = Number(metric.totalMb);
+      if (pct === null) pct = Math.round((usedMb / totalMb) * 100);
+      valueText = `${formatDockerMem(usedMb)} / ${formatDockerMem(totalMb)}`;
+    } else if (Number.isFinite(Number(metric.usedGb)) && Number.isFinite(Number(metric.totalGb)) && Number(metric.totalGb) > 0) {
+      const usedGb = Number(metric.usedGb);
+      const totalGb = Number(metric.totalGb);
+      if (pct === null) pct = Math.round((usedGb / totalGb) * 100);
+      valueText = `${usedGb.toFixed(1)} / ${totalGb.toFixed(1)} ГБ`;
+    } else if (metric.used !== undefined && metric.total !== undefined) {
+      valueText = `${metric.used} / ${metric.total}`;
+    } else if (pct !== null) {
+      valueText = `${pct}%`;
+    }
+    if (!valueText) return null;
+    const suffix = pct !== null && !valueText.includes('%') ? ` (${pct}%)` : '';
+    const swapHigh = isSwap && (
+      (pct !== null && pct >= 50)
+      || (Number.isFinite(Number(metric.usedMb)) && Number(metric.usedMb) >= 512)
+    );
+    const warn = swapHigh || (pct !== null && pct >= warnPct);
+    return { text: `${label}: ${valueText}${suffix}`, warn };
+  }
+  return null;
+}
+
+function normalizeDockerSubItem(raw, fallback = null) {
+  const base = fallback || {};
+  return {
+    id: raw?.id || base.id || raw?.container || '',
+    container: raw?.container || base.container || '',
+    name: raw?.name || base.name || raw?.container || '',
+    description: raw?.description ?? base.description ?? '',
+    running: Boolean(raw?.running),
+    memMb: Number.isFinite(Number(raw?.memMb)) ? Number(raw.memMb) : 0,
+    cpuPct: Number.isFinite(Number(raw?.cpuPct)) ? Number(raw.cpuPct) : 0,
+    port: raw?.port ?? base.port ?? null,
+    url: raw?.url ?? base.url ?? '',
+  };
+}
+
+function normalizeDockerHost(raw, fallbackHost) {
+  const fb = fallbackHost || { online: false, stacks: [], totalContainerMb: 0, runningCount: 0, totalCount: 0 };
+  if (!raw || typeof raw !== 'object') {
+    return {
+      ...fb,
+      stacks: (fb.stacks || []).map((s) => ({
+        ...s,
+        ...(Array.isArray(s.subItems) ? { subItems: s.subItems.map((sub) => ({ ...sub })) } : {}),
+      })),
+    };
+  }
+  const fbMap = new Map((fb.stacks || []).map((s) => [s.id, s]));
+  const rawStacks = Array.isArray(raw.stacks) && raw.stacks.length ? raw.stacks : (fb.stacks || []);
+  const stacks = rawStacks.map((st) => {
+    const base = fbMap.get(st?.id) || {};
+    const rawSubs = Array.isArray(st?.subItems) ? st.subItems : base.subItems;
+    const baseSubMap = new Map((base.subItems || []).map((sub) => [sub.container || sub.id, sub]));
+    const subItems = Array.isArray(rawSubs)
+      ? rawSubs.map((sub) => normalizeDockerSubItem(sub, baseSubMap.get(sub?.container || sub?.id)))
+      : undefined;
+    const totalCount = Number.isFinite(Number(st?.totalCount))
+      ? Number(st.totalCount)
+      : (subItems ? subItems.length : Math.max(1, (st?.containers || base.containers || []).length));
+    const runningCount = Number.isFinite(Number(st?.runningCount))
+      ? Number(st.runningCount)
+      : (subItems ? subItems.filter((x) => x.running).length : (st?.running ? totalCount : 0));
+    return {
+      id: st?.id || base.id || '',
+      host: st?.host || base.host || '',
+      name: st?.name || base.name || st?.id || '',
+      description: st?.description ?? base.description ?? '',
+      containers: Array.isArray(st?.containers) ? st.containers : (base.containers || []),
+      running: typeof st?.running === 'boolean' ? st.running : runningCount > 0,
+      runningCount,
+      totalCount,
+      memMb: Number.isFinite(Number(st?.memMb)) ? Number(st.memMb) : 0,
+      cpuPct: Number.isFinite(Number(st?.cpuPct)) ? Number(st.cpuPct) : 0,
+      port: st?.port ?? base.port ?? null,
+      url: st?.url ?? base.url ?? '',
+      alwaysOn: typeof st?.alwaysOn === 'boolean' ? st.alwaysOn : Boolean(base.alwaysOn),
+      critical: typeof st?.critical === 'boolean' ? st.critical : Boolean(base.critical),
+      expandable: typeof st?.expandable === 'boolean' ? st.expandable : Boolean(base.expandable || subItems?.length),
+      ...(subItems ? { subItems } : {}),
+    };
+  });
+  const totalContainerMb = Number.isFinite(Number(raw.totalContainerMb))
+    ? Number(raw.totalContainerMb)
+    : stacks.reduce((sum, s) => sum + (Number(s.memMb) || 0), 0);
+  const runningCount = Number.isFinite(Number(raw.runningCount))
+    ? Number(raw.runningCount)
+    : stacks.filter((s) => s.running).length;
+  const totalCount = Number.isFinite(Number(raw.totalCount))
+    ? Number(raw.totalCount)
+    : stacks.length;
+  return {
+    online: Boolean(raw.online),
+    hostMem: raw.hostMem ?? null,
+    hostSwap: raw.hostSwap ?? null,
+    hostDisk: raw.hostDisk ?? null,
+    totalContainerMb,
+    runningCount,
+    totalCount,
+    stacks,
+    error: raw.error ? String(raw.error) : '',
+  };
+}
+
+function normalizeDockerStatus(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      pc: normalizeDockerHost(null, FALLBACK_DOCKER_STATUS.pc),
+      lenovo: normalizeDockerHost(null, FALLBACK_DOCKER_STATUS.lenovo),
+      checkedAt: null,
+      isFallback: true,
+    };
+  }
+  return {
+    pc: normalizeDockerHost(raw.pc, FALLBACK_DOCKER_STATUS.pc),
+    lenovo: normalizeDockerHost(raw.lenovo, FALLBACK_DOCKER_STATUS.lenovo),
+    checkedAt: raw.checkedAt || Date.now(),
+    isFallback: false,
+  };
+}
+
+async function fetchDockerStatus({ refresh = false } = {}) {
+  const host = window.host;
+  if (typeof host?.dockerStatus === 'function') {
+    try {
+      const res = await host.dockerStatus({ refresh: Boolean(refresh) });
+      if (res && (res.pc || res.lenovo)) {
+        return normalizeDockerStatus(res);
+      }
+    } catch (err) {
+      const fb = normalizeDockerStatus(null);
+      const msg = err?.message || 'Не удалось получить статус Docker';
+      fb.pc.error = msg;
+      fb.lenovo.error = msg;
+      return fb;
+    }
+  }
+  const fb = normalizeDockerStatus(null);
+  fb.pc.error = 'Модуль Docker ещё не подключён в приложении';
+  fb.lenovo.error = 'Модуль Docker ещё не подключён в приложении';
+  return fb;
+}
+
+function openExternalUrl(url) {
+  if (!url) return;
+  try {
+    if (typeof window.host?.chatsOpenLink === 'function') {
+      window.host.chatsOpenLink(url);
+      return;
+    }
+  } catch {
+    // ignore IPC error and fall through
+  }
+  try {
+    window.open(url, '_blank', 'noopener,noreferrer');
+  } catch {
+    // ignore popup restrictions
+  }
+}
+
 function item(name, description, opts = {}) {
   const section = opts.section || 'commands';
   const category = opts.category || (section === 'skills' ? 'style' : 'chat');
@@ -871,6 +1301,7 @@ export const FALLBACK_SECTIONS = [
       item('skills', 'Список установленных навыков', { category: 'system' }),
       item('plugins', 'Каталог локальных плагинов и правил', { aliases: ['plugin'], category: 'system' }),
       item('connectors', 'Каталог коннекторов, статусы и свои MCP', { aliases: ['connector'], category: 'system' }),
+      item('docker', 'Пульт Docker: контейнеры на ПК и сервере .107', { category: 'system', icon: 'box' }),
       item('hookify', 'Пользовательские правила Hookify', { category: 'system' }),
       item('doctor', 'Быстрая диагностика систем Капри', { category: 'system' }),
       item('storage', 'Использование диска и базы', { category: 'system' }),
@@ -941,6 +1372,10 @@ const CATALOG_HERO = {
   connectors: {
     title: 'Коннекторы',
     subtitle: 'Подключения к почте, базе знаний, вебу, коду и личным данным. Упоминай через @ в чате.',
+  },
+  docker: {
+    title: 'Пульт Docker',
+    subtitle: 'Контейнеры на ПК и старом ноуте (.107): запуск, рестарт и расход памяти.',
   },
   styles: {
     title: 'Стили',
@@ -1872,6 +2307,7 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
     }
 
     for (const sec of data.sections || []) {
+      if (sec.id === 'docker') continue;
       let items = Array.isArray(sec.items) ? sec.items : [];
       if (sec.id === 'skills' || sec.id === 'plugins' || sec.id === 'connectors') {
         items = items.filter((it) => it.enabled !== false);
@@ -2090,6 +2526,14 @@ export async function openCatalogModal({
   });
   let pluginsData = normalizePluginsResponse({}, catalog.sections.find((s) => s.id === 'plugins')?.items || FALLBACK_PLUGINS, ctx);
   let connectorsData = normalizeConnectorsResponse({}, catalog.sections.find((s) => s.id === 'connectors')?.items || FALLBACK_CONNECTORS, ctx);
+  let dockerData = normalizeDockerStatus(null);
+  let dockerLoaded = false;
+  let dockerLoading = false;
+  let dockerRefreshing = false;
+  let dockerConfirmStop = null; // { host, stackId, container?, name, message }
+  let openNomadStackId = null;
+  let nomadSubmodalBackdrop = null;
+  const pendingDockerOps = new Set();
   let activeTab = initialTab || 'commands';
   let searchQuery = '';
   let noticeText = '';
@@ -2210,7 +2654,7 @@ export async function openCatalogModal({
   const searchInput = document.createElement('input');
   searchInput.type = 'search';
   searchInput.className = 'slash-catalog__search';
-  searchInput.placeholder = 'Поиск по командам, навыкам, плагинам и коннекторам…';
+  searchInput.placeholder = 'Поиск по командам, навыкам, плагинам, коннекторам и Docker…';
   searchInput.setAttribute('aria-label', 'Поиск по каталогу');
   searchWrap.appendChild(searchInput);
 
@@ -2295,6 +2739,25 @@ export async function openCatalogModal({
     }
   }
 
+  function ensureDockerSectionInCatalog() {
+    if (!Array.isArray(catalog.sections)) catalog.sections = [];
+    if (catalog.sections.some((s) => s.id === 'docker')) return;
+    const dockerSec = {
+      id: 'docker',
+      title: 'Docker',
+      allLabel: 'Пульт Docker',
+      items: [],
+    };
+    const stylesIdx = catalog.sections.findIndex((s) => s.id === 'styles');
+    if (stylesIdx >= 0) {
+      catalog.sections.splice(stylesIdx, 0, dockerSec);
+    } else {
+      catalog.sections.push(dockerSec);
+    }
+  }
+
+  ensureDockerSectionInCatalog();
+
   function emitSkillsChanged(nextData) {
     skillsData = normalizeSkillsResponse(nextData, skillsData.items);
     syncSkillsIntoCatalog();
@@ -2332,7 +2795,16 @@ export async function openCatalogModal({
     window.dispatchEvent(new CustomEvent('capri:connectors-changed', { detail: connectorsData }));
   }
 
+  function closeNomadPackModal() {
+    openNomadStackId = null;
+    if (nomadSubmodalBackdrop) {
+      nomadSubmodalBackdrop.remove();
+      nomadSubmodalBackdrop = null;
+    }
+  }
+
   function cleanup() {
+    closeNomadPackModal();
     window.removeEventListener('keydown', onEscape, true);
     backdrop.remove();
     if (activeModalCleanup === cleanup) activeModalCleanup = null;
@@ -2342,6 +2814,20 @@ export async function openCatalogModal({
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopImmediatePropagation();
+      if (openNomadStackId) {
+        if (dockerConfirmStop && dockerConfirmStop.stackId === openNomadStackId) {
+          dockerConfirmStop = null;
+          renderNomadPackModal();
+          return;
+        }
+        closeNomadPackModal();
+        return;
+      }
+      if (dockerConfirmStop) {
+        dockerConfirmStop = null;
+        renderModal();
+        return;
+      }
       if (activeForm || plusPanelOpen || inlineHookifyFormOpen || confirmRemoveConnectorId || openSetupConnectorId) {
         activeForm = null;
         plusPanelOpen = false;
@@ -2430,6 +2916,7 @@ export async function openCatalogModal({
   }
 
   function renderTabs() {
+    ensureDockerSectionInCatalog();
     const sections = catalog.sections || [];
     if (!sections.some((s) => s.id === activeTab) && sections.length) {
       activeTab = sections[0].id;
@@ -2445,12 +2932,25 @@ export async function openCatalogModal({
       label.textContent = sec.title;
       const count = document.createElement('span');
       count.className = 'slash-catalog__tab-count';
-      const itemCount = sec.id === 'skills'
-        ? (skillsData.items || []).length
-        : (sec.id === 'plugins'
-          ? (pluginsData.items || []).length
-          : (sec.id === 'connectors' ? (connectorsData.items || []).length : (sec.items || []).length));
-      count.textContent = String(itemCount);
+      let countText = '';
+      if (sec.id === 'skills') {
+        countText = String((skillsData.items || []).length);
+      } else if (sec.id === 'plugins') {
+        countText = String((pluginsData.items || []).length);
+      } else if (sec.id === 'connectors') {
+        countText = String((connectorsData.items || []).length);
+      } else if (sec.id === 'docker') {
+        const pcRun = Number(dockerData?.pc?.runningCount) || 0;
+        const pcTot = Number(dockerData?.pc?.totalCount) || (dockerData?.pc?.stacks?.length || 0);
+        const srvRun = Number(dockerData?.lenovo?.runningCount) || 0;
+        const srvTot = Number(dockerData?.lenovo?.totalCount) || (dockerData?.lenovo?.stacks?.length || 0);
+        const tot = pcTot + srvTot;
+        const run = pcRun + srvRun;
+        countText = dockerLoaded && !dockerData?.isFallback ? `${run}/${tot}` : String(tot);
+      } else {
+        countText = String((sec.items || []).length);
+      }
+      count.textContent = countText;
 
       btn.append(label, count);
       btn.addEventListener('click', () => {
@@ -2459,9 +2959,13 @@ export async function openCatalogModal({
         plusPanelOpen = false;
         activeForm = null;
         confirmRemoveConnectorId = null;
+        dockerConfirmStop = null;
         formError = '';
         hookifyError = '';
         renderModal();
+        if (sec.id === 'docker' && !dockerLoaded && !dockerLoading) {
+          loadDockerStatus({ refresh: false });
+        }
       });
       return btn;
     }));
@@ -5912,6 +6416,614 @@ export async function openCatalogModal({
     return card;
   }
 
+  function dockerOpKey(host, stackId, container = '') {
+    return `${host}:${stackId}:${container || ''}`;
+  }
+
+  function findDockerStack(hostKey, stackId) {
+    const list = dockerData?.[hostKey]?.stacks || [];
+    return list.find((s) => s.id === stackId) || null;
+  }
+
+  async function loadDockerStatus({ refresh = false } = {}) {
+    if (refresh) {
+      if (dockerRefreshing) return;
+      dockerRefreshing = true;
+    } else {
+      if (dockerLoading) return;
+      dockerLoading = true;
+    }
+    renderModal();
+    if (openNomadStackId) renderNomadPackModal();
+    try {
+      const next = await fetchDockerStatus({ refresh });
+      if (!document.body.contains(backdrop)) return;
+      dockerData = next;
+      dockerLoaded = true;
+      if (refresh && !next.isFallback) {
+        noticeText = 'Статус Docker обновлён.';
+      }
+    } finally {
+      dockerLoading = false;
+      dockerRefreshing = false;
+      if (document.body.contains(backdrop)) {
+        renderModal();
+        if (openNomadStackId) renderNomadPackModal();
+      }
+    }
+  }
+
+  async function handleDockerAction({ host, stackId, container = undefined, action, confirm = false, label = '' }) {
+    const opKey = dockerOpKey(host, stackId, container || '');
+    if (pendingDockerOps.has(opKey)) return;
+    const hostApi = window.host;
+    if (typeof hostApi?.dockerAction !== 'function') {
+      noticeText = 'Управление Docker пока не подключено в приложении.';
+      renderModal();
+      if (openNomadStackId) renderNomadPackModal();
+      return;
+    }
+
+    pendingDockerOps.add(opKey);
+    if (confirm) dockerConfirmStop = null;
+    noticeText = '';
+    renderModal();
+    if (openNomadStackId) renderNomadPackModal();
+
+    try {
+      const payload = { host, stackId, action };
+      if (container) payload.container = container;
+      if (confirm) payload.confirm = true;
+      const res = await hostApi.dockerAction(payload);
+      if (!document.body.contains(backdrop)) return;
+
+      if (res?.confirmRequired) {
+        dockerConfirmStop = {
+          host,
+          stackId,
+          container: container || '',
+          name: label || stackId,
+          message: res.message || `Остановить критический сервис ${label || stackId}?`,
+        };
+      } else if (res?.ok) {
+        dockerConfirmStop = null;
+        if (res.status && (res.status.pc || res.status.lenovo)) {
+          dockerData = normalizeDockerStatus(res.status);
+          dockerLoaded = true;
+        } else {
+          const fresh = await fetchDockerStatus({ refresh: true });
+          if (document.body.contains(backdrop)) {
+            dockerData = fresh;
+            dockerLoaded = true;
+          }
+        }
+        if (res.message) noticeText = res.message;
+      } else {
+        noticeText = res?.error || res?.message || 'Не удалось выполнить действие Docker.';
+      }
+    } catch (err) {
+      if (document.body.contains(backdrop)) {
+        noticeText = err?.message || 'Ошибка при обращении к Docker.';
+      }
+    } finally {
+      pendingDockerOps.delete(opKey);
+      if (document.body.contains(backdrop)) {
+        renderModal();
+        if (openNomadStackId) renderNomadPackModal();
+      }
+    }
+  }
+
+  function matchesDockerStack(stack, q) {
+    if (!q) return true;
+    const hay = [
+      stack.name,
+      stack.description,
+      stack.id,
+      stack.port ? String(stack.port) : '',
+      ...(Array.isArray(stack.containers) ? stack.containers : []),
+    ].join(' ').toLowerCase();
+    if (hay.includes(q)) return true;
+    if (Array.isArray(stack.subItems)) {
+      return stack.subItems.some((sub) => [
+        sub.name,
+        sub.description,
+        sub.id,
+        sub.container,
+        sub.port ? String(sub.port) : '',
+      ].join(' ').toLowerCase().includes(q));
+    }
+    return false;
+  }
+
+  function buildDockerConfirmBar(conf, { insideSubmodal = false } = {}) {
+    const barEl = document.createElement('div');
+    barEl.className = 'slash-docker-confirm';
+
+    const textEl = document.createElement('span');
+    textEl.className = 'slash-docker-confirm__text';
+    textEl.textContent = conf.message || `Остановить ${conf.name}?`;
+
+    const actions = document.createElement('div');
+    actions.className = 'slash-docker-confirm__actions';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'slash-docker-btn';
+    cancelBtn.textContent = 'Отмена';
+    cancelBtn.addEventListener('click', () => {
+      dockerConfirmStop = null;
+      if (insideSubmodal) renderNomadPackModal();
+      renderModal();
+    });
+
+    const stopBtn = document.createElement('button');
+    stopBtn.type = 'button';
+    stopBtn.className = 'slash-docker-btn slash-docker-btn--danger';
+    stopBtn.textContent = 'Остановить';
+    stopBtn.addEventListener('click', () => {
+      handleDockerAction({
+        host: conf.host,
+        stackId: conf.stackId,
+        container: conf.container || undefined,
+        action: 'stop',
+        confirm: true,
+        label: conf.name,
+      });
+    });
+
+    actions.append(cancelBtn, stopBtn);
+    barEl.append(textEl, actions);
+    return barEl;
+  }
+
+  function renderNomadPackModal() {
+    if (!openNomadStackId) {
+      closeNomadPackModal();
+      return;
+    }
+    const stack = findDockerStack('lenovo', openNomadStackId) || findDockerStack('pc', openNomadStackId);
+    if (!stack) {
+      closeNomadPackModal();
+      return;
+    }
+
+    if (!nomadSubmodalBackdrop) {
+      nomadSubmodalBackdrop = document.createElement('div');
+      nomadSubmodalBackdrop.className = 'slash-docker-submodal-backdrop';
+      nomadSubmodalBackdrop.setAttribute('role', 'dialog');
+      nomadSubmodalBackdrop.setAttribute('aria-modal', 'true');
+      nomadSubmodalBackdrop.setAttribute('aria-label', stack.name || 'Пакет NOMAD');
+      nomadSubmodalBackdrop.addEventListener('mousedown', (e) => {
+        if (e.target === nomadSubmodalBackdrop) closeNomadPackModal();
+      });
+      document.body.appendChild(nomadSubmodalBackdrop);
+    }
+
+    const subItems = Array.isArray(stack.subItems) ? stack.subItems : [];
+    const runningSubs = subItems.filter((s) => s.running).length;
+    const totalMem = subItems.reduce((acc, s) => acc + (s.running ? (Number(s.memMb) || 0) : 0), 0);
+    const hostKey = stack.host || 'lenovo';
+    const hostOnline = Boolean(dockerData?.[hostKey]?.online);
+
+    const dialog = document.createElement('div');
+    dialog.className = 'slash-docker-submodal';
+
+    const head = document.createElement('div');
+    head.className = 'slash-docker-submodal__head';
+
+    const copy = document.createElement('div');
+    copy.className = 'slash-docker-submodal__copy';
+
+    const titleRow = document.createElement('div');
+    titleRow.className = 'slash-docker-submodal__title-row';
+
+    const title = document.createElement('h3');
+    title.className = 'slash-docker-submodal__title';
+    title.textContent = stack.name || `Пакет NOMAD (${subItems.length})`;
+
+    const summaryPill = document.createElement('span');
+    summaryPill.className = 'slash-docker-pill';
+    summaryPill.textContent = `${runningSubs} / ${subItems.length} работает · ${formatDockerMem(totalMem || stack.memMb)}`;
+
+    titleRow.append(title, summaryPill);
+
+    const subtitle = document.createElement('p');
+    subtitle.className = 'slash-docker-submodal__subtitle';
+    subtitle.textContent = 'Отдельное управление сервисами пакета NOMAD на сервере .107';
+
+    copy.append(titleRow, subtitle);
+
+    const headActions = document.createElement('div');
+    headActions.className = 'slash-docker-submodal__actions';
+
+    const refreshBtn = document.createElement('button');
+    refreshBtn.type = 'button';
+    refreshBtn.className = 'slash-docker-btn slash-docker-btn--icon';
+    refreshBtn.title = 'Обновить статус';
+    refreshBtn.setAttribute('aria-label', 'Обновить статус пакета NOMAD');
+    refreshBtn.disabled = dockerRefreshing || dockerLoading;
+    refreshBtn.appendChild(createIconSvg('refresh', 15));
+    refreshBtn.addEventListener('click', () => loadDockerStatus({ refresh: true }));
+
+    const closeSubBtn = document.createElement('button');
+    closeSubBtn.type = 'button';
+    closeSubBtn.className = 'slash-catalog__close';
+    closeSubBtn.title = 'Закрыть';
+    closeSubBtn.setAttribute('aria-label', 'Закрыть окно пакета NOMAD');
+    closeSubBtn.appendChild(createIconSvg('close', 18));
+    closeSubBtn.addEventListener('click', closeNomadPackModal);
+
+    headActions.append(refreshBtn, closeSubBtn);
+    head.append(copy, headActions);
+
+    const listWrap = document.createElement('div');
+    listWrap.className = 'slash-docker-submodal__body';
+
+    if (noticeText) {
+      const subNotice = document.createElement('p');
+      subNotice.className = 'slash-catalog__notice';
+      subNotice.textContent = noticeText;
+      listWrap.appendChild(subNotice);
+    }
+
+    for (const sub of subItems) {
+      const opKey = dockerOpKey(hostKey, stack.id, sub.container);
+      const isBusy = pendingDockerOps.has(opKey) || pendingDockerOps.has(dockerOpKey(hostKey, stack.id, ''));
+      const isConfirming = Boolean(
+        dockerConfirmStop
+        && dockerConfirmStop.host === hostKey
+        && dockerConfirmStop.stackId === stack.id
+        && dockerConfirmStop.container === sub.container,
+      );
+
+      const card = document.createElement('div');
+      card.className = 'slash-docker-subrow';
+
+      const inner = document.createElement('div');
+      inner.className = 'slash-docker-subrow__inner';
+
+      const main = document.createElement('div');
+      main.className = 'slash-docker-subrow__main';
+
+      const topLine = document.createElement('div');
+      topLine.className = 'slash-docker-subrow__top';
+
+      const dot = document.createElement('span');
+      dot.className = `slash-status-dot ${sub.running ? 'is-connected' : 'is-paused'}`;
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'slash-docker-subrow__name';
+      nameEl.textContent = sub.name || sub.container;
+
+      topLine.append(dot, nameEl);
+      if (sub.port) {
+        const portEl = document.createElement('span');
+        portEl.className = 'slash-docker-subrow__port';
+        portEl.textContent = `:${sub.port}`;
+        topLine.appendChild(portEl);
+      }
+
+      main.appendChild(topLine);
+      if (sub.description) {
+        const descEl = document.createElement('span');
+        descEl.className = 'slash-docker-subrow__desc';
+        descEl.textContent = sub.description;
+        main.appendChild(descEl);
+      }
+
+      const controls = document.createElement('div');
+      controls.className = 'slash-docker-item__controls';
+
+      const statPill = document.createElement('span');
+      statPill.className = `slash-docker-pill slash-docker-pill--stat${sub.running ? '' : ' slash-docker-pill--off'}`;
+      statPill.textContent = isBusy ? 'Выполняю…' : formatDockerStackStat(sub.memMb, sub.cpuPct, sub.running);
+      controls.appendChild(statPill);
+
+      if (sub.running && sub.url) {
+        const openBtn = document.createElement('button');
+        openBtn.type = 'button';
+        openBtn.className = 'slash-docker-btn';
+        openBtn.append(createIconSvg('external', 13), document.createTextNode('Открыть'));
+        openBtn.addEventListener('click', () => openExternalUrl(sub.url));
+        controls.appendChild(openBtn);
+      }
+
+      const restartBtn = document.createElement('button');
+      restartBtn.type = 'button';
+      restartBtn.className = 'slash-docker-btn slash-docker-btn--icon';
+      restartBtn.title = `Перезапустить ${sub.name || sub.container}`;
+      restartBtn.setAttribute('aria-label', `Перезапустить ${sub.name || sub.container}`);
+      restartBtn.disabled = isBusy || !hostOnline;
+      restartBtn.appendChild(createIconSvg('refresh', 14));
+      restartBtn.addEventListener('click', () => {
+        handleDockerAction({
+          host: hostKey,
+          stackId: stack.id,
+          container: sub.container,
+          action: 'restart',
+          label: sub.name || sub.container,
+        });
+      });
+      controls.appendChild(restartBtn);
+
+      const sw = createToggleSwitch(Boolean(sub.running), {
+        label: `${sub.running ? 'Выключить' : 'Включить'} ${sub.name || sub.container}`,
+        disabled: isBusy || !hostOnline,
+        onToggle: () => {
+          handleDockerAction({
+            host: hostKey,
+            stackId: stack.id,
+            container: sub.container,
+            action: sub.running ? 'stop' : 'start',
+            label: sub.name || sub.container,
+          });
+        },
+      });
+      controls.appendChild(sw);
+
+      inner.append(main, controls);
+      card.appendChild(inner);
+
+      if (isConfirming) {
+        card.appendChild(buildDockerConfirmBar(dockerConfirmStop, { insideSubmodal: true }));
+      }
+
+      listWrap.appendChild(card);
+    }
+
+    dialog.append(head, listWrap);
+    nomadSubmodalBackdrop.replaceChildren(dialog);
+  }
+
+  function openNomadPackModal(stackId) {
+    openNomadStackId = stackId;
+    renderNomadPackModal();
+  }
+
+  function buildDockerStackItem(stack, hostKey, hostOnline) {
+    const opKey = dockerOpKey(hostKey, stack.id, '');
+    const isBusy = pendingDockerOps.has(opKey);
+    const isConfirming = Boolean(
+      dockerConfirmStop
+      && dockerConfirmStop.host === hostKey
+      && dockerConfirmStop.stackId === stack.id
+      && !dockerConfirmStop.container,
+    );
+    const isPartial = stack.running && stack.totalCount > 1 && stack.runningCount < stack.totalCount;
+
+    const itemEl = document.createElement('div');
+    itemEl.className = `slash-docker-item${stack.running ? '' : ' is-stopped'}${isConfirming ? ' is-confirming' : ''}`;
+    itemEl.dataset.stackId = stack.id;
+
+    const row = document.createElement('div');
+    row.className = 'slash-docker-row';
+
+    const iconWrap = document.createElement('span');
+    iconWrap.className = 'slash-docker-item__icon';
+    iconWrap.appendChild(createIconSvg(dockerStackIconName(stack), 17));
+
+    const main = document.createElement('div');
+    main.className = 'slash-docker-item__main';
+
+    const topLine = document.createElement('div');
+    topLine.className = 'slash-docker-item__top';
+
+    const dot = document.createElement('span');
+    dot.className = `slash-status-dot ${stack.running ? (isPartial ? 'is-auth' : 'is-connected') : 'is-paused'}`;
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'slash-docker-item__name';
+    nameEl.textContent = stack.name || stack.id;
+
+    topLine.append(dot, nameEl);
+
+    if (stack.alwaysOn) {
+      const alwaysPill = document.createElement('span');
+      alwaysPill.className = 'slash-docker-pill slash-docker-pill--always';
+      alwaysPill.textContent = '24/7';
+      topLine.appendChild(alwaysPill);
+    }
+
+    if (stack.totalCount > 1) {
+      const cntPill = document.createElement('span');
+      cntPill.className = 'slash-docker-pill slash-docker-pill--quiet';
+      cntPill.textContent = `${stack.runningCount}/${stack.totalCount}`;
+      topLine.appendChild(cntPill);
+    }
+
+    main.appendChild(topLine);
+    if (stack.description) {
+      const descEl = document.createElement('span');
+      descEl.className = 'slash-docker-item__desc';
+      descEl.textContent = stack.description;
+      main.appendChild(descEl);
+    }
+
+    const controls = document.createElement('div');
+    controls.className = 'slash-docker-item__controls';
+
+    const statPill = document.createElement('span');
+    statPill.className = `slash-docker-pill slash-docker-pill--stat${stack.running ? '' : ' slash-docker-pill--off'}`;
+    statPill.textContent = isBusy ? 'Выполняю…' : formatDockerStackStat(stack.memMb, stack.cpuPct, stack.running);
+    controls.appendChild(statPill);
+
+    if (stack.expandable && Array.isArray(stack.subItems) && stack.subItems.length) {
+      const packBtn = document.createElement('button');
+      packBtn.type = 'button';
+      packBtn.className = 'slash-docker-btn slash-docker-btn--pack';
+      packBtn.append(
+        createIconSvg('layers', 14),
+        document.createTextNode(`Открыть пакет (${stack.subItems.length})`),
+      );
+      packBtn.addEventListener('click', () => openNomadPackModal(stack.id));
+      controls.appendChild(packBtn);
+    } else if (stack.running && stack.url) {
+      const openBtn = document.createElement('button');
+      openBtn.type = 'button';
+      openBtn.className = 'slash-docker-btn';
+      openBtn.append(createIconSvg('external', 13), document.createTextNode('Открыть'));
+      openBtn.addEventListener('click', () => openExternalUrl(stack.url));
+      controls.appendChild(openBtn);
+    }
+
+    const restartBtn = document.createElement('button');
+    restartBtn.type = 'button';
+    restartBtn.className = 'slash-docker-btn slash-docker-btn--icon';
+    restartBtn.title = `Перезапустить ${stack.name || stack.id}`;
+    restartBtn.setAttribute('aria-label', `Перезапустить ${stack.name || stack.id}`);
+    restartBtn.disabled = isBusy || !hostOnline;
+    restartBtn.appendChild(createIconSvg('refresh', 14));
+    restartBtn.addEventListener('click', () => {
+      handleDockerAction({
+        host: hostKey,
+        stackId: stack.id,
+        action: 'restart',
+        label: stack.name || stack.id,
+      });
+    });
+    controls.appendChild(restartBtn);
+
+    const sw = createToggleSwitch(Boolean(stack.running), {
+      label: `${stack.running ? 'Выключить' : 'Включить'} ${stack.name || stack.id}`,
+      disabled: isBusy || !hostOnline,
+      onToggle: () => {
+        handleDockerAction({
+          host: hostKey,
+          stackId: stack.id,
+          action: stack.running ? 'stop' : 'start',
+          label: stack.name || stack.id,
+        });
+      },
+    });
+    controls.appendChild(sw);
+
+    row.append(iconWrap, main, controls);
+    itemEl.appendChild(row);
+
+    if (isConfirming) {
+      itemEl.appendChild(buildDockerConfirmBar(dockerConfirmStop));
+    }
+
+    return itemEl;
+  }
+
+  function buildDockerServerBlock(hostKey, titleText, iconName, hostData, q) {
+    const allStacks = Array.isArray(hostData?.stacks) ? hostData.stacks : [];
+    const filtered = q ? allStacks.filter((st) => matchesDockerStack(st, q)) : allStacks;
+    if (q && !filtered.length) return null;
+
+    const section = document.createElement('section');
+    section.className = 'slash-docker-server';
+    section.dataset.dockerHost = hostKey;
+
+    const head = document.createElement('div');
+    head.className = 'slash-docker-server__head';
+
+    const meta = document.createElement('div');
+    meta.className = 'slash-docker-server__meta';
+
+    const titleRow = document.createElement('div');
+    titleRow.className = 'slash-docker-server__title-row';
+
+    const dot = document.createElement('span');
+    dot.className = `slash-status-dot ${hostData?.online ? 'is-connected' : (dockerLoading ? 'is-auth' : 'is-offline')}`;
+
+    const icon = document.createElement('span');
+    icon.className = 'slash-docker-server__icon';
+    icon.appendChild(createIconSvg(iconName, 18));
+
+    const h3 = document.createElement('h3');
+    h3.className = 'slash-docker-server__title';
+    h3.textContent = titleText;
+
+    const countPill = document.createElement('span');
+    countPill.className = 'slash-docker-server__count';
+    countPill.textContent = hostData?.online
+      ? `${hostData.runningCount} / ${hostData.totalCount} работает`
+      : (dockerLoading ? 'Загрузка…' : 'Нет связи');
+
+    titleRow.append(dot, icon, h3, countPill);
+
+    const metrics = document.createElement('div');
+    metrics.className = 'slash-docker-server__metrics';
+
+    const contPill = document.createElement('span');
+    contPill.className = 'slash-docker-pill slash-docker-pill--stat';
+    contPill.textContent = `Контейнеры: ${formatDockerMem(hostData?.totalContainerMb || 0)}`;
+    metrics.appendChild(contPill);
+
+    const memInfo = formatHostMetric(hostData?.hostMem, 'RAM', { warnPct: 85 });
+    if (memInfo) {
+      const p = document.createElement('span');
+      p.className = `slash-docker-pill slash-docker-pill--stat${memInfo.warn ? ' is-warn' : ''}`;
+      p.textContent = memInfo.text;
+      metrics.appendChild(p);
+    }
+
+    const swapInfo = formatHostMetric(hostData?.hostSwap, 'Swap', { warnPct: 50, isSwap: true });
+    if (swapInfo) {
+      const p = document.createElement('span');
+      p.className = `slash-docker-pill slash-docker-pill--stat${swapInfo.warn ? ' is-warn' : ''}`;
+      p.textContent = swapInfo.text;
+      metrics.appendChild(p);
+    }
+
+    const diskInfo = formatHostMetric(hostData?.hostDisk, 'Диск', { warnPct: 85 });
+    if (diskInfo) {
+      const p = document.createElement('span');
+      p.className = `slash-docker-pill slash-docker-pill--stat${diskInfo.warn ? ' is-warn' : ''}`;
+      p.textContent = diskInfo.text;
+      metrics.appendChild(p);
+    }
+
+    meta.append(titleRow, metrics);
+
+    const actions = document.createElement('div');
+    actions.className = 'slash-docker-server__actions';
+
+    if (hostKey === 'lenovo') {
+      const kumaStack = allStacks.find((s) => s.id === 'srv-kuma');
+      const kumaUrl = kumaStack?.url || 'http://192.168.0.107:3001';
+      const kumaBtn = document.createElement('button');
+      kumaBtn.type = 'button';
+      kumaBtn.className = 'slash-docker-btn';
+      kumaBtn.title = 'Открыть Uptime Kuma (:3001)';
+      kumaBtn.append(createIconSvg('external', 13), document.createTextNode('Uptime Kuma'));
+      kumaBtn.addEventListener('click', () => openExternalUrl(kumaUrl));
+      actions.appendChild(kumaBtn);
+    }
+
+    const refreshBtn = document.createElement('button');
+    refreshBtn.type = 'button';
+    refreshBtn.className = 'slash-docker-btn slash-docker-btn--icon';
+    refreshBtn.title = `Обновить ${titleText}`;
+    refreshBtn.setAttribute('aria-label', `Обновить ${titleText}`);
+    refreshBtn.disabled = dockerRefreshing || dockerLoading;
+    refreshBtn.appendChild(createIconSvg('refresh', 14));
+    refreshBtn.addEventListener('click', () => loadDockerStatus({ refresh: true }));
+    actions.appendChild(refreshBtn);
+
+    head.append(meta, actions);
+    section.appendChild(head);
+
+    if (hostData?.error && !hostData?.online && !dockerLoading) {
+      const errEl = document.createElement('p');
+      errEl.className = 'slash-docker-server__error';
+      errEl.textContent = hostData.error;
+      section.appendChild(errEl);
+    }
+
+    const list = document.createElement('div');
+    list.className = 'slash-docker-list';
+    for (const stack of filtered) {
+      list.appendChild(buildDockerStackItem(stack, hostKey, Boolean(hostData?.online)));
+    }
+    section.appendChild(list);
+
+    return section;
+  }
+
   function renderModal() {
     renderTabs();
     const sections = catalog.sections || [];
@@ -6082,6 +7194,36 @@ export async function openCatalogModal({
       actions.append(addBtn, checkAllBtn, reloadBtn);
       heroRow.append(copy, actions);
       hero.appendChild(heroRow);
+    } else if (sec.id === 'docker') {
+      const heroRow = document.createElement('div');
+      heroRow.className = 'slash-catalog__hero-row';
+
+      const copy = document.createElement('div');
+      copy.className = 'slash-catalog__hero-copy';
+      const h2 = document.createElement('h2');
+      h2.className = 'slash-catalog__title';
+      h2.textContent = heroInfo.title;
+      const sub = document.createElement('p');
+      sub.className = 'slash-catalog__subtitle';
+      sub.textContent = heroInfo.subtitle;
+      copy.append(h2, sub);
+
+      const actions = document.createElement('div');
+      actions.className = 'slash-catalog__hero-actions';
+
+      const refreshAllBtn = document.createElement('button');
+      refreshAllBtn.type = 'button';
+      refreshAllBtn.className = 'slash-catalog__action-btn';
+      refreshAllBtn.disabled = dockerRefreshing || dockerLoading;
+      refreshAllBtn.append(
+        createIconSvg('refresh', 16),
+        document.createTextNode(dockerRefreshing || dockerLoading ? 'Обновляю…' : 'Обновить'),
+      );
+      refreshAllBtn.addEventListener('click', () => loadDockerStatus({ refresh: true }));
+
+      actions.appendChild(refreshAllBtn);
+      heroRow.append(copy, actions);
+      hero.appendChild(heroRow);
     } else {
       const h2 = document.createElement('h2');
       h2.className = 'slash-catalog__title';
@@ -6120,6 +7262,29 @@ export async function openCatalogModal({
       frag.appendChild(buildHookifyAddForm({ inline: false }));
     } else if (sec.id === 'connectors' && activeForm === 'connector-add') {
       frag.appendChild(buildAddConnectorForm());
+    }
+
+    if (sec.id === 'docker') {
+      const serversWrap = document.createElement('div');
+      serversWrap.className = 'slash-docker-servers';
+
+      const pcBlock = buildDockerServerBlock('pc', 'Docker на ПК', 'monitor', dockerData.pc, q);
+      const lenovoBlock = buildDockerServerBlock('lenovo', 'Docker на старом ноуте (.107)', 'server', dockerData.lenovo, q);
+
+      if (pcBlock) serversWrap.appendChild(pcBlock);
+      if (lenovoBlock) serversWrap.appendChild(lenovoBlock);
+
+      if (serversWrap.childElementCount) {
+        frag.appendChild(serversWrap);
+      } else {
+        const empty = document.createElement('div');
+        empty.className = 'slash-catalog__empty';
+        empty.textContent = q ? 'По запросу контейнеры Docker не нашлись.' : 'Контейнеры Docker не найдены.';
+        frag.appendChild(empty);
+      }
+
+      body.replaceChildren(frag);
+      return;
     }
 
     if (sec.id === 'connectors') {
@@ -6322,6 +7487,10 @@ export async function openCatalogModal({
   renderModal();
   searchInput.focus();
 
+  if (activeTab === 'docker') {
+    loadDockerStatus({ refresh: false });
+  }
+
   const [liveCatalog, liveSkills, livePlugins, liveConnectors] = await Promise.all([
     fetchCatalog(ctx),
     fetchSkills(ctx, catalog.sections.find((s) => s.id === 'skills')?.items || []),
@@ -6336,6 +7505,7 @@ export async function openCatalogModal({
     syncSkillsIntoCatalog();
     syncPluginsIntoCatalog();
     syncConnectorsIntoCatalog();
+    ensureDockerSectionInCatalog();
     renderModal();
   }
 }

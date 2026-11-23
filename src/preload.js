@@ -88,6 +88,8 @@ contextBridge.exposeInMainWorld('host', {
   connectorsHealthSync: (payload) => ipcRenderer.invoke('connectors:health-sync', payload),
   connectorsConfigure: (payload) => ipcRenderer.invoke('connectors:configure', payload),
   onConnectorsChanged: on('capri:connectors-changed'),
+  dockerStatus: (params) => ipcRenderer.invoke('docker:status', params),
+  dockerAction: (payload) => ipcRenderer.invoke('docker:action', payload),
   chatCompact: (payload) => ipcRenderer.invoke('chat:compact', payload),
   agentsCompact: (payload) => ipcRenderer.invoke('agents:compact', payload),
   openChats: () => ipcRenderer.send('chats:open'),

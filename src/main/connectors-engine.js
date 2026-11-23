@@ -55,6 +55,8 @@ const CONFIGURABLE_CONNECTORS = new Set([
 ]);
 
 const TELEGRAM_TOKEN_RE = /^\d{6,12}:[A-Za-z0-9_-]{30,}$/;
+const DEFAULT_WGER_URL = 'http://192.168.0.107:8085';
+const OPENNOTEBOOK_URL = 'http://127.0.0.1:8502';
 
 const GOOGLE_SETUP_STEPS = Object.freeze([
   '1. Открой Antigravity → Plugins Manager.',
@@ -780,7 +782,7 @@ class ConnectorsEngine {
       case 'wger': {
         const wCfg = cfg.connectorsConfig?.wger;
         if (!wCfg?.url) {
-          return { status: 'not_configured', detail: 'Локальный URL Wger не задан' };
+          return { status: 'not_configured', detail: `URL не задан (автопроверка ${DEFAULT_WGER_URL})` };
         }
         return { status: 'offline', detail: `URL задан (${wCfg.url}), ждёт проверки` };
       }
@@ -925,15 +927,43 @@ class ConnectorsEngine {
         }
         case 'wger': {
           const wCfg = cfg.connectorsConfig?.wger;
-          if (!wCfg?.url) {
-            status = 'not_configured';
-            detail = 'URL Wger не настроен';
+          const hasCustomUrl = Boolean(wCfg?.url);
+          const targetUrl = String(wCfg?.url || DEFAULT_WGER_URL).trim();
+          const parsed = new URL(targetUrl);
+          const port = Number(parsed.port) || (parsed.protocol === 'https:' ? 443 : 80);
+          const probe = await this.probeTcpImpl(parsed.hostname, port, PROBE_TIMEOUT_MS);
+          latencyMs = probe.latencyMs;
+          if (!probe.ok) {
+            status = hasCustomUrl ? 'offline' : 'not_configured';
+            detail = hasCustomUrl
+              ? `${parsed.host} недоступен`
+              : `URL Wger не задан (${parsed.host} недоступен)`;
           } else {
-            const parsed = new URL(wCfg.url);
-            const probe = await this.probeTcpImpl(parsed.hostname, Number(parsed.port) || (parsed.protocol === 'https:' ? 443 : 80), PROBE_TIMEOUT_MS);
-            latencyMs = probe.latencyMs;
-            status = probe.ok ? 'connected' : 'offline';
-            detail = probe.ok ? `${parsed.host} доступен` : `${parsed.host} недоступен`;
+            const cleanUrl = parsed.toString().replace(/\/+$/, '');
+            const plainToken = wCfg?.token ? this.openKey(wCfg.token) : '';
+            try {
+              const res = await this.fetchImpl(`${cleanUrl}/api/v2/workout/?limit=1`, {
+                headers: plainToken ? { Authorization: `Token ${plainToken}` } : {},
+                signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+              });
+              latencyMs = Date.now() - started;
+              if (res && res.ok) {
+                status = 'connected';
+                detail = `${parsed.host} (HTTP ${res.status})`;
+              } else if (res && (res.status === 401 || res.status === 403)) {
+                status = 'auth_required';
+                detail = `Сервер ${parsed.host} отвечает, нужен API Key (HTTP ${res.status})`;
+              } else if (res && res.status < 500) {
+                status = 'auth_required';
+                detail = `Сервер ${parsed.host} отвечает (HTTP ${res.status})`;
+              } else {
+                status = 'offline';
+                detail = `HTTP ${res?.status || 'ERR'}`;
+              }
+            } catch (fetchErr) {
+              status = 'offline';
+              detail = fetchErr?.message || `${parsed.host} недоступен`;
+            }
           }
           break;
         }
@@ -986,7 +1016,7 @@ class ConnectorsEngine {
     const pausedInMode = Boolean(pauseReason);
     const health = this.getCachedHealth(def);
     const wgerCfg = def.id === 'wger' ? cfg?.connectorsConfig?.wger : null;
-    const resolvedUrl = def.id === 'wger' ? String(wgerCfg?.url || '') : (def.url || '');
+    const resolvedUrl = def.id === 'wger' ? String(wgerCfg?.url || DEFAULT_WGER_URL) : (def.url || '');
     const resolvedHasToken = def.id === 'wger'
       ? Boolean(wgerCfg?.token)
       : (def.id === 'telegram' ? Boolean(cfg?.telegramToken) : Boolean(def.hasToken));
@@ -1488,7 +1518,7 @@ class ConnectorsEngine {
     return { ok: true, path: filePath, summary };
   }
 
-  buildNotebookDigest({ allowlistPaths } = {}) {
+  buildNotebookDigest({ allowlistPaths, openNotebookRunning } = {}) {
     const allowedNormalized = new Set(this.notebookAllowlist.map((p) => path.resolve(p).toLowerCase()));
     const candidates = Array.isArray(allowlistPaths) && allowlistPaths.length > 0
       ? allowlistPaths
@@ -1533,24 +1563,44 @@ class ConnectorsEngine {
       };
     }
 
+    let isOpenNotebookRunning = typeof openNotebookRunning === 'boolean' ? openNotebookRunning : null;
+    if (isOpenNotebookRunning === null && typeof this.deps?.isOpenNotebookRunning === 'function') {
+      try {
+        isOpenNotebookRunning = Boolean(this.deps.isOpenNotebookRunning());
+      } catch {
+        isOpenNotebookRunning = false;
+      }
+    }
+    if (isOpenNotebookRunning === null && typeof this.deps?.dockerEngine?.getCachedStatus === 'function') {
+      const cachedDocker = this.deps.dockerEngine.getCachedStatus();
+      const stack = cachedDocker?.pc?.stacks?.find((s) => s.id === 'pc-opennotebook');
+      isOpenNotebookRunning = Boolean(stack?.running);
+    }
+
     const generatedAt = new Date().toISOString();
     const header = [
       '# GENESIS Notebook Digest (санитизированный)',
       `Собрано: ${generatedAt}`,
       `Источники: ${includedFiles.join(', ')}`,
+      isOpenNotebookRunning ? `OpenNotebook: ${OPENNOTEBOOK_URL} (доступен)` : null,
       '',
-    ].join('\n');
+    ].filter((line) => line !== null).join('\n');
 
     const content = `${header}\n${sections.join('\n\n---\n\n')}`.slice(0, 18000);
     const outPath = this.notebookDigestFile();
     fs.mkdirSync(path.dirname(outPath), { recursive: true });
     fs.writeFileSync(outPath, content, 'utf8');
 
+    const openNotebookMeta = isOpenNotebookRunning
+      ? { available: true, url: OPENNOTEBOOK_URL }
+      : undefined;
+
     this.saveConfig({
       notebookDigestMeta: {
         lastDigestAt: generatedAt,
         lastDigestPath: outPath,
         chars: content.length,
+        ...(openNotebookMeta ? { openNotebook: openNotebookMeta } : {}),
       },
     });
     this.healthCache.delete('gemini-notebook');
@@ -1562,6 +1612,7 @@ class ConnectorsEngine {
       generatedAt,
       includedFiles,
       rejectedFiles,
+      ...(openNotebookMeta ? { openNotebook: openNotebookMeta } : {}),
       preview: content.slice(0, 600),
     };
   }
@@ -1863,14 +1914,16 @@ class ConnectorsEngine {
 
       case 'wger': {
         const wCfg = cfg.connectorsConfig?.wger;
-        if (!wCfg?.url) return { fenced: false, text: 'Wger не настроен (укажи локальный URL в connectorsConfig.wger).' };
-        const base = String(wCfg.url).replace(/\/+$/, '');
-        const token = wCfg.token ? this.openKey(wCfg.token) : '';
+        const base = String(wCfg?.url || DEFAULT_WGER_URL).replace(/\/+$/, '');
+        const token = wCfg?.token ? this.openKey(wCfg.token) : '';
         const headers = token ? { Authorization: `Token ${token}` } : {};
         const res = await this.fetchImpl(`${base}/api/v2/workout/?limit=5`, {
           headers,
           signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
         });
+        if (res.status === 401 || res.status === 403) {
+          return { fenced: false, text: `Wger отвечает (${base}), но нужен API Key (HTTP ${res.status}).` };
+        }
         if (!res.ok) return { fenced: false, text: `Wger вернул HTTP ${res.status}.` };
         const json = await res.json();
         const rows = Array.isArray(json?.results) ? json.results.slice(0, 5) : [];

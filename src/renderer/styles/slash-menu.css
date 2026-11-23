@@ -2113,6 +2113,476 @@
   color: #8E918F;
 }
 
+/* ---------- Docker Control Panel (PC + Lenovo .107 + NOMAD 10-service mini-modal) ---------- */
+.slash-docker-servers {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.slash-docker-server {
+  border-radius: 16px;
+  background: #1E1F20;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.slash-docker-server__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.slash-docker-server__meta {
+  flex: 1 1 320px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.slash-docker-server__title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.slash-docker-server__icon {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  color: #C4C7C5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.slash-docker-server__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: #E3E3E3;
+}
+
+.slash-docker-server__count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #282A2C;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #C4C7C5;
+  font: 500 12px/1 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  white-space: nowrap;
+}
+
+.slash-docker-server__metrics {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.slash-docker-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #282A2C;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #C4C7C5;
+  font: 400 12px/1 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  white-space: nowrap;
+}
+
+.slash-docker-pill--quiet {
+  height: 20px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #8E918F;
+  background: #131314;
+}
+
+.slash-docker-pill--always {
+  height: 20px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #C4C7C5;
+  background: #282A2C;
+  border-color: rgba(129, 201, 149, 0.28);
+}
+
+.slash-docker-pill--stat {
+  font-variant-numeric: tabular-nums;
+  color: #C4C7C5;
+}
+
+.slash-docker-pill--off {
+  color: #8E918F;
+  background: #131314;
+}
+
+.slash-docker-pill.is-warn {
+  color: #FDD663;
+  border-color: rgba(253, 214, 99, 0.32);
+  background: rgba(253, 214, 99, 0.1);
+}
+
+.slash-docker-pill.is-danger {
+  color: #F28B82;
+  border-color: rgba(242, 139, 130, 0.32);
+  background: rgba(242, 139, 130, 0.1);
+}
+
+.slash-docker-server__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.slash-docker-server__error {
+  margin: 0;
+  padding: 8px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(242, 139, 130, 0.08);
+  color: #F28B82;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.slash-docker-list {
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  gap: 4px;
+}
+
+.slash-docker-item {
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.slash-docker-item:hover,
+.slash-docker-item.is-confirming {
+  background: #131314;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.slash-docker-item.is-stopped .slash-docker-item__icon {
+  color: #8E918F;
+}
+
+.slash-docker-item.is-stopped .slash-docker-item__name {
+  color: #C4C7C5;
+}
+
+.slash-docker-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 8px 12px;
+}
+
+.slash-docker-item__icon {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: 999px;
+  background: #282A2C;
+  color: #E3E3E3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.slash-docker-item__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.slash-docker-item__top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.slash-docker-item__name {
+  font-size: 14px;
+  font-weight: 500;
+  color: #E3E3E3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.slash-docker-item__desc {
+  font-size: 12.5px;
+  font-weight: 400;
+  color: #8E918F;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-docker-item__controls {
+  flex: none;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.slash-docker-btn {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: transparent;
+  color: #C4C7C5;
+  font: 500 12px/1 var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+  text-transform: none;
+  letter-spacing: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.slash-docker-btn:hover:not(:disabled) {
+  background: #282A2C;
+  color: #E3E3E3;
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.slash-docker-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.slash-docker-btn--icon {
+  width: 28px;
+  padding: 0;
+}
+
+.slash-docker-btn--pack {
+  background: #282A2C;
+  color: #E3E3E3;
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.slash-docker-btn--pack:hover:not(:disabled) {
+  background: #333639;
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.slash-docker-btn--danger {
+  background: rgba(242, 139, 130, 0.14);
+  border-color: rgba(242, 139, 130, 0.36);
+  color: #F28B82;
+}
+
+.slash-docker-btn--danger:hover:not(:disabled) {
+  background: rgba(242, 139, 130, 0.22);
+  border-color: rgba(242, 139, 130, 0.52);
+  color: #F28B82;
+}
+
+.slash-docker-confirm {
+  margin: 0 12px 10px 56px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(242, 139, 130, 0.08);
+  border: 1px solid rgba(242, 139, 130, 0.28);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.slash-docker-confirm__text {
+  flex: 1 1 220px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: #E3E3E3;
+}
+
+.slash-docker-confirm__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* ---------- NOMAD 10-Service Mini-Modal Overlay ---------- */
+.slash-docker-submodal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 140;
+  background: rgba(0, 0, 0, 0.64);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  font-family: var(--gem-font-sans, 'Google Sans', 'Segoe UI', system-ui, sans-serif);
+}
+
+.slash-docker-submodal {
+  width: min(680px, 100%);
+  max-height: min(640px, 100%);
+  background: #131314;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  box-shadow: 0 20px 56px rgba(0, 0, 0, 0.68);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: #E3E3E3;
+}
+
+.slash-docker-submodal__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: #1E1F20;
+}
+
+.slash-docker-submodal__copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.slash-docker-submodal__title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.slash-docker-submodal__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.25;
+  color: #E3E3E3;
+}
+
+.slash-docker-submodal__subtitle {
+  margin: 0;
+  font-size: 12.5px;
+  color: #8E918F;
+}
+
+.slash-docker-submodal__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.slash-docker-submodal__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: #3C4043 transparent;
+}
+
+.slash-docker-submodal__body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.slash-docker-submodal__body::-webkit-scrollbar-thumb {
+  background: #3C4043;
+  border-radius: 999px;
+}
+
+.slash-docker-subrow {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: #1E1F20;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.slash-docker-subrow:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.slash-docker-subrow__inner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 8px 12px;
+}
+
+.slash-docker-subrow__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.slash-docker-subrow__top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.slash-docker-subrow__name {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: #E3E3E3;
+}
+
+.slash-docker-subrow__port {
+  font: 400 11.5px/1 var(--gem-font-mono, ui-monospace, monospace);
+  color: #8E918F;
+}
+
+.slash-docker-subrow__desc {
+  font-size: 12px;
+  color: #8E918F;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 640px) {
   .slash-plugin-drawer {
     padding-left: 12px;
@@ -2126,5 +2596,19 @@
   .slash-skill-form__grid,
   .slash-connector-setup__grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .slash-docker-row,
+  .slash-docker-subrow__inner {
+    flex-wrap: wrap;
+  }
+
+  .slash-docker-item__controls {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .slash-docker-confirm {
+    margin-left: 12px;
   }
 }

@@ -386,12 +386,14 @@ async function executeAgentSlashCommand(rawText, { confirm = false } = {}) {
       await runAgentCompact(id, parsed.rest, null);
       return true;
     }
-    if (cmdName === 'help' || cmdName === 'skills' || cmdName === 'plugins' || cmdName === 'plugin' || cmdName === 'hookify' || cmdName === 'connectors' || cmdName === 'connector') {
+    if (cmdName === 'help' || cmdName === 'skills' || cmdName === 'plugins' || cmdName === 'plugin' || cmdName === 'hookify' || cmdName === 'connectors' || cmdName === 'connector' || cmdName === 'docker') {
       const targetTab = cmdName === 'skills'
         ? 'skills'
         : (['plugins', 'plugin', 'hookify'].includes(cmdName)
           ? 'plugins'
-          : (['connectors', 'connector'].includes(cmdName) ? 'connectors' : 'commands'));
+          : (['connectors', 'connector'].includes(cmdName)
+            ? 'connectors'
+            : (cmdName === 'docker' ? 'docker' : 'commands')));
       openCatalogModal({
         initialTab: targetTab,
         focusPluginId: cmdName === 'hookify' ? 'hookify' : null,
@@ -453,6 +455,18 @@ async function executeAgentSlashCommand(rawText, { confirm = false } = {}) {
       initialTab: act.tab || result.tab || 'commands',
       focusPluginId: act.focusPlugin || act.pluginId || act.focusPluginId || result.focusPlugin || result.pluginId || null,
       focusConnectorId: act.focusConnector || act.connectorId || act.focusConnectorId || result.focusConnector || result.connectorId || null,
+      getContext: getAgentSlashContext,
+      onRunCommand: handleAgentCatalogSelect,
+      onSkillsChanged: handleAgentSkillsChanged,
+      onPluginsChanged: handleAgentPluginsChanged,
+      onConnectorsChanged: handleAgentConnectorsChanged,
+    });
+    return true;
+  }
+
+  if (cmdName === 'docker' && !result.handled) {
+    openCatalogModal({
+      initialTab: 'docker',
       getContext: getAgentSlashContext,
       onRunCommand: handleAgentCatalogSelect,
       onSkillsChanged: handleAgentSkillsChanged,

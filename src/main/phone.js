@@ -40,6 +40,7 @@ const {
 const { SkillsEngine } = require('./skills-engine');
 const { PluginsEngine } = require('./plugins-engine');
 const { ConnectorsEngine, parseModelUseTag, stripModelUseTags } = require('./connectors-engine');
+const { DockerEngine } = require('./docker-engine');
 const SUGGESTIONS_TTL_MS = 45 * 60 * 1000; // 45 минут кэша подсказок от E4B
 const WORKER_COOLDOWN_MS = 30 * 60 * 1000; // 30 минут кулдауна для уставших воркеров Deep Research
 const RESEARCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -426,6 +427,8 @@ class PhoneBridge {
     this._fallbackSlash = null;
     this._fallbackSkills = null;
     this._fallbackPlugins = null;
+    this._fallbackConnectors = null;
+    this._fallbackDocker = null;
   }
 
   skillsEngine() {
@@ -460,6 +463,15 @@ class PhoneBridge {
     return this._fallbackConnectors;
   }
 
+  dockerEngine() {
+    if (this.d.dockerEngine) return this.d.dockerEngine;
+    if (this.d.slashEngine?.dockerEngine) return this.d.slashEngine.dockerEngine;
+    if (!this._fallbackDocker) {
+      this._fallbackDocker = new DockerEngine();
+    }
+    return this._fallbackDocker;
+  }
+
   slashEngine() {
     if (this.d.slashEngine) return this.d.slashEngine;
     if (!this._fallbackSlash) {
@@ -468,6 +480,7 @@ class PhoneBridge {
         skillsEngine: this.skillsEngine(),
         pluginsEngine: this.pluginsEngine(),
         connectorsEngine: this.connectorsEngine(),
+        dockerEngine: this.dockerEngine(),
       });
     }
     return this._fallbackSlash;
@@ -937,6 +950,7 @@ class PhoneBridge {
           skillsEngine: true,
           pluginsEngine: true,
           connectorsEngine: true,
+          dockerEngine: true,
           privateVaultSave: Boolean(this.d.savePrivateChat),
           contextLimits,
         });
@@ -1148,6 +1162,25 @@ class PhoneBridge {
         const result = await this.connectorsEngine().configureConnector(body);
         if (result.ok) this.d.onConnectorsChanged?.(body);
         return this.send(res, result.ok ? 200 : 400, result);
+      }
+      if (req.method === 'GET' && url.pathname === '/docker/status') {
+        const refreshRaw = url.searchParams.get('refresh');
+        const refresh = refreshRaw === '1' || refreshRaw === 'true';
+        return this.send(res, 200, await this.dockerEngine().getStatus({ refresh }));
+      }
+      if (req.method === 'POST' && url.pathname === '/docker/action') {
+        const body = await this.readJson(req);
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          return this.send(res, 400, { ok: false, error: 'Некорректное тело запроса.' });
+        }
+        const result = await this.dockerEngine().controlStack({
+          host: body.host,
+          stackId: body.stackId,
+          container: body.container,
+          action: body.action,
+          confirm: body.confirm === true,
+        });
+        return this.send(res, (result.ok || result.confirmRequired) ? 200 : 400, result);
       }
       if (req.method === 'GET' && url.pathname === '/commands') {
         const mode = url.searchParams.get('mode') || 'chat';

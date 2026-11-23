@@ -32,7 +32,7 @@ const OUTPUT_STYLE_HINTS = Object.freeze({
 
 const INSTANT_COMMAND_IDS = new Set([
   'status', 'usage', 'quota', 'context', 'tasks', 'tools', 'mcp', 'skills', 'reload-skills',
-  'plugins', 'hookify', 'connectors',
+  'plugins', 'hookify', 'connectors', 'docker',
   'doctor', 'storage', 'permissions', 'memory', 'help', 'find', 'free', 'today', 'mail',
   'clip', 'alta', 'agents', 'harness', 'nomad', 'web', 'tor', 'copy', 'export', 'insights', 'stop',
 ]);
@@ -108,6 +108,7 @@ const COMMAND_CATEGORY_BY_ID = Object.freeze({
   plugins: 'system',
   hookify: 'system',
   connectors: 'system',
+  docker: 'system',
   insights: 'system',
   help: 'system',
   today: 'agents',
@@ -251,6 +252,11 @@ const CONNECTOR_COMMANDS = Object.freeze([
     aliases: ['connector'],
     icon: 'plug',
     description: 'Показать статус коннекторов и открыть каталог на вкладке «Коннекторы»',
+  }),
+  CMD('docker', {
+    aliases: ['containers', 'stacks'],
+    icon: 'server',
+    description: 'Пульт Docker (ПК и сервер Lenovo .107) — статус и управление стеками',
   }),
 ]);
 
@@ -906,6 +912,7 @@ class SlashCommandEngine {
     this.skillsEngine = opts.skillsEngine || opts.deps?.skillsEngine || null;
     this.pluginsEngine = opts.pluginsEngine || opts.deps?.pluginsEngine || null;
     this.connectorsEngine = opts.connectorsEngine || opts.deps?.connectorsEngine || null;
+    this.dockerEngine = opts.dockerEngine || opts.deps?.dockerEngine || null;
     this.getConfig = typeof opts.getConfig === 'function' ? opts.getConfig : () => ({});
     this.saveConfig = typeof opts.saveConfig === 'function' ? opts.saveConfig : () => {};
     this.deps = opts.deps || {};
@@ -1385,6 +1392,28 @@ class SlashCommandEngine {
           return { handled: true, instant: true, action: 'open-catalog', tab: 'connectors', reply: lines.join('\n') };
         }
         return { handled: true, instant: true, action: 'open-catalog', tab: 'connectors', reply: 'Открываю каталог коннекторов.' };
+      }
+
+      case 'docker': {
+        if (this.dockerEngine && typeof this.dockerEngine.getStatus === 'function') {
+          const st = await this.dockerEngine.getStatus({ refresh: false }).catch(() => null);
+          if (st) {
+            const pcLine = st.pc?.online
+              ? `ПК: ${st.pc.runningCount}/${st.pc.totalCount} стеков · ${Math.round(st.pc.totalContainerMb || 0)} МБ`
+              : `ПК: недоступен${st.pc?.error ? ` (${st.pc.error})` : ''}`;
+            const srvLine = st.lenovo?.online
+              ? `Lenovo .107: ${st.lenovo.runningCount}/${st.lenovo.totalCount} стеков · ${Math.round(st.lenovo.totalContainerMb || 0)} МБ`
+              : `Lenovo .107: недоступен${st.lenovo?.error ? ` (${st.lenovo.error})` : ''}`;
+            return {
+              handled: true,
+              instant: true,
+              action: 'open-catalog',
+              tab: 'docker',
+              reply: `Пульт Docker:\n• ${pcLine}\n• ${srvLine}`,
+            };
+          }
+        }
+        return { handled: true, instant: true, action: 'open-catalog', tab: 'docker', reply: 'Открываю пульт Docker.' };
       }
 
       case 'status': {

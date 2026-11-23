@@ -35,6 +35,7 @@ const { SlashCommandEngine, compactHistory, isIsolatedMode } = require('./slash-
 const { SkillsEngine } = require('./skills-engine');
 const { PluginsEngine } = require('./plugins-engine');
 const { ConnectorsEngine } = require('./connectors-engine');
+const { DockerEngine } = require('./docker-engine');
 const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
 const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('./hub-artifacts');
@@ -638,6 +639,7 @@ function ensureAgentSessions() {
       skillsEngine: ensureSkillsEngine(),
       pluginsEngine: ensurePluginsEngine(),
       connectorsEngine: ensureConnectorsEngine(),
+      dockerEngine: ensureDockerEngine(),
     });
   return agentSessions;
 }
@@ -1874,6 +1876,13 @@ let slashEngine = null;
 let skillsEngine = null;
 let pluginsEngine = null;
 let connectorsEngine = null;
+let dockerEngine = null;
+
+function ensureDockerEngine() {
+  if (dockerEngine) return dockerEngine;
+  dockerEngine = new DockerEngine();
+  return dockerEngine;
+}
 
 function ensureSkillsEngine() {
   if (skillsEngine) return skillsEngine;
@@ -1920,6 +1929,7 @@ function ensureConnectorsEngine() {
       },
       kiwixSearch: async (q) => kiwix.fromLocalFirst((url) => kiwix.search(q, { url, limit: 4 }), config.load().kiwixUrl),
       webSearch: async (q) => agentWeb.search({ query: q, read: 0 }),
+      dockerEngine: ensureDockerEngine(),
     },
   });
   return connectorsEngine;
@@ -1990,6 +2000,7 @@ function ensureSlashEngine() {
     skillsEngine: ensureSkillsEngine(),
     pluginsEngine: ensurePluginsEngine(),
     connectorsEngine: ensureConnectorsEngine(),
+    dockerEngine: ensureDockerEngine(),
     getConfig: () => config.load(),
     saveConfig: (patch) => config.save(patch),
     deps: {
@@ -2255,6 +2266,7 @@ async function applyPhone() {
       skillsEngine: ensureSkillsEngine(),
       pluginsEngine: ensurePluginsEngine(),
       connectorsEngine: ensureConnectorsEngine(),
+      dockerEngine: ensureDockerEngine(),
       onConnectorsChanged: (payload) => {
         if (payload?.id === 'telegram') applyTelegram();
         broadcastConnectorsChanged();
@@ -4255,6 +4267,16 @@ function registerIpc() {
     }
     return res;
   });
+  ipcMain.handle('docker:status', (_e, params = {}) => ensureDockerEngine().getStatus({
+    refresh: params?.refresh === true || params?.refresh === 1,
+  }));
+  ipcMain.handle('docker:action', (_e, payload = {}) => ensureDockerEngine().controlStack({
+    host: payload?.host,
+    stackId: payload?.stackId,
+    container: payload?.container,
+    action: payload?.action,
+    confirm: payload?.confirm === true,
+  }));
   ipcMain.handle('chat:compact', (_e, payload = {}) => compactDesktopChat(payload || {}));
   ipcMain.handle('agents:compact', (event, { id, focus } = {}) => hubSessions(event).compact(id, { focus }));
   ipcMain.handle('agents:list', (event) => ({ sessions: hubSessions(event).summaries(), models: SESSION_MODELS }));
