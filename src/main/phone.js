@@ -1291,6 +1291,18 @@ class PhoneBridge {
         });
         return this.send(res, (result.ok || result.confirmRequired) ? 200 : 400, result);
       }
+      // 2.95b: the Termux worker (capri_brain.py) takes the PC's commands itself and returns their output
+      if (req.method === 'GET' && url.pathname === '/termux/next') {
+        return this.send(res, 200, { job: this.phoneControlEngine().nextTermuxJob() });
+      }
+      if (req.method === 'POST' && url.pathname === '/termux/result') {
+        const body = await this.readJson(req, MAX_BODY * 4);
+        const result = this.phoneControlEngine().reportTermuxResult(body || {});
+        return this.send(res, result.ok ? 200 : 404, result);
+      }
+      if (req.method === 'GET' && url.pathname === '/phone-control/termux-result') {
+        return this.send(res, 200, this.phoneControlEngine().termuxResult(url.searchParams.get('id') || ''));
+      }
       if (req.method === 'POST' && url.pathname === '/phone-control/action-result') {
         const body = await this.readJson(req, MAX_BODY);
         if (!body || typeof body !== 'object' || Array.isArray(body)) {

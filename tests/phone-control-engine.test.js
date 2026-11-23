@@ -45,7 +45,7 @@ test('PHONE_MODULES_CATALOG defines exact 8 privacy-safe modules with expected U
   assert.equal(byId.get('phone-wger').url, 'http://192.168.0.107:8085');
   assert.equal(byId.get('phone-fmd').url, 'http://192.168.0.107:8083');
   assert.deepEqual(byId.get('phone-fmd').actions, ['locate', 'open']);
-  assert.deepEqual(byId.get('phone-termux').actions, ['open']);
+  assert.deepEqual(byId.get('phone-termux').actions, ['open', 'run']);
 });
 
 test('PhoneControlEngine tracks 5m online window, persists non-sensitive state only, and forwards healthSummary to ConnectorsEngine', () => {
@@ -370,4 +370,29 @@ test('/phone slash command, PhoneBridge endpoints, and IPC contracts in main.js 
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('Termux run: read-only commands go at once, others need a confirmation; the worker takes the job and returns masked output', () => {
+  const engine = new PhoneControlEngine();
+  const safe = engine.queueAction({ moduleId: 'phone-termux', action: 'run', payload: { command: 'uname -a' } });
+  assert.equal(safe.queued, true);
+  for (const command of ['rm -rf ~', 'ls; rm x', 'cat a > b', 'echo $(id)', 'ping 8.8.8.8', 'pkg install nmap']) {
+    const r = engine.queueAction({ moduleId: 'phone-termux', action: 'run', payload: { command } });
+    assert.equal(r.confirmRequired, true, command);
+  }
+  const confirmed = engine.queueAction({ moduleId: 'phone-termux', action: 'run', payload: { command: 'pkg install nmap' }, confirmed: true });
+  assert.equal(confirmed.queued, true);
+  assert.equal(engine.queueAction({ moduleId: 'phone-termux', action: 'run', payload: { command: 'ping -c 3 1.1.1.1' } }).queued, true);
+  assert.equal(engine.termuxResult(safe.actionId).state, 'queued');
+  const job = engine.nextTermuxJob();
+  assert.equal(job.command, 'uname -a');
+  assert.equal(engine.termuxResult(safe.actionId).state, 'running');
+  assert.equal(engine.drainPendingActions().length, 0); // the Altair app never sees Termux jobs
+  engine.reportTermuxResult({ id: job.id, exitCode: 0, stdout: 'Linux token=supersecret42 ok' });
+  const done = engine.termuxResult(safe.actionId);
+  assert.equal(done.state, 'done');
+  assert.equal(done.exitCode, 0);
+  assert.equal(done.stdout, 'Linux «скрыто» ok');
+  assert.equal(engine.reportTermuxResult({ id: 'nope' }).ok, false);
+  assert.equal(engine.termuxResult('nope').state, 'missing');
 });

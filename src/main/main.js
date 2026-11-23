@@ -4763,6 +4763,7 @@ function registerIpc() {
     payload: payload?.payload,
     confirmed: payload?.confirmed === true,
   }));
+  ipcMain.handle('phone-control:termux-result', (_e, id) => ensurePhoneControlEngine().termuxResult(String(id || '')));
   ipcMain.handle('chat:compact', (_e, payload = {}) => compactDesktopChat(payload || {}));
   ipcMain.handle('agents:compact', (event, { id, focus } = {}) => hubSessions(event).compact(id, { focus }));
   ipcMain.handle('agents:list', (event) => ({ sessions: hubSessions(event).summaries(), models: SESSION_MODELS }));

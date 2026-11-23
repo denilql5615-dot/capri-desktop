@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { safeText } = require('./activity-journal');
 
 const DEFAULT_DEVICE_NAME = 'Xiaomi 13T Pro';
 const DEFAULT_ANDROID_VERSION = '16';
@@ -23,6 +24,20 @@ const VALID_MODULE_STATUSES = new Set([
   'unknown',
 ]);
 const CONFIRM_REQUIRED_ACTIONS = new Set(['dial', 'sms']);
+// 2.95b: the PC's hands in Termux. Read-only diagnostics run at once; anything else (or any chain,
+// redirect or substitution) waits for an explicit confirmation, like a call or an SMS.
+const TERMUX_SAFE = new Set(['ls', 'pwd', 'cat', 'head', 'tail', 'wc', 'grep', 'uname', 'whoami', 'id', 'date', 'uptime',
+  'df', 'du', 'free', 'ps', 'pgrep', 'ip', 'ifconfig', 'ping', 'nslookup', 'dig', 'getprop', 'which', 'echo', 'nproc',
+  'termux-battery-status', 'termux-wifi-connectioninfo', 'termux-telephony-deviceinfo']);
+const TERMUX_UNSAFE_CHARS = /[;&|><`]|\$\(|\n/;
+const TERMUX_JOB_TTL_MS = 10 * 60 * 1000;
+const MAX_TERMUX_RESULTS = 50;
+function termuxSafe(command) {
+  if (TERMUX_UNSAFE_CHARS.test(command)) return false;
+  const first = command.trim().split(/\s+/)[0];
+  if (first === 'ping') return /\s-c\s*\d{1,2}\b/.test(command); // a bounded ping only
+  return TERMUX_SAFE.has(first);
+}
 
 const PHONE_MODULES_CATALOG = Object.freeze([
   Object.freeze({
@@ -91,11 +106,11 @@ const PHONE_MODULES_CATALOG = Object.freeze([
   Object.freeze({
     id: 'phone-termux',
     name: 'Termux + TermuxHub',
-    actions: Object.freeze(['open']),
+    actions: Object.freeze(['open', 'run']),
     privacySafe: true,
     confirmRequired: false,
     url: '',
-    description: 'Локальный Linux-терминал на телефоне',
+    description: 'Локальный Linux-терминал на телефоне; run — команда с ПК, вывод возвращается (2.95b)',
   }),
 ]);
 
@@ -232,6 +247,8 @@ class PhoneControlEngine {
     };
     this.pendingActions = [];
     this.dispatchedMeta = new Map();
+    this.termuxJobs = []; // taken by the Termux worker itself (capri_brain.py), not by the Altair app
+    this.termuxResults = new Map();
     this.lastAction = null;
 
     this._loadPersistedState();
@@ -439,6 +456,8 @@ class PhoneControlEngine {
       };
     }
 
+    if (mod.id === 'phone-termux' && act === 'run') return this._queueTermux(payload, confirmed === true);
+
     const sanitized = this._sanitizeActionPayload(mod, act, payload);
     if (!sanitized.ok) {
       return { ok: false, moduleId: mod.id, action: act, error: sanitized.error };
@@ -486,6 +505,58 @@ class PhoneControlEngine {
       pendingCount: this.pendingActions.length,
       message: `Команда "${act}" для ${mod.name} поставлена в очередь.`,
     };
+  }
+
+  _queueTermux(payload, confirmed) {
+    const src = payload && typeof payload === 'object' ? payload : {};
+    const command = String(src.command ?? '').replace(/\r/g, '').trim().slice(0, 2000);
+    if (!command) return { ok: false, moduleId: 'phone-termux', action: 'run', error: 'Пустая команда для Termux.' };
+    if (!termuxSafe(command) && !confirmed) {
+      return { ok: false, confirmRequired: true, moduleId: 'phone-termux', action: 'run', command,
+        error: 'Эта команда в Termux меняет телефон или выходит за чтение — нужна явная команда подтверждения.' };
+    }
+    const nowMs = this._now();
+    this.termuxJobs = this.termuxJobs.filter((j) => nowMs - j.createdAtMs < TERMUX_JOB_TTL_MS).slice(-(this.maxQueue - 1));
+    const timeoutSec = Math.min(300, Math.max(5, Number(src.timeoutSec) || 60));
+    const job = { id: crypto.randomUUID(), command, timeoutSec, createdAtMs: nowMs };
+    this.termuxJobs.push(job);
+    this._rememberTermux(job.id, { state: 'queued', command });
+    return { ok: true, queued: true, moduleId: 'phone-termux', action: 'run', actionId: job.id,
+      message: 'Команда передана в Termux; результат — по actionId.' };
+  }
+
+  /** The Termux worker asks for its next job (GET /termux/next). */
+  nextTermuxJob() {
+    const nowMs = this._now();
+    this.termuxJobs = this.termuxJobs.filter((j) => nowMs - j.createdAtMs < TERMUX_JOB_TTL_MS);
+    const job = this.termuxJobs.shift();
+    if (!job) return null;
+    this._rememberTermux(job.id, { state: 'running', command: job.command });
+    return { id: job.id, command: job.command, timeoutSec: job.timeoutSec };
+  }
+
+  /** The worker's answer (POST /termux/result): output cut and masked before it is kept. */
+  reportTermuxResult({ id, exitCode, stdout, stderr, error } = {}) {
+    const key = sanitizeText(id, 64);
+    const prev = this.termuxResults.get(key);
+    if (!prev) return { ok: false, error: 'Неизвестное задание Termux.' };
+    this._rememberTermux(key, {
+      state: 'done', command: prev.command,
+      exitCode: Number.isInteger(exitCode) ? exitCode : null,
+      stdout: safeText(String(stdout ?? ''), 4000, { tail: true }),
+      stderr: safeText(String(stderr ?? ''), 2000, { tail: true }),
+      ...(error && { error: safeText(String(error), 300) }),
+    });
+    return { ok: true };
+  }
+
+  termuxResult(id) {
+    return this.termuxResults.get(sanitizeText(id, 64)) || { state: 'missing' };
+  }
+
+  _rememberTermux(id, value) {
+    this.termuxResults.set(id, { ...value, at: new Date(this._now()).toISOString() });
+    while (this.termuxResults.size > MAX_TERMUX_RESULTS) this.termuxResults.delete(this.termuxResults.keys().next().value);
   }
 
   drainPendingActions() {
