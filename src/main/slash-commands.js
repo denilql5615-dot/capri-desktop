@@ -193,7 +193,7 @@ const BUILTIN_COMMANDS = Object.freeze([
   CMD('slice', { aliases: ['срез', 'срезы'], icon: 'refresh-cw', argsHint: '[статус|диск вкл|диск выкл|вкл|выкл]', description: 'Срез памяти: освежить OpenNotebook и дайджест для Gemini Notebook (сам — в 09:00 и 21:00)' }),
   CMD('schedule', { kind: 'prompt', icon: 'clock', argsHint: '<расписание>', description: 'Спроектировать периодическую фоновую задачу по расписанию' }),
   CMD('goal', { kind: 'prompt', icon: 'target', argsHint: '<цель>', description: 'Автономный режим до полного достижения цели без ранней остановки' }),
-  CMD('council', { kind: 'prompt', icon: 'layers', cloudOnly: true, argsHint: '<вопрос>', description: 'Созвать совет моделей с перекрёстной критикой и вердиктом' }),
+  CMD('council', { kind: 'prompt', icon: 'layers', cloudOnly: true, argsHint: '<вопрос>', description: 'Совет: Sonnet, Antigravity Hydrogen и Neon, пара Web Gemini и один ректор' }),
 
   // --- Codex (11) ---
   CMD('fork', { kind: 'session', icon: 'git-branch', description: 'Создать независимую ветку текущего диалога' }),

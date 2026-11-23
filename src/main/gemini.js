@@ -131,7 +131,7 @@ async function inlineFiles(files, { extract, read = (f) => fs.readFileSync(f, 'u
   return parts.join('\n\n');
 }
 
-async function askIn(page, prompt, { chat = null, model = null, task = null, files = [], clipboard = null, extract = null, timeoutMs = 300000, pollMs = 1500, requireSignIn = true, stableTicks = 2, signal, onActivity } = {}) {
+async function askIn(page, prompt, { chat = null, model = null, task = null, files = [], clipboard = null, extract = null, timeoutMs = 300000, pollMs = 1500, requireSignIn = true, stableTicks = 2, signal, onActivity, onSent } = {}) {
   signal?.throwIfAborted();
   const text = String(prompt || '').trim();
   if (!text) throw new Error('пустой вопрос');
@@ -298,6 +298,7 @@ async function askIn(page, prompt, { chat = null, model = null, task = null, fil
     if (!went && i < 2) await send();
   }
   if (!went) throw new Error('вопрос не ушёл в Gemini (кнопка отправки не сработала)');
+  onSent?.();
   // done: a new answer is there, Gemini no longer shows "Stop", and its text stopped changing.
   // dropped: the question showed up, then vanished with no answer (Gemini's Argon does that to some
   // plain-text questions after minutes of "thinking") — said at once, so the caller can ask another model
@@ -372,6 +373,62 @@ function ask(prompt, { open, chat, model, files, minGapMs = 4000, onQuota, ...re
   return enqueue(run);
 }
 
+/**
+ * Two (or more) Web Gemini models at once, as ONE item of the queue and ONE session of her MAIN window:
+ * the first model in the lasting tab, the others each in a passing tab of the same session, opened only
+ * after the first question went out (a model picked in a fresh tab can't switch the first one mid-send).
+ * Returns one ask(prompt, extra) per model; the job starts when all of them were called (or after
+ * gatherMs). A call after the start runs as an ordinary ask().
+ */
+function pair(models, { open, minGapMs = 4000, onQuota, signal, gatherMs = 3000, ...rest } = {}) {
+  const calls = new Map();
+  let started = false;
+  let timer = null;
+  const start = () => {
+    if (started) return;
+    started = true;
+    clearTimeout(timer);
+    const jobs = models.filter((m) => calls.has(m)).map((m) => ({ model: m, ...calls.get(m) }));
+    const settle = (job, p) => p.then(job.resolve, job.reject);
+    enqueue(async () => {
+      const wait = lastAt + minGapMs - Date.now();
+      if (wait > 0) await pause(wait);
+      signal?.throwIfAborted();
+      const s = await open();
+      try {
+        const [first, ...others] = jobs;
+        let sent;
+        const firstSent = new Promise((r) => { sent = r; });
+        const ask = (page, job, extra = {}) => askIn(page, job.prompt, { model: job.model, signal, ...rest, ...job.extra, ...extra });
+        const one = (s.withKept ? s.withKept(GEMINI_TAB, GEMINI_URL, (page) => ask(page, first, { onSent: sent })) : s.withTab((page) => ask(page, first, { onSent: sent })))
+          .finally(() => sent());
+        settle(first, one);
+        const rest2 = others.map((job) => {
+          const p = firstSent.then(() => { signal?.throwIfAborted(); return s.withTab((page) => ask(page, job)); });
+          settle(job, p);
+          return p;
+        });
+        await Promise.allSettled([one, ...rest2]);
+        if (onQuota && s.attached && s.withKept && !signal?.aborted) {
+          const windows = await s.withKept(GEMINI_TAB, GEMINI_URL, (page) => readUsageIn(page)).catch(() => []);
+          if (windows.length) onQuota(windows);
+        }
+      } finally {
+        lastAt = Date.now();
+        await s.close();
+      }
+    }).catch((err) => { for (const job of jobs) job.reject(err); });
+  };
+  return models.map((model) => (prompt, extra = {}) => {
+    if (started) return ask(prompt, { open, model, minGapMs, onQuota, signal, ...rest, ...extra });
+    return new Promise((resolve, reject) => {
+      calls.set(model, { prompt, extra, resolve, reject });
+      if (calls.size === models.length) start();
+      else if (!timer) timer = setTimeout(start, gatherMs);
+    });
+  });
+}
+
 /** The Windows clipboard through Electron, for pasting images; what was on it is kept and put back. */
 // (this Electron's clipboard is the async web one: read/write with ClipboardItem, as main.js uses it)
 function electronClipboard() {
@@ -396,4 +453,4 @@ function electronClipboard() {
   };
 }
 
-module.exports = { ask, askIn, readUsage, chatId, checkFiles, splitFiles, inlineFiles, electronClipboard, MODELS, GEMINI_URL, GEMINI_TAB };
+module.exports = { ask, askIn, pair, readUsage, chatId, checkFiles, splitFiles, inlineFiles, electronClipboard, MODELS, GEMINI_URL, GEMINI_TAB };

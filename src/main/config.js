@@ -99,7 +99,10 @@ const DEFAULTS = {
   webMcp: true, // her web for your agents (web-mcp.js): search and read through her browser nodes
   webMcpPort: 47825,
   kiwixUrl: 'http://192.168.0.108:8090', // NOMAD's offline libraries on the home server (kiwix.js): the root of her knowledge
-  agyAppPort: 8793, // the Antigravity app's DevTools port (agy-app.js): its Orchestrator for her council
+  agyAppPort: 8793, // the Antigravity app's DevTools port (agy-app.js)
+  // the one rector of an ordinary /council: 'opus' | 'sol' | 'agy-neon-high' | 'web-neon', or 'auto' (the
+  // seat with the most quota left, checked before the start; council.pickRector)
+  councilRector: 'auto',
   geminiAdviser: true, // Gemini as an adviser (gemini.js): ask_gemini for her and your agents, on your account in MAIN
   pimMcpToken: null,
 };

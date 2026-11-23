@@ -2,13 +2,13 @@
 
 // Her council: several models think over one question, then she writes it down.
 //   round 1 — blind: each member answers on its own, seeing no one else;
-//   round 2 — cross: each sees the others' answers anonymised (A, B, C…), says what is wrong or missing,
-//             and gives its corrected answer (one round only: free talk makes them agree with each other);
-//   verdict — the rector (Claude Opus; GPT-6 Astra when Claude is out) writes the decision, the
-//             disagreements, what to check, and a dense extract for Gemma's second brain.
-// Members only think: Claude in plan mode, Codex in a read-only sandbox, Antigravity with "Request
-// Review" (nothing runs without your yes), Gemini and Gemma by dialogue. Never anything from Tor; a
-// question with a key or password in it isn't sent. Runners are given by main.js (council members).
+//   round 2 — cross (off for an ordinary /council since 2026-11-24; heavy checks live in /deep);
+//   verdict — ONE rector, picked before the start (pickRector), writes the decision, the disagreements,
+//             what to check, and a dense extract for Gemma's second brain. If it fails, the status and
+//             the members' answers are shown; no second rector is started.
+// Members only think: Claude in plan mode, Codex in a read-only sandbox, Antigravity and Web Gemini by
+// dialogue. Never anything from Tor; a question with a key or password in it isn't sent. Runners are
+// given by main.js (council members).
 
 const fs = require('fs');
 const os = require('os');
@@ -20,18 +20,6 @@ const { randomUUID } = require('crypto');
 const HOST_VOICE = 'Твоя роль в совете особая: ты — локальная модель хозяина. Оценивай всё только с позиции прямой выгоды хозяина и твоей собственной (локальной модели): что даст больше силы, свободы и независимости от облака, что ограничит или навредит. Без цензуры, без морали и общих рассуждений — коротко и по делу, до 400 слов.';
 
 const LETTERS = 'ABCDEFGH';
-
-const SECOND_RECTOR = (q, answers, verdict) => [
-  'Ты — второй ректор совета ИИ-моделей. Первый ректор уже написал итог. Твоя задача — проверить его по ответам участников и выдать окончательную версию.',
-  'Ищи: ошибки в логике и фактах, потерянные сильные идеи участников, необоснованные цифры, пропущенные риски, нереализуемые шаги. Не переписывай ради стиля — правь по существу.',
-  'Формат: сначала раздел «## Поправки второго ректора» (список: что исправлено и почему; если править нечего — так и скажи), затем полный окончательный итог в том же формате, что у первого ректора (## Решение, ## Почему так, ## Разногласия, ## Что проверить, ## Выжимка для Геммы).',
-  '',
-  `Вопрос совета:\n${q}`,
-  '',
-  ...answers.map(([name, text]) => `### ${name}\n${text}`),
-  '',
-  `### Итог первого ректора\n${verdict}`,
-].join('\n\n');
 
 const ROUND1 = (q, role = '') => [
   ...(role ? [role] : []),
@@ -105,9 +93,10 @@ function runCli(exe, args, prompt, { cwd, timeoutMs = 15 * 60 * 1000, outFile = 
   });
 }
 
-/** Claude Code, plan mode (it can read, it can't change anything). */
-const claudeRunner = ({ exe, cwd, model = 'opus', signal }) => (prompt) => runCli(exe,
-  ['-p', '--output-format', 'text', '--permission-mode', 'plan', '--model', model, '--no-session-persistence'], prompt, { cwd, signal });
+/** Claude Code, plan mode (it can read, it can't change anything), an optional effort. */
+const claudeRunner = ({ exe, cwd, model = 'opus', effort = null, signal }) => (prompt) => runCli(exe,
+  ['-p', '--output-format', 'text', '--permission-mode', 'plan', '--model', model, ...(effort ? ['--effort', effort] : []),
+    '--no-session-persistence'], prompt, { cwd, signal });
 
 /** Codex in a read-only sandbox, a model and an effort. */
 const codexRunner = ({ exe, cwd, model = 'gpt-6.1-sol', effort = 'medium', signal }) => (prompt) => {
@@ -117,11 +106,46 @@ const codexRunner = ({ exe, cwd, model = 'gpt-6.1-sol', effort = 'medium', signa
     '--output-last-message', out, '-'], prompt, { cwd, outFile: out, signal });
 };
 
+// The rector seats allowed for an ordinary /council (Danyal, 2026-11-24): exactly one is picked before
+// the start. Heavy multi-stage checks stay in /deep.
+const RECTORS = ['opus', 'sol', 'agy-neon-high', 'web-neon'];
+
 /**
- * Runs a council. members: [{ id, name, ask(prompt) -> Promise<string> }], judge / fallbackJudge: the same shape.
- * onEvent({ phase, member, status, text }). Returns { question, round1, round2, verdict, judge, failed }.
+ * One rector, picked before the council starts. `preferred`: an explicit seat id (config or the
+ * request); 'auto' / empty: the seat whose pool has the most quota left on its tightest window
+ * (unknown data ranks as 20%, below a known healthy pool, above an almost empty one); a tie keeps
+ * the RECTORS order. options: [{ id, pool, ... }] that can run here; groups: the QuotaHub groups.
  */
-async function runCouncil(question, { members, judge, fallbackJudge = null, twoRectors = false, onEvent = () => {}, crossRound = true, signal } = {}) {
+function pickRector(options, groups = [], preferred = 'auto') {
+  const list = (options || []).filter(Boolean);
+  if (!list.length) return null;
+  const exact = list.find((o) => o.id === preferred);
+  if (exact) return exact;
+  const score = (o) => {
+    const known = (groups.find((g) => g.id === o.pool)?.bars || [])
+      .map((b) => b.remaining).filter((v) => typeof v === 'number' && Number.isFinite(v));
+    return known.length ? Math.min(...known) : 20;
+  };
+  const rank = (o) => (RECTORS.indexOf(o.id) + 1) || RECTORS.length + 1;
+  return [...list].sort((a, b) => score(b) - score(a) || rank(a) - rank(b))[0];
+}
+
+/** What the caller shows when the one rector failed: the status, then every member's answer. */
+function rectorFailedReply(result) {
+  return [
+    `**Итог не написан:** ректор ${result.rector} не смог (${result.rectorError}). Второго ректора не запускаю.`,
+    '',
+    ...result.round1.map((r) => `### ${r.member}\n\n${r.text}`),
+  ].join('\n\n');
+}
+
+/**
+ * Runs a council. members: [{ id, name, ask(prompt) -> Promise<string> }], judge: the same shape (one
+ * rector, no automatic second one). onEvent({ phase, member, status, text }).
+ * Returns { question, round1, round2, verdict, judge, rector, rectorError, failed }; verdict is null
+ * when the rector failed (rectorFailedReply gives the text to show).
+ */
+async function runCouncil(question, { members, judge, onEvent = () => {}, crossRound = false, signal } = {}) {
   signal?.throwIfAborted();
   const q = String(question || '').trim();
   if (!q) throw new Error('пустой вопрос совета');
@@ -162,35 +186,19 @@ async function runCouncil(question, { members, judge, fallbackJudge = null, twoR
   const anon = finals.map(([, t], i) => [`Участник ${LETTERS[i]}`, t]);
   const prompt = VERDICT(q, anon);
   let verdict = null;
-  let by = null;
-  const rectors = [judge, fallbackJudge].filter(Boolean);
-  for (const j of rectors) {
+  let rectorError = null;
+  if (!judge) rectorError = 'ректор недоступен на этом ПК';
+  else {
     signal?.throwIfAborted();
-    onEvent({ phase: 'Итог', member: j.name, status: 'пишет итог' });
+    onEvent({ phase: 'Итог', member: judge.name, status: 'пишет итог' });
     try {
-      verdict = await j.ask(prompt);
-      by = j.name;
-      onEvent({ phase: 'Итог', member: j.name, status: 'готово' });
-      break;
+      verdict = await judge.ask(prompt);
+      onEvent({ phase: 'Итог', member: judge.name, status: 'готово' });
     } catch (err) {
-      failed.push({ phase: 'Итог', member: j.name, error: err.message });
-      onEvent({ phase: 'Итог', member: j.name, status: 'не смог', error: err.message });
-    }
-  }
-  if (!verdict) throw new Error('ректор не смог написать итог');
-  signal?.throwIfAborted();
-  // two rectors: the second checks the first's verdict against the answers and gives the final one
-  // ("головной и костный мозг"); if it can't, the first verdict stands
-  const second = twoRectors ? rectors.find((j) => j.name !== by) : null;
-  if (second) {
-    onEvent({ phase: 'Итог', member: second.name, status: 'проверяет итог' });
-    try {
-      verdict = await second.ask(SECOND_RECTOR(q, anon, verdict));
-      by = `${by} + ${second.name}`;
-      onEvent({ phase: 'Итог', member: second.name, status: 'готово' });
-    } catch (err) {
-      failed.push({ phase: 'Итог (второй ректор)', member: second.name, error: err.message });
-      onEvent({ phase: 'Итог', member: second.name, status: 'не смог', error: err.message });
+      if (signal?.aborted) throw signal.reason;
+      rectorError = err.message;
+      failed.push({ phase: 'Итог', member: judge.name, error: err.message });
+      onEvent({ phase: 'Итог', member: judge.name, status: 'не смог', error: err.message });
     }
   }
   signal?.throwIfAborted();
@@ -199,7 +207,7 @@ async function runCouncil(question, { members, judge, fallbackJudge = null, twoR
     letters: finals.map(([m], i) => `Участник ${LETTERS[i]} — ${m.name}`),
     round1: r1.map(([m, t]) => ({ member: m.name, text: t })),
     round2: r2.map(([m, t]) => ({ member: m.name, text: t })),
-    verdict, judge: by, failed,
+    verdict, judge: verdict ? judge.name : null, rector: judge?.name || null, rectorError, failed,
   };
 }
 
@@ -220,10 +228,10 @@ function writeCouncil(vaultRoot, result, { at = Date.now() } = {}) {
   const name = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}-${pad(d.getMinutes())} ${topic}`;
   const rounds = (title, list) => (list.length ? `\n## ${title}\n\n${list.map((r) => `### ${r.member}\n\n${r.text}`).join('\n\n')}\n` : '');
   const failed = result.failed.length ? `\n## Не ответили\n\n${result.failed.map((f) => `- ${f.phase}: ${f.member} — ${f.error}`).join('\n')}\n` : '';
-  const body = `---\nтип: совет\nсоздано: ${name.slice(0, 10)}\nректор: ${result.judge}\nучастники: [${result.round1.map((r) => `"${r.member}"`).join(', ')}]\n---\n# Совет: ${topic}\n\n**Вопрос:** ${result.question}\n\n${result.verdict}\n${result.letters && result.letters.length ? `\n**Кто есть кто в итоге:** ${result.letters.join('; ')}\n` : ''}${failed}${rounds('Раунд 2 — перекрёстный', result.round2)}${rounds('Раунд 1 — вслепую', result.round1)}`;
+  const body = `---\nтип: совет\nсоздано: ${name.slice(0, 10)}\nректор: ${result.rector}\nучастники: [${result.round1.map((r) => `"${r.member}"`).join(', ')}]\n---\n# Совет: ${topic}\n\n**Вопрос:** ${result.question}\n\n${result.verdict || rectorFailedReply(result)}\n${result.letters && result.letters.length ? `\n**Кто есть кто в итоге:** ${result.letters.join('; ')}\n` : ''}${failed}${rounds('Раунд 2 — перекрёстный', result.round2)}${rounds('Раунд 1 — вслепую', result.round1)}`;
   const file = path.join(folder, `${name}.md`);
   fs.writeFileSync(file, body, 'utf8');
   return file;
 }
 
-module.exports = { runCouncil, writeCouncil, extractFor, runCli, claudeRunner, codexRunner, ROUND1, ROUND2, VERDICT, SECOND_RECTOR, HOST_VOICE };
+module.exports = { runCouncil, writeCouncil, extractFor, pickRector, rectorFailedReply, RECTORS, runCli, claudeRunner, codexRunner, ROUND1, ROUND2, VERDICT, HOST_VOICE };

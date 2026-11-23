@@ -16,13 +16,13 @@ function moduleUrl(file) {
 
 const VERDICT_TEXT = '## Решение\nДелать так.\n\n## Выжимка для Геммы\n- Правило один.\n- Правило два.\n\n## Что проверить\n- x';
 
-test('runCouncil: blind round, anonymised cross round, rector verdict; a silent member is noted, not fatal', async () => {
+test('runCouncil: blind round, anonymised cross round (when asked), rector verdict; a silent member is noted, not fatal', async () => {
   const seen = {};
   const member = (name, fail) => ({ name, ask: async (p) => { (seen[name] = seen[name] || []).push(p); if (fail) throw new Error('лимит'); return `ответ ${name}`; } });
   const members = [member('Альфа'), member('Бета'), member('Гамма', true)];
   let judged = '';
   const r = await council.runCouncil('Как устроить совет?', {
-    members, judge: { name: 'Ректор', ask: async (p) => { judged = p; return VERDICT_TEXT; } },
+    members, crossRound: true, judge: { name: 'Ректор', ask: async (p) => { judged = p; return VERDICT_TEXT; } },
   });
   assert.deepEqual(r.round1.map((x) => x.member), ['Альфа', 'Бета']);
   assert.deepEqual(r.round2.map((x) => x.member), ['Альфа', 'Бета']);
@@ -39,28 +39,52 @@ test('runCouncil: blind round, anonymised cross round, rector verdict; a silent 
   assert.deepEqual(council.extractFor(r.verdict), ['Правило один.', 'Правило два.']);
 });
 
-test('runCouncil: the rector out → the fallback rector; nobody answering → an error', async () => {
-  const ok = { name: 'A', ask: async () => 'a' };
-  const r = await council.runCouncil('Вопрос?', { members: [ok], judge: { name: 'Opus', ask: async () => { throw new Error('limit'); } }, fallbackJudge: { name: 'Astra', ask: async () => VERDICT_TEXT } });
-  assert.equal(r.judge, 'Astra');
+test('ordinary council: one blind round, every member asked once, exactly one rector call', async () => {
+  const calls = [];
+  const members = ['A', 'B', 'C', 'D', 'E'].map((name) => ({ name, ask: async () => { calls.push(name); return `ответ ${name}`; } }));
+  let rectorCalls = 0;
+  const r = await council.runCouncil('Вопрос?', { members, judge: { name: 'Opus', ask: async () => { rectorCalls += 1; return VERDICT_TEXT; } } });
+  assert.deepEqual(calls.sort(), ['A', 'B', 'C', 'D', 'E']);
+  assert.deepEqual(r.round2, []);
+  assert.equal(rectorCalls, 1);
+  assert.equal(r.judge, 'Opus');
+});
+
+test('the one rector fails: its status and the members\' answers, no second rector', async () => {
+  const ok = { name: 'A', ask: async () => 'ответ A' };
+  let calls = 0;
+  const r = await council.runCouncil('Вопрос?', { members: [ok], judge: { name: 'Opus', ask: async () => { calls += 1; throw new Error('limit'); } } });
+  assert.equal(calls, 1);
+  assert.equal(r.verdict, null);
+  assert.equal(r.rector, 'Opus');
+  assert.equal(r.rectorError, 'limit');
+  const reply = council.rectorFailedReply(r);
+  assert.match(reply, /ректор Opus не смог \(limit\)\. Второго ректора не запускаю/);
+  assert.match(reply, /### A\n\nответ A/);
   await assert.rejects(council.runCouncil('Вопрос?', { members: [{ name: 'X', ask: async () => { throw new Error('нет'); } }], judge: ok }), /никто не ответил/);
 });
 
-test('two rectors: the second checks the first verdict and gives the final one; a member\'s role goes into its brief', async () => {
-  let seenRole = '';
-  const members = [{ name: 'A', ask: async () => 'a' }, { name: 'Гемма', role: 'РОЛЬ ХОЗЯИНА', ask: async (p) => { seenRole = seenRole || p; return 'g'; } }];
-  let secondSaw = '';
-  const r = await council.runCouncil('Вопрос?', {
-    members, twoRectors: true,
-    judge: { name: 'Opus', ask: async () => VERDICT_TEXT },
-    fallbackJudge: { name: 'Astra', ask: async (p) => { secondSaw = p; return `## Поправки второго ректора\n- нет\n\n${VERDICT_TEXT}`; } },
-  });
-  assert.match(seenRole, /^РОЛЬ ХОЗЯИНА/);
-  assert.match(secondSaw, /### Итог первого ректора\n## Решение/);
-  assert.equal(r.judge, 'Opus + Astra');
-  assert.match(r.verdict, /Поправки второго ректора/);
+test('a stopped council does not report the rector as failed', async () => {
+  const abort = new AbortController();
+  const judge = { name: 'Opus', ask: async () => { abort.abort(new Error('stopped')); throw new Error('killed'); } };
+  await assert.rejects(council.runCouncil('Вопрос?', { members: [{ name: 'A', ask: async () => 'a' }], judge, signal: abort.signal }), /stopped/);
 });
 
+test('pickRector: an explicit seat wins; auto takes the pool with the most quota left; unknown ranks as 20%', () => {
+  const seats = [{ id: 'opus', pool: 'claude' }, { id: 'sol', pool: 'codex' }, { id: 'agy-neon-high', pool: 'agy-gemini' }, { id: 'web-neon', pool: 'web-gemini' }];
+  const groups = [
+    { id: 'claude', bars: [{ remaining: 0 }, { remaining: 86 }] },
+    { id: 'codex', bars: [{ remaining: 28 }, { remaining: 20 }] },
+    { id: 'agy-gemini', bars: [{ remaining: 60 }] },
+    { id: 'web-gemini', bars: [{ remaining: 99 }, { remaining: 79 }] },
+  ];
+  assert.equal(council.pickRector(seats, groups, 'sol').id, 'sol');
+  assert.equal(council.pickRector(seats, groups, 'auto').id, 'web-neon');
+  assert.equal(council.pickRector(seats, [], 'auto').id, 'opus'); // nothing known: the agreed order
+  assert.equal(council.pickRector(seats, [{ id: 'claude', bars: [{ remaining: 3 }] }], 'auto').id, 'sol'); // unknown 20 > known 3
+  assert.equal(council.pickRector(seats.slice(1), groups, 'opus').id, 'web-neon'); // the asked seat isn't here: auto
+  assert.equal(council.pickRector([], groups), null);
+});
 test('writeCouncil: a note in Результаты/Совет, verdict first, rounds after', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'capri-council-'));
   const file = council.writeCouncil(root, { question: 'Как устроить совет?', round1: [{ member: 'A', text: 'r1' }], round2: [{ member: 'A', text: 'r2' }], verdict: VERDICT_TEXT, judge: 'Ректор', failed: [] }, { at: new Date(2026, 10, 17, 20, 5).getTime() });

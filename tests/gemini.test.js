@@ -162,3 +162,52 @@ test('MODELS maps research and hardest roles to Neon', () => {
   assert.equal(gemini.MODELS.hardest, 'Neon');
   assert.equal(gemini.MODELS.code, 'Hydrogen');
 });
+
+test('pair: two Web Gemini models in ONE MAIN session at once; the second tab opens after the first question went out', async () => {
+  const log = [];
+  let opened = 0;
+  let closed = 0;
+  const tab = (name) => {
+    const { page, seen } = fakePage({ reply: `ответ ${name}`, polls: 4 });
+    const evaluate = page.evaluate;
+    page.evaluate = async (fn, arg) => {
+      const out = await evaluate(fn, arg);
+      if (String(fn).includes('send message')) log.push(`${name} sent`);
+      return out && typeof out === 'object' && 'signedIn' in out ? { ...out, model: 'Hydrogen Neon' } : out;
+    };
+    return { page, seen };
+  };
+  const session = {
+    attached: true,
+    withKept: async (_match, _url, fn) => { log.push('kept tab'); return fn(tab('kept').page); },
+    withTab: async (fn) => { log.push('passing tab'); return fn(tab('passing').page); },
+    close: async () => { closed += 1; },
+  };
+  const [hydrogen, neon] = gemini.pair(['everyday', 'research'], {
+    open: async () => { opened += 1; return session; }, minGapMs: 0, pollMs: 1, task: false,
+  });
+  const [a, b] = await Promise.all([hydrogen('вопрос'), neon('вопрос')]);
+  assert.equal(a.answer, 'ответ kept');
+  assert.equal(b.answer, 'ответ passing');
+  assert.equal(opened, 1);
+  assert.equal(closed, 1);
+  assert.ok(log.indexOf('passing tab') > log.indexOf('kept sent'), log.join(' → '));
+});
+
+test('pair: a failing first tab still lets the second one run, and each caller gets its own result', async () => {
+  const session = {
+    attached: true,
+    withKept: async () => { throw new Error('вкладка недоступна'); },
+    withTab: async (fn) => {
+      const { page } = fakePage({ reply: 'ок' });
+      const evaluate = page.evaluate;
+      page.evaluate = async (f, arg) => { const out = await evaluate(f, arg); return out && typeof out === 'object' && 'signedIn' in out ? { ...out, model: 'Neon' } : out; };
+      return fn(page);
+    },
+    close: async () => {},
+  };
+  const [first, second] = gemini.pair(['everyday', 'research'], { open: async () => session, minGapMs: 0, pollMs: 1, task: false });
+  const [x, y] = await Promise.allSettled([first('q'), second('q')]);
+  assert.equal(x.status, 'rejected');
+  assert.equal(y.value.answer, 'ок');
+});

@@ -1497,7 +1497,8 @@ class PhoneBridge {
           let result;
           let status = 200;
           try {
-            const options = { ...flags, signal: abort.signal, notifyActivity };
+            const rector = typeof body.rector === 'string' && /^[a-z-]{2,20}$/.test(body.rector) ? body.rector : undefined;
+            const options = { ...flags, rector, signal: abort.signal, notifyActivity };
             result = kind === 'council'
               ? await this.runMobileCouncil(flags.text, options)
               : await this.runDeepResearch(flags.text, options);

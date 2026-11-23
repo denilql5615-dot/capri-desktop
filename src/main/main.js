@@ -2549,12 +2549,15 @@ async function applyPhone() {
       quotaSnapshot: () => ensureQuotaHub().snapshot(),
       quotaRefresh: () => ensureQuotaHub().refresh({ force: true }),
       quotaGroup: groupFor,
-      runMobileCouncil: async (query, { signal, notifyActivity }) => {
+      runMobileCouncil: async (query, { signal, notifyActivity, rector }) => {
         const result = await council.runCouncil(query, {
-          ...councilMembers(config.load(), null, { signal, notifyActivity }),
-          signal, twoRectors: true,
+          ...councilMembers(config.load(), null, { signal, notifyActivity, rector }),
+          signal,
         });
-        return { reply: result.verdict, rector: result.judge };
+        return {
+          reply: result.verdict || council.rectorFailedReply(result),
+          rector: result.rector, rectorFailed: !result.verdict, rectorError: result.rectorError || undefined,
+        };
       },
       quotaActivity: () => {
         const { active, groups } = ensureQuotaHub().snapshot();
@@ -3643,47 +3646,50 @@ const agentWeb = createAgentWeb({
   },
 });
 
-// Her council's members (council.js), each only thinking: Gemini Hydrogen on the web (your subscription),
-// Antigravity's Orchestrator (Argon) in its app with "Request Review", Claude Opus in plan mode, Codex
-// GPT-6.1 Sol (medium) read-only, and Gemma (the main local brain). The rector: Claude Opus; GPT-6 Astra
-// (high) when Claude is out. `only`: a subset by id.
-function councilMembers(cfg, only, { signal, notifyActivity } = {}) {
+// Her ordinary council (council.js, agreed with Danyal 2026-11-24), each member only thinking: Claude
+// Sonnet 5.5 Medium in plan mode, Antigravity Hydrogen High and Neon Medium, and the Web Gemini pair
+// (Hydrogen + Neon) at once in one MAIN session. ONE rector, picked before the start: Claude Opus 5.5
+// Medium, Codex GPT-6.2 Sol Medium, Antigravity Neon High or Web Gemini Neon (its High level is not
+// confirmed in Gemini's DOM). `only`: a subset of members by id; `rector`: a seat id or 'auto'.
+function councilMembers(cfg, only, { signal, notifyActivity, rector } = {}) {
   const cwd = workers.workDir(cfg);
   const claudeExe = workers.findClaude();
   const codexExe = workers.findCodex();
+  const open = () => capriBrowser.openSession(browserOpts(cfg));
+  const agy = (model) => (p, { onActivity } = {}) => workers.askGemini(cfg, [{ role: 'user', content: p }], () => {}, signal, { model, onActivity });
+  const [webHydrogen, webNeon] = gemini.pair(['everyday', 'research'], { open, signal, clipboard: gemini.electronClipboard() });
+  const web = (asker) => async (p, { onActivity } = {}) => (await asker(p, { onActivity })).answer;
   const all = [
-    { id: 'gemini', name: 'Gemini Hydrogen (веб)', ask: async (p) => (await gemini.ask(p, { model: 'everyday', signal, clipboard: gemini.electronClipboard(), open: () => capriBrowser.openSession(browserOpts(cfg)) })).answer },
-    { id: 'argon', name: 'Antigravity Orchestrator (Argon)', ask: async (p) => (await agyApp.ask(p, { model: 'Orchestrator (Argon)', port: cfg.agyAppPort, signal })).answer },
-    ...(claudeExe ? [{ id: 'opus', name: 'Claude Opus', ask: council.claudeRunner({ exe: claudeExe, cwd, model: 'opus', signal }) }] : []),
-    ...(codexExe ? [{ id: 'sol', name: 'Codex GPT-6.1 Sol', ask: council.codexRunner({ exe: codexExe, cwd, model: 'gpt-6.1-sol', effort: 'medium', signal }) }] : []),
-    { id: 'gemma', name: 'Gemma (голос хозяина)', role: council.HOST_VOICE, ask: async (p) => {
-      const model = brains.ready(await ollama.models().catch(() => [])) ? await brains.use('main') : cfg.chatModel;
-      // a cross round carries everyone's answers: a 16k window (8k was too small in the first council)
-      return ollama.chat({ model, messages: [{ role: 'user', content: p }], numPredict: 1400, numCtx: 16384 }, () => {}, signal);
-    } },
+    ...(claudeExe ? [{ id: 'sonnet', name: 'Claude Sonnet 5.5 · Medium', pool: 'claude', ask: council.claudeRunner({ exe: claudeExe, cwd, model: 'sonnet', effort: 'medium', signal }) }] : []),
+    { id: 'agy-hydrogen', name: 'Antigravity · Hydrogen High', pool: 'agy-gemini', ask: agy('gemini-4-hydrogen-high') },
+    { id: 'agy-neon', name: 'Antigravity · Neon Medium', pool: 'agy-gemini', ask: agy('gemini-4-neon-medium') },
+    { id: 'web-hydrogen', name: 'Web Gemini · Hydrogen', pool: 'web-gemini', ask: web(webHydrogen) },
+    { id: 'web-neon', name: 'Web Gemini · Neon', pool: 'web-gemini', ask: web(webNeon) },
   ];
   const members = Array.isArray(only) && only.length ? all.filter((m) => only.includes(m.id)) : all;
-  const pools = { gemini: 'web-gemini', argon: 'agy-argon', opus: 'claude', sol: 'codex', 'rector-opus': 'claude', 'rector-astra': 'codex' };
+  const seats = [
+    claudeExe && { id: 'opus', name: 'Claude Opus 5.5 · Medium (ректор)', pool: 'claude', ask: council.claudeRunner({ exe: claudeExe, cwd, model: 'opus', effort: 'medium', signal }) },
+    codexExe && { id: 'sol', name: 'Codex GPT-6.2 Sol · Medium (ректор)', pool: 'codex', ask: council.codexRunner({ exe: codexExe, cwd, model: 'gpt-6.2-sol', effort: 'medium', signal }) },
+    { id: 'agy-neon-high', name: 'Antigravity · Neon High (ректор)', pool: 'agy-gemini', ask: agy('gemini-4-neon-high') },
+    { id: 'web-neon', name: 'Web Gemini · Neon (ректор)', pool: 'web-gemini', ask: async (p, { onActivity } = {}) => (await gemini.ask(p, { model: 'hardest', open, signal, onActivity })).answer },
+  ];
+  const groups = (() => { try { return ensureQuotaHub().snapshot().groups || []; } catch { return []; } })();
+  const judge = council.pickRector(seats, groups, rector || cfg.councilRector || 'auto');
   const tracked = (member) => ({
-    ...member, ask: async (...args) => {
+    ...member, ask: async (prompt) => {
       signal?.throwIfAborted();
-      const pool = pools[member.id];
       const runId = randomUUID();
-      const emit = (state) => notifyActivity?.({ runId, agent: member.name, pool, event: { kind: 'turn', state } });
-      emit('running');
+      const send = (event) => notifyActivity?.({ runId, agent: member.name, pool: member.pool, event });
+      send({ kind: 'turn', state: 'running' });
       let state = 'failed';
       try {
-        const answer = await withQuota(pool, 'swarm', () => member.ask(...args));
+        const answer = await withQuota(member.pool, 'swarm', () => member.ask(prompt, { onActivity: (event) => send(event) }));
         state = 'done';
         return answer;
-      } finally { emit(state); }
+      } finally { send({ kind: 'turn', state: signal?.aborted ? 'stopped' : state }); }
     },
   });
-  return {
-    members: members.map(tracked),
-    judge: claudeExe ? tracked({ id: 'rector-opus', name: 'Claude Opus (ректор)', ask: council.claudeRunner({ exe: claudeExe, cwd, model: 'opus', signal }) }) : null,
-    fallbackJudge: codexExe ? tracked({ id: 'rector-astra', name: 'GPT-6 Astra (ректор)', ask: council.codexRunner({ exe: codexExe, cwd, model: 'gpt-6-astra', effort: 'high', signal }) }) : null,
-  };
+  return { members: members.map(tracked), judge: judge ? tracked(judge) : null };
 }
 
 // her browser settings for browser.js: which browser, and your profile with its control port when set
@@ -5134,16 +5140,17 @@ function registerIpc() {
     if (tor.wantsTor(q) || tor.onionLink(q)) return { error: 'Tor и даркнет совету не отдаются' };
     try {
       const cfg = config.load();
-      const { members, judge, fallbackJudge } = councilMembers(cfg, how.members);
+      const { members, judge } = councilMembers(cfg, how.members, { rector: how.rector });
       const result = await council.runCouncil(q, {
-        members, judge, fallbackJudge, twoRectors: how.twoRectors !== false, // Opus writes, Astra checks (Danyal: two rectors)
+        members, judge, // one rector, picked before the start (2026-11-24); no automatic second one
         onEvent: (e) => console.warn(`[capri] совет · ${e.phase} · ${e.member}: ${e.status}${e.seconds ? ` (${e.seconds} с)` : ''}${e.error ? ` — ${e.error}` : ''}`),
       });
       const dir = notesDir();
       const root = path.basename(dir).toLowerCase() === 'capri' ? path.dirname(dir) : dir;
       const file = council.writeCouncil(root, result);
       return {
-        verdict: result.verdict, judge: result.judge, members: result.round1.map((r) => r.member), failed: result.failed,
+        verdict: result.verdict || council.rectorFailedReply(result), judge: result.rector, rectorFailed: !result.verdict,
+        members: result.round1.map((r) => r.member), failed: result.failed,
         extract: council.extractFor(result.verdict), file, note: path.relative(root, file).replace(/\\/g, '/'),
       };
     } catch (err) {
