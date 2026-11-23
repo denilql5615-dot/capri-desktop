@@ -21,7 +21,7 @@ const INTERVAL_MS = Object.freeze({
   claude: { shown: 60e3, hidden: 60e3 }, // reading a file the status line writes: free
   codex: { shown: 60e3, hidden: 5 * 60e3 }, // a short `codex app-server` call
   agy: { shown: 5 * 60e3, hidden: 15 * 60e3 }, // a short hidden `agy` start (2.8b)
-  'web-gemini': { shown: 60e3, hidden: 10 * 60e3 }, // the /usage page in the Gemini tab (2.8d)
+  'web-gemini': { shown: 60e3, hidden: Infinity }, // Usage shares the conversation tab
 });
 const STALE_MS = 30 * 60e3;
 
@@ -61,7 +61,7 @@ function toBars(groupId, windows = [], now = Date.now()) {
     const reset = resetsAt !== null && resetsAt <= now; // the window has rolled over since the reading
     byKind.set(kind, {
       kind,
-      label: `${g.label} ${KIND_LABEL[kind]}`,
+      label: `${g.label} ${groupId === 'web-gemini' && kind === '5h' ? 'Текущий лимит' : KIND_LABEL[kind]}`,
       remaining: reset ? 100 : Math.max(0, Math.min(100, Math.round(remaining * 10) / 10)),
       resetsAt: reset ? null : resetsAt,
       rolledOver: reset,

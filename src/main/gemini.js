@@ -14,6 +14,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { readUsageIn } = require('./gemini-usage');
 
 const GEMINI_URL = 'https://gemini.google.com/app';
 const GEMINI_TAB = /^https:\/\/gemini\.google\.com\/app(?:[/?#]|$)/i; // its chat, not its hidden helper frames
@@ -31,7 +32,29 @@ const MODELS = {
 };
 
 let queue = Promise.resolve();
+let pending = 0;
 let lastAt = 0;
+
+function enqueue(run) {
+  pending += 1;
+  const p = queue.then(run).finally(() => { pending -= 1; });
+  queue = p.catch(() => {});
+  return p;
+}
+
+function readUsage(open) {
+  if (pending) return Promise.resolve(null);
+  return enqueue(async () => {
+    const session = await open();
+    try {
+      if (!session.attached) return null;
+      const windows = await session.withKept(GEMINI_TAB, GEMINI_URL, readUsageIn);
+      return windows.length ? { windows, checkedAt: Date.now() } : null;
+    } finally {
+      await session.close();
+    }
+  });
+}
 
 /** A chat id from an address or an id: "ccfa5ca0a07a98a5", or null. */
 function chatId(value) {
@@ -286,13 +309,20 @@ async function askIn(page, prompt, { chat = null, model = null, task = null, fil
  * One question at a time across her (and your agents'), a pause between them, in Gemini's lasting tab.
  * open(): a session of her MAIN window (browser.openSession) with withKept() and close().
  */
-function ask(prompt, { open, chat, model, files, minGapMs = 4000, ...rest } = {}) {
+function ask(prompt, { open, chat, model, files, minGapMs = 4000, onQuota, ...rest } = {}) {
   const run = async () => {
     const wait = lastAt + minGapMs - Date.now();
     if (wait > 0) await pause(wait);
     const s = await open();
     const inTab = (m) => {
-      const go = (page) => askIn(page, prompt, { chat, model: m, files, ...rest });
+      const go = async (page) => {
+        const said = await askIn(page, prompt, { chat, model: m, files, ...rest });
+        if (onQuota && s.attached) {
+          const windows = await readUsageIn(page).catch(() => []);
+          if (windows.length) onQuota(windows);
+        }
+        return said;
+      };
       return s.withKept ? s.withKept(GEMINI_TAB, GEMINI_URL, go) : s.withTab(go);
     };
     try {
@@ -309,9 +339,7 @@ function ask(prompt, { open, chat, model, files, minGapMs = 4000, ...rest } = {}
       await s.close();
     }
   };
-  const p = queue.then(run, run);
-  queue = p.catch(() => {});
-  return p;
+  return enqueue(run);
 }
 
 /** The Windows clipboard through Electron, for pasting images; what was on it is kept and put back. */
@@ -338,4 +366,4 @@ function electronClipboard() {
   };
 }
 
-module.exports = { ask, askIn, chatId, checkFiles, splitFiles, inlineFiles, electronClipboard, MODELS, GEMINI_URL, GEMINI_TAB };
+module.exports = { ask, askIn, readUsage, chatId, checkFiles, splitFiles, inlineFiles, electronClipboard, MODELS, GEMINI_URL, GEMINI_TAB };

@@ -59,7 +59,7 @@ function hub({ shown = [] } = {}) {
 test('refresh asks each source at its own pace and faster while its bar is shown', async () => {
   const { h, asked, updates, tick } = hub({ shown: ['codex'] });
   const first = await h.refresh();
-  assert.deepEqual(asked, { claude: 1, codex: 1, agy: 1, webGemini: 1 });
+  assert.deepEqual(asked, { claude: 1, codex: 1, agy: 1, webGemini: 0 });
   assert.equal(updates.length, 1);
   const codex = first.groups.find((g) => g.id === 'codex');
   assert.deepEqual(codex.bars.map((b) => [b.label, b.remaining]), [['Codex 5 часов', 50], ['Codex Неделя', 75]]);
@@ -71,7 +71,11 @@ test('refresh asks each source at its own pace and faster while its bar is shown
   assert.equal(asked.agy, 1); // hidden: 15 minutes
   assert.equal(asked.claude, 2); // a file: every minute
 
+  h.setShown(['web-gemini']);
+  await h.refresh({ groups: ['web-gemini'] });
+  assert.equal(asked.webGemini, 1);
   await h.refresh({ force: true });
+  assert.equal(asked.webGemini, 2);
   assert.equal(asked.agy, 2);
 });
 

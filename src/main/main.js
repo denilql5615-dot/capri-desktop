@@ -81,7 +81,14 @@ const {
   createTorState,
   createAgentWeb,
 } = require('./tor-guard');
-const gemini = require('./gemini');
+const geminiWeb = require('./gemini');
+const gemini = {
+  ...geminiWeb,
+  ask: (prompt, options) => geminiWeb.ask(prompt, {
+    ...options,
+    onQuota: (windows) => ensureQuotaHub().push('web-gemini', windows, 'web-gemini'),
+  }),
+};
 const agyApp = require('./agy-app');
 const kiwix = require('./kiwix');
 const memoryRoot = require('./memory-root');
@@ -457,7 +464,11 @@ function ensureQuotaHub() {
         }
         return Object.keys(out).length > 1 ? out : null;
       },
-      webGemini: async () => null, // 2.8d: the /usage page in the Gemini tab
+      webGemini: () => {
+        const cfg = config.load();
+        if (!cfg.capriBrowserProfile || torState.isQuarantined()) return null;
+        return gemini.readUsage(() => capriBrowser.openSession(browserOpts(cfg)));
+      },
     },
     onUpdate: (snap) => {
       for (const win of BrowserWindow.getAllWindows()) {
