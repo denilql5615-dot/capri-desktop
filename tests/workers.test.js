@@ -202,7 +202,7 @@ test('askCodex resolves immediately on turn.completed JSONL event without waitin
   assert.strictEqual(res, 'OK');
   assert.deepStrictEqual(deltas, ['OK']);
   assert.deepStrictEqual(usages, [{ promptTokens: 1420, evalTokens: 35 }]);
-  assert.deepStrictEqual(activity, [{ id: 'command', kind: 'command', state: 'done' }]);
+  assert.deepStrictEqual(activity, [{ id: 'command', kind: 'command', state: 'done', detail: { exitCode: 0 } }]);
   assert.ok(spawnedArgs.includes('--ephemeral'));
   assert.ok(spawnedArgs.includes('--json'));
   assert.ok(spawnedArgs.includes('mcp_servers.capri-web.enabled=false'));

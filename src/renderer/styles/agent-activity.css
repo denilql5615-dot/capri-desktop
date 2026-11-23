@@ -1,33 +1,67 @@
+/* The action feed in the chat (2.9 part 3): no card, it reads as the start of the reply. */
 .agent-activity {
   list-style: none;
   color: var(--hub-text);
   font: 400 13px/1.45 var(--gem-font-sans, system-ui);
+  margin: 4px 0 8px;
 }
 
-.agent-activity details {
-  border: 1px solid var(--hub-rule);
-  border-radius: 12px;
-  padding: 8px 12px;
+.agent-activity__head {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  padding: 2px 0;
+  background: none;
+  color: var(--hub-text);
+  font: inherit;
+  cursor: pointer;
 }
 
-.agent-activity summary { cursor: pointer; }
+.agent-activity__head .agent-activity__status { color: var(--hub-text); }
+.agent-activity__chevron { color: var(--hub-muted); }
 .agent-activity__status { color: var(--hub-muted); }
-.agent-activity summary .agent-activity__status { margin-inline-start: 8px; }
 
-.agent-activity ol {
-  margin: 8px 0 0;
-  padding: 0;
+.agent-activity__list {
+  margin: 4px 0 0;
+  padding: 0 0 0 4px;
   list-style: none;
-  max-height: 192px;
-  overflow-y: auto;
+  border-inline-start: 1px solid var(--hub-rule, #ffffff1f);
 }
 
-.agent-activity ol li {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 4px 0;
+.agent-activity__step {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  align-items: start;
+  gap: 10px;
+  padding: 4px 0 4px 8px;
   overflow-wrap: anywhere;
+  color: var(--hub-muted);
+  transition: opacity .25s ease;
+  animation: agent-activity-in .22s ease-out;
 }
 
-.agent-activity ol .agent-activity__status { flex: none; }
+.agent-activity__step.is-running,
+.agent-activity__step.is-message { color: var(--hub-text); }
+.agent-activity__step.is-failed,
+.agent-activity__step.is-failed .agent-activity__status { color: #f28b82; }
+.agent-activity__step[tabindex] { cursor: pointer; }
+.agent-activity__step .agent-activity__status { font-size: 12px; }
+.agent-activity__logo { display: inline-flex; width: 16px; height: 16px; margin-top: 2px; }
+.agent-activity__logo svg { width: 100%; height: 100%; }
+
+.agent-activity__detail {
+  grid-column: 2 / -1;
+  margin: 6px 0 2px;
+  padding: 8px 10px;
+  max-height: 240px;
+  overflow: auto;
+  border-radius: 10px;
+  background: #ffffff0d;
+  color: var(--hub-text);
+  font: 12px/1.45 ui-monospace, Consolas, monospace;
+  white-space: pre-wrap;
+}
+
+@keyframes agent-activity-in { from { opacity: 0; transform: translateY(3px); } }
+@media (prefers-reduced-motion: reduce) { .agent-activity__step { animation: none; transition: none; } }

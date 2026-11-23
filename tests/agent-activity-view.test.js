@@ -25,25 +25,33 @@ class Element {
   setAttribute() {}
 }
 
-test('the timeline updates one row per step and ignores an earlier turn', async (t) => {
+test('the feed updates one row per step, ignores an earlier turn, shows the last three, opens the whole chain', async (t) => {
   const { connectAgentActivity } = await import('../src/renderer/js/agent-activity.js');
   global.document = { createElement: () => new Element() };
   t.after(() => { delete global.document; });
   const list = new Element();
   let emit;
   connectAgentActivity({ onAgentActivity: (listener) => { emit = listener; } }, list, () => 'chat');
-  const send = (runId, event) => emit({ id: 'chat', runId, event });
+  const send = (runId, event) => emit({ id: 'chat', runId, agent: 'codex', event });
   send('old', { kind: 'turn', state: 'running' });
   send('current', { kind: 'turn', state: 'running' });
   send('old', { id: 'late', kind: 'tool', state: 'done' });
-  send('current', { id: 'command', kind: 'command', state: 'running' });
-  send('current', { id: 'command', kind: 'command', state: 'done' });
+  send('current', { id: 'm', kind: 'message', text: 'Смотрю тесты.', state: 'done' });
+  send('current', { id: 'command', kind: 'command', name: 'git', state: 'running', detail: { command: 'git status' } });
+  send('current', { id: 'command', kind: 'command', name: 'git', state: 'failed' });
+  send('current', { id: 'skill', kind: 'skill', name: 'wiki-query', state: 'done' });
   send('current', { id: 'think', kind: 'thinking', state: 'running' });
   send('current', { kind: 'turn', state: 'stopped' });
   assert.equal(list.children.length, 1);
-  const [summary, steps] = list.children[0].children[0].children;
-  assert.equal(summary.children[0].textContent, 'Остановлено');
-  assert.deepEqual(steps.children.map((row) => row.children.map((cell) => cell.textContent)), [
-    ['Команда', 'Готово'], ['Обработка запроса', 'Остановлено'],
+  const [head, steps] = list.children[0].children;
+  assert.equal(head.children[0].textContent, 'Остановлено');
+  const rows = () => steps.children.map((row) => [row.className, row.children[1].textContent, row.children[2].textContent]);
+  assert.deepEqual(rows(), [
+    ['agent-activity__step is-failed', 'Выполнено git status', 'Ошибка'],
+    ['agent-activity__step is-done', 'Навык: wiki-query', 'Готово'],
+    ['agent-activity__step is-running', 'Обрабатываю запрос', 'Остановлено'],
   ]);
+  head.onclick();
+  assert.equal(steps.children.length, 4);
+  assert.equal(rows()[0][1], 'Смотрю тесты.');
 });
