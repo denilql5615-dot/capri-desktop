@@ -25,6 +25,48 @@ test('the phone can read current swarm quotas only with the bridge token', async
   }
 });
 
+test('phone research activity is scoped to the request and command kind', async () => {
+  const ready = Promise.withResolvers();
+  const finish = Promise.withResolvers();
+  const requestId = randomUUID();
+  const groups = [{ id: 'codex', bars: [] }, { id: 'claude', bars: [] }];
+  const bridge = new PhoneBridge({
+    token: () => 'fixture',
+    quotaSnapshot: () => ({ groups }),
+    quotaGroup: (agent) => agent,
+    runMobileCouncil: async (question, { notifyActivity }) => {
+      assert.equal(question, 'synthetic question');
+      notifyActivity({ runId: 'worker', agent: 'codex', event: { kind: 'turn', state: 'running' } });
+      ready.resolve();
+      await finish.promise;
+      notifyActivity({ runId: 'worker', agent: 'codex', event: { kind: 'turn', state: 'done' } });
+      return { reply: 'verdict' };
+    },
+  });
+  const port = await bridge.start(0, '127.0.0.1');
+  const url = `http://127.0.0.1:${port}`;
+  const headers = { 'x-capri-token': 'fixture' };
+  const activity = (id) => fetch(`${url}/deep-research/activity?requestId=${id}`, { headers }).then((res) => res.json());
+  try {
+    assert.deepEqual(await (await fetch(`${url}/quotas`, { headers })).json(), { groups });
+    const pending = fetch(`${url}/deep-research`, { method: 'POST', headers,
+      body: JSON.stringify({ kind: 'council', requestId, query: 'synthetic question' }) });
+    await ready.promise;
+    assert.deepEqual(await activity(requestId), { running: true,
+      steps: [{ agent: 'codex', kind: 'turn', state: 'running' }], groups: [groups[0]] });
+    assert.deepEqual(await activity(randomUUID()), { running: false, steps: [], groups: [] });
+    finish.resolve();
+    assert.deepEqual(await (await pending).json(), { reply: 'verdict' });
+    const done = await activity(requestId);
+    assert.equal(done.running, false);
+    assert.equal(done.steps[0].state, 'done');
+    assert.deepEqual(done.groups, [groups[0]]);
+  } finally {
+    finish.resolve();
+    bridge.stop();
+  }
+});
+
 test('mobile chat carries model and isolated context, and retries one PC turn', async () => {
   const calls = [];
   const logged = [];

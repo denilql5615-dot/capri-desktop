@@ -2546,6 +2546,16 @@ async function applyPhone() {
       dockerEngine: ensureDockerEngine(),
       pcToolsEngine: ensurePcToolsEngine(),
       phoneControlEngine: ensurePhoneControlEngine(), stylesEngine: ensureStylesEngine(),
+      quotaSnapshot: () => ensureQuotaHub().snapshot(),
+      quotaRefresh: () => ensureQuotaHub().refresh({ force: true }),
+      quotaGroup: groupFor,
+      runMobileCouncil: async (query, { signal, notifyActivity }) => {
+        const result = await council.runCouncil(query, {
+          ...councilMembers(config.load(), null, { signal, notifyActivity }),
+          signal, twoRectors: true,
+        });
+        return { reply: result.verdict, rector: result.judge };
+      },
       quotaActivity: () => {
         const { active, groups } = ensureQuotaHub().snapshot();
         return groups.filter((group) => active.includes(group.id));
@@ -3637,30 +3647,42 @@ const agentWeb = createAgentWeb({
 // Antigravity's Orchestrator (Argon) in its app with "Request Review", Claude Opus in plan mode, Codex
 // GPT-6.1 Sol (medium) read-only, and Gemma (the main local brain). The rector: Claude Opus; GPT-6 Astra
 // (high) when Claude is out. `only`: a subset by id.
-function councilMembers(cfg, only) {
+function councilMembers(cfg, only, { signal, notifyActivity } = {}) {
   const cwd = workers.workDir(cfg);
   const claudeExe = workers.findClaude();
   const codexExe = workers.findCodex();
   const all = [
-    { id: 'gemini', name: 'Gemini Hydrogen (веб)', ask: async (p) => (await gemini.ask(p, { model: 'everyday', clipboard: gemini.electronClipboard(), open: () => capriBrowser.openSession(browserOpts(cfg)) })).answer },
-    { id: 'argon', name: 'Antigravity Orchestrator (Argon)', ask: async (p) => (await agyApp.ask(p, { model: 'Orchestrator (Argon)', port: cfg.agyAppPort })).answer },
-    ...(claudeExe ? [{ id: 'opus', name: 'Claude Opus', ask: council.claudeRunner({ exe: claudeExe, cwd, model: 'opus' }) }] : []),
-    ...(codexExe ? [{ id: 'sol', name: 'Codex GPT-6.1 Sol', ask: council.codexRunner({ exe: codexExe, cwd, model: 'gpt-6.1-sol', effort: 'medium' }) }] : []),
+    { id: 'gemini', name: 'Gemini Hydrogen (веб)', ask: async (p) => (await gemini.ask(p, { model: 'everyday', signal, clipboard: gemini.electronClipboard(), open: () => capriBrowser.openSession(browserOpts(cfg)) })).answer },
+    { id: 'argon', name: 'Antigravity Orchestrator (Argon)', ask: async (p) => (await agyApp.ask(p, { model: 'Orchestrator (Argon)', port: cfg.agyAppPort, signal })).answer },
+    ...(claudeExe ? [{ id: 'opus', name: 'Claude Opus', ask: council.claudeRunner({ exe: claudeExe, cwd, model: 'opus', signal }) }] : []),
+    ...(codexExe ? [{ id: 'sol', name: 'Codex GPT-6.1 Sol', ask: council.codexRunner({ exe: codexExe, cwd, model: 'gpt-6.1-sol', effort: 'medium', signal }) }] : []),
     { id: 'gemma', name: 'Gemma (голос хозяина)', role: council.HOST_VOICE, ask: async (p) => {
       const model = brains.ready(await ollama.models().catch(() => [])) ? await brains.use('main') : cfg.chatModel;
       // a cross round carries everyone's answers: a 16k window (8k was too small in the first council)
-      return ollama.chat({ model, messages: [{ role: 'user', content: p }], numPredict: 1400, numCtx: 16384 }, () => {});
+      return ollama.chat({ model, messages: [{ role: 'user', content: p }], numPredict: 1400, numCtx: 16384 }, () => {}, signal);
     } },
   ];
   const members = Array.isArray(only) && only.length ? all.filter((m) => only.includes(m.id)) : all;
   const pools = { gemini: 'web-gemini', argon: 'agy-argon', opus: 'claude', sol: 'codex', 'rector-opus': 'claude', 'rector-astra': 'codex' };
-  const tracked = (member) => pools[member.id] ? {
-    ...member, ask: (...args) => withQuota(pools[member.id], 'swarm', () => member.ask(...args)),
-  } : member;
+  const tracked = (member) => ({
+    ...member, ask: async (...args) => {
+      signal?.throwIfAborted();
+      const pool = pools[member.id];
+      const runId = randomUUID();
+      const emit = (state) => notifyActivity?.({ runId, agent: member.name, pool, event: { kind: 'turn', state } });
+      emit('running');
+      let state = 'failed';
+      try {
+        const answer = await withQuota(pool, 'swarm', () => member.ask(...args));
+        state = 'done';
+        return answer;
+      } finally { emit(state); }
+    },
+  });
   return {
     members: members.map(tracked),
-    judge: claudeExe ? tracked({ id: 'rector-opus', name: 'Claude Opus (ректор)', ask: council.claudeRunner({ exe: claudeExe, cwd, model: 'opus' }) }) : null,
-    fallbackJudge: codexExe ? tracked({ id: 'rector-astra', name: 'GPT-6 Astra (ректор)', ask: council.codexRunner({ exe: codexExe, cwd, model: 'gpt-6-astra', effort: 'high' }) }) : null,
+    judge: claudeExe ? tracked({ id: 'rector-opus', name: 'Claude Opus (ректор)', ask: council.claudeRunner({ exe: claudeExe, cwd, model: 'opus', signal }) }) : null,
+    fallbackJudge: codexExe ? tracked({ id: 'rector-astra', name: 'GPT-6 Astra (ректор)', ask: council.codexRunner({ exe: codexExe, cwd, model: 'gpt-6-astra', effort: 'high', signal }) }) : null,
   };
 }
 

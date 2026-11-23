@@ -54,8 +54,9 @@ function answerAfter(text, mark) {
 }
 
 /** Asks Antigravity in a new conversation: { answer, model }. */
-function ask(prompt, { model = 'Orchestrator (Argon)', preset = 'Request Review', port = DEFAULT_PORT, timeoutMs = 20 * 60 * 1000, connectTo = connect } = {}) {
+function ask(prompt, { model = 'Orchestrator (Argon)', preset = 'Request Review', port = DEFAULT_PORT, timeoutMs = 20 * 60 * 1000, connectTo = connect, signal } = {}) {
   const run = async () => {
+    signal?.throwIfAborted();
     const { br, page } = await connectTo(port);
     const presetBefore = await current(page, 'Agent permissions preset');
     const modelBefore = await current(page, 'Select model');
@@ -74,6 +75,7 @@ function ask(prompt, { model = 'Orchestrator (Argon)', preset = 'Request Review'
       const mark = `[конец вопроса ${Date.now().toString(36)}]`;
       await page.evaluate((t) => { document.execCommand('insertText', false, t); }, `${String(prompt).trim()}\n\n${mark}`);
       await pause(600);
+      signal?.throwIfAborted();
       await page.keyboard.press('Enter');
       const busy = () => page.evaluate(() => [...document.querySelectorAll('button, [role=button]')]
         .some((b) => /^(Stop execution|Cancel \(Ctrl\+D\))/i.test(b.getAttribute('aria-label') || (b.innerText || '').trim())));
@@ -82,6 +84,11 @@ function ask(prompt, { model = 'Orchestrator (Argon)', preset = 'Request Review'
       let idle = 0;
       while (Date.now() - started < timeoutMs) {
         await pause(3000);
+        if (signal?.aborted) {
+          await page.evaluate(() => [...document.querySelectorAll('button, [role=button]')]
+            .find((b) => /^(Stop execution|Cancel \(Ctrl\+D\))/i.test(b.getAttribute('aria-label') || (b.innerText || '').trim()))?.click()).catch(() => {});
+          signal.throwIfAborted();
+        }
         const b = await busy();
         if (b) { seenBusy = true; idle = 0; continue; }
         if (seenBusy || Date.now() - started > 15000) idle++;

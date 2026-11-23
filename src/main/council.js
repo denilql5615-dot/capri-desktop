@@ -76,9 +76,12 @@ const killTree = (child) => {
 };
 
 /** A CLI run: prompt on stdin, text out (stdout or a file), a deadline. */
-function runCli(exe, args, prompt, { cwd, timeoutMs = 15 * 60 * 1000, outFile = null, parse = null } = {}) {
+function runCli(exe, args, prompt, { cwd, timeoutMs = 15 * 60 * 1000, outFile = null, parse = null, signal } = {}) {
   return new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
     const child = spawn(exe, args, { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const stop = () => { killTree(child); reject(signal.reason); };
+    signal?.addEventListener('abort', stop, { once: true });
     const timer = setTimeout(() => { killTree(child); reject(new Error('не уложился во время')); }, timeoutMs);
     let out = '';
     let err = '';
@@ -86,9 +89,10 @@ function runCli(exe, args, prompt, { cwd, timeoutMs = 15 * 60 * 1000, outFile = 
     child.stdout.on('data', (d) => { out += d; });
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (d) => { err = (err + d).slice(-3000); });
-    child.on('error', (e) => { clearTimeout(timer); reject(e); });
+    child.on('error', (e) => { clearTimeout(timer); signal?.removeEventListener('abort', stop); reject(e); });
     child.on('close', (code) => {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', stop);
       let text = out;
       if (outFile) { try { text = fs.readFileSync(outFile, 'utf8'); } catch { text = ''; } fs.rm(outFile, { force: true }, () => {}); }
       if (parse) text = parse(text);
@@ -101,22 +105,23 @@ function runCli(exe, args, prompt, { cwd, timeoutMs = 15 * 60 * 1000, outFile = 
 }
 
 /** Claude Code, plan mode (it can read, it can't change anything). */
-const claudeRunner = ({ exe, cwd, model = 'opus' }) => (prompt) => runCli(exe,
-  ['-p', '--output-format', 'text', '--permission-mode', 'plan', '--model', model, '--no-session-persistence'], prompt, { cwd });
+const claudeRunner = ({ exe, cwd, model = 'opus', signal }) => (prompt) => runCli(exe,
+  ['-p', '--output-format', 'text', '--permission-mode', 'plan', '--model', model, '--no-session-persistence'], prompt, { cwd, signal });
 
 /** Codex in a read-only sandbox, a model and an effort. */
-const codexRunner = ({ exe, cwd, model = 'gpt-6.1-sol', effort = 'medium' }) => (prompt) => {
+const codexRunner = ({ exe, cwd, model = 'gpt-6.1-sol', effort = 'medium', signal }) => (prompt) => {
   const out = path.join(os.tmpdir(), `capri-council-${randomUUID()}.txt`);
   return runCli(exe, ['exec', '--skip-git-repo-check', '--sandbox', 'read-only', '--cd', cwd, '--model', model,
     '-c', `model_reasoning_effort="${effort}"`, '-c', 'mcp_servers.node_repl.enabled=false', '-c', 'features.memories=false',
-    '--output-last-message', out, '-'], prompt, { cwd, outFile: out });
+    '--output-last-message', out, '-'], prompt, { cwd, outFile: out, signal });
 };
 
 /**
  * Runs a council. members: [{ id, name, ask(prompt) -> Promise<string> }], judge / fallbackJudge: the same shape.
  * onEvent({ phase, member, status, text }). Returns { question, round1, round2, verdict, judge, failed }.
  */
-async function runCouncil(question, { members, judge, fallbackJudge = null, twoRectors = false, onEvent = () => {}, crossRound = true } = {}) {
+async function runCouncil(question, { members, judge, fallbackJudge = null, twoRectors = false, onEvent = () => {}, crossRound = true, signal } = {}) {
+  signal?.throwIfAborted();
   const q = String(question || '').trim();
   if (!q) throw new Error('пустой вопрос совета');
   const failed = [];
@@ -136,6 +141,7 @@ async function runCouncil(question, { members, judge, fallbackJudge = null, twoR
 
   // round 1 — blind
   const r1 = (await settle('Раунд 1 — вслепую', members, (m) => ROUND1(q, m.role))).filter(([, t]) => t);
+  signal?.throwIfAborted();
   if (!r1.length) throw new Error('в совете никто не ответил');
   let finals = r1;
   let r2 = [];
@@ -146,6 +152,7 @@ async function runCouncil(question, { members, judge, fallbackJudge = null, twoR
       const others = r1.filter(([x]) => x !== m).map(([, t], i) => [LETTERS[i], t]);
       return ROUND2(q, mine, others);
     })).filter(([, t]) => t);
+    signal?.throwIfAborted();
     // a member who answered round 1 but not round 2 keeps its first answer
     finals = r1.map(([m, t]) => r2.find(([x]) => x === m) || [m, t]);
   }
@@ -157,6 +164,7 @@ async function runCouncil(question, { members, judge, fallbackJudge = null, twoR
   let by = null;
   const rectors = [judge, fallbackJudge].filter(Boolean);
   for (const j of rectors) {
+    signal?.throwIfAborted();
     onEvent({ phase: 'Итог', member: j.name, status: 'пишет итог' });
     try {
       verdict = await j.ask(prompt);
@@ -169,6 +177,7 @@ async function runCouncil(question, { members, judge, fallbackJudge = null, twoR
     }
   }
   if (!verdict) throw new Error('ректор не смог написать итог');
+  signal?.throwIfAborted();
   // two rectors: the second checks the first's verdict against the answers and gives the final one
   // ("головной и костный мозг"); if it can't, the first verdict stands
   const second = twoRectors ? rectors.find((j) => j.name !== by) : null;
@@ -183,6 +192,7 @@ async function runCouncil(question, { members, judge, fallbackJudge = null, twoR
       onEvent({ phase: 'Итог', member: second.name, status: 'не смог', error: err.message });
     }
   }
+  signal?.throwIfAborted();
   return {
     question: q,
     letters: finals.map(([m], i) => `Участник ${LETTERS[i]} — ${m.name}`),

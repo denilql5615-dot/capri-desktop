@@ -784,7 +784,7 @@ class AgentSessions {
     this.active.set(id, abort);
     this.notify(id);
     const activity = this.notifyActivity || opts.notifyActivity ? randomUUID() : null;
-    const publish = activity ? (event) => (opts.notifyActivity || this.notifyActivity)({ id, runId: activity, agent: targetAgent, event }) : null;
+    const publish = activity ? (event) => (opts.notifyActivity || this.notifyActivity)({ id, runId: activity, agent: targetAgent, model: resolved.effectiveModel, event }) : null;
     let activityState = 'failed';
     try {
       publish?.({ kind: 'turn', state: 'running' });

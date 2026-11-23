@@ -423,6 +423,7 @@ class PhoneBridge {
     this.privateSuggestionIndex = -1;
     this.workerCooldowns = new Map(); // workerId -> untilMs
     this.researchRequests = new Map();
+    this.researchActivity = new Map();
     this.earlyResearchStops = new Map();
     this.queue = Promise.resolve();
     this.chatRequests = new Map();
@@ -822,6 +823,16 @@ class PhoneBridge {
     if (isPrivate) this.privateSuggestionsCache = cacheEntry;
     else this.suggestionsCache.set(m, cacheEntry);
     return pickRotated(sets, false, now);
+  }
+
+  async runMobileCouncil(query, opts = {}) {
+    opts.signal?.throwIfAborted();
+    if (!query.trim()) throw Object.assign(new Error('Укажи вопрос для совета.'), { status: 400 });
+    if (opts.privateMode || opts.ephemeral || opts.localOnly || this.d.externalBlocked?.(query)) {
+      throw Object.assign(new Error('Совет недоступен в этом режиме.'), { status: 403 });
+    }
+    if (!this.d.runMobileCouncil) throw Object.assign(new Error('Совет недоступен на ПК.'), { status: 503 });
+    return this.d.runMobileCouncil(query, opts);
   }
 
   async runDeepResearch(query, opts = {}) {
@@ -1414,10 +1425,23 @@ class PhoneBridge {
         }
         return this.send(res, 200, { ok: true });
       }
+      if (req.method === 'GET' && url.pathname === '/deep-research/activity') {
+        const id = url.searchParams.get('requestId') || '';
+        if (!RESEARCH_ID.test(id)) return this.send(res, 400, { error: 'Неверный идентификатор исследования.' });
+        const trace = this.researchActivity.get(id);
+        const groups = this.d.quotaSnapshot?.().groups || [];
+        const now = Date.now();
+        const visible = trace && trace.until > now;
+        const pools = visible ? new Set([...trace.groups].filter(([, until]) => until > now).map(([pool]) => pool)) : new Set();
+        return this.send(res, 200, { running: Boolean(visible && trace.until === Infinity),
+          steps: visible ? [...trace.steps.values()] : [], groups: groups.filter((group) => pools.has(group.id)) });
+      }
       if (req.method === 'POST' && url.pathname === '/deep-research') {
         const body = await this.readJson(req);
         const flags = parsePromptFlags(String(body.query ?? body.text ?? '').slice(0, 4000), body);
         const { requestId } = body;
+        const kind = body.kind ?? 'deep';
+        if (kind !== 'deep' && kind !== 'council') return this.send(res, 400, { error: 'Неизвестный тип исследования.' });
         if (requestId !== undefined && (typeof requestId !== 'string' || !RESEARCH_ID.test(requestId))) {
           return this.send(res, 400, { error: 'Неверный идентификатор исследования.' });
         }
@@ -1429,16 +1453,51 @@ class PhoneBridge {
         }
         const abort = new AbortController();
         if (requestId) this.researchRequests.set(requestId, abort);
+        for (const [id, trace] of this.researchActivity) {
+          if (trace.until <= Date.now()) this.researchActivity.delete(id);
+        }
+        const trace = { until: Infinity, steps: new Map(), groups: new Map(), workers: new Map() };
+        if (requestId) this.researchActivity.set(requestId, trace);
+        const notifyActivity = ({ runId, agent, model, event, pool }) => {
+          if (!requestId || abort.signal.aborted) return;
+          const group = pool || this.d.quotaGroup?.(agent, model);
+          if (group && event.kind === 'turn') {
+            if (event.state === 'running') trace.workers.set(runId, group);
+            else trace.workers.delete(runId);
+            trace.groups.set(group, [...trace.workers.values()].includes(group) ? Infinity : Date.now() + 6000);
+          }
+          const key = event.kind === 'turn' ? runId : `${runId}:${event.id}`;
+          trace.steps.set(key, { agent, ...event });
+          if (trace.steps.size > 32) trace.steps.delete(trace.steps.keys().next().value);
+        };
         const disconnect = () => { if (!res.writableEnded) abort.abort(); };
         res.once('close', disconnect);
         if (res.destroyed) disconnect();
         try {
-          const result = await this.runDeepResearch(flags.text, { ...flags, signal: abort.signal });
+          const options = { ...flags, signal: abort.signal, notifyActivity };
+          const result = kind === 'council'
+            ? await this.runMobileCouncil(flags.text, options)
+            : await this.runDeepResearch(flags.text, options);
           if (!res.destroyed) return this.send(res, 200, abort.signal.aborted ? { stopped: true } : result);
         } catch (error) {
           if (!abort.signal.aborted) throw error;
           if (!res.destroyed) return this.send(res, 200, { stopped: true });
         } finally {
+          trace.until = Date.now() + 6000;
+          for (const [group, until] of trace.groups) {
+            if (until > Date.now()) trace.groups.set(group, trace.until);
+          }
+          if (abort.signal.aborted) {
+            for (const step of trace.steps.values()) {
+              if (step.state === 'running') step.state = 'stopped';
+            }
+          }
+          if (requestId) {
+            const expiry = setTimeout(() => {
+              if (this.researchActivity.get(requestId) === trace) this.researchActivity.delete(requestId);
+            }, 6000);
+            expiry.unref();
+          }
           res.off('close', disconnect);
           if (requestId) this.researchRequests.delete(requestId);
         }
@@ -1677,6 +1736,11 @@ class PhoneBridge {
       }
       if (req.method === 'GET' && url.pathname === '/quotas/activity') {
         return this.send(res, 200, { groups: this.d.quotaActivity?.() || [] });
+      }
+      if (req.method === 'GET' && url.pathname === '/quotas') {
+        const quotas = url.searchParams.get('refresh') === 'true'
+          ? await this.d.quotaRefresh?.() : this.d.quotaSnapshot?.();
+        return this.send(res, 200, quotas || { groups: [] });
       }
       if (req.method === 'POST' && url.pathname === '/agents/artifact') {
         const body = await this.readJson(req);
