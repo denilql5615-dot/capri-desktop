@@ -34,6 +34,7 @@ const { LOCAL_CONTEXT_DEFAULTS, getContextLimits, buildContextStats, resolveCont
 const { SlashCommandEngine, compactHistory, isIsolatedMode } = require('./slash-commands');
 const { SkillsEngine } = require('./skills-engine');
 const { PluginsEngine } = require('./plugins-engine');
+const { ConnectorsEngine } = require('./connectors-engine');
 const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
 const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('./hub-artifacts');
@@ -471,7 +472,18 @@ function ensureAgentSessions() {
       if (pluginsCtx.blocked) {
         throw new Error(pluginsCtx.blockReason || 'Запрос заблокирован правилом безопасности.');
       }
-      const combinedHints = isRp ? '' : [skillsCtx.text, pluginsCtx.text, hints].filter(Boolean).join('\n\n');
+      const connectorContext = isRp
+        ? ''
+        : (typeof meta?.connectorContext === 'string'
+          ? meta.connectorContext
+          : (await (meta?.connectorsEngine || ensureConnectorsEngine()).resolveTurnContext({
+            text: lastUser,
+            mode: meta?.mode || 'agent',
+            ephemeral: Boolean(meta?.ephemeral),
+            isCloud: isCloudAgent,
+            torQuarantined: torState.isQuarantined(),
+          })).contextBlock);
+      const combinedHints = isRp ? '' : [skillsCtx.text, pluginsCtx.text, connectorContext, hints].filter(Boolean).join('\n\n');
       if (meta?.ephemeral || meta?.privateMode || meta?.localOnly || meta?.mode === 'private' || meta?.mode === 'nsfw') {
         throw new Error('Облачные модели недоступны в этом режиме.');
       }
@@ -625,6 +637,7 @@ function ensureAgentSessions() {
     }, (id, delta) => chatsWin?.webContents.send('agents:update', { id, delta }), {
       skillsEngine: ensureSkillsEngine(),
       pluginsEngine: ensurePluginsEngine(),
+      connectorsEngine: ensureConnectorsEngine(),
     });
   return agentSessions;
 }
@@ -1860,6 +1873,7 @@ function phoneControl() {
 let slashEngine = null;
 let skillsEngine = null;
 let pluginsEngine = null;
+let connectorsEngine = null;
 
 function ensureSkillsEngine() {
   if (skillsEngine) return skillsEngine;
@@ -1880,6 +1894,40 @@ function ensurePluginsEngine() {
     saveConfig: (patch) => config.save(patch),
   });
   return pluginsEngine;
+}
+
+function ensureConnectorsEngine() {
+  if (connectorsEngine) return connectorsEngine;
+  connectorsEngine = new ConnectorsEngine({
+    userDataDir: app.getPath('userData'),
+    getConfig: () => config.load(),
+    saveConfig: (patch) => config.save(patch),
+    sealKey: setup.sealKey,
+    openKeys: setup.openKeys,
+    deps: {
+      pim: { read: (q) => readPimTool(q), service: () => pimService() },
+      vaultDir: () => notesDir(),
+      searchVault: (q, opts = {}) => {
+        if (opts.ephemeral || opts.mode === 'nsfw') return [];
+        const matches = notes.searchVault(notesDir(), q, 4, {
+          journalDir: path.join(app.getPath('userData'), 'memory-journal'),
+        });
+        if (opts.isCloud) {
+          if (torState.isQuarantined()) return [];
+          return (matches || []).filter((m) => !hasSecret(m.text || '') && !messagesHaveTor([{ role: 'user', content: m.text || '' }]));
+        }
+        return matches;
+      },
+      kiwixSearch: async (q) => kiwix.fromLocalFirst((url) => kiwix.search(q, { url, limit: 4 }), config.load().kiwixUrl),
+      webSearch: async (q) => agentWeb.search({ query: q, read: 0 }),
+    },
+  });
+  return connectorsEngine;
+}
+
+function broadcastConnectorsChanged() {
+  try { chatsWin?.webContents.send('capri:connectors-changed'); } catch {}
+  try { overlay?.webContents.send('capri:connectors-changed'); } catch {}
 }
 
 async function compactDesktopChat({ mode = 'chat', ephemeral = false, agent = null, sessionId = null, history, focus = '', model = '' } = {}) {
@@ -1941,6 +1989,7 @@ function ensureSlashEngine() {
   slashEngine = new SlashCommandEngine({
     skillsEngine: ensureSkillsEngine(),
     pluginsEngine: ensurePluginsEngine(),
+    connectorsEngine: ensureConnectorsEngine(),
     getConfig: () => config.load(),
     saveConfig: (patch) => config.save(patch),
     deps: {
@@ -2205,6 +2254,11 @@ async function applyPhone() {
       persona: phonePersona,
       skillsEngine: ensureSkillsEngine(),
       pluginsEngine: ensurePluginsEngine(),
+      connectorsEngine: ensureConnectorsEngine(),
+      onConnectorsChanged: (payload) => {
+        if (payload?.id === 'telegram') applyTelegram();
+        broadcastConnectorsChanged();
+      },
       slashEngine: ensureSlashEngine(),
       contextLimits: () => getContextLimits({ ctxFor: ollama.ctxFor }),
       savePrivateChat: (id, messages, options) => {
@@ -2903,7 +2957,17 @@ async function prepLocal(cfg, messages, { main = false, explicitModel, mobile = 
       userText: cleanSaid,
       isCloud: cfg.provider !== 'ollama',
     });
-    skillsText = [skillCtx.text, pluginCtx.text].filter(Boolean).join('\n\n');
+    const connCtx = await ensureConnectorsEngine().resolveTurnContext({
+      text: cleanSaid,
+      mode: modeNow,
+      ephemeral: false,
+      isCloud: cfg.provider !== 'ollama',
+      torQuarantined: torCtx,
+    });
+    if (lastUserIdx >= 0 && connCtx.cleanedText && connCtx.cleanedText !== cleanSaid) {
+      finalMessages = finalMessages.map((m, idx) => (idx === lastUserIdx ? { ...m, content: connCtx.cleanedText } : m));
+    }
+    skillsText = [skillCtx.text, pluginCtx.text, connCtx.contextBlock, connCtx.hintsBlock].filter(Boolean).join('\n\n');
     if (skillsText) {
       const firstSysIdx = finalMessages.findIndex((m) => m?.role === 'system');
       if (firstSysIdx >= 0) {
@@ -3702,7 +3766,14 @@ function registerIpc() {
           userText: userNow,
           isCloud: true,
         });
-        const combinedWorkerRules = [skillCtx.text, pluginCtx.text].filter(Boolean).join('\n\n');
+        const connCtx = await ensureConnectorsEngine().resolveTurnContext({
+          text: userNow,
+          mode: 'chat',
+          ephemeral: false,
+          isCloud: true,
+          torQuarantined: torState.isQuarantined(),
+        });
+        const combinedWorkerRules = [skillCtx.text, pluginCtx.text, connCtx.contextBlock].filter(Boolean).join('\n\n');
         const workerMessages = combinedWorkerRules
           ? [{ role: 'system', content: combinedWorkerRules }, ...baseWorkerMessages]
           : baseWorkerMessages;
@@ -4136,6 +4207,53 @@ function registerIpc() {
   ipcMain.handle('plugins:reload', (_e, params = {}) => {
     ensurePluginsEngine().reload();
     return ensurePluginsEngine().listPlugins(params || {});
+  });
+  ipcMain.handle('connectors:list', async (_e, params = {}) => {
+    const engine = ensureConnectorsEngine();
+    if (params?.refresh) await engine.checkAll(params || {});
+    return engine.listConnectors(params || {});
+  });
+  ipcMain.handle('connectors:toggle', (_e, payload = {}) => {
+    const res = ensureConnectorsEngine().toggleConnector(payload || {});
+    if (res.ok) broadcastConnectorsChanged();
+    return res;
+  });
+  ipcMain.handle('connectors:check', async (_e, payload = {}) => {
+    const engine = ensureConnectorsEngine();
+    const res = payload?.id
+      ? await engine.checkConnector(payload.id, payload || {})
+      : await engine.checkAll(payload || {});
+    if (res.ok) broadcastConnectorsChanged();
+    return res;
+  });
+  ipcMain.handle('connectors:query', (_e, payload = {}) => ensureConnectorsEngine().queryConnector(payload || {}));
+  ipcMain.handle('connectors:add', (_e, payload = {}) => {
+    const res = ensureConnectorsEngine().addConnector(payload || {});
+    if (res.ok) broadcastConnectorsChanged();
+    return res;
+  });
+  ipcMain.handle('connectors:remove', (_e, payload = {}) => {
+    const res = ensureConnectorsEngine().removeConnector(payload || {});
+    if (res.ok) broadcastConnectorsChanged();
+    return res;
+  });
+  ipcMain.handle('connectors:notebook-digest', (_e, payload = {}) => {
+    const res = ensureConnectorsEngine().buildNotebookDigest(payload || {});
+    if (res.ok) broadcastConnectorsChanged();
+    return res;
+  });
+  ipcMain.handle('connectors:health-sync', (_e, payload = {}) => {
+    const res = ensureConnectorsEngine().saveHealthSummary(payload || {});
+    if (res.ok) broadcastConnectorsChanged();
+    return res;
+  });
+  ipcMain.handle('connectors:configure', async (_e, payload = {}) => {
+    const res = await ensureConnectorsEngine().configureConnector(payload || {});
+    if (res.ok) {
+      if (payload?.id === 'telegram') applyTelegram();
+      broadcastConnectorsChanged();
+    }
+    return res;
   });
   ipcMain.handle('chat:compact', (_e, payload = {}) => compactDesktopChat(payload || {}));
   ipcMain.handle('agents:compact', (event, { id, focus } = {}) => hubSessions(event).compact(id, { focus }));

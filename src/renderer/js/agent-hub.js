@@ -386,10 +386,12 @@ async function executeAgentSlashCommand(rawText, { confirm = false } = {}) {
       await runAgentCompact(id, parsed.rest, null);
       return true;
     }
-    if (cmdName === 'help' || cmdName === 'skills' || cmdName === 'plugins' || cmdName === 'plugin' || cmdName === 'hookify') {
+    if (cmdName === 'help' || cmdName === 'skills' || cmdName === 'plugins' || cmdName === 'plugin' || cmdName === 'hookify' || cmdName === 'connectors' || cmdName === 'connector') {
       const targetTab = cmdName === 'skills'
         ? 'skills'
-        : (['plugins', 'plugin', 'hookify'].includes(cmdName) ? 'plugins' : 'commands');
+        : (['plugins', 'plugin', 'hookify'].includes(cmdName)
+          ? 'plugins'
+          : (['connectors', 'connector'].includes(cmdName) ? 'connectors' : 'commands'));
       openCatalogModal({
         initialTab: targetTab,
         focusPluginId: cmdName === 'hookify' ? 'hookify' : null,
@@ -397,6 +399,7 @@ async function executeAgentSlashCommand(rawText, { confirm = false } = {}) {
         onRunCommand: handleAgentCatalogSelect,
         onSkillsChanged: handleAgentSkillsChanged,
         onPluginsChanged: handleAgentPluginsChanged,
+        onConnectorsChanged: handleAgentConnectorsChanged,
       });
       return true;
     }
@@ -449,10 +452,12 @@ async function executeAgentSlashCommand(rawText, { confirm = false } = {}) {
     openCatalogModal({
       initialTab: act.tab || result.tab || 'commands',
       focusPluginId: act.focusPlugin || act.pluginId || act.focusPluginId || result.focusPlugin || result.pluginId || null,
+      focusConnectorId: act.focusConnector || act.connectorId || act.focusConnectorId || result.focusConnector || result.connectorId || null,
       getContext: getAgentSlashContext,
       onRunCommand: handleAgentCatalogSelect,
       onSkillsChanged: handleAgentSkillsChanged,
       onPluginsChanged: handleAgentPluginsChanged,
+      onConnectorsChanged: handleAgentConnectorsChanged,
     });
     return true;
   }
@@ -590,13 +595,23 @@ function handleAgentCatalogSelect(it) {
       onRunCommand: handleAgentCatalogSelect,
       onSkillsChanged: handleAgentSkillsChanged,
       onPluginsChanged: handleAgentPluginsChanged,
+      onConnectorsChanged: handleAgentConnectorsChanged,
     });
+    return;
+  }
+  const inputEl = $('input');
+  const id = current()?.id;
+  if (it?.kind === 'connector') {
+    const mention = it.mention || `@${it.id || it.name}`;
+    const prev = inputEl.value.trim();
+    inputEl.value = prev ? `${prev} ${mention} ` : `${mention} `;
+    if (id) drafts.set(id, inputEl.value);
+    inputEl.focus();
+    updateAgentSendButton();
     return;
   }
   const slash = it.slash || `/${it.name}`;
   const needsArgs = it.kind === 'skill' || it.kind === 'prompt' || (it.argsHint && String(it.argsHint).trim().startsWith('<'));
-  const inputEl = $('input');
-  const id = current()?.id;
   if (needsArgs) {
     const prev = inputEl.value.trim();
     inputEl.value = prev ? `${slash} ${prev}` : `${slash} `;
@@ -663,6 +678,10 @@ function handleAgentPluginsChanged() {
   agentSlashMenu?.refresh();
 }
 
+function handleAgentConnectorsChanged() {
+  agentSlashMenu?.refresh();
+}
+
 agentSlashMenu = attachSlashMenu({
   input: $('input'),
   container: agentComposeEl,
@@ -683,10 +702,12 @@ agentSlashMenu = attachSlashMenu({
     openCatalogModal({
       initialTab: tabId,
       focusPluginId: opts?.focusPluginId || null,
+      focusConnectorId: opts?.focusConnectorId || null,
       getContext: getAgentSlashContext,
       onRunCommand: handleAgentCatalogSelect,
       onSkillsChanged: handleAgentSkillsChanged,
       onPluginsChanged: handleAgentPluginsChanged,
+      onConnectorsChanged: handleAgentConnectorsChanged,
     });
   },
 });
@@ -696,6 +717,7 @@ registerCatalogTarget('agents', {
   onRunCommand: handleAgentCatalogSelect,
   onSkillsChanged: handleAgentSkillsChanged,
   onPluginsChanged: handleAgentPluginsChanged,
+  onConnectorsChanged: handleAgentConnectorsChanged,
 });
 
 agentQuickSkills = bindQuickSkillToggles({

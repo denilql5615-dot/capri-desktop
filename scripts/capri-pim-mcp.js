@@ -1,0 +1,44 @@
+#!/usr/bin/env node
+'use strict';
+
+// A stdio bridge to Capri's PIM MCP (src/main/pim-mcp.js, http://127.0.0.1:47824/mcp) for agents that
+// can't fetch a DPAPI header themselves (Antigravity, Gemini CLI). Reads the sealed token via
+// scripts/pim-headers.ps1 and forwards tool list/calls without printing secrets or writing anything.
+
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const sdk = (p) => require(path.join(__dirname, '..', 'node_modules', '@modelcontextprotocol', 'sdk', 'dist', 'cjs', p));
+const { Server } = sdk('server/index.js');
+const { StdioServerTransport } = sdk('server/stdio.js');
+const { Client } = sdk('client/index.js');
+const { StreamableHTTPClientTransport } = sdk('client/streamableHttp.js');
+const { ListToolsRequestSchema, CallToolRequestSchema } = sdk('types.js');
+
+const URL_ = process.env.CAPRI_PIM_MCP_URL || 'http://127.0.0.1:47824/mcp';
+
+function token() {
+  return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
+    path.join(__dirname, 'pim-headers.ps1'), '-TokenOnly'], { encoding: 'utf8', windowsHide: true }).trim();
+}
+
+let client = null;
+async function upstream() {
+  if (client) return client;
+  const c = new Client({ name: 'capri-pim-bridge', version: '1.0.0' });
+  await c.connect(new StreamableHTTPClientTransport(new URL(URL_), { requestInit: { headers: { authorization: `Bearer ${token()}` } } }));
+  client = c;
+  return c;
+}
+
+const down = (e) => ({ isError: true, content: [{ type: 'text', text: `Capri's PIM is not reachable (is Capri running?): ${e.message}` }] });
+
+(async () => {
+  const server = new Server({ name: 'capri-pim', version: '1.0.0' }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    try { return await (await upstream()).listTools(); } catch { client = null; return { tools: [] }; }
+  });
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    try { return await (await upstream()).callTool(req.params, undefined, { timeout: 120000 }); } catch (e) { client = null; return down(e); }
+  });
+  await server.connect(new StdioServerTransport());
+})();

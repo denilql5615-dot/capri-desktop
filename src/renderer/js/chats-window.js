@@ -593,10 +593,12 @@ async function executeSlashCommand(rawText, { confirm = false } = {}) {
       if (prev && !busy && !toolBusy) await sendPlainMessage(prev);
       return true;
     }
-    if (cmdName === 'help' || cmdName === 'skills' || cmdName === 'plugins' || cmdName === 'plugin' || cmdName === 'hookify') {
+    if (cmdName === 'help' || cmdName === 'skills' || cmdName === 'plugins' || cmdName === 'plugin' || cmdName === 'hookify' || cmdName === 'connectors' || cmdName === 'connector') {
       const targetTab = cmdName === 'skills'
         ? 'skills'
-        : (['plugins', 'plugin', 'hookify'].includes(cmdName) ? 'plugins' : 'commands');
+        : (['plugins', 'plugin', 'hookify'].includes(cmdName)
+          ? 'plugins'
+          : (['connectors', 'connector'].includes(cmdName) ? 'connectors' : 'commands'));
       openActiveCatalog(targetTab, cmdName === 'hookify' ? { focusPluginId: 'hookify' } : {});
       return true;
     }
@@ -646,10 +648,12 @@ async function executeSlashCommand(rawText, { confirm = false } = {}) {
     openCatalogModal({
       initialTab: act.tab || result.tab || 'commands',
       focusPluginId: act.focusPlugin || act.pluginId || act.focusPluginId || result.focusPlugin || result.pluginId || null,
+      focusConnectorId: act.focusConnector || act.connectorId || act.focusConnectorId || result.focusConnector || result.connectorId || null,
       getContext: getChatsSlashContext,
       onRunCommand: handleCatalogSelect,
       onSkillsChanged: handleChatsSkillsChanged,
       onPluginsChanged: handleChatsPluginsChanged,
+      onConnectorsChanged: handleChatsConnectorsChanged,
     });
     return true;
   }
@@ -810,7 +814,16 @@ function handleCatalogSelect(it) {
       onRunCommand: handleCatalogSelect,
       onSkillsChanged: handleChatsSkillsChanged,
       onPluginsChanged: handleChatsPluginsChanged,
+      onConnectorsChanged: handleChatsConnectorsChanged,
     });
+    return;
+  }
+  if (it?.kind === 'connector') {
+    const mention = it.mention || `@${it.id || it.name}`;
+    const prev = input.value.trim();
+    input.value = prev ? `${prev} ${mention} ` : `${mention} `;
+    input.focus();
+    renderControls();
     return;
   }
   const slash = it.slash || `/${it.name}`;
@@ -838,6 +851,10 @@ function handleChatsPluginsChanged() {
   slashMenu?.refresh();
 }
 
+function handleChatsConnectorsChanged() {
+  slashMenu?.refresh();
+}
+
 slashMenu = attachSlashMenu({
   input,
   container: composeEl,
@@ -855,10 +872,12 @@ slashMenu = attachSlashMenu({
     openCatalogModal({
       initialTab: tabId,
       focusPluginId: opts?.focusPluginId || null,
+      focusConnectorId: opts?.focusConnectorId || null,
       getContext: getChatsSlashContext,
       onRunCommand: handleCatalogSelect,
       onSkillsChanged: handleChatsSkillsChanged,
       onPluginsChanged: handleChatsPluginsChanged,
+      onConnectorsChanged: handleChatsConnectorsChanged,
     });
   },
 });
@@ -868,6 +887,7 @@ registerCatalogTarget('chats', {
   onRunCommand: handleCatalogSelect,
   onSkillsChanged: handleChatsSkillsChanged,
   onPluginsChanged: handleChatsPluginsChanged,
+  onConnectorsChanged: handleChatsConnectorsChanged,
 });
 
 quickSkills = bindQuickSkillToggles({

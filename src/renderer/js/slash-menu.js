@@ -6,6 +6,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 export const INSTANT_COMMANDS = new Set([
   'status', 'usage', 'quota', 'context', 'tasks', 'tools', 'mcp',
   'skills', 'reload-skills', 'plugin', 'plugins', 'hookify',
+  'connector', 'connectors',
   'doctor', 'storage', 'permissions',
   'memory', 'help', 'find', 'free', 'today', 'mail', 'clip',
   'alta', 'agents', 'harness', 'nomad', 'web', 'tor', 'copy',
@@ -198,6 +199,27 @@ const ICON_PATHS = {
     ['path', { d: 'M3 12l9 4.5 9-4.5' }],
     ['path', { d: 'M3 16.5l9 4.5 9-4.5' }],
   ],
+  heart: [
+    ['path', { d: 'M12 20.5l-1.35-1.23C5.4 14.56 2.5 11.9 2.5 8.6A4.6 4.6 0 0 1 7.1 4c1.9 0 3.6.98 4.9 2.54C13.3 4.98 15 4 16.9 4a4.6 4.6 0 0 1 4.6 4.6c0 3.3-2.9 5.96-8.15 10.67L12 20.5z' }],
+  ],
+  play: [
+    ['circle', { cx: 12, cy: 12, r: 9 }],
+    ['path', { d: 'M10 8.5l6 3.5-6 3.5v-7z' }],
+  ],
+  server: [
+    ['rect', { x: 3, y: 4, width: 18, height: 6, rx: 1.5 }],
+    ['rect', { x: 3, y: 14, width: 18, height: 6, rx: 1.5 }],
+    ['path', { d: 'M7 7h.01M7 17h.01' }],
+  ],
+  send: [
+    ['path', { d: 'M21 3L10 14' }],
+    ['path', { d: 'M21 3l-7 18-4-7-7-4 18-7z' }],
+  ],
+  'file-text': [
+    ['path', { d: 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z' }],
+    ['path', { d: 'M14 3v5h5' }],
+    ['path', { d: 'M9 13h6M9 17h4' }],
+  ],
   terminal: [
     ['path', { d: 'M7 19l10-14' }],
   ],
@@ -357,9 +379,17 @@ export const PLUGIN_CATEGORIES = [
   { id: 'safety', title: 'Безопасность и автоматизация' },
 ];
 
+export const CONNECTOR_CATEGORIES = [
+  { id: 'comms', title: 'Почта, календарь и связь' },
+  { id: 'knowledge', title: 'Память, знания и медиа' },
+  { id: 'dev', title: 'Код, модели и инфраструктура' },
+  { id: 'health', title: 'Здоровье и личный спорт' },
+];
+
 const COMMAND_CATEGORY_TITLES = Object.fromEntries(COMMAND_CATEGORIES.map((c) => [c.id, c.title]));
 const SKILL_CATEGORY_TITLES = Object.fromEntries(SKILL_CATEGORIES.map((c) => [c.id, c.title]));
 const PLUGIN_CATEGORY_TITLES = Object.fromEntries(PLUGIN_CATEGORIES.map((c) => [c.id, c.title]));
+const CONNECTOR_CATEGORY_TITLES = Object.fromEntries(CONNECTOR_CATEGORIES.map((c) => [c.id, c.title]));
 
 const PLUGIN_ICON_BY_ID = {
   'obsidian-wiki-pack': 'book',
@@ -559,6 +589,206 @@ export const FALLBACK_PLUGINS = [
   ),
 ];
 
+const CONNECTOR_ICON_BY_ID = {
+  'proton-pim': 'mail',
+  'google-workspace': 'layers',
+  telegram: 'send',
+  obsidian: 'book',
+  'nomad-kiwix': 'database',
+  'capri-web': 'globe',
+  'science-search': 'search',
+  youtube: 'play',
+  'gemini-notebook': 'file-text',
+  github: 'branch',
+  huggingface: 'cpu',
+  context7: 'book',
+  'home-server': 'server',
+  'health-connect': 'heart',
+  wger: 'activity',
+};
+
+const CONNECTOR_ICON_BY_CAT = {
+  comms: 'mail',
+  knowledge: 'book',
+  dev: 'plug',
+  health: 'heart',
+};
+
+const CONFIGURABLE_CONNECTOR_IDS = new Set([
+  'telegram',
+  'wger',
+  'health-connect',
+  'google-workspace',
+  'gemini-notebook',
+]);
+
+const DEFAULT_GOOGLE_WORKSPACE_STEPS = [
+  '1. Открой Antigravity → Plugins Manager.',
+  '2. В разделе Google Drive / Docs / Sheets / Slides нажми Sign in.',
+  '3. Вернись сюда и нажми «Проверить вход».',
+];
+
+function connectorIconName(c) {
+  if (c?.icon && (ICON_PATHS[c.icon] || ICON_ALIAS[c.icon])) return c.icon;
+  return CONNECTOR_ICON_BY_ID[c?.id] || CONNECTOR_ICON_BY_CAT[c?.category] || 'plug';
+}
+
+function connectorStatusDotClass(c) {
+  if (!c || c.enabled === false || c.pausedInMode) return 'is-paused';
+  if (c.status === 'connected') return 'is-connected';
+  if (c.status === 'auth_required') return 'is-auth';
+  if (c.status === 'offline' || c.status === 'error') return 'is-offline';
+  return 'is-paused';
+}
+
+function defaultConnectorStatusLabel(status) {
+  if (status === 'connected') return 'Подключено';
+  if (status === 'auth_required') return 'Нужен вход';
+  if (status === 'offline' || status === 'error') return 'Нет связи';
+  return 'Не настроено';
+}
+
+function makeFallbackConnector(id, name, category, description, opts = {}) {
+  const status = opts.status || 'not_configured';
+  return {
+    id,
+    name,
+    aliases: opts.aliases || [],
+    category,
+    categoryTitle: CONNECTOR_CATEGORY_TITLES[category] || '',
+    description,
+    enabled: opts.enabled !== false,
+    pausedInMode: false,
+    pauseReason: '',
+    cloudOnly: Boolean(opts.cloudOnly),
+    localOnly: Boolean(opts.localOnly),
+    vaultOnly: Boolean(opts.vaultOnly),
+    offlineSafe: Boolean(opts.offlineSafe),
+    status,
+    statusLabel: opts.statusLabel || defaultConnectorStatusLabel(status),
+    latencyMs: Number.isFinite(opts.latencyMs) ? opts.latencyMs : null,
+    detail: opts.detail || '',
+    isCustom: Boolean(opts.isCustom),
+    configurable: typeof opts.configurable === 'boolean' ? opts.configurable : CONFIGURABLE_CONNECTOR_IDS.has(id),
+    transport: opts.transport || 'builtin',
+    url: opts.url || '',
+    command: opts.command || '',
+    lastDigestAt: opts.lastDigestAt || null,
+    kind: 'connector',
+    section: 'connectors',
+    mention: `@${id}`,
+    icon: opts.icon || CONNECTOR_ICON_BY_ID[id] || CONNECTOR_ICON_BY_CAT[category] || 'plug',
+  };
+}
+
+export const FALLBACK_CONNECTORS = [
+  makeFallbackConnector(
+    'proton-pim',
+    'Proton Mail и Календарь',
+    'comms',
+    'Письма и события Proton (только чтение без подтверждения)',
+    { cloudOnly: true, aliases: ['proton', 'mail', 'calendar'], status: 'connected', statusLabel: 'Локальный мост' },
+  ),
+  makeFallbackConnector(
+    'google-workspace',
+    'Google Workspace',
+    'comms',
+    'Drive, Docs, Sheets, Slides, Calendar, Gmail и Contacts',
+    { cloudOnly: true, aliases: ['google', 'gdrive', 'gdocs', 'gsheets', 'gslides', 'gmail', 'contacts'], status: 'auth_required' },
+  ),
+  makeFallbackConnector(
+    'telegram',
+    'Telegram',
+    'comms',
+    'Чтение сообщений и уведомлений (отправка с подтверждением)',
+    { cloudOnly: true, aliases: ['tg'], status: 'not_configured' },
+  ),
+  makeFallbackConnector(
+    'obsidian',
+    'Obsidian Vault',
+    'knowledge',
+    'Поиск и чтение заметок в D:\\Obsidian\\C.A.P.R.I',
+    { vaultOnly: true, offlineSafe: true, aliases: ['vault', 'notes'], status: 'connected' },
+  ),
+  makeFallbackConnector(
+    'nomad-kiwix',
+    'NOMAD / Kiwix',
+    'knowledge',
+    '63 офлайн-книги и справочники локально и на сервере',
+    { offlineSafe: true, aliases: ['nomad', 'kiwix'], status: 'connected' },
+  ),
+  makeFallbackConnector(
+    'capri-web',
+    'Capri Web и Tor',
+    'knowledge',
+    'Поиск и чтение веб-страниц через браузер Капри и SearXNG',
+    { cloudOnly: true, aliases: ['web', 'search'], status: 'connected' },
+  ),
+  makeFallbackConnector(
+    'science-search',
+    'Наука и медицина',
+    'knowledge',
+    'Публикации и исследования в OpenAlex, PubMed и arXiv',
+    { cloudOnly: true, aliases: ['science', 'pubmed', 'openalex', 'arxiv', 'consensus'], status: 'connected' },
+  ),
+  makeFallbackConnector(
+    'youtube',
+    'YouTube',
+    'knowledge',
+    'Поиск, метаданные и разбор роликов YouTube без API-ключа',
+    { cloudOnly: true, aliases: ['yt', 'video'], status: 'connected' },
+  ),
+  makeFallbackConnector(
+    'gemini-notebook',
+    'Gemini Notebook',
+    'knowledge',
+    'Очищенный дайджест памяти для синхронизации с веб-Gemini',
+    { cloudOnly: true, aliases: ['notebook', 'notebooklm'], status: 'connected' },
+  ),
+  makeFallbackConnector(
+    'github',
+    'Git и GitHub',
+    'dev',
+    'Локальные репозитории Капри, ветки, статусы и коммиты',
+    { offlineSafe: true, aliases: ['git', 'repo'], status: 'connected' },
+  ),
+  makeFallbackConnector(
+    'huggingface',
+    'Hugging Face Hub',
+    'dev',
+    'Поиск моделей, GGUF-весов, загрузок и тегов',
+    { cloudOnly: true, aliases: ['hf', 'gguf', 'models'], status: 'connected' },
+  ),
+  makeFallbackConnector(
+    'context7',
+    'Context7',
+    'dev',
+    'Актуальная документация библиотек и API',
+    { cloudOnly: true, aliases: ['c7', 'docs-api'], status: 'connected' },
+  ),
+  makeFallbackConnector(
+    'home-server',
+    'Сервер Lenovo .107',
+    'dev',
+    'Проверка доступности сервисов домашнего сервера',
+    { cloudOnly: true, aliases: ['server', 'lenovo', '107'], status: 'connected' },
+  ),
+  makeFallbackConnector(
+    'health-connect',
+    'Health Connect / Zepp',
+    'health',
+    'Шаги, сон, пульс и тренировки — строго локально',
+    { localOnly: true, offlineSafe: true, aliases: ['health', 'sleep', 'steps', 'zepp'], status: 'not_configured' },
+  ),
+  makeFallbackConnector(
+    'wger',
+    'Wger',
+    'health',
+    'Локальный дневник тренировок и питания (self-hosted)',
+    { localOnly: true, offlineSafe: true, aliases: ['workout', 'gym'], status: 'not_configured' },
+  ),
+];
+
 function item(name, description, opts = {}) {
   const section = opts.section || 'commands';
   const category = opts.category || (section === 'skills' ? 'style' : 'chat');
@@ -640,6 +870,7 @@ export const FALLBACK_SECTIONS = [
       item('mcp', 'Статус MCP-подключений', { category: 'system' }),
       item('skills', 'Список установленных навыков', { category: 'system' }),
       item('plugins', 'Каталог локальных плагинов и правил', { aliases: ['plugin'], category: 'system' }),
+      item('connectors', 'Каталог коннекторов, статусы и свои MCP', { aliases: ['connector'], category: 'system' }),
       item('hookify', 'Пользовательские правила Hookify', { category: 'system' }),
       item('doctor', 'Быстрая диагностика систем Капри', { category: 'system' }),
       item('storage', 'Использование диска и базы', { category: 'system' }),
@@ -679,13 +910,7 @@ export const FALLBACK_SECTIONS = [
     id: 'connectors',
     title: 'Коннекторы',
     allLabel: 'Все коннекторы',
-    stage: '2.4',
-    items: [
-      item('proton-pim', 'Proton Mail и Proton Calendar (только чтение без подтверждения)', { section: 'connectors', kind: 'draft', icon: 'mail', badge: 'Этап 2.4' }),
-      item('obsidian-vault', 'Прямой доступ к заметкам D:\\Obsidian\\C.A.P.R.I', { section: 'connectors', kind: 'draft', icon: 'book', badge: 'Этап 2.4' }),
-      item('github-sync', 'Репозитории, коммиты и ревью через GitHub', { section: 'connectors', kind: 'draft', icon: 'branch', badge: 'Этап 2.4' }),
-      item('google-workspace', 'Документы и таблицы при явном подключении', { section: 'connectors', kind: 'draft', icon: 'plug', badge: 'Этап 2.4' }),
-    ],
+    items: FALLBACK_CONNECTORS,
   },
   {
     id: 'styles',
@@ -715,7 +940,7 @@ const CATALOG_HERO = {
   },
   connectors: {
     title: 'Коннекторы',
-    subtitle: 'Внешние подключения к почте, календарю, хранилищам и сервисам.',
+    subtitle: 'Подключения к почте, базе знаний, вебу, коду и личным данным. Упоминай через @ в чате.',
   },
   styles: {
     title: 'Стили',
@@ -751,6 +976,35 @@ function applyPluginModePause(plugin, ctx) {
   return { ...plugin };
 }
 
+function applyConnectorModePause(connector, ctx) {
+  if (!connector) return connector;
+  const isolated = isIsolatedContext(ctx);
+  const noVault = Boolean(ctx?.ephemeral || ctx?.mode === 'nsfw');
+  const isCloudAgent = Boolean(ctx?.mode === 'agent' || ctx?.agent);
+  if (connector.localOnly && isCloudAgent) {
+    return {
+      ...connector,
+      pausedInMode: true,
+      pauseReason: connector.pauseReason || 'Только локально (скрыто для облачных агентов)',
+    };
+  }
+  if (connector.cloudOnly && isolated) {
+    return {
+      ...connector,
+      pausedInMode: true,
+      pauseReason: connector.pauseReason || 'Пауза в изолированном режиме',
+    };
+  }
+  if (connector.vaultOnly && noVault) {
+    return {
+      ...connector,
+      pausedInMode: true,
+      pauseReason: connector.pauseReason || 'Пауза во временном/18+ режиме',
+    };
+  }
+  return { ...connector };
+}
+
 function buildFallbackCatalog(ctx) {
   const isolated = isIsolatedContext(ctx);
   const pct = Number.isFinite(ctx?.pct) ? Math.round(ctx.pct) : null;
@@ -759,6 +1013,12 @@ function buildFallbackCatalog(ctx) {
       return {
         ...sec,
         items: sec.items.map((p) => applyPluginModePause(p, ctx)),
+      };
+    }
+    if (sec.id === 'connectors') {
+      return {
+        ...sec,
+        items: sec.items.map((c) => applyConnectorModePause(c, ctx)),
       };
     }
     return {
@@ -935,6 +1195,94 @@ async function fetchPlugins(ctx, fallbackItems = []) {
   return normalizePluginsResponse({}, base, ctx);
 }
 
+function normalizeConnectorsResponse(res, fallbackItems = [], ctx = null) {
+  const rawItems = Array.isArray(res?.items)
+    ? res.items
+    : (Array.isArray(res?.categories) ? res.categories.flatMap((c) => c.items || []) : fallbackItems);
+  const items = (rawItems || []).map((c) => {
+    const id = c.id || c.slug || c.name;
+    const status = c.status || 'not_configured';
+    return {
+      ...c,
+      id,
+      name: c.name || c.title || id,
+      aliases: Array.isArray(c.aliases) ? c.aliases : [],
+      category: c.category || 'dev',
+      categoryTitle: c.categoryTitle || CONNECTOR_CATEGORY_TITLES[c.category] || 'Прочее',
+      description: c.description || '',
+      enabled: c.enabled !== false,
+      pausedInMode: Boolean(c.pausedInMode),
+      pauseReason: c.pauseReason || '',
+      cloudOnly: Boolean(c.cloudOnly),
+      localOnly: Boolean(c.localOnly),
+      vaultOnly: Boolean(c.vaultOnly),
+      offlineSafe: Boolean(c.offlineSafe),
+      status,
+      statusLabel: c.statusLabel || defaultConnectorStatusLabel(status),
+      latencyMs: Number.isFinite(Number(c.latencyMs)) ? Math.round(Number(c.latencyMs)) : null,
+      detail: c.detail || '',
+      isCustom: Boolean(c.isCustom),
+      configurable: typeof c.configurable === 'boolean' ? c.configurable : CONFIGURABLE_CONNECTOR_IDS.has(id),
+      transport: c.transport || (c.isCustom ? 'http' : 'builtin'),
+      url: c.url || '',
+      command: c.command || '',
+      lastDigestAt: c.lastDigestAt || null,
+      kind: 'connector',
+      section: 'connectors',
+      mention: `@${id}`,
+      icon: connectorIconName(c),
+    };
+  });
+  const finalItems = ctx && !Array.isArray(res?.items) && !Array.isArray(res?.categories)
+    ? items.map((c) => applyConnectorModePause(c, ctx))
+    : items;
+  const categories = Array.isArray(res?.categories) && res.categories.length
+    ? res.categories.map((cat) => ({
+      id: cat.id,
+      title: cat.title || CONNECTOR_CATEGORY_TITLES[cat.id] || 'Прочее',
+      items: (cat.items || []).map((c) => finalItems.find((x) => x.id === (c.id || c.slug || c.name)) || c),
+    }))
+    : groupByCategories(finalItems, CONNECTOR_CATEGORIES);
+  const total = Number.isFinite(res?.stats?.total) ? res.stats.total : finalItems.length;
+  const enabled = Number.isFinite(res?.stats?.enabled)
+    ? res.stats.enabled
+    : finalItems.filter((c) => c.enabled !== false).length;
+  const connected = Number.isFinite(res?.stats?.connected)
+    ? res.stats.connected
+    : finalItems.filter((c) => c.enabled !== false && c.status === 'connected').length;
+  const activeInMode = Number.isFinite(res?.stats?.activeInMode)
+    ? res.stats.activeInMode
+    : finalItems.filter((c) => c.enabled !== false && !c.pausedInMode).length;
+  const customCount = Number.isFinite(res?.stats?.customCount)
+    ? res.stats.customCount
+    : finalItems.filter((c) => c.isCustom).length;
+  return {
+    categories,
+    items: finalItems,
+    stats: { total, enabled, connected, activeInMode, customCount },
+  };
+}
+
+async function fetchConnectors(ctx, { fallbackItems = [], refresh = false } = {}) {
+  const host = window.host;
+  if (typeof host?.connectorsList === 'function') {
+    try {
+      const res = await host.connectorsList({
+        mode: ctx?.mode || 'capri',
+        ephemeral: Boolean(ctx?.ephemeral),
+        refresh: Boolean(refresh),
+      });
+      if (res && (Array.isArray(res.categories) || Array.isArray(res.items))) {
+        return normalizeConnectorsResponse(res, fallbackItems, ctx);
+      }
+    } catch {
+      // fall back cleanly
+    }
+  }
+  const base = fallbackItems.length ? fallbackItems : FALLBACK_CONNECTORS;
+  return normalizeConnectorsResponse({}, base, ctx);
+}
+
 async function fetchCatalog(ctx) {
   const host = window.host;
   if (typeof host?.commandsList === 'function') {
@@ -978,6 +1326,7 @@ export function extractActiveSlashToken(value, caretPos) {
   if (prevTokens.some((tok) => !tok.startsWith('/'))) return null;
 
   return {
+    trigger: '/',
     start,
     end: pos,
     token,
@@ -987,12 +1336,37 @@ export function extractActiveSlashToken(value, caretPos) {
   };
 }
 
+/**
+ * Finds the active `@connector` token at the caret position when `@` appears at
+ * start-of-string or immediately after whitespace (ignoring emails like `user@gmail.com`).
+ */
+export function extractActiveMentionToken(value, caretPos) {
+  const text = String(value || '');
+  const pos = Number.isFinite(caretPos) ? caretPos : text.length;
+  const before = text.slice(0, pos);
+  const match = before.match(/(?:^|\s)(@[^\s@]*)$/);
+  if (!match) return null;
+
+  const token = match[1];
+  const start = pos - token.length;
+  return {
+    trigger: '@',
+    start,
+    end: pos,
+    token,
+    query: token.slice(1).toLowerCase(),
+    isChained: false,
+    prevTokens: [],
+  };
+}
+
 function scoreItem(it, query) {
   if (!query) return 10;
   const id = (it.id || '').toLowerCase();
   const name = (it.name || '').toLowerCase();
   const title = (it.title || '').toLowerCase();
   const slash = (it.slash || `/${name}`).toLowerCase();
+  const mention = (it.mention || (id ? `@${id}` : '')).toLowerCase();
   const aliases = (it.aliases || []).map((a) => String(a).toLowerCase());
   const desc = (it.description || '').toLowerCase();
   const cat = (it.category || '').toLowerCase();
@@ -1001,13 +1375,15 @@ function scoreItem(it, query) {
   const commands = Array.isArray(it.commands) ? it.commands.map((c) => String(c).toLowerCase()) : [];
   const hooks = Array.isArray(it.hooks) ? it.hooks.map((h) => String(h).toLowerCase()) : [];
   const rules = Array.isArray(it.rules) ? it.rules.map((r) => String(r).toLowerCase()) : [];
-  const statusNote = (it.statusNote || '').toLowerCase();
+  const statusNote = (it.statusNote || it.statusLabel || '').toLowerCase();
+  const detail = (it.detail || '').toLowerCase();
+  const url = (it.url || '').toLowerCase();
 
-  if (name === query || id === query || slash === `/${query}` || aliases.includes(query)) return 100;
+  if (name === query || id === query || slash === `/${query}` || mention === `@${query}` || aliases.includes(query)) return 100;
   if (name.startsWith(query) || id.startsWith(query) || title.startsWith(query) || aliases.some((a) => a.startsWith(query))) return 80;
-  if (name.includes(query) || id.includes(query) || title.includes(query) || slash.includes(query) || aliases.some((a) => a.includes(query))) return 50;
+  if (name.includes(query) || id.includes(query) || title.includes(query) || slash.includes(query) || mention.includes(query) || aliases.some((a) => a.includes(query))) return 50;
   if (skills.some((s) => s.includes(query)) || commands.some((c) => c.includes(query)) || hooks.some((h) => h.includes(query))) return 35;
-  if (desc.includes(query) || statusNote.includes(query) || rules.some((r) => r.includes(query))) return 25;
+  if (desc.includes(query) || statusNote.includes(query) || detail.includes(query) || url.includes(query) || rules.some((r) => r.includes(query))) return 25;
   if (cat.includes(query) || catTitle.includes(query)) return 15;
   return 0;
 }
@@ -1049,7 +1425,7 @@ const INITIAL_LIMITS = {
   commands: 8,
   skills: 5,
   plugins: 3,
-  connectors: 2,
+  connectors: 4,
   styles: 2,
 };
 
@@ -1059,7 +1435,7 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
   const menu = document.createElement('div');
   menu.className = 'slash-menu';
   menu.setAttribute('role', 'listbox');
-  menu.setAttribute('aria-label', 'Команды и навыки');
+  menu.setAttribute('aria-label', 'Команды, навыки и коннекторы');
   menu.hidden = true;
   container.appendChild(menu);
 
@@ -1083,15 +1459,39 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
     }
     const seq = ++fetchSeq;
     const loaded = await fetchCatalog(ctx);
-    const pluginsSec = loaded?.sections?.find((s) => s.id === 'plugins');
+    const sections = Array.isArray(loaded?.sections) ? loaded.sections : [];
+
+    const pluginsSec = sections.find((s) => s.id === 'plugins');
     const needsLivePlugins = !pluginsSec
       || pluginsSec.stage
       || (Array.isArray(pluginsSec.items) && pluginsSec.items.some((it) => it.kind === 'draft'));
-    if (needsLivePlugins && typeof window.host?.pluginsList === 'function') {
-      const livePlugins = await fetchPlugins(ctx);
-      if (pluginsSec && Array.isArray(livePlugins.items) && livePlugins.items.length) {
-        delete pluginsSec.stage;
-        pluginsSec.items = livePlugins.items;
+
+    const connectorsSec = sections.find((s) => s.id === 'connectors');
+    const needsLiveConnectors = force
+      || !connectorsSec
+      || connectorsSec.stage
+      || (Array.isArray(connectorsSec.items) && connectorsSec.items.some((it) => it.kind === 'draft'));
+
+    const [livePlugins, liveConnectors] = await Promise.all([
+      needsLivePlugins && typeof window.host?.pluginsList === 'function' ? fetchPlugins(ctx) : Promise.resolve(null),
+      needsLiveConnectors && typeof window.host?.connectorsList === 'function' ? fetchConnectors(ctx) : Promise.resolve(null),
+    ]);
+
+    if (livePlugins && pluginsSec && Array.isArray(livePlugins.items) && livePlugins.items.length) {
+      delete pluginsSec.stage;
+      pluginsSec.items = livePlugins.items;
+    }
+    if (liveConnectors && Array.isArray(liveConnectors.items) && liveConnectors.items.length) {
+      if (connectorsSec) {
+        delete connectorsSec.stage;
+        connectorsSec.items = liveConnectors.items;
+      } else {
+        sections.push({
+          id: 'connectors',
+          title: 'Коннекторы',
+          allLabel: 'Все коннекторы',
+          items: liveConnectors.items,
+        });
       }
     }
     if (seq !== fetchSeq) return catalog || loaded;
@@ -1130,6 +1530,29 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
       return;
     }
     const it = entry.item;
+    const isConnector = entry.sectionId === 'connectors' || it.kind === 'connector';
+
+    if (range?.trigger === '@') {
+      const mention = `@${it.id || it.name}`;
+      close();
+      applyTokenReplacement(input, range, mention);
+      onSelectItem?.(it, { inserted: true, runImmediately: false, range, isMention: true });
+      return;
+    }
+
+    if (isConnector) {
+      if (forceInsert && range) {
+        const mention = `@${it.id || it.name}`;
+        close();
+        applyTokenReplacement(input, range, mention);
+        onSelectItem?.(it, { inserted: true, runImmediately: false, range, isMention: true });
+        return;
+      }
+      close();
+      onOpenCatalog?.('connectors', { focusConnectorId: it.id || it.name });
+      return;
+    }
+
     if (entry.sectionId === 'plugins' || it.kind === 'plugin') {
       close();
       onOpenCatalog?.('plugins', { focusPluginId: it.id || it.name });
@@ -1162,9 +1585,10 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
     onSelectItem?.(it, { inserted: false, runImmediately: true, range });
   }
 
-  function buildItemRow(it, sectionId, ctxPct) {
+  function buildItemRow(it, sectionId, ctxPct, { isMentionMode = false } = {}) {
     const isSkill = sectionId === 'skills' || it.kind === 'skill';
     const isPlugin = sectionId === 'plugins' || it.kind === 'plugin';
+    const isConnector = sectionId === 'connectors' || it.kind === 'connector';
     const isPaused = Boolean(it.pausedInMode);
     const row = document.createElement('button');
     row.type = 'button';
@@ -1174,31 +1598,54 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
 
     const iconWrap = document.createElement('span');
     iconWrap.className = 'slash-menu__icon';
-    const iconName = isPlugin
-      ? pluginIconName(it)
-      : (it.icon || (it.isPack ? 'layers' : (isSkill ? 'sparkles' : it.name)));
+    const iconName = isConnector
+      ? connectorIconName(it)
+      : (isPlugin
+        ? pluginIconName(it)
+        : (it.icon || (it.isPack ? 'layers' : (isSkill ? 'sparkles' : it.name))));
     iconWrap.appendChild(createIconSvg(iconName, 18));
 
     const main = document.createElement('span');
     main.className = 'slash-menu__main';
 
-    const title = document.createElement('span');
-    title.className = 'slash-menu__title';
-    title.textContent = isPlugin ? (it.name || it.id) : (it.slash || `/${it.name}`);
-    main.appendChild(title);
+    if (isConnector) {
+      const chip = document.createElement('span');
+      chip.className = 'slash-mention-chip';
+      chip.textContent = `@${it.id || it.name}`;
+      main.appendChild(chip);
 
-    if (it.argsHint && !isPlugin) {
-      const args = document.createElement('span');
-      args.className = 'slash-menu__args';
-      args.textContent = it.argsHint;
-      main.appendChild(args);
-    }
+      if (it.name && it.name !== it.id) {
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'slash-menu__mention-name';
+        nameSpan.textContent = it.name;
+        main.appendChild(nameSpan);
+      }
 
-    if (it.description) {
-      const desc = document.createElement('span');
-      desc.className = 'slash-menu__desc';
-      desc.textContent = it.description;
-      main.appendChild(desc);
+      if (it.description) {
+        const desc = document.createElement('span');
+        desc.className = 'slash-menu__desc';
+        desc.textContent = it.description;
+        main.appendChild(desc);
+      }
+    } else {
+      const title = document.createElement('span');
+      title.className = 'slash-menu__title';
+      title.textContent = isPlugin ? (it.name || it.id) : (it.slash || `/${it.name}`);
+      main.appendChild(title);
+
+      if (it.argsHint && !isPlugin) {
+        const args = document.createElement('span');
+        args.className = 'slash-menu__args';
+        args.textContent = it.argsHint;
+        main.appendChild(args);
+      }
+
+      if (it.description) {
+        const desc = document.createElement('span');
+        desc.className = 'slash-menu__desc';
+        desc.textContent = it.description;
+        main.appendChild(desc);
+      }
     }
 
     row.append(iconWrap, main);
@@ -1214,7 +1661,18 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
       right.appendChild(pausedBadge);
     }
 
-    if (isPlugin) {
+    if (isConnector) {
+      const dot = document.createElement('span');
+      dot.className = `slash-status-dot ${connectorStatusDotClass(it)}`;
+      dot.title = it.statusLabel || defaultConnectorStatusLabel(it.status);
+      right.appendChild(dot);
+      if (!isPaused && it.statusLabel) {
+        const stBadge = document.createElement('span');
+        stBadge.className = 'slash-menu__badge slash-menu__badge--meta';
+        stBadge.textContent = String(it.statusLabel);
+        right.appendChild(stBadge);
+      }
+    } else if (isPlugin) {
       if (it.statusNote) {
         const metaBadge = document.createElement('span');
         metaBadge.className = 'slash-menu__badge slash-menu__badge--meta';
@@ -1297,7 +1755,7 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
     return row;
   }
 
-  function buildAllRow(sec) {
+  function buildAllRow(sec, totalOverride = null) {
     const row = document.createElement('button');
     row.type = 'button';
     row.className = 'slash-menu__all-row';
@@ -1313,7 +1771,7 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
 
     const count = document.createElement('span');
     count.className = 'slash-menu__all-count';
-    count.textContent = String((sec.items || []).length);
+    count.textContent = String(totalOverride ?? (sec.items || []).length);
 
     row.append(iconWrap, label, count);
 
@@ -1337,11 +1795,70 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
     const ctx = getContext?.() || {};
     const data = catalog || buildFallbackCatalog(ctx);
     const q = activeToken.query;
+    const isMention = activeToken.trigger === '@';
     const isChained = activeToken.isChained;
     const ctxPct = Number.isFinite(ctx.pct) ? Math.round(ctx.pct) : null;
 
     flatRows = [];
     const frag = document.createDocumentFragment();
+
+    if (isMention) {
+      const connSec = (data.sections || []).find((s) => s.id === 'connectors') || {
+        id: 'connectors',
+        title: 'Коннекторы',
+        allLabel: 'Все коннекторы',
+        items: FALLBACK_CONNECTORS.map((c) => applyConnectorModePause(c, ctx)),
+      };
+      const allConn = Array.isArray(connSec.items) ? connSec.items : [];
+      let items = allConn.filter((it) => it.enabled !== false && it.kind !== 'draft');
+      if (q) {
+        items = items
+          .map((it) => ({ it, score: scoreItem(it, q) }))
+          .filter((x) => x.score > 0)
+          .sort((a, b) => b.score - a.score)
+          .map((x) => x.it);
+      }
+
+      if (items.length) {
+        const secEl = document.createElement('div');
+        secEl.className = 'slash-menu__section';
+
+        const head = document.createElement('div');
+        head.className = 'slash-menu__section-head';
+        const headTitle = document.createElement('span');
+        headTitle.textContent = 'Коннекторы';
+        const hint = document.createElement('span');
+        hint.className = 'slash-menu__section-stage';
+        hint.textContent = 'Упоминание @';
+        head.append(headTitle, hint);
+        secEl.appendChild(head);
+
+        const visible = q ? items : items.slice(0, 10);
+        for (const it of visible) {
+          secEl.appendChild(buildItemRow(it, 'connectors', ctxPct, { isMentionMode: true }));
+        }
+
+        if (!q) {
+          secEl.appendChild(buildAllRow(connSec, allConn.length));
+        }
+
+        frag.appendChild(secEl);
+      }
+
+      if (!flatRows.length) {
+        const empty = document.createElement('div');
+        empty.className = 'slash-menu__empty';
+        empty.textContent = 'Подходящий коннектор не найден';
+        frag.appendChild(empty);
+      }
+
+      menu.replaceChildren(frag);
+      menu.hidden = false;
+      open = true;
+      activeIndex = 0;
+      if (flatRows.length) highlight(0);
+      return;
+    }
 
     if (isChained) {
       const chainBar = document.createElement('div');
@@ -1356,7 +1873,7 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
 
     for (const sec of data.sections || []) {
       let items = Array.isArray(sec.items) ? sec.items : [];
-      if (sec.id === 'skills' || sec.id === 'plugins') {
+      if (sec.id === 'skills' || sec.id === 'plugins' || sec.id === 'connectors') {
         items = items.filter((it) => it.enabled !== false);
       }
       if (isChained) {
@@ -1418,7 +1935,8 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
 
   function updateFromInput() {
     const caret = input.selectionStart ?? input.value.length;
-    const token = extractActiveSlashToken(input.value, caret);
+    const token = extractActiveSlashToken(input.value, caret)
+      || extractActiveMentionToken(input.value, caret);
     if (!token) {
       if (open) close();
       return;
@@ -1499,6 +2017,7 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
   window.addEventListener('keydown', onWindowKeyDown, true);
   window.addEventListener('capri:skills-changed', onSkillsChangedEvent);
   window.addEventListener('capri:plugins-changed', onSkillsChangedEvent);
+  window.addEventListener('capri:connectors-changed', onSkillsChangedEvent);
   document.addEventListener('mousedown', onDocMouseDown);
 
   return {
@@ -1514,6 +2033,7 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
       window.removeEventListener('keydown', onWindowKeyDown, true);
       window.removeEventListener('capri:skills-changed', onSkillsChangedEvent);
       window.removeEventListener('capri:plugins-changed', onSkillsChangedEvent);
+      window.removeEventListener('capri:connectors-changed', onSkillsChangedEvent);
       document.removeEventListener('mousedown', onDocMouseDown);
       menu.remove();
     },
@@ -1550,10 +2070,12 @@ function createToggleSwitch(checked, { label, disabled = false, onToggle }) {
 export async function openCatalogModal({
   initialTab = 'commands',
   focusPluginId = null,
+  focusConnectorId = null,
   getContext,
   onRunCommand,
   onSkillsChanged,
   onPluginsChanged,
+  onConnectorsChanged,
 } = {}) {
   if (activeModalCleanup) {
     activeModalCleanup();
@@ -1567,10 +2089,11 @@ export async function openCatalogModal({
     items: catalog.sections.find((s) => s.id === 'skills')?.items || [],
   });
   let pluginsData = normalizePluginsResponse({}, catalog.sections.find((s) => s.id === 'plugins')?.items || FALLBACK_PLUGINS, ctx);
+  let connectorsData = normalizeConnectorsResponse({}, catalog.sections.find((s) => s.id === 'connectors')?.items || FALLBACK_CONNECTORS, ctx);
   let activeTab = initialTab || 'commands';
   let searchQuery = '';
   let noticeText = '';
-  let activeForm = null; // null | 'create' | 'install' | 'plugin-create' | 'plugin-install' | 'hookify-add'
+  let activeForm = null; // null | 'create' | 'install' | 'plugin-create' | 'plugin-install' | 'hookify-add' | 'connector-add'
   let plusPanelOpen = false;
   let inlineHookifyFormOpen = false;
   let formBusy = false;
@@ -1578,9 +2101,21 @@ export async function openCatalogModal({
   let hookifyError = '';
   let reloadingSkills = false;
   let reloadingPlugins = false;
+  let reloadingConnectors = false;
+  let checkingAllConnectors = false;
+  let digestBusy = false;
+  let digestResult = null; // { path, chars, generatedAt, preview, markdown } | null
+  let openSetupConnectorId = null;
+  let confirmRemoveConnectorId = null;
   let pendingFocusPluginId = focusPluginId || null;
+  let pendingFocusConnectorId = focusConnectorId || null;
   const pendingToggles = new Set();
   const pendingPluginToggles = new Set();
+  const pendingConnectorToggles = new Set();
+  const pendingConnectorChecks = new Set();
+  const pendingConnectorRemoves = new Set();
+  const pendingConnectorConfigs = new Set();
+  const connectorConfigFeedback = new Map(); // id -> { ok: boolean, text: string }
   const pendingHookifyOps = new Set();
   const collapsedGroups = new Set();
   const expandedPlugins = new Set(focusPluginId ? [focusPluginId] : []);
@@ -1626,12 +2161,31 @@ export async function openCatalogModal({
     action: 'warn', // 'warn' | 'inject' | 'block'
     message: '',
   };
+  const connectorAddDraft = {
+    name: '',
+    slug: '',
+    category: 'dev',
+    transport: 'http', // 'http' | 'stdio'
+    url: '',
+    command: '',
+    args: '',
+    token: '',
+    scope: 'cloud', // 'cloud' | 'local'
+    preview: null,
+    previewMessage: '',
+  };
+  const connectorSetupDrafts = {
+    telegram: { token: '' },
+    wger: { url: '', token: '' },
+    'health-connect': { steps: '', sleepHours: '', avgHr: '', notes: '' },
+    'google-workspace': { setupSteps: [...DEFAULT_GOOGLE_WORKSPACE_STEPS] },
+  };
 
   const backdrop = document.createElement('div');
   backdrop.className = 'slash-catalog-backdrop';
   backdrop.setAttribute('role', 'dialog');
   backdrop.setAttribute('aria-modal', 'true');
-  backdrop.setAttribute('aria-label', 'Каталог команд, навыков и плагинов');
+  backdrop.setAttribute('aria-label', 'Каталог команд, навыков, плагинов и коннекторов');
 
   const modal = document.createElement('div');
   modal.className = 'slash-catalog';
@@ -1656,7 +2210,7 @@ export async function openCatalogModal({
   const searchInput = document.createElement('input');
   searchInput.type = 'search';
   searchInput.className = 'slash-catalog__search';
-  searchInput.placeholder = 'Поиск по командам, навыкам, плагинам и категориям…';
+  searchInput.placeholder = 'Поиск по командам, навыкам, плагинам и коннекторам…';
   searchInput.setAttribute('aria-label', 'Поиск по каталогу');
   searchWrap.appendChild(searchInput);
 
@@ -1667,11 +2221,28 @@ export async function openCatalogModal({
   plusBtn.title = 'Создать или установить';
   plusBtn.appendChild(createIconSvg('plus', 18));
   plusBtn.addEventListener('click', () => {
+    if (activeTab === 'connectors') {
+      if (activeForm === 'connector-add') {
+        activeForm = null;
+        formError = '';
+        connectorAddDraft.preview = null;
+        connectorAddDraft.previewMessage = '';
+      } else {
+        activeForm = 'connector-add';
+        plusPanelOpen = false;
+        formError = '';
+        connectorAddDraft.preview = null;
+        connectorAddDraft.previewMessage = '';
+      }
+      renderModal();
+      return;
+    }
     if (activeForm) {
       activeForm = null;
       formError = '';
       installDraft.preview = null;
       pluginInstallDraft.preview = null;
+      connectorAddDraft.preview = null;
       plusPanelOpen = false;
     } else {
       plusPanelOpen = !plusPanelOpen;
@@ -1715,6 +2286,15 @@ export async function openCatalogModal({
     }
   }
 
+  function syncConnectorsIntoCatalog() {
+    const sections = catalog.sections || [];
+    const connSec = sections.find((s) => s.id === 'connectors');
+    if (connSec && Array.isArray(connectorsData?.items)) {
+      delete connSec.stage;
+      connSec.items = connectorsData.items;
+    }
+  }
+
   function emitSkillsChanged(nextData) {
     skillsData = normalizeSkillsResponse(nextData, skillsData.items);
     syncSkillsIntoCatalog();
@@ -1741,6 +2321,17 @@ export async function openCatalogModal({
     }
   }
 
+  function emitConnectorsChanged(nextData) {
+    connectorsData = normalizeConnectorsResponse(nextData, connectorsData.items, ctx);
+    syncConnectorsIntoCatalog();
+    try {
+      onConnectorsChanged?.(connectorsData);
+    } catch {
+      // ignore listener errors
+    }
+    window.dispatchEvent(new CustomEvent('capri:connectors-changed', { detail: connectorsData }));
+  }
+
   function cleanup() {
     window.removeEventListener('keydown', onEscape, true);
     backdrop.remove();
@@ -1751,14 +2342,18 @@ export async function openCatalogModal({
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopImmediatePropagation();
-      if (activeForm || plusPanelOpen || inlineHookifyFormOpen) {
+      if (activeForm || plusPanelOpen || inlineHookifyFormOpen || confirmRemoveConnectorId || openSetupConnectorId) {
         activeForm = null;
         plusPanelOpen = false;
         inlineHookifyFormOpen = false;
+        confirmRemoveConnectorId = null;
+        openSetupConnectorId = null;
         formError = '';
         hookifyError = '';
         installDraft.preview = null;
         pluginInstallDraft.preview = null;
+        connectorAddDraft.preview = null;
+        connectorAddDraft.previewMessage = '';
         renderModal();
         return;
       }
@@ -1774,7 +2369,7 @@ export async function openCatalogModal({
   window.addEventListener('keydown', onEscape, true);
 
   function renderTopPlusControls() {
-    const supportsPlus = activeTab === 'skills' || activeTab === 'plugins';
+    const supportsPlus = activeTab === 'skills' || activeTab === 'plugins' || activeTab === 'connectors';
     plusBtn.hidden = !supportsPlus;
     if (!supportsPlus) {
       plusPanelEl.hidden = true;
@@ -1782,13 +2377,15 @@ export async function openCatalogModal({
     }
     const labelText = activeTab === 'skills'
       ? 'Создать или установить навык'
-      : 'Создать, установить плагин или добавить правило Hookify';
+      : (activeTab === 'plugins'
+        ? 'Создать, установить плагин или добавить правило Hookify'
+        : 'Добавить MCP-коннектор');
     plusBtn.title = labelText;
     plusBtn.setAttribute('aria-label', labelText);
     plusBtn.setAttribute('aria-expanded', String(plusPanelOpen || Boolean(activeForm)));
     plusBtn.classList.toggle('is-active', plusPanelOpen || Boolean(activeForm));
 
-    if (!plusPanelOpen) {
+    if (!plusPanelOpen || activeTab === 'connectors') {
       plusPanelEl.hidden = true;
       return;
     }
@@ -1850,7 +2447,9 @@ export async function openCatalogModal({
       count.className = 'slash-catalog__tab-count';
       const itemCount = sec.id === 'skills'
         ? (skillsData.items || []).length
-        : (sec.id === 'plugins' ? (pluginsData.items || []).length : (sec.items || []).length);
+        : (sec.id === 'plugins'
+          ? (pluginsData.items || []).length
+          : (sec.id === 'connectors' ? (connectorsData.items || []).length : (sec.items || []).length));
       count.textContent = String(itemCount);
 
       btn.append(label, count);
@@ -1859,6 +2458,7 @@ export async function openCatalogModal({
         noticeText = '';
         plusPanelOpen = false;
         activeForm = null;
+        confirmRemoveConnectorId = null;
         formError = '';
         hookifyError = '';
         renderModal();
@@ -3877,6 +4477,1441 @@ export async function openCatalogModal({
     return card;
   }
 
+  async function handleReloadConnectors() {
+    if (reloadingConnectors) return;
+    reloadingConnectors = true;
+    renderModal();
+    try {
+      const refreshed = await fetchConnectors(ctx, { fallbackItems: connectorsData.items, refresh: true });
+      emitConnectorsChanged(refreshed);
+      noticeText = `Список коннекторов обновлён (${connectorsData.items.length}).`;
+    } catch (err) {
+      noticeText = err?.message || 'Не удалось обновить список коннекторов.';
+    } finally {
+      reloadingConnectors = false;
+      if (document.body.contains(backdrop)) renderModal();
+    }
+  }
+
+  async function handleConnectorToggle(connector, nextEnabled) {
+    const id = connector.id || connector.name;
+    if (!id || pendingConnectorToggles.has(id)) return;
+    pendingConnectorToggles.add(id);
+    renderModal();
+
+    const host = window.host;
+    if (typeof host?.connectorsToggle === 'function') {
+      try {
+        const res = await host.connectorsToggle({ id, enabled: Boolean(nextEnabled) });
+        if (res && res.ok !== false) {
+          if (Array.isArray(res.categories) || Array.isArray(res.items)) {
+            emitConnectorsChanged(res);
+          } else {
+            const refreshed = await fetchConnectors(ctx, { fallbackItems: connectorsData.items });
+            emitConnectorsChanged(refreshed);
+          }
+          noticeText = '';
+        } else {
+          noticeText = res?.error || 'Не удалось переключить коннектор.';
+        }
+      } catch (err) {
+        noticeText = err?.message || 'Не удалось переключить коннектор.';
+      }
+    } else {
+      const nextItems = (connectorsData.items || []).map((c) => (
+        c.id === id ? { ...c, enabled: Boolean(nextEnabled) } : c
+      ));
+      emitConnectorsChanged({ items: nextItems });
+    }
+
+    pendingConnectorToggles.delete(id);
+    if (document.body.contains(backdrop)) renderModal();
+  }
+
+  async function handleConnectorCheck(connectorId = null) {
+    if (connectorId) {
+      if (pendingConnectorChecks.has(connectorId)) return;
+      pendingConnectorChecks.add(connectorId);
+    } else {
+      if (checkingAllConnectors) return;
+      checkingAllConnectors = true;
+    }
+    renderModal();
+
+    const host = window.host;
+    if (typeof host?.connectorsCheck === 'function') {
+      try {
+        const res = await host.connectorsCheck(connectorId ? { id: connectorId } : {});
+        if (res && res.ok !== false) {
+          if (Array.isArray(res.categories) || Array.isArray(res.items)) {
+            emitConnectorsChanged(res);
+          } else {
+            const refreshed = await fetchConnectors(ctx, { fallbackItems: connectorsData.items, refresh: true });
+            emitConnectorsChanged(refreshed);
+          }
+          if (connectorId && res.connector) {
+            const lat = Number.isFinite(Number(res.connector.latencyMs)) ? ` (${Math.round(Number(res.connector.latencyMs))} мс)` : '';
+            noticeText = `${res.connector.name || connectorId}: ${res.connector.statusLabel || res.connector.status}${lat}.`;
+          } else {
+            noticeText = `Проверка завершена. Подключено: ${connectorsData.stats?.connected ?? 0} из ${connectorsData.stats?.total ?? connectorsData.items.length}.`;
+          }
+        } else {
+          noticeText = res?.error || 'Не удалось проверить коннектор.';
+        }
+      } catch (err) {
+        noticeText = err?.message || 'Ошибка при проверке коннектора.';
+      }
+    } else {
+      noticeText = 'Проверка связи недоступна в офлайн-режиме.';
+    }
+
+    if (connectorId) pendingConnectorChecks.delete(connectorId);
+    else checkingAllConnectors = false;
+    if (document.body.contains(backdrop)) renderModal();
+  }
+
+  async function handleConnectorRemove(connector) {
+    const id = connector?.id;
+    if (!id || pendingConnectorRemoves.has(id)) return;
+    pendingConnectorRemoves.add(id);
+    renderModal();
+
+    const host = window.host;
+    if (typeof host?.connectorsRemove === 'function') {
+      try {
+        const res = await host.connectorsRemove({ id, confirm: true });
+        if (res && res.ok !== false) {
+          if (Array.isArray(res.categories) || Array.isArray(res.items)) {
+            emitConnectorsChanged(res);
+          } else {
+            const refreshed = await fetchConnectors(ctx, { fallbackItems: connectorsData.items });
+            emitConnectorsChanged(refreshed);
+          }
+          confirmRemoveConnectorId = null;
+          noticeText = `Коннектор «${connector.name || id}» удалён.`;
+        } else {
+          noticeText = res?.error || 'Не удалось удалить коннектор.';
+        }
+      } catch (err) {
+        noticeText = err?.message || 'Ошибка при удалении коннектора.';
+      }
+    } else {
+      const nextItems = (connectorsData.items || []).filter((c) => c.id !== id);
+      emitConnectorsChanged({ items: nextItems });
+      confirmRemoveConnectorId = null;
+      noticeText = `Коннектор «${connector.name || id}» удалён.`;
+    }
+
+    pendingConnectorRemoves.delete(id);
+    if (document.body.contains(backdrop)) renderModal();
+  }
+
+  async function copyPlainText(text) {
+    const value = String(text || '');
+    if (!value) return false;
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch {
+      // fall through to host clipboard helper
+    }
+    if (typeof window.host?.chatsCopy === 'function') {
+      window.host.chatsCopy(value);
+      return true;
+    }
+    return false;
+  }
+
+  async function applyConnectorConfigureResponse(res) {
+    if (res && (Array.isArray(res.categories) || Array.isArray(res.items))) {
+      emitConnectorsChanged(res);
+      return;
+    }
+    const refreshed = await fetchConnectors(ctx, { fallbackItems: connectorsData.items, refresh: true });
+    emitConnectorsChanged(refreshed);
+  }
+
+  function extractDigestPayload(res) {
+    const d = (res && typeof res.digest === 'object' && res.digest) ? res.digest : res;
+    if (!d || typeof d !== 'object') return null;
+    const preview = String(d.preview || '');
+    const markdown = String(d.markdown || d.content || d.text || preview);
+    const chars = Number.isFinite(Number(d.chars)) ? Math.round(Number(d.chars)) : markdown.length;
+    return {
+      path: String(d.path || ''),
+      chars,
+      generatedAt: d.generatedAt || new Date().toISOString(),
+      preview,
+      markdown,
+    };
+  }
+
+  async function handleConnectorConfigure(id, payload = {}) {
+    if (!id || pendingConnectorConfigs.has(id)) return null;
+    const host = window.host;
+    const hasConfigure = typeof host?.connectorsConfigure === 'function';
+    const canFallback = (
+      (id === 'health-connect' && typeof host?.connectorsHealthSync === 'function')
+      || (id === 'google-workspace' && typeof host?.connectorsCheck === 'function')
+      || (id === 'gemini-notebook' && typeof host?.connectorsNotebookDigest === 'function')
+    );
+
+    if (!hasConfigure && !canFallback) {
+      const msg = 'Настройка этого коннектора недоступна в текущем режиме.';
+      connectorConfigFeedback.set(id, { ok: false, text: msg });
+      noticeText = msg;
+      renderModal();
+      return null;
+    }
+
+    pendingConnectorConfigs.add(id);
+    connectorConfigFeedback.delete(id);
+    renderModal();
+
+    let result = null;
+    try {
+      let res;
+      if (hasConfigure) {
+        res = await host.connectorsConfigure({ id, ...payload });
+      } else if (id === 'health-connect') {
+        res = await host.connectorsHealthSync(payload);
+      } else if (id === 'google-workspace') {
+        res = await host.connectorsCheck({ id: 'google-workspace' });
+      } else {
+        res = await host.connectorsNotebookDigest();
+      }
+      result = res;
+
+      if (id === 'google-workspace' && Array.isArray(res?.setupSteps) && res.setupSteps.length) {
+        connectorSetupDrafts['google-workspace'].setupSteps = res.setupSteps.map((s) => String(s));
+      }
+
+      if (!res || res.ok === false) {
+        const errMsg = res?.error || res?.message || 'Не удалось сохранить настройки коннектора.';
+        connectorConfigFeedback.set(id, { ok: false, text: errMsg });
+        noticeText = errMsg;
+      } else {
+        if (id === 'telegram') {
+          connectorSetupDrafts.telegram.token = '';
+        } else if (id === 'wger') {
+          connectorSetupDrafts.wger.token = '';
+          if (payload.url) connectorSetupDrafts.wger.url = payload.url;
+        } else if (id === 'gemini-notebook') {
+          const parsed = extractDigestPayload(res);
+          if (parsed) digestResult = parsed;
+        }
+
+        await applyConnectorConfigureResponse(res);
+
+        let okMsg = res.message || '';
+        if (!okMsg) {
+          if (id === 'telegram') {
+            const botTag = res.botUsername ? ` (@${String(res.botUsername).replace(/^@/, '')})` : '';
+            okMsg = res.linked
+              ? `Telegram-бот${botTag} подключён и связан.`
+              : `Токен сохранён${botTag}. Напиши боту /start и нажми «Сохранить и связать».`;
+          } else if (id === 'wger') {
+            okMsg = res.connected || res.reachable
+              ? 'Wger сохранён и доступен.'
+              : 'Настройки Wger сохранены (проверь доступность сервера).';
+          } else if (id === 'health-connect') {
+            okMsg = 'Локальные данные здоровья сохранены.';
+          } else if (id === 'google-workspace') {
+            const conn = res.connector || (connectorsData.items || []).find((x) => x.id === 'google-workspace');
+            okMsg = res.detail || conn?.detail || (conn?.status === 'connected' ? 'Вход в Google Workspace подтверждён.' : 'Вход в Google Workspace пока не обнаружен.');
+          } else if (id === 'gemini-notebook') {
+            okMsg = `Дайджест Gemini Notebook собран (${digestResult?.chars ?? 0} симв.).`;
+          } else {
+            okMsg = 'Настройки сохранены.';
+          }
+        }
+        connectorConfigFeedback.set(id, { ok: true, text: okMsg });
+        noticeText = okMsg;
+      }
+    } catch (err) {
+      const errMsg = err?.message || 'Ошибка при настройке коннектора.';
+      connectorConfigFeedback.set(id, { ok: false, text: errMsg });
+      noticeText = errMsg;
+    } finally {
+      pendingConnectorConfigs.delete(id);
+      if (document.body.contains(backdrop)) renderModal();
+    }
+    return result;
+  }
+
+  async function handleNotebookDigest({ copyAfter = false } = {}) {
+    if (digestBusy || pendingConnectorConfigs.has('gemini-notebook')) return;
+    const host = window.host;
+    if (typeof host?.connectorsConfigure !== 'function' && typeof host?.connectorsNotebookDigest !== 'function') {
+      const msg = 'Сборка дайджеста Gemini Notebook недоступна в текущем режиме.';
+      connectorConfigFeedback.set('gemini-notebook', { ok: false, text: msg });
+      noticeText = msg;
+      renderModal();
+      return;
+    }
+    digestBusy = true;
+    openSetupConnectorId = 'gemini-notebook';
+    renderModal();
+    try {
+      const res = typeof host?.connectorsConfigure === 'function'
+        ? await host.connectorsConfigure({ id: 'gemini-notebook' })
+        : await host.connectorsNotebookDigest();
+      if (!res || res.ok === false) {
+        const errMsg = res?.error || 'Не удалось собрать дайджест Gemini Notebook.';
+        connectorConfigFeedback.set('gemini-notebook', { ok: false, text: errMsg });
+        noticeText = errMsg;
+      } else {
+        const parsed = extractDigestPayload(res);
+        if (parsed) digestResult = parsed;
+        await applyConnectorConfigureResponse(res);
+        let msg = res.message || `Дайджест Gemini Notebook собран (${digestResult?.chars ?? 0} симв.).`;
+        if (copyAfter && digestResult) {
+          const copied = await copyPlainText(digestResult.markdown || digestResult.preview);
+          if (copied) msg = `Дайджест собран (${digestResult.chars} симв.) и скопирован в буфер обмена.`;
+        }
+        connectorConfigFeedback.set('gemini-notebook', { ok: true, text: msg });
+        noticeText = msg;
+      }
+    } catch (err) {
+      const errMsg = err?.message || 'Ошибка при сборке дайджеста.';
+      connectorConfigFeedback.set('gemini-notebook', { ok: false, text: errMsg });
+      noticeText = errMsg;
+    } finally {
+      digestBusy = false;
+      if (document.body.contains(backdrop)) renderModal();
+    }
+  }
+
+  function buildConnectorsStatsBar() {
+    const st = connectorsData.stats || {};
+    const total = Number.isFinite(st.total) ? st.total : (connectorsData.items || []).length;
+    const connected = Number.isFinite(st.connected)
+      ? st.connected
+      : (connectorsData.items || []).filter((c) => c.enabled !== false && c.status === 'connected').length;
+    const activeInMode = Number.isFinite(st.activeInMode)
+      ? st.activeInMode
+      : (connectorsData.items || []).filter((c) => c.enabled !== false && !c.pausedInMode).length;
+    const customCount = Number.isFinite(st.customCount)
+      ? st.customCount
+      : (connectorsData.items || []).filter((c) => c.isCustom).length;
+
+    const strip = document.createElement('div');
+    strip.className = 'slash-budget';
+
+    const main = document.createElement('span');
+    main.className = 'slash-budget__main';
+
+    const dot = document.createElement('span');
+    dot.className = `slash-status-dot ${connected > 0 ? 'is-connected' : 'is-paused'}`;
+    dot.setAttribute('aria-hidden', 'true');
+
+    const text = document.createElement('span');
+    text.textContent = `Подключено: ${connected} · Активно: ${activeInMode} / ${total}`;
+
+    main.append(dot, text);
+
+    const meta = document.createElement('span');
+    meta.className = 'slash-budget__meta';
+    meta.textContent = customCount > 0 ? `Своих MCP: ${customCount}` : 'Упоминание через @';
+
+    strip.append(main, meta);
+    return strip;
+  }
+
+  function buildAddConnectorForm() {
+    const form = document.createElement('form');
+    form.className = 'slash-skill-form';
+    form.autocomplete = 'off';
+
+    const head = document.createElement('div');
+    head.className = 'slash-skill-form__head';
+    const title = document.createElement('h3');
+    title.className = 'slash-skill-form__title';
+    title.textContent = 'Добавить MCP-коннектор';
+    const closeFormBtn = document.createElement('button');
+    closeFormBtn.type = 'button';
+    closeFormBtn.className = 'slash-catalog__action-btn slash-catalog__action-btn--icon';
+    closeFormBtn.setAttribute('aria-label', 'Закрыть форму');
+    closeFormBtn.appendChild(createIconSvg('close', 16));
+    closeFormBtn.addEventListener('click', () => {
+      activeForm = null;
+      formError = '';
+      connectorAddDraft.preview = null;
+      connectorAddDraft.previewMessage = '';
+      renderModal();
+    });
+    head.append(title, closeFormBtn);
+    form.appendChild(head);
+
+    if (formError) {
+      const err = document.createElement('p');
+      err.className = 'slash-skill-form__error';
+      err.textContent = formError;
+      form.appendChild(err);
+    }
+
+    const transportTabs = document.createElement('div');
+    transportTabs.className = 'slash-skill-form__tabs';
+    for (const [key, label] of [['http', 'HTTP / SSE'], ['stdio', 'Локальный stdio']]) {
+      const tabBtn = document.createElement('button');
+      tabBtn.type = 'button';
+      tabBtn.className = `slash-skill-form__tab${connectorAddDraft.transport === key ? ' is-active' : ''}`;
+      tabBtn.textContent = label;
+      tabBtn.disabled = formBusy;
+      tabBtn.addEventListener('click', () => {
+        connectorAddDraft.transport = key;
+        connectorAddDraft.preview = null;
+        connectorAddDraft.previewMessage = '';
+        formError = '';
+        renderModal();
+      });
+      transportTabs.appendChild(tabBtn);
+    }
+    form.appendChild(transportTabs);
+
+    const grid = document.createElement('div');
+    grid.className = 'slash-skill-form__grid';
+
+    const nameField = document.createElement('label');
+    nameField.className = 'slash-skill-form__field';
+    const nameLbl = document.createElement('span');
+    nameLbl.className = 'slash-skill-form__label';
+    nameLbl.textContent = 'Название';
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'slash-skill-form__input';
+    nameInput.placeholder = 'Например, Notion MCP';
+    nameInput.value = connectorAddDraft.name;
+    nameInput.required = true;
+    nameInput.addEventListener('input', () => {
+      connectorAddDraft.name = nameInput.value;
+      connectorAddDraft.preview = null;
+    });
+    nameField.append(nameLbl, nameInput);
+
+    const slugField = document.createElement('label');
+    slugField.className = 'slash-skill-form__field';
+    const slugLbl = document.createElement('span');
+    slugLbl.className = 'slash-skill-form__label';
+    slugLbl.textContent = 'Тег @slug (необязательно)';
+    const slugInput = document.createElement('input');
+    slugInput.type = 'text';
+    slugInput.className = 'slash-skill-form__input';
+    slugInput.placeholder = 'notion-mcp';
+    slugInput.value = connectorAddDraft.slug;
+    slugInput.addEventListener('input', () => {
+      connectorAddDraft.slug = slugInput.value;
+      connectorAddDraft.preview = null;
+    });
+    slugField.append(slugLbl, slugInput);
+
+    const catField = document.createElement('label');
+    catField.className = 'slash-skill-form__field';
+    const catLbl = document.createElement('span');
+    catLbl.className = 'slash-skill-form__label';
+    catLbl.textContent = 'Категория';
+    const catSelect = document.createElement('select');
+    catSelect.className = 'slash-skill-form__select';
+    for (const c of CONNECTOR_CATEGORIES) {
+      const opt = document.createElement('option');
+      opt.value = c.id;
+      opt.textContent = c.title;
+      catSelect.appendChild(opt);
+    }
+    catSelect.value = connectorAddDraft.category || 'dev';
+    catSelect.addEventListener('change', () => {
+      connectorAddDraft.category = catSelect.value;
+      connectorAddDraft.preview = null;
+    });
+    catField.append(catLbl, catSelect);
+
+    const scopeField = document.createElement('div');
+    scopeField.className = 'slash-skill-form__field';
+    const scopeLbl = document.createElement('span');
+    scopeLbl.className = 'slash-skill-form__label';
+    scopeLbl.textContent = 'Режим доступа';
+    const scopeTabs = document.createElement('div');
+    scopeTabs.className = 'slash-skill-form__tabs';
+    for (const [key, label] of [['cloud', 'Облачный'], ['local', 'Только локальный']]) {
+      const sBtn = document.createElement('button');
+      sBtn.type = 'button';
+      sBtn.className = `slash-skill-form__tab${connectorAddDraft.scope === key ? ' is-active' : ''}`;
+      sBtn.textContent = label;
+      sBtn.disabled = formBusy;
+      sBtn.addEventListener('click', () => {
+        connectorAddDraft.scope = key;
+        connectorAddDraft.preview = null;
+        renderModal();
+      });
+      scopeTabs.appendChild(sBtn);
+    }
+    scopeField.append(scopeLbl, scopeTabs);
+
+    grid.append(nameField, slugField, catField, scopeField);
+
+    if (connectorAddDraft.transport === 'http') {
+      const urlField = document.createElement('label');
+      urlField.className = 'slash-skill-form__field slash-skill-form__field--full';
+      const urlLbl = document.createElement('span');
+      urlLbl.className = 'slash-skill-form__label';
+      urlLbl.textContent = 'URL сервера MCP (HTTP / SSE)';
+      const urlInput = document.createElement('input');
+      urlInput.type = 'url';
+      urlInput.className = 'slash-skill-form__input';
+      urlInput.placeholder = 'http://127.0.0.1:8080/mcp или https://example.com/sse';
+      urlInput.value = connectorAddDraft.url;
+      urlInput.required = true;
+      urlInput.addEventListener('input', () => {
+        connectorAddDraft.url = urlInput.value;
+        connectorAddDraft.preview = null;
+      });
+      urlField.append(urlLbl, urlInput);
+      grid.appendChild(urlField);
+    } else {
+      const cmdField = document.createElement('label');
+      cmdField.className = 'slash-skill-form__field';
+      const cmdLbl = document.createElement('span');
+      cmdLbl.className = 'slash-skill-form__label';
+      cmdLbl.textContent = 'Команда запуска';
+      const cmdInput = document.createElement('input');
+      cmdInput.type = 'text';
+      cmdInput.className = 'slash-skill-form__input';
+      cmdInput.placeholder = 'node или npx';
+      cmdInput.value = connectorAddDraft.command;
+      cmdInput.required = true;
+      cmdInput.addEventListener('input', () => {
+        connectorAddDraft.command = cmdInput.value;
+        connectorAddDraft.preview = null;
+      });
+      cmdField.append(cmdLbl, cmdInput);
+
+      const argsField = document.createElement('label');
+      argsField.className = 'slash-skill-form__field';
+      const argsLbl = document.createElement('span');
+      argsLbl.className = 'slash-skill-form__label';
+      argsLbl.textContent = 'Аргументы (через пробел, необязательно)';
+      const argsInput = document.createElement('input');
+      argsInput.type = 'text';
+      argsInput.className = 'slash-skill-form__input';
+      argsInput.placeholder = 'server.js --readonly';
+      argsInput.value = connectorAddDraft.args;
+      argsInput.addEventListener('input', () => {
+        connectorAddDraft.args = argsInput.value;
+        connectorAddDraft.preview = null;
+      });
+      argsField.append(argsLbl, argsInput);
+
+      grid.append(cmdField, argsField);
+    }
+
+    const tokenField = document.createElement('label');
+    tokenField.className = 'slash-skill-form__field slash-skill-form__field--full';
+    const tokenLbl = document.createElement('span');
+    tokenLbl.className = 'slash-skill-form__label';
+    tokenLbl.textContent = 'API-токен / ключ (необязательно) · Шифруется через Windows DPAPI';
+    const tokenInput = document.createElement('input');
+    tokenInput.type = 'password';
+    tokenInput.autocomplete = 'new-password';
+    tokenInput.className = 'slash-skill-form__input';
+    tokenInput.placeholder = 'Оставь пустым, если авторизация не нужна';
+    tokenInput.value = connectorAddDraft.token;
+    tokenInput.addEventListener('input', () => {
+      connectorAddDraft.token = tokenInput.value;
+      connectorAddDraft.preview = null;
+    });
+    const tokenHint = document.createElement('span');
+    tokenHint.className = 'slash-skill-form__hint';
+    tokenHint.textContent = connectorAddDraft.scope === 'local'
+      ? 'Только локальный: никогда не передаётся облачным агентам (работает только в локальной Ollama).'
+      : 'Облачный: автоматически ставится на паузу в приватном, временном, 18+ и Tor режимах.';
+    tokenField.append(tokenLbl, tokenInput, tokenHint);
+    grid.appendChild(tokenField);
+
+    form.appendChild(grid);
+
+    if (connectorAddDraft.preview) {
+      const pv = connectorAddDraft.preview;
+      const previewBox = document.createElement('div');
+      previewBox.className = 'slash-skill-form__preview';
+
+      const pvTitle = document.createElement('div');
+      pvTitle.className = 'slash-skill-form__preview-title';
+      const pvName = document.createElement('span');
+      pvName.textContent = pv.name || connectorAddDraft.name.trim() || 'MCP-коннектор';
+      pvTitle.appendChild(pvName);
+      if (pv.id || pv.slug) {
+        const pvTag = document.createElement('span');
+        pvTag.className = 'slash-mention-chip';
+        pvTag.textContent = `@${pv.id || pv.slug}`;
+        pvTitle.appendChild(pvTag);
+      }
+
+      const pvDesc = document.createElement('p');
+      pvDesc.className = 'slash-skill-form__preview-desc';
+      pvDesc.textContent = connectorAddDraft.previewMessage || 'Проверь параметры подключения и подтверди добавление.';
+
+      const pvMeta = document.createElement('div');
+      pvMeta.className = 'slash-skill-form__preview-meta';
+      const parts = [];
+      parts.push(`Транспорт: ${pv.transport || connectorAddDraft.transport}`);
+      if (pv.url || connectorAddDraft.url.trim()) parts.push(`URL: ${pv.url || connectorAddDraft.url.trim()}`);
+      if (pv.command || connectorAddDraft.command.trim()) parts.push(`Команда: ${pv.command || connectorAddDraft.command.trim()}`);
+      parts.push(connectorAddDraft.scope === 'local' ? 'Только локальный' : 'Облачный');
+      if (connectorAddDraft.token.trim()) parts.push('Токен: DPAPI');
+      pvMeta.textContent = parts.join(' · ');
+
+      previewBox.append(pvTitle, pvDesc, pvMeta);
+      form.appendChild(previewBox);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'slash-skill-form__actions';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'slash-catalog__action-btn';
+    cancelBtn.textContent = connectorAddDraft.preview ? 'Сбросить' : 'Отмена';
+    cancelBtn.disabled = formBusy;
+    cancelBtn.addEventListener('click', () => {
+      if (connectorAddDraft.preview) {
+        connectorAddDraft.preview = null;
+        connectorAddDraft.previewMessage = '';
+        formError = '';
+        renderModal();
+        return;
+      }
+      activeForm = null;
+      formError = '';
+      renderModal();
+    });
+
+    const submitBtn = document.createElement('button');
+    submitBtn.type = 'submit';
+    submitBtn.className = 'slash-catalog__action-btn slash-catalog__action-btn--primary';
+    if (connectorAddDraft.preview) {
+      submitBtn.textContent = formBusy ? 'Сохраняю…' : 'Подтвердить добавление';
+    } else {
+      submitBtn.textContent = formBusy ? 'Проверяю…' : 'Проверить коннектор';
+    }
+    submitBtn.disabled = formBusy;
+
+    actions.append(cancelBtn, submitBtn);
+    form.appendChild(actions);
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (formBusy) return;
+      const name = connectorAddDraft.name.trim();
+      const transport = connectorAddDraft.transport === 'stdio' ? 'stdio' : 'http';
+      const url = transport === 'http' ? connectorAddDraft.url.trim() : '';
+      const command = transport === 'stdio' ? connectorAddDraft.command.trim() : '';
+      const args = transport === 'stdio'
+        ? connectorAddDraft.args.trim().split(/\s+/).filter(Boolean)
+        : [];
+
+      if (!name) {
+        formError = 'Укажи название коннектора.';
+        renderModal();
+        return;
+      }
+      if (transport === 'http' && !url) {
+        formError = 'Укажи URL MCP-сервера.';
+        renderModal();
+        return;
+      }
+      if (transport === 'stdio' && !command) {
+        formError = 'Укажи команду запуска stdio-сервера.';
+        renderModal();
+        return;
+      }
+      if (typeof window.host?.connectorsAdd !== 'function') {
+        formError = 'Добавление MCP-коннекторов недоступно в текущем режиме.';
+        renderModal();
+        return;
+      }
+
+      const confirm = Boolean(connectorAddDraft.preview);
+      const isLocal = connectorAddDraft.scope === 'local';
+      formBusy = true;
+      formError = '';
+      renderModal();
+      try {
+        const res = await window.host.connectorsAdd({
+          name,
+          slug: (confirm && (connectorAddDraft.preview?.id || connectorAddDraft.preview?.slug))
+            ? (connectorAddDraft.preview.id || connectorAddDraft.preview.slug)
+            : (connectorAddDraft.slug.trim() || undefined),
+          category: connectorAddDraft.category || 'dev',
+          transport,
+          ...(url ? { url } : {}),
+          ...(command ? { command, args } : {}),
+          ...(connectorAddDraft.token.trim() ? { token: connectorAddDraft.token.trim() } : {}),
+          cloudOnly: !isLocal,
+          localOnly: isLocal,
+          confirm,
+        });
+        if (!confirm && res?.confirmRequired) {
+          connectorAddDraft.preview = res.preview || {
+            name,
+            slug: connectorAddDraft.slug.trim(),
+            transport,
+            url,
+            command,
+          };
+          connectorAddDraft.previewMessage = res.message || '';
+        } else if (!res || res.ok === false) {
+          formError = res?.error || res?.message || 'Не удалось добавить MCP-коннектор.';
+        } else {
+          if (Array.isArray(res.categories) || Array.isArray(res.items)) {
+            emitConnectorsChanged(res);
+          } else {
+            const refreshed = await fetchConnectors(ctx, { fallbackItems: connectorsData.items });
+            emitConnectorsChanged(refreshed);
+          }
+          const createdId = res.connector?.id || connectorAddDraft.preview?.id || '';
+          const createdName = res.connector?.name || name;
+          noticeText = `Коннектор «${createdName}» добавлен${createdId ? ` (@${createdId})` : ''}.`;
+          if (createdId) pendingFocusConnectorId = createdId;
+          activeForm = null;
+          connectorAddDraft.name = '';
+          connectorAddDraft.slug = '';
+          connectorAddDraft.url = '';
+          connectorAddDraft.command = '';
+          connectorAddDraft.args = '';
+          connectorAddDraft.token = '';
+          connectorAddDraft.preview = null;
+          connectorAddDraft.previewMessage = '';
+        }
+      } catch (err) {
+        formError = err?.message || 'Ошибка при добавлении MCP-коннектора.';
+      } finally {
+        formBusy = false;
+        if (document.body.contains(backdrop)) renderModal();
+      }
+    });
+
+    return form;
+  }
+
+  function buildConnectorSetupPanel(c) {
+    const id = c.id || c.name;
+    const busy = pendingConnectorConfigs.has(id) || (id === 'gemini-notebook' && digestBusy);
+    const feedback = connectorConfigFeedback.get(id) || null;
+
+    const panel = document.createElement('div');
+    panel.className = 'slash-connector-setup';
+    panel.addEventListener('click', (e) => e.stopPropagation());
+
+    const head = document.createElement('div');
+    head.className = 'slash-connector-setup__head';
+    const title = document.createElement('h4');
+    title.className = 'slash-connector-setup__title';
+    const titles = {
+      telegram: 'Настройка Telegram-бота',
+      wger: 'Настройка Wger',
+      'health-connect': 'Локальный чек-ин здоровья',
+      'google-workspace': 'Вход в Google Workspace',
+      'gemini-notebook': 'Дайджест Gemini Notebook',
+    };
+    title.textContent = titles[id] || `Настройка ${c.name || id}`;
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'slash-card__btn slash-card__btn--icon';
+    closeBtn.setAttribute('aria-label', 'Скрыть панель настройки');
+    closeBtn.appendChild(createIconSvg('close', 14));
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openSetupConnectorId = null;
+      renderModal();
+    });
+    head.append(title, closeBtn);
+    panel.appendChild(head);
+
+    const appendFeedback = () => {
+      if (!feedback?.text) return;
+      const fb = document.createElement('p');
+      fb.className = `slash-connector-setup__feedback ${feedback.ok ? 'is-ok' : 'is-error'}`;
+      fb.textContent = feedback.text;
+      panel.appendChild(fb);
+    };
+
+    const makeField = (labelText, inputEl, hintText = '', full = false) => {
+      const wrap = document.createElement('label');
+      wrap.className = `slash-skill-form__field${full ? ' slash-skill-form__field--full' : ''}`;
+      const lbl = document.createElement('span');
+      lbl.className = 'slash-skill-form__label';
+      lbl.textContent = labelText;
+      wrap.append(lbl, inputEl);
+      if (hintText) {
+        const hint = document.createElement('span');
+        hint.className = 'slash-skill-form__hint';
+        hint.textContent = hintText;
+        wrap.appendChild(hint);
+      }
+      return wrap;
+    };
+
+    if (id === 'telegram') {
+      const steps = document.createElement('ul');
+      steps.className = 'slash-connector-setup__steps';
+      for (const line of [
+        '1. Получи токен у @BotFather → вставь ниже.',
+        '2. Напиши боту /start и нажми «Сохранить и связать».',
+      ]) {
+        const li = document.createElement('li');
+        li.textContent = line;
+        steps.appendChild(li);
+      }
+      panel.appendChild(steps);
+
+      const form = document.createElement('form');
+      form.className = 'slash-connector-setup__form';
+      form.autocomplete = 'off';
+
+      const tokenInput = document.createElement('input');
+      tokenInput.type = 'password';
+      tokenInput.className = 'slash-skill-form__input';
+      tokenInput.autocomplete = 'off';
+      tokenInput.placeholder = '123456789:AA...';
+      tokenInput.value = connectorSetupDrafts.telegram.token;
+      tokenInput.disabled = busy;
+      tokenInput.addEventListener('input', () => {
+        connectorSetupDrafts.telegram.token = tokenInput.value;
+      });
+      form.appendChild(makeField('Токен бота', tokenInput, 'Шифруется через Windows DPAPI', true));
+
+      if (feedback?.text) {
+        const fb = document.createElement('p');
+        fb.className = `slash-connector-setup__feedback ${feedback.ok ? 'is-ok' : 'is-error'}`;
+        fb.textContent = feedback.text;
+        form.appendChild(fb);
+      }
+
+      const actions = document.createElement('div');
+      actions.className = 'slash-connector-setup__actions';
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'slash-connector-btn';
+      cancelBtn.disabled = busy;
+      cancelBtn.textContent = 'Скрыть';
+      cancelBtn.addEventListener('click', () => {
+        openSetupConnectorId = null;
+        renderModal();
+      });
+
+      const submitBtn = document.createElement('button');
+      submitBtn.type = 'submit';
+      submitBtn.className = 'slash-connector-btn slash-connector-btn--primary';
+      submitBtn.disabled = busy;
+      submitBtn.textContent = busy ? 'Связываю…' : 'Сохранить и связать';
+
+      actions.append(cancelBtn, submitBtn);
+      form.appendChild(actions);
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const tok = connectorSetupDrafts.telegram.token.trim();
+        if (!tok && c.status === 'not_configured') {
+          connectorConfigFeedback.set('telegram', { ok: false, text: 'Вставь токен бота от @BotFather.' });
+          renderModal();
+          return;
+        }
+        await handleConnectorConfigure('telegram', tok ? { token: tok, link: true } : { link: true });
+      });
+
+      panel.appendChild(form);
+      return panel;
+    }
+
+    if (id === 'wger') {
+      const form = document.createElement('form');
+      form.className = 'slash-connector-setup__form';
+      form.autocomplete = 'off';
+
+      const grid = document.createElement('div');
+      grid.className = 'slash-connector-setup__grid';
+
+      const urlInput = document.createElement('input');
+      urlInput.type = 'url';
+      urlInput.className = 'slash-skill-form__input';
+      urlInput.placeholder = 'http://192.168.0.107:8000 или https://wger.de';
+      urlInput.value = connectorSetupDrafts.wger.url;
+      urlInput.disabled = busy;
+      urlInput.addEventListener('input', () => {
+        connectorSetupDrafts.wger.url = urlInput.value;
+      });
+
+      const tokenInput = document.createElement('input');
+      tokenInput.type = 'password';
+      tokenInput.className = 'slash-skill-form__input';
+      tokenInput.autocomplete = 'off';
+      tokenInput.placeholder = 'API Key (необязательно для открытого сервера)';
+      tokenInput.value = connectorSetupDrafts.wger.token;
+      tokenInput.disabled = busy;
+      tokenInput.addEventListener('input', () => {
+        connectorSetupDrafts.wger.token = tokenInput.value;
+      });
+
+      grid.append(
+        makeField('URL сервера', urlInput, 'Локальный сервер или wger.de'),
+        makeField('API Key', tokenInput, 'Wger → Профиль → API Key, шифруется через DPAPI'),
+      );
+      form.appendChild(grid);
+
+      if (feedback?.text) {
+        const fb = document.createElement('p');
+        fb.className = `slash-connector-setup__feedback ${feedback.ok ? 'is-ok' : 'is-error'}`;
+        fb.textContent = feedback.text;
+        form.appendChild(fb);
+      }
+
+      const actions = document.createElement('div');
+      actions.className = 'slash-connector-setup__actions';
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'slash-connector-btn';
+      cancelBtn.disabled = busy;
+      cancelBtn.textContent = 'Скрыть';
+      cancelBtn.addEventListener('click', () => {
+        openSetupConnectorId = null;
+        renderModal();
+      });
+
+      const submitBtn = document.createElement('button');
+      submitBtn.type = 'submit';
+      submitBtn.className = 'slash-connector-btn slash-connector-btn--primary';
+      submitBtn.disabled = busy;
+      submitBtn.textContent = busy ? 'Проверяю…' : 'Сохранить и проверить';
+
+      actions.append(cancelBtn, submitBtn);
+      form.appendChild(actions);
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const cleanUrl = connectorSetupDrafts.wger.url.trim().replace(/\/+$/, '');
+        const cleanTok = connectorSetupDrafts.wger.token.trim();
+        if (!/^https?:\/\/\S+/i.test(cleanUrl)) {
+          connectorConfigFeedback.set('wger', { ok: false, text: 'Укажи корректный URL, начиная с http:// или https://.' });
+          renderModal();
+          return;
+        }
+        await handleConnectorConfigure('wger', { url: cleanUrl, ...(cleanTok ? { token: cleanTok } : {}) });
+      });
+
+      panel.appendChild(form);
+      return panel;
+    }
+
+    if (id === 'health-connect') {
+      const draft = connectorSetupDrafts['health-connect'];
+      const form = document.createElement('form');
+      form.className = 'slash-connector-setup__form';
+      form.autocomplete = 'off';
+
+      const grid = document.createElement('div');
+      grid.className = 'slash-connector-setup__grid';
+
+      const stepsInput = document.createElement('input');
+      stepsInput.type = 'number';
+      stepsInput.min = '0';
+      stepsInput.max = '200000';
+      stepsInput.step = '1';
+      stepsInput.className = 'slash-skill-form__input';
+      stepsInput.placeholder = '8500';
+      stepsInput.value = draft.steps;
+      stepsInput.disabled = busy;
+      stepsInput.addEventListener('input', () => { draft.steps = stepsInput.value; });
+
+      const sleepInput = document.createElement('input');
+      sleepInput.type = 'number';
+      sleepInput.min = '0';
+      sleepInput.max = '24';
+      sleepInput.step = '0.1';
+      sleepInput.className = 'slash-skill-form__input';
+      sleepInput.placeholder = '7.5';
+      sleepInput.value = draft.sleepHours;
+      sleepInput.disabled = busy;
+      sleepInput.addEventListener('input', () => { draft.sleepHours = sleepInput.value; });
+
+      const hrInput = document.createElement('input');
+      hrInput.type = 'number';
+      hrInput.min = '25';
+      hrInput.max = '240';
+      hrInput.step = '1';
+      hrInput.className = 'slash-skill-form__input';
+      hrInput.placeholder = '68';
+      hrInput.value = draft.avgHr;
+      hrInput.disabled = busy;
+      hrInput.addEventListener('input', () => { draft.avgHr = hrInput.value; });
+
+      const notesInput = document.createElement('input');
+      notesInput.type = 'text';
+      notesInput.className = 'slash-skill-form__input';
+      notesInput.placeholder = 'Силовая 45 мин, ровный сон';
+      notesInput.value = draft.notes;
+      notesInput.disabled = busy;
+      notesInput.addEventListener('input', () => { draft.notes = notesInput.value; });
+
+      grid.append(
+        makeField('Шаги', stepsInput),
+        makeField('Сон (ч)', sleepInput),
+        makeField('Средний пульс', hrInput),
+        makeField('Тренировка / заметка', notesInput),
+      );
+      form.appendChild(grid);
+
+      const note = document.createElement('p');
+      note.className = 'slash-connector-setup__note';
+      note.textContent = 'Данные хранятся строго локально. Для автосинхронизации с Android Health Connect / Zepp Life открой раздел «Коннекторы» в мобильной Капри.';
+      form.appendChild(note);
+
+      if (feedback?.text) {
+        const fb = document.createElement('p');
+        fb.className = `slash-connector-setup__feedback ${feedback.ok ? 'is-ok' : 'is-error'}`;
+        fb.textContent = feedback.text;
+        form.appendChild(fb);
+      }
+
+      const actions = document.createElement('div');
+      actions.className = 'slash-connector-setup__actions';
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'slash-connector-btn';
+      cancelBtn.disabled = busy;
+      cancelBtn.textContent = 'Скрыть';
+      cancelBtn.addEventListener('click', () => {
+        openSetupConnectorId = null;
+        renderModal();
+      });
+
+      const submitBtn = document.createElement('button');
+      submitBtn.type = 'submit';
+      submitBtn.className = 'slash-connector-btn slash-connector-btn--primary';
+      submitBtn.disabled = busy;
+      submitBtn.textContent = busy ? 'Сохраняю…' : 'Сохранить локально';
+
+      actions.append(cancelBtn, submitBtn);
+      form.appendChild(actions);
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const parseNum = (raw) => {
+          const s = String(raw || '').trim().replace(',', '.');
+          if (!s) return null;
+          const n = Number(s);
+          return Number.isFinite(n) ? n : null;
+        };
+        const steps = parseNum(draft.steps);
+        const sleepHours = parseNum(draft.sleepHours);
+        const avgHr = parseNum(draft.avgHr);
+        const notes = String(draft.notes || '').trim();
+        if (steps === null && sleepHours === null && avgHr === null && !notes) {
+          connectorConfigFeedback.set('health-connect', { ok: false, text: 'Заполни хотя бы одно поле.' });
+          renderModal();
+          return;
+        }
+        await handleConnectorConfigure('health-connect', {
+          ...(steps !== null ? { steps } : {}),
+          ...(sleepHours !== null ? { sleepHours } : {}),
+          ...(avgHr !== null ? { avgHr } : {}),
+          ...(notes ? { notes } : {}),
+          source: 'desktop-local',
+        });
+      });
+
+      panel.appendChild(form);
+      return panel;
+    }
+
+    if (id === 'google-workspace') {
+      const stepsList = document.createElement('ul');
+      stepsList.className = 'slash-connector-setup__steps';
+      const lines = connectorSetupDrafts['google-workspace'].setupSteps?.length
+        ? connectorSetupDrafts['google-workspace'].setupSteps
+        : DEFAULT_GOOGLE_WORKSPACE_STEPS;
+      for (const line of lines) {
+        const li = document.createElement('li');
+        li.textContent = line;
+        stepsList.appendChild(li);
+      }
+      panel.appendChild(stepsList);
+
+      appendFeedback();
+
+      const actions = document.createElement('div');
+      actions.className = 'slash-connector-setup__actions';
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'slash-connector-btn';
+      cancelBtn.disabled = busy;
+      cancelBtn.textContent = 'Скрыть';
+      cancelBtn.addEventListener('click', () => {
+        openSetupConnectorId = null;
+        renderModal();
+      });
+
+      const checkSignInBtn = document.createElement('button');
+      checkSignInBtn.type = 'button';
+      checkSignInBtn.className = 'slash-connector-btn slash-connector-btn--primary';
+      checkSignInBtn.disabled = busy;
+      checkSignInBtn.append(
+        createIconSvg('check', 13),
+        document.createTextNode(busy ? 'Проверяю…' : 'Проверить вход'),
+      );
+      checkSignInBtn.addEventListener('click', () => {
+        handleConnectorConfigure('google-workspace', { action: 'check' });
+      });
+
+      actions.append(cancelBtn, checkSignInBtn);
+      panel.appendChild(actions);
+      return panel;
+    }
+
+    if (id === 'gemini-notebook') {
+      const note = document.createElement('p');
+      note.className = 'slash-connector-setup__note';
+      note.textContent = 'Собирает очищенный дайджест рабочих заметок GENESIS (без секретов и Tor). Скопируй текст и вставь прямо в Gemini Notebook.';
+      panel.appendChild(note);
+
+      appendFeedback();
+
+      if (digestResult) {
+        const metaRow = document.createElement('div');
+        metaRow.className = 'slash-connector-digest__head';
+        const dMeta = document.createElement('span');
+        dMeta.className = 'slash-connector-digest__meta';
+        dMeta.textContent = `Собрано: ${digestResult.chars} симв.`;
+        metaRow.appendChild(dMeta);
+        panel.appendChild(metaRow);
+
+        if (digestResult.path) {
+          const pathEl = document.createElement('div');
+          pathEl.className = 'slash-connector-digest__path';
+          pathEl.textContent = digestResult.path;
+          panel.appendChild(pathEl);
+        }
+
+        if (digestResult.preview) {
+          const prevEl = document.createElement('pre');
+          prevEl.className = 'slash-connector-digest__preview';
+          prevEl.textContent = digestResult.preview;
+          panel.appendChild(prevEl);
+        }
+      }
+
+      const actions = document.createElement('div');
+      actions.className = 'slash-connector-setup__actions';
+
+      if (digestResult?.path) {
+        const copyPathBtn = document.createElement('button');
+        copyPathBtn.type = 'button';
+        copyPathBtn.className = 'slash-connector-btn';
+        copyPathBtn.textContent = 'Копировать путь';
+        copyPathBtn.addEventListener('click', async () => {
+          const ok = await copyPlainText(digestResult?.path || '');
+          if (!ok) return;
+          copyPathBtn.textContent = 'Скопировано';
+          setTimeout(() => { copyPathBtn.textContent = 'Копировать путь'; }, 1200);
+        });
+        actions.appendChild(copyPathBtn);
+      }
+
+      const buildBtn = document.createElement('button');
+      buildBtn.type = 'button';
+      buildBtn.className = `slash-connector-btn${digestResult ? '' : ' slash-connector-btn--primary'}`;
+      buildBtn.disabled = busy || c.enabled === false;
+      buildBtn.append(
+        createIconSvg('file-text', 13),
+        document.createTextNode(busy ? 'Собираю…' : 'Собрать дайджест'),
+      );
+      buildBtn.addEventListener('click', () => handleNotebookDigest());
+      actions.appendChild(buildBtn);
+
+      const copyTextBtn = document.createElement('button');
+      copyTextBtn.type = 'button';
+      copyTextBtn.className = `slash-connector-btn${digestResult ? ' slash-connector-btn--primary' : ''}`;
+      copyTextBtn.disabled = busy || c.enabled === false;
+      copyTextBtn.append(
+        createIconSvg('clipboard', 13),
+        document.createTextNode('Копировать текст'),
+      );
+      copyTextBtn.addEventListener('click', async () => {
+        const text = digestResult?.markdown || digestResult?.preview || '';
+        if (!text) {
+          await handleNotebookDigest({ copyAfter: true });
+          return;
+        }
+        const ok = await copyPlainText(text);
+        if (!ok) return;
+        copyTextBtn.replaceChildren(createIconSvg('check', 13), document.createTextNode('Скопировано'));
+        setTimeout(() => {
+          copyTextBtn.replaceChildren(createIconSvg('clipboard', 13), document.createTextNode('Копировать текст'));
+        }, 1200);
+      });
+      actions.appendChild(copyTextBtn);
+
+      panel.appendChild(actions);
+      return panel;
+    }
+
+    return null;
+  }
+
+  function buildConnectorCard(c) {
+    const id = c.id || c.name;
+    const enabled = c.enabled !== false;
+    const paused = Boolean(c.pausedInMode);
+    const toggleBusy = pendingConnectorToggles.has(id);
+    const checkBusy = pendingConnectorChecks.has(id) || checkingAllConnectors;
+    const removeBusy = pendingConnectorRemoves.has(id);
+    const configBusy = pendingConnectorConfigs.has(id);
+    const isConfirmingRemove = confirmRemoveConnectorId === id;
+    const isFocused = pendingFocusConnectorId === id;
+    const isConfigurable = Boolean(c.configurable) || CONFIGURABLE_CONNECTOR_IDS.has(id);
+    const isSetupOpen = isConfigurable && openSetupConnectorId === id;
+    const dotCls = connectorStatusDotClass(c);
+
+    const card = document.createElement('div');
+    card.className = `slash-connector-card${enabled ? '' : ' is-disabled'}${isFocused ? ' is-focused' : ''}${isSetupOpen ? ' is-setup-open' : ''}`;
+    card.dataset.connectorId = id;
+
+    const row = document.createElement('div');
+    row.className = 'slash-connector-row';
+
+    const avatar = document.createElement('span');
+    avatar.className = 'slash-catalog__avatar';
+    avatar.appendChild(createIconSvg(connectorIconName(c), 18));
+
+    const main = document.createElement('div');
+    main.className = 'slash-connector-main';
+
+    const topLine = document.createElement('div');
+    topLine.className = 'slash-catalog__item-top';
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'slash-catalog__item-name';
+    nameEl.textContent = c.name || id;
+    topLine.appendChild(nameEl);
+
+    const mentionBtn = document.createElement('button');
+    mentionBtn.type = 'button';
+    mentionBtn.className = 'slash-mention-chip slash-mention-chip--btn';
+    mentionBtn.textContent = `@${id}`;
+    mentionBtn.disabled = !enabled;
+    mentionBtn.title = enabled ? `Вставить @${id} в поле ввода` : 'Коннектор выключен';
+    mentionBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!enabled) return;
+      cleanup();
+      onRunCommand?.({ ...c, kind: 'connector', mention: `@${id}` });
+    });
+    topLine.appendChild(mentionBtn);
+
+    const descEl = document.createElement('span');
+    descEl.className = 'slash-catalog__item-desc';
+    descEl.textContent = c.description || '';
+
+    const metaRow = document.createElement('div');
+    metaRow.className = 'slash-catalog__meta-row';
+
+    const statusPill = document.createElement('span');
+    statusPill.className = `slash-connector-status ${dotCls}`;
+    const dot = document.createElement('span');
+    dot.className = `slash-status-dot ${dotCls}`;
+    dot.setAttribute('aria-hidden', 'true');
+    const stText = document.createElement('span');
+    const latencyPart = Number.isFinite(c.latencyMs) && c.latencyMs >= 0 ? ` · ${c.latencyMs} мс` : '';
+    stText.textContent = `${c.statusLabel || defaultConnectorStatusLabel(c.status)}${latencyPart}`;
+    statusPill.append(dot, stText);
+    metaRow.appendChild(statusPill);
+
+    if (c.localOnly) {
+      const localChip = document.createElement('span');
+      localChip.className = 'slash-skill-chip';
+      localChip.textContent = 'Только локально';
+      metaRow.appendChild(localChip);
+    }
+
+    if (paused) {
+      const pauseChip = document.createElement('span');
+      pauseChip.className = 'slash-skill-chip slash-skill-chip--paused';
+      pauseChip.textContent = 'Пауза в этом режиме';
+      if (c.pauseReason) pauseChip.title = c.pauseReason;
+      metaRow.appendChild(pauseChip);
+    }
+
+    if (c.isCustom) {
+      const customChip = document.createElement('span');
+      customChip.className = 'slash-skill-chip';
+      customChip.textContent = 'Свой MCP';
+      metaRow.appendChild(customChip);
+    }
+
+    if (c.detail) {
+      const detailEl = document.createElement('span');
+      detailEl.className = 'slash-connector-detail';
+      detailEl.textContent = String(c.detail);
+      detailEl.title = String(c.detail);
+      metaRow.appendChild(detailEl);
+    }
+
+    const actionsRow = document.createElement('div');
+    actionsRow.className = 'slash-connector-actions';
+
+    if (isConfigurable) {
+      if (id === 'gemini-notebook') {
+        const digestBtn = document.createElement('button');
+        digestBtn.type = 'button';
+        digestBtn.className = `slash-connector-btn${isSetupOpen ? ' is-active' : ''}`;
+        digestBtn.disabled = digestBusy || configBusy || !enabled;
+        digestBtn.append(
+          createIconSvg('file-text', 13),
+          document.createTextNode(digestBusy ? 'Собираю…' : 'Собрать дайджест'),
+        );
+        digestBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          handleNotebookDigest();
+        });
+        actionsRow.appendChild(digestBtn);
+
+        const copyDigestBtn = document.createElement('button');
+        copyDigestBtn.type = 'button';
+        copyDigestBtn.className = 'slash-connector-btn';
+        copyDigestBtn.disabled = digestBusy || configBusy || !enabled;
+        copyDigestBtn.append(
+          createIconSvg('clipboard', 13),
+          document.createTextNode('Копировать'),
+        );
+        copyDigestBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const text = digestResult?.markdown || digestResult?.preview || '';
+          if (!text) {
+            await handleNotebookDigest({ copyAfter: true });
+            return;
+          }
+          const ok = await copyPlainText(text);
+          if (!ok) return;
+          copyDigestBtn.replaceChildren(createIconSvg('check', 13), document.createTextNode('Скопировано'));
+          setTimeout(() => {
+            copyDigestBtn.replaceChildren(createIconSvg('clipboard', 13), document.createTextNode('Копировать'));
+          }, 1200);
+        });
+        actionsRow.appendChild(copyDigestBtn);
+      } else {
+        const needsSetup = c.status === 'not_configured' || c.status === 'auth_required';
+        const setupBtn = document.createElement('button');
+        setupBtn.type = 'button';
+        setupBtn.className = `slash-connector-btn${isSetupOpen ? ' is-active' : (needsSetup ? ' slash-connector-btn--primary' : '')}`;
+        setupBtn.disabled = configBusy || removeBusy;
+        setupBtn.setAttribute('aria-expanded', String(isSetupOpen));
+        const isGoogle = id === 'google-workspace';
+        setupBtn.append(
+          createIconSvg(isGoogle ? 'plug' : 'sliders', 13),
+          document.createTextNode(isGoogle ? 'Войти' : 'Настроить'),
+        );
+        setupBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (openSetupConnectorId === id) {
+            openSetupConnectorId = null;
+          } else {
+            openSetupConnectorId = id;
+            if (id === 'wger' && !connectorSetupDrafts.wger.url && c.url) {
+              connectorSetupDrafts.wger.url = c.url;
+            }
+          }
+          renderModal();
+        });
+        actionsRow.appendChild(setupBtn);
+      }
+    }
+
+    const checkBtn = document.createElement('button');
+    checkBtn.type = 'button';
+    checkBtn.className = 'slash-connector-btn';
+    checkBtn.disabled = checkBusy || removeBusy || configBusy;
+    checkBtn.append(
+      createIconSvg('refresh', 13),
+      document.createTextNode(pendingConnectorChecks.has(id) ? 'Проверяю…' : 'Проверить'),
+    );
+    checkBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      handleConnectorCheck(id);
+    });
+    actionsRow.appendChild(checkBtn);
+
+    if (c.isCustom) {
+      if (isConfirmingRemove) {
+        const lbl = document.createElement('span');
+        lbl.className = 'slash-connector-confirm-label';
+        lbl.textContent = 'Удалить?';
+
+        const okBtn = document.createElement('button');
+        okBtn.type = 'button';
+        okBtn.className = 'slash-connector-btn slash-connector-btn--danger is-confirming';
+        okBtn.disabled = removeBusy;
+        okBtn.textContent = removeBusy ? 'Удаляю…' : 'Подтвердить';
+        okBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          handleConnectorRemove(c);
+        });
+
+        const noBtn = document.createElement('button');
+        noBtn.type = 'button';
+        noBtn.className = 'slash-connector-btn';
+        noBtn.disabled = removeBusy;
+        noBtn.textContent = 'Отмена';
+        noBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          confirmRemoveConnectorId = null;
+          renderModal();
+        });
+
+        actionsRow.append(lbl, okBtn, noBtn);
+      } else {
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'slash-connector-btn slash-connector-btn--danger';
+        delBtn.disabled = removeBusy;
+        delBtn.append(createIconSvg('trash', 13), document.createTextNode('Удалить'));
+        delBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          confirmRemoveConnectorId = id;
+          renderModal();
+        });
+        actionsRow.appendChild(delBtn);
+      }
+    }
+
+    main.append(topLine, descEl, metaRow, actionsRow);
+
+    const right = document.createElement('span');
+    right.className = 'slash-catalog__item-right';
+
+    const sw = createToggleSwitch(enabled, {
+      label: `${enabled ? 'Выключить' : 'Включить'} коннектор ${c.name || id}`,
+      disabled: toggleBusy || removeBusy,
+      onToggle: () => handleConnectorToggle(c, !enabled),
+    });
+    right.appendChild(sw);
+
+    row.append(avatar, main, right);
+    card.appendChild(row);
+
+    if (isSetupOpen) {
+      const setupPanel = buildConnectorSetupPanel(c);
+      if (setupPanel) card.appendChild(setupPanel);
+    }
+
+    return card;
+  }
+
   function renderModal() {
     renderTabs();
     const sections = catalog.sections || [];
@@ -3995,6 +6030,58 @@ export async function openCatalogModal({
       actions.append(createBtn, installBtn, reloadBtn);
       heroRow.append(copy, actions);
       hero.appendChild(heroRow);
+    } else if (sec.id === 'connectors') {
+      const heroRow = document.createElement('div');
+      heroRow.className = 'slash-catalog__hero-row';
+
+      const copy = document.createElement('div');
+      copy.className = 'slash-catalog__hero-copy';
+      const h2 = document.createElement('h2');
+      h2.className = 'slash-catalog__title';
+      h2.textContent = heroInfo.title;
+      const sub = document.createElement('p');
+      sub.className = 'slash-catalog__subtitle';
+      sub.textContent = heroInfo.subtitle;
+      copy.append(h2, sub);
+
+      const actions = document.createElement('div');
+      actions.className = 'slash-catalog__hero-actions';
+
+      const addBtn = document.createElement('button');
+      addBtn.type = 'button';
+      addBtn.className = `slash-catalog__action-btn${activeForm === 'connector-add' ? ' is-active' : ''}`;
+      addBtn.append(createIconSvg('plus', 16), document.createTextNode('Добавить MCP'));
+      addBtn.addEventListener('click', () => {
+        activeForm = activeForm === 'connector-add' ? null : 'connector-add';
+        plusPanelOpen = false;
+        formError = '';
+        connectorAddDraft.preview = null;
+        connectorAddDraft.previewMessage = '';
+        renderModal();
+      });
+
+      const checkAllBtn = document.createElement('button');
+      checkAllBtn.type = 'button';
+      checkAllBtn.className = 'slash-catalog__action-btn';
+      checkAllBtn.disabled = checkingAllConnectors || reloadingConnectors;
+      checkAllBtn.append(
+        createIconSvg('check', 16),
+        document.createTextNode(checkingAllConnectors ? 'Проверяю…' : 'Проверить все'),
+      );
+      checkAllBtn.addEventListener('click', () => handleConnectorCheck(null));
+
+      const reloadBtn = document.createElement('button');
+      reloadBtn.type = 'button';
+      reloadBtn.className = 'slash-catalog__action-btn slash-catalog__action-btn--icon';
+      reloadBtn.setAttribute('aria-label', 'Обновить список коннекторов');
+      reloadBtn.title = 'Обновить список коннекторов';
+      reloadBtn.disabled = reloadingConnectors || checkingAllConnectors;
+      reloadBtn.appendChild(createIconSvg('refresh', 16));
+      reloadBtn.addEventListener('click', handleReloadConnectors);
+
+      actions.append(addBtn, checkAllBtn, reloadBtn);
+      heroRow.append(copy, actions);
+      hero.appendChild(heroRow);
     } else {
       const h2 = document.createElement('h2');
       h2.className = 'slash-catalog__title';
@@ -4010,6 +6097,8 @@ export async function openCatalogModal({
       frag.appendChild(buildBudgetBar());
     } else if (sec.id === 'plugins') {
       frag.appendChild(buildPluginsStatsBar());
+    } else if (sec.id === 'connectors') {
+      frag.appendChild(buildConnectorsStatsBar());
     }
 
     if (noticeText) {
@@ -4029,6 +6118,48 @@ export async function openCatalogModal({
       frag.appendChild(buildInstallPluginForm());
     } else if (sec.id === 'plugins' && activeForm === 'hookify-add') {
       frag.appendChild(buildHookifyAddForm({ inline: false }));
+    } else if (sec.id === 'connectors' && activeForm === 'connector-add') {
+      frag.appendChild(buildAddConnectorForm());
+    }
+
+    if (sec.id === 'connectors') {
+      const cats = Array.isArray(connectorsData.categories) && connectorsData.categories.length
+        ? connectorsData.categories
+        : groupByCategories(connectorsData.items || [], CONNECTOR_CATEGORIES);
+      let renderedCount = 0;
+      for (const cat of cats) {
+        let items = Array.isArray(cat.items) ? cat.items : [];
+        if (q) {
+          const catMatch = (cat.title || '').toLowerCase().includes(q) || (cat.id || '').toLowerCase().includes(q);
+          items = items
+            .map((it) => ({ it, score: catMatch ? Math.max(15, scoreItem(it, q)) : scoreItem(it, q) }))
+            .filter((x) => x.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .map((x) => x.it);
+        }
+        if (!items.length) continue;
+        renderedCount += items.length;
+        const hasFocused = Boolean(pendingFocusConnectorId && items.some((it) => it.id === pendingFocusConnectorId));
+        frag.appendChild(
+          buildCollapsibleGroup(`connectors:${cat.id}`, cat.title, items, buildConnectorCard, Boolean(q) || hasFocused),
+        );
+      }
+      if (!renderedCount) {
+        const empty = document.createElement('div');
+        empty.className = 'slash-catalog__empty';
+        empty.textContent = q ? 'По запросу коннекторы не нашлись.' : 'Коннекторов пока нет.';
+        frag.appendChild(empty);
+      }
+      body.replaceChildren(frag);
+      if (pendingFocusConnectorId) {
+        const targetCard = Array.from(body.querySelectorAll('.slash-connector-card'))
+          .find((el) => el.dataset.connectorId === pendingFocusConnectorId);
+        if (targetCard) {
+          targetCard.scrollIntoView({ block: 'nearest' });
+          pendingFocusConnectorId = null;
+        }
+      }
+      return;
     }
 
     if (sec.id === 'plugins') {
@@ -4191,17 +6322,20 @@ export async function openCatalogModal({
   renderModal();
   searchInput.focus();
 
-  const [liveCatalog, liveSkills, livePlugins] = await Promise.all([
+  const [liveCatalog, liveSkills, livePlugins, liveConnectors] = await Promise.all([
     fetchCatalog(ctx),
     fetchSkills(ctx, catalog.sections.find((s) => s.id === 'skills')?.items || []),
     fetchPlugins(ctx, catalog.sections.find((s) => s.id === 'plugins')?.items || FALLBACK_PLUGINS),
+    fetchConnectors(ctx, { fallbackItems: catalog.sections.find((s) => s.id === 'connectors')?.items || FALLBACK_CONNECTORS }),
   ]);
   if (document.body.contains(backdrop)) {
     catalog = liveCatalog;
     skillsData = liveSkills;
     pluginsData = livePlugins;
+    connectorsData = liveConnectors;
     syncSkillsIntoCatalog();
     syncPluginsIntoCatalog();
+    syncConnectorsIntoCatalog();
     renderModal();
   }
 }
@@ -4219,16 +6353,22 @@ export function openActiveCatalog(initialTab = 'commands', opts = {}) {
   const activeTab = agentsPlate && !agentsPlate.hidden ? 'agents' : 'chats';
   const target = catalogTargets.get(activeTab) || catalogTargets.get('chats') || catalogTargets.get('agents');
   if (!target) {
-    openCatalogModal({ initialTab, focusPluginId: opts?.focusPluginId || null });
+    openCatalogModal({
+      initialTab,
+      focusPluginId: opts?.focusPluginId || null,
+      focusConnectorId: opts?.focusConnectorId || null,
+    });
     return;
   }
   openCatalogModal({
     initialTab,
     focusPluginId: opts?.focusPluginId || null,
+    focusConnectorId: opts?.focusConnectorId || null,
     getContext: target.getContext,
     onRunCommand: target.onRunCommand,
     onSkillsChanged: target.onSkillsChanged,
     onPluginsChanged: target.onPluginsChanged,
+    onConnectorsChanged: target.onConnectorsChanged,
   });
 }
 

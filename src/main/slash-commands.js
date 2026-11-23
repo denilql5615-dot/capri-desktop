@@ -32,7 +32,7 @@ const OUTPUT_STYLE_HINTS = Object.freeze({
 
 const INSTANT_COMMAND_IDS = new Set([
   'status', 'usage', 'quota', 'context', 'tasks', 'tools', 'mcp', 'skills', 'reload-skills',
-  'plugins', 'hookify',
+  'plugins', 'hookify', 'connectors',
   'doctor', 'storage', 'permissions', 'memory', 'help', 'find', 'free', 'today', 'mail',
   'clip', 'alta', 'agents', 'harness', 'nomad', 'web', 'tor', 'copy', 'export', 'insights', 'stop',
 ]);
@@ -107,6 +107,7 @@ const COMMAND_CATEGORY_BY_ID = Object.freeze({
   'reload-skills': 'system',
   plugins: 'system',
   hookify: 'system',
+  connectors: 'system',
   insights: 'system',
   help: 'system',
   today: 'agents',
@@ -242,6 +243,14 @@ const PLUGIN_COMMANDS = Object.freeze([
   CMD('hookify', {
     icon: 'shield',
     description: 'Показать активные правила Hookify и открыть управление в плагинах',
+  }),
+]);
+
+const CONNECTOR_COMMANDS = Object.freeze([
+  CMD('connectors', {
+    aliases: ['connector'],
+    icon: 'plug',
+    description: 'Показать статус коннекторов и открыть каталог на вкладке «Коннекторы»',
   }),
 ]);
 
@@ -594,6 +603,7 @@ function buildRegistry(dynamicSkills = []) {
   const builtinCmdIds = new Set([
     ...BUILTIN_COMMANDS.filter((c) => c.section === 'commands').map((c) => c.id),
     ...PLUGIN_COMMANDS.map((c) => c.id),
+    ...CONNECTOR_COMMANDS.map((c) => c.id),
   ]);
   const diskById = new Map();
   for (const sk of dynamicSkills) {
@@ -602,7 +612,7 @@ function buildRegistry(dynamicSkills = []) {
   }
 
   const items = [];
-  for (const c of [...BUILTIN_COMMANDS, ...PLUGIN_COMMANDS]) {
+  for (const c of [...BUILTIN_COMMANDS, ...PLUGIN_COMMANDS, ...CONNECTOR_COMMANDS]) {
     if (c.id === 'genesis-techlead-reviewer' && diskById.has(c.id)) {
       const disk = diskById.get(c.id);
       items.push({ ...c, promptBody: disk.promptBody || '', skillPath: disk.skillPath || '' });
@@ -895,6 +905,7 @@ class SlashCommandEngine {
     this.skillRoots = opts.skillRoots || defaultSkillRoots();
     this.skillsEngine = opts.skillsEngine || opts.deps?.skillsEngine || null;
     this.pluginsEngine = opts.pluginsEngine || opts.deps?.pluginsEngine || null;
+    this.connectorsEngine = opts.connectorsEngine || opts.deps?.connectorsEngine || null;
     this.getConfig = typeof opts.getConfig === 'function' ? opts.getConfig : () => ({});
     this.saveConfig = typeof opts.saveConfig === 'function' ? opts.saveConfig : () => {};
     this.deps = opts.deps || {};
@@ -1085,7 +1096,52 @@ class SlashCommandEngine {
       pluginsSection = { id: 'plugins', title: 'Плагины', allLabel: 'Все плагины', stage: '2.3', items: pluginItems };
     }
 
-    const connectorItems = DRAFT_CONNECTORS.filter(allow).map((i) => ({ ...i }));
+    let connectorsSection;
+    if (this.connectorsEngine) {
+      const connCatalog = this.connectorsEngine.listConnectors({ mode, ephemeral });
+      const connItems = connCatalog.items.map((c) => ({
+        id: c.id,
+        name: c.name,
+        slash: '',
+        aliases: Array.isArray(c.aliases) ? [...c.aliases] : [],
+        section: 'connectors',
+        kind: 'connector',
+        icon: c.icon || 'plug',
+        category: c.category,
+        categoryTitle: c.categoryTitle,
+        description: c.description,
+        badge: c.pausedInMode ? 'Пауза' : (c.statusLabel || null),
+        active: Boolean(c.enabled && !c.pausedInMode),
+        chainable: false,
+        confirmRequired: false,
+        cloudOnly: Boolean(c.cloudOnly),
+        localOnly: Boolean(c.localOnly),
+        offlineSafe: Boolean(c.offlineSafe),
+        argsHint: '',
+        enabled: Boolean(c.enabled),
+        pausedInMode: Boolean(c.pausedInMode),
+        pauseReason: c.pauseReason || null,
+        status: c.status,
+        statusLabel: c.statusLabel,
+        latencyMs: c.latencyMs ?? null,
+        detail: c.detail || '',
+        isCustom: Boolean(c.isCustom),
+        transport: c.transport || 'http',
+        url: c.url || '',
+        ...(c.lastDigestAt !== undefined && { lastDigestAt: c.lastDigestAt }),
+      }));
+      connectorsSection = {
+        id: 'connectors',
+        title: 'Коннекторы',
+        allLabel: 'Все коннекторы',
+        categories: connCatalog.categories,
+        items: connItems,
+        stats: connCatalog.stats,
+      };
+    } else {
+      const connectorItems = DRAFT_CONNECTORS.filter(allow).map((i) => ({ ...i }));
+      connectorsSection = { id: 'connectors', title: 'Коннекторы', allLabel: 'Все коннекторы', stage: '2.4', items: connectorItems };
+    }
     const styleItems = DRAFT_STYLES.filter(allow).map((i) => ({ ...i }));
 
     return {
@@ -1105,7 +1161,7 @@ class SlashCommandEngine {
           ...(quickToggles && { quickToggles }),
         },
         pluginsSection,
-        { id: 'connectors', title: 'Коннекторы', allLabel: 'Все коннекторы', stage: '2.4', items: connectorItems },
+        connectorsSection,
         { id: 'styles', title: 'Стили', allLabel: 'Посмотреть все стили', stage: '2.7', items: styleItems },
       ],
     };
@@ -1314,6 +1370,21 @@ class SlashCommandEngine {
           };
         }
         return { handled: true, instant: true, action: 'open-catalog', tab: 'plugins', focusPlugin: 'hookify', reply: 'Открываю управление правилами Hookify.' };
+      }
+
+      case 'connectors': {
+        if (this.connectorsEngine) {
+          const catalog = this.connectorsEngine.listConnectors({ mode, ephemeral });
+          const lines = [
+            `Коннекторов активно: ${catalog.stats.activeInMode} / ${catalog.stats.total} · Подключено: ${catalog.stats.connected}`,
+            ...catalog.items.slice(0, 15).map((c) => {
+              const stateTag = c.pausedInMode ? 'пауза' : (c.enabled ? (c.statusLabel || 'вкл') : 'выкл');
+              return `• @${c.id} (${c.name}) [${stateTag}] — ${c.detail || c.description}`;
+            }),
+          ];
+          return { handled: true, instant: true, action: 'open-catalog', tab: 'connectors', reply: lines.join('\n') };
+        }
+        return { handled: true, instant: true, action: 'open-catalog', tab: 'connectors', reply: 'Открываю каталог коннекторов.' };
       }
 
       case 'status': {
@@ -1733,6 +1804,7 @@ class SlashCommandEngine {
 module.exports = {
   BUILTIN_COMMANDS,
   PLUGIN_COMMANDS,
+  CONNECTOR_COMMANDS,
   COMMAND_CATEGORIES,
   DRAFT_PLUGINS,
   DRAFT_CONNECTORS,

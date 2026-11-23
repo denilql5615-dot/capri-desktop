@@ -39,6 +39,7 @@ const {
 } = require('./slash-commands');
 const { SkillsEngine } = require('./skills-engine');
 const { PluginsEngine } = require('./plugins-engine');
+const { ConnectorsEngine, parseModelUseTag, stripModelUseTags } = require('./connectors-engine');
 const SUGGESTIONS_TTL_MS = 45 * 60 * 1000; // 45 минут кэша подсказок от E4B
 const WORKER_COOLDOWN_MS = 30 * 60 * 1000; // 30 минут кулдауна для уставших воркеров Deep Research
 const RESEARCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -445,6 +446,20 @@ class PhoneBridge {
     return this._fallbackPlugins;
   }
 
+  connectorsEngine() {
+    if (this.d.connectorsEngine) return this.d.connectorsEngine;
+    if (this.d.slashEngine?.connectorsEngine) return this.d.slashEngine.connectorsEngine;
+    if (!this._fallbackConnectors) {
+      this._fallbackConnectors = new ConnectorsEngine({
+        deps: {
+          pim: this.d.readPim ? { read: this.d.readPim } : null,
+          webSearch: this.d.webSearch || null,
+        },
+      });
+    }
+    return this._fallbackConnectors;
+  }
+
   slashEngine() {
     if (this.d.slashEngine) return this.d.slashEngine;
     if (!this._fallbackSlash) {
@@ -452,6 +467,7 @@ class PhoneBridge {
         deps: this.buildSlashDeps(),
         skillsEngine: this.skillsEngine(),
         pluginsEngine: this.pluginsEngine(),
+        connectorsEngine: this.connectorsEngine(),
       });
     }
     return this._fallbackSlash;
@@ -920,6 +936,7 @@ class PhoneBridge {
           slashCommands: true,
           skillsEngine: true,
           pluginsEngine: true,
+          connectorsEngine: true,
           privateVaultSave: Boolean(this.d.savePrivateChat),
           contextLimits,
         });
@@ -1044,6 +1061,93 @@ class PhoneBridge {
           mode: body.mode || 'chat',
           ephemeral: body.ephemeral === true,
         }));
+      }
+      if (req.method === 'GET' && url.pathname === '/connectors') {
+        const mode = url.searchParams.get('mode') || 'chat';
+        const epRaw = url.searchParams.get('ephemeral');
+        const ephemeral = epRaw === 'true' || epRaw === '1';
+        const refreshRaw = url.searchParams.get('refresh');
+        const refresh = refreshRaw === '1' || refreshRaw === 'true';
+        if (refresh) {
+          return this.send(res, 200, await this.connectorsEngine().checkAll({ mode, ephemeral }));
+        }
+        return this.send(res, 200, this.connectorsEngine().listConnectors({ mode, ephemeral }));
+      }
+      if (req.method === 'POST' && url.pathname === '/connectors/toggle') {
+        const body = await this.readJson(req);
+        const result = this.connectorsEngine().toggleConnector({
+          id: body.id,
+          enabled: body.enabled,
+          mode: body.mode || 'chat',
+          ephemeral: body.ephemeral === true,
+        });
+        return this.send(res, result.ok ? 200 : 400, result);
+      }
+      if (req.method === 'POST' && url.pathname === '/connectors/check') {
+        const body = await this.readJson(req).catch(() => ({}));
+        const result = body.id
+          ? await this.connectorsEngine().checkConnector(body.id, { mode: body.mode || 'chat', ephemeral: body.ephemeral === true })
+          : await this.connectorsEngine().checkAll({ mode: body.mode || 'chat', ephemeral: body.ephemeral === true });
+        return this.send(res, result.ok ? 200 : 400, result);
+      }
+      if (req.method === 'POST' && url.pathname === '/connectors/query') {
+        const body = await this.readJson(req);
+        const result = await this.connectorsEngine().queryConnector({
+          id: body.id,
+          query: body.query || '',
+          mode: body.mode || 'chat',
+          ephemeral: body.ephemeral === true,
+          isCloud: false,
+        });
+        return this.send(res, result.ok ? 200 : 400, result);
+      }
+      if (req.method === 'POST' && url.pathname === '/connectors/add') {
+        const body = await this.readJson(req, MAX_BODY * 2);
+        const result = this.connectorsEngine().addConnector({
+          name: body.name,
+          slug: body.slug,
+          category: body.category,
+          transport: body.transport,
+          url: body.url,
+          command: body.command,
+          args: body.args,
+          token: body.token,
+          cloudOnly: body.cloudOnly,
+          localOnly: body.localOnly,
+          confirm: body.confirm === true,
+          mode: body.mode || 'chat',
+          ephemeral: body.ephemeral === true,
+        });
+        return this.send(res, (result.ok || result.confirmRequired) ? 200 : 400, result);
+      }
+      if (req.method === 'POST' && url.pathname === '/connectors/remove') {
+        const body = await this.readJson(req);
+        const result = this.connectorsEngine().removeConnector({
+          id: body.id,
+          confirm: body.confirm === true,
+          mode: body.mode || 'chat',
+          ephemeral: body.ephemeral === true,
+        });
+        return this.send(res, (result.ok || result.confirmRequired) ? 200 : 400, result);
+      }
+      if (req.method === 'POST' && url.pathname === '/connectors/notebook-digest') {
+        const body = await this.readJson(req).catch(() => ({}));
+        const result = this.connectorsEngine().buildNotebookDigest(body || {});
+        return this.send(res, result.ok ? 200 : 400, result);
+      }
+      if (req.method === 'POST' && url.pathname === '/connectors/health-sync') {
+        const body = await this.readJson(req, MAX_BODY * 2);
+        const result = this.connectorsEngine().saveHealthSummary(body || {});
+        return this.send(res, result.ok ? 200 : 400, result);
+      }
+      if (req.method === 'POST' && url.pathname === '/connectors/configure') {
+        const body = await this.readJson(req, MAX_BODY * 2);
+        if (!body || typeof body !== 'object' || Array.isArray(body) || !String(body.id || '').trim()) {
+          return this.send(res, 400, { ok: false, error: 'Не указан id коннектора.' });
+        }
+        const result = await this.connectorsEngine().configureConnector(body);
+        if (result.ok) this.d.onConnectorsChanged?.(body);
+        return this.send(res, result.ok ? 200 : 400, result);
       }
       if (req.method === 'GET' && url.pathname === '/commands') {
         const mode = url.searchParams.get('mode') || 'chat';
@@ -1538,15 +1642,29 @@ class PhoneBridge {
       userText: text,
       isCloud: false,
     });
+    const connCtx = await this.connectorsEngine().resolveTurnContext({
+      text,
+      mode: skillMode,
+      ephemeral: Boolean(ephemeral),
+      isCloud: false,
+    });
+    const effectiveText = connCtx.cleanedText || text;
     const missingFallback = (Array.isArray(flags.skills) ? flags.skills : [])
       .filter((sk) => !skillCtx.activeSkillIds.includes(sk) && !skillCtx.pausedSkillIds.includes(sk) && SKILL_NOTES[sk])
       .map((sk) => SKILL_NOTES[sk]);
     const baseSystemPrompt = baseSysParts.filter(Boolean).join('\n');
-    const skillsText = [skillCtx.text, pluginCtx.text, ...missingFallback, flags.slashSystemHint].filter(Boolean).join('\n\n');
+    const skillsText = [
+      skillCtx.text,
+      pluginCtx.text,
+      connCtx.contextBlock,
+      connCtx.hintsBlock,
+      ...missingFallback,
+      flags.slashSystemHint,
+    ].filter(Boolean).join('\n\n');
     const sysContent = [baseSystemPrompt, skillsText].filter(Boolean).join('\n');
 
     const historySlice = flags.history ?? (isolated ? [] : this.turns.slice(-TURNS * 2));
-    const userMsg = { role: 'user', content: text, ...(flags.images?.length ? { images: flags.images } : {}) };
+    const userMsg = { role: 'user', content: effectiveText, ...(flags.images?.length ? { images: flags.images } : {}) };
     const messages = [
       { role: 'system', content: sysContent },
       ...historySlice,
@@ -1569,9 +1687,48 @@ class PhoneBridge {
         ...(flags.localMode && { localMode: flags.localMode }),
       };
       const requestSignal = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
-      const { text: said, brain, context } = await this.d.chat(messages, requestSignal, opts);
+      const firstChat = await this.d.chat(messages, requestSignal, opts);
       requestSignal.throwIfAborted();
-      const reply = String(said || '').trim();
+      let brain = firstChat?.brain;
+      let context = firstChat?.context;
+      let reply = String(firstChat?.text || '').trim();
+      const usedConnectors = [...connCtx.usedConnectorIds];
+
+      const useTag = parseModelUseTag(reply);
+      if (useTag) {
+        const followRes = await this.connectorsEngine().queryConnector({
+          id: useTag.id,
+          query: useTag.query || effectiveText,
+          mode: skillMode,
+          ephemeral: Boolean(ephemeral),
+          isCloud: false,
+        });
+        const followPayload = followRes.ok
+          ? followRes.reply
+          : `Коннектор ${useTag.id} не ответил: ${followRes.error || 'ошибка'}`;
+        const followMessages = [
+          ...messages,
+          { role: 'assistant', content: reply },
+          {
+            role: 'user',
+            content: `[Результат коннектора ${useTag.id} (только чтение)]\n${followPayload}\n\nДай итоговый ответ пользователю по этим данным, без тега [[use:...]].`,
+          },
+        ];
+        const secondChat = await this.d.chat(followMessages, requestSignal, opts);
+        requestSignal.throwIfAborted();
+        const cleanedFollow = stripModelUseTags(secondChat?.text || '');
+        if (cleanedFollow) {
+          reply = cleanedFollow;
+          brain = secondChat?.brain || brain;
+          context = secondChat?.context || context;
+        } else {
+          reply = stripModelUseTags(reply) || followPayload;
+        }
+        if (followRes.ok && !usedConnectors.includes(useTag.id)) {
+          usedConnectors.push(useTag.id);
+        }
+      }
+
       if (!reply) return { reply: 'Модель промолчала. Спроси ещё раз, покороче.', brain };
       if (!isolated && flags.btw !== true && flags.history === undefined) {
         this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
@@ -1587,6 +1744,7 @@ class PhoneBridge {
         reply,
         brain,
         context: contextStats,
+        ...(usedConnectors.length && { connectors: usedConnectors }),
         ...(pluginCtx.warnings?.length && { warnings: pluginCtx.warnings }),
         ...(flags.btw === true && { btw: true }),
       };
