@@ -11,6 +11,20 @@ test('tokenMatches: only the right key, never an empty one', () => {
   assert.strictEqual(tokenMatches('', ''), false);
 });
 
+test('the phone can read current swarm quotas only with the bridge token', async () => {
+  const groups = [{ id: 'codex', bars: [{ kind: '5h', remaining: 42 }] }];
+  const bridge = new PhoneBridge({ token: () => 'fixture', quotaActivity: () => groups });
+  const port = await bridge.start(0, '127.0.0.1');
+  try {
+    const url = `http://127.0.0.1:${port}/quotas/activity`;
+    assert.strictEqual((await fetch(url)).status, 401);
+    const response = await fetch(url, { headers: { 'x-capri-token': 'fixture' } });
+    assert.deepStrictEqual(await response.json(), { groups });
+  } finally {
+    bridge.stop();
+  }
+});
+
 test('mobile chat carries model and isolated context, and retries one PC turn', async () => {
   const calls = [];
   const logged = [];

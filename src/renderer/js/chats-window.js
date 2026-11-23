@@ -115,6 +115,7 @@ const composeEl = $('.log__compose');
 const logMainEl = linesEl.closest('.log');
 const slashDock = ensureSlashDock(logMainEl, composeEl);
 const logMetaEl = $('.log__meta');
+mountQuotaStrip(logMetaEl, { local: true });
 
 function currentHistory() {
   if (usesTool()) {
@@ -1026,3 +1027,4 @@ host.onChatsState((state) => {
 renderControls();
 load();
 input.focus();
+import { mountQuotaStrip } from './quota-view.js';

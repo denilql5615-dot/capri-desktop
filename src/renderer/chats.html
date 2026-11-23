@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="styles/gemini-tokens.css">
   <link rel="stylesheet" href="styles/hub-layout.css?v=8">
   <link rel="stylesheet" href="styles/slash-menu.css">
+  <link rel="stylesheet" href="styles/quotas.css">
   <link rel="stylesheet" href="styles/styles-library.css">
 </head>
 <body>
@@ -28,6 +29,7 @@
     <div class="hud__main">
       <header class="hud__bar">
         <h1 class="hud__title"></h1>
+        <button class="panel__action" id="open-quotas" type="button">Лимиты</button>
         <button class="panel__action hud__catalog-btn" type="button" aria-label="Команды и навыки" title="Команды и навыки">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="3.5" y="3.5" width="6.5" height="6.5" rx="1.5"></rect>
@@ -199,9 +201,6 @@
           <span class="agents__run" hidden>В работе</span>
         </header>
         <div class="agents__quota" hidden>
-          <span class="agents__quota-group"></span>
-          <span class="agents__quota-values" aria-live="polite"></span>
-          <button class="panel__action agents__quota-refresh" type="button">Обновить</button>
           <details class="agents__quota-edit" hidden>
             <summary>Снимок квоты</summary>
             <form class="agents__quota-form">

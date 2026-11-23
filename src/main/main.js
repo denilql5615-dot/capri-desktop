@@ -43,7 +43,7 @@ const { PcToolsEngine } = require('./pc-tools-engine');
 const { PhoneControlEngine } = require('./phone-control-engine');
 const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
-const { QuotaHub } = require('./quota-hub');
+const { QuotaHub, groupFor, GROUPS: QUOTA_GROUPS } = require('./quota-hub');
 const { readAgyLive, readSnapshot: readAgyStatusLineSnapshot, poolsToGroups } = require('./quota-agy');
 const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('./hub-artifacts');
 const notes = require('./notes');
@@ -84,10 +84,10 @@ const {
 const geminiWeb = require('./gemini');
 const gemini = {
   ...geminiWeb,
-  ask: (prompt, options) => geminiWeb.ask(prompt, {
+  ask: (prompt, options) => withQuota('web-gemini', 'companion', () => geminiWeb.ask(prompt, {
     ...options,
     onQuota: (windows) => ensureQuotaHub().push('web-gemini', windows, 'web-gemini'),
-  }),
+  })),
 };
 const agyApp = require('./agy-app');
 const kiwix = require('./kiwix');
@@ -477,6 +477,18 @@ function ensureQuotaHub() {
     },
   });
   return quotaHub;
+}
+
+async function withQuota(group, scope, work) {
+  const end = group && scope ? startQuotaActivity(group, scope) : null;
+  try { return await work(); } finally { end?.(); }
+}
+
+function startQuotaActivity(group, scope) {
+  const hub = ensureQuotaHub();
+  const end = hub.track(group, scope);
+  if (group !== 'web-gemini') void hub.refresh({ groups: [group] }).catch(() => {});
+  return end;
 }
 
 const agyQuotaFile = () => path.join(app.getPath('userData'), 'antigravity-quota.json');
@@ -1372,7 +1384,37 @@ function openChats() {
   chatsWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   chatsWin.webContents.on('will-navigate', (event) => event.preventDefault());
   chatsWin.once('ready-to-show', () => chatsWin?.show());
-  chatsWin.on('closed', () => { chatsWin = null; });
+  const windowId = chatsWin.webContents.id;
+  chatsWin.on('closed', () => {
+    quotaHub?.setShown([], windowId);
+    chatsWin = null;
+  });
+}
+
+let quotaWin = null;
+function openQuotaWindow() {
+  if (quotaWin) {
+    if (quotaWin.isMinimized()) quotaWin.restore();
+    quotaWin.show();
+    quotaWin.focus();
+    return;
+  }
+  quotaWin = new BrowserWindow({
+    width: 500, height: 660, minWidth: 340, minHeight: 400, show: false,
+    title: 'Лимиты облаков', icon: HUB_ICON, backgroundColor: '#17191c', autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, '..', 'preload.js'), contextIsolation: true, sandbox: true,
+    },
+  });
+  quotaWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  quotaWin.webContents.on('will-navigate', (event) => event.preventDefault());
+  quotaWin.once('ready-to-show', () => quotaWin?.show());
+  const windowId = quotaWin.webContents.id;
+  quotaWin.on('closed', () => {
+    quotaHub?.setShown([], windowId);
+    quotaWin = null;
+  });
+  quotaWin.loadURL('capri://app/src/renderer/quotas.html');
 }
 
 let torSafeWin = null;
@@ -2460,6 +2502,10 @@ async function applyPhone() {
       dockerEngine: ensureDockerEngine(),
       pcToolsEngine: ensurePcToolsEngine(),
       phoneControlEngine: ensurePhoneControlEngine(), stylesEngine: ensureStylesEngine(),
+      quotaActivity: () => {
+        const { active, groups } = ensureQuotaHub().snapshot();
+        return groups.filter((group) => active.includes(group.id));
+      },
       onConnectorsChanged: (payload) => {
         if (payload?.id === 'telegram') applyTelegram();
         broadcastConnectorsChanged();
@@ -2671,7 +2717,7 @@ async function applyPhone() {
       },
       agentCreate: async (agent) => ensureAgentSessions().create(agent),
       agentHistory: async (id) => ensureAgentSessions().history(id),
-      agentSend: async ({ id, agent, model, effort, text, retry, files, queue, history, ephemeral, privateMode, localOnly, mode, useVault, signal }) => {
+      agentSend: async ({ id, agent, model, effort, text, retry, files, queue, history, ephemeral, privateMode, localOnly, mode, useVault, signal, quotaScope }) => {
         signal?.throwIfAborted();
         if (ephemeral === true || privateMode === true || localOnly === true || mode === 'private' || mode === 'nsfw') {
           throw new Error('Облачные модели недоступны в этом режиме.');
@@ -2701,7 +2747,8 @@ async function applyPhone() {
         signal?.throwIfAborted();
         const sendOpts = { effort, agent: targetAgent, history, ephemeral, privateMode, localOnly, mode, useVault: useVault !== false };
         if (queue === true && retry !== true) return mgr.enqueue(id, chosenModel, promptText, sendOpts);
-        return mgr.send(id, chosenModel, promptText, retry === true, false, true, sendOpts);
+        return withQuota(groupFor(targetAgent, chosenModel), quotaScope, () =>
+          mgr.send(id, chosenModel, promptText, retry === true, false, true, sendOpts));
       },
       agentStop: async (id) => ensureAgentSessions().stop(id),
       agentCompact: async ({ id, focus }) => ensureAgentSessions().compact(id, { focus }),
@@ -3266,7 +3313,8 @@ async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch,
       ? baseMessages
       : require('./brain/influence-glue').stripBrainHints(baseMessages);
     try {
-      const generate = () => llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict, onUsage: opts?.onUsage }, send, signal);
+      const generate = () => withQuota(cfg.provider === 'claude' ? 'claude' : null, 'chat', () =>
+        llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict, onUsage: opts?.onUsage }, send, signal));
       const needsSwap = cfg.provider === 'ollama' && model && (isAuxiliaryModel(model) || brains.auxiliary);
       const text = needsSwap ? await brains.withModel(model, generate, signal) : await generate();
       if (opts?.persistFallback !== false && model !== pickModel(cfg)) updateConfig({ chatModel: model });
@@ -3556,10 +3604,14 @@ function councilMembers(cfg, only) {
     } },
   ];
   const members = Array.isArray(only) && only.length ? all.filter((m) => only.includes(m.id)) : all;
+  const pools = { gemini: 'web-gemini', argon: 'agy-argon', opus: 'claude', sol: 'codex', 'rector-opus': 'claude', 'rector-astra': 'codex' };
+  const tracked = (member) => pools[member.id] ? {
+    ...member, ask: (...args) => withQuota(pools[member.id], 'swarm', () => member.ask(...args)),
+  } : member;
   return {
-    members,
-    judge: claudeExe ? { id: 'rector-opus', name: 'Claude Opus (ректор)', ask: council.claudeRunner({ exe: claudeExe, cwd, model: 'opus' }) } : null,
-    fallbackJudge: codexExe ? { id: 'rector-astra', name: 'GPT-6 Astra (ректор)', ask: council.codexRunner({ exe: codexExe, cwd, model: 'gpt-6-astra', effort: 'high' }) } : null,
+    members: members.map(tracked),
+    judge: claudeExe ? tracked({ id: 'rector-opus', name: 'Claude Opus (ректор)', ask: council.claudeRunner({ exe: claudeExe, cwd, model: 'opus' }) }) : null,
+    fallbackJudge: codexExe ? tracked({ id: 'rector-astra', name: 'GPT-6 Astra (ректор)', ask: council.codexRunner({ exe: codexExe, cwd, model: 'gpt-6-astra', effort: 'high' }) }) : null,
   };
 }
 
@@ -3981,7 +4033,11 @@ function registerIpc() {
       const tierOpts = workerSettings(route.tier, { computer: hands === 'yes' });
       if (['claude', 'codex', 'gemini'].includes(worker)) router.hold(route.tier || 'routine');
       let actualWorker = worker;
+      let endWorkerQuota;
       const onStep = (step, prev = []) => {
+        endWorkerQuota?.();
+        const group = groupFor(['claude', 'codex'].includes(step) ? step : 'gemini', step);
+        endWorkerQuota = startQuotaActivity(group, 'chat');
         actualWorker = step;
         const label = workers.WORKER_LABELS[step] || step;
         const chainText = prev.length
@@ -4046,7 +4102,8 @@ function registerIpc() {
           ? [{ role: 'system', content: combinedWorkerRules }, ...baseWorkerMessages]
           : baseWorkerMessages;
         try {
-          return await workers.runWorker(worker, cfg, workerMessages, send, abort.signal, desktopOpts);
+          return await workers.runWorker(worker, cfg, workerMessages, send, abort.signal, desktopOpts)
+            .finally(() => endWorkerQuota?.());
         } catch (err) {
           if (abort.signal.aborted || err?.message === 'stopped' || cfg.provider !== 'ollama' || !brains.ready(chatModels)) throw err;
           console.warn(`[capri] cloud chain gave nothing (${err.message}): her main brain answers`);
@@ -4624,9 +4681,18 @@ function registerIpc() {
     fs.writeFileSync(agyQuotaFile(), JSON.stringify(data), 'utf8');
     ensureQuotaHub().refresh({ force: true, groups: [group] }).catch(() => {});
   });
-  ipcMain.handle('quotas:snapshot', () => ensureQuotaHub().refresh());
-  ipcMain.handle('quotas:refresh', () => ensureQuotaHub().refresh({ force: true }));
-  ipcMain.handle('quotas:shown', (_e, groups = []) => { ensureQuotaHub().setShown(groups); return ensureQuotaHub().refresh({ groups }); });
+  ipcMain.on('quotas:open', openQuotaWindow);
+  ipcMain.handle('quotas:snapshot', () => ensureQuotaHub().snapshot());
+  ipcMain.handle('quotas:refresh', (_e, group) =>
+    ensureQuotaHub().refresh({ force: true, groups: QUOTA_GROUPS.some(({ id }) => id === group) ? [group] : null }));
+  ipcMain.handle('quotas:shown', (event, { agent, model, all, visible } = {}) => {
+    const hub = ensureQuotaHub();
+    const selected = visible ? groupFor(agent, model) : null;
+    const groups = !visible ? [] : all ? QUOTA_GROUPS.map(({ id }) => id) : selected ? [selected] : [];
+    hub.setShown(groups, event.sender.id);
+    if (groups.length && !all) void hub.refresh({ groups });
+    return { ...hub.snapshot(), selected };
+  });
   ipcMain.handle('agents:history', (event, id) => hubSessions(event).history(id));
   ipcMain.handle('agents:create', (event, agent) => hubSessions(event).create(agent));
   ipcMain.handle('agents:send', async (event, { id, agent, model, effort, text, retry, files, history, skills }) => {

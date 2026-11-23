@@ -1,5 +1,6 @@
 import { appendHubText } from './hub-links.js';
 import { openStylesLibrary } from './styles-library.js';
+import { mountQuotaStrip } from './quota-view.js';
 import {
   attachSlashMenu,
   openCatalogModal,
@@ -16,7 +17,7 @@ import {
 } from './slash-menu.js';
 
 const host = window.host;
-const labels = { claude: 'Claude', codex: 'Codex', gemini: 'Antigravity', gemma: 'Gemma', faun: 'RP' };
+const labels = { claude: 'Claude', codex: 'Codex', gemini: 'Antigravity', 'gemini-web': 'Web Gemini', gemma: 'Gemma', faun: 'RP' };
 const $ = (name) => document.querySelector(`.agents__${name}`);
 const drafts = new Map();
 const attachments = new Map();
@@ -33,7 +34,6 @@ let revision = 0;
 let historyId;
 let history = [];
 let historyRevision = 0;
-let quotaRevision = 0;
 let agentSlashState = {};
 const sessionContextPct = new Map();
 let agentSlashMenu = null;
@@ -42,7 +42,7 @@ const agentLogEl = document.querySelector('[data-tab="agents"] .log');
 const agentComposeEl = $('compose');
 const agentMetaEl = $('meta');
 const agentSlashDock = ensureSlashDock(agentLogEl, agentComposeEl);
-const quotaLabels = { claude: 'Claude', codex: 'Codex', 'agy-argon': 'Argon', 'agy-gemini': 'Gemini Flash / Pro', 'agy-third-party': 'Claude / GPT в Antigravity' };
+const quotaStrip = mountQuotaStrip(agentMetaEl);
 
 function estimateAgentContextPct() {
   const id = current()?.id;
@@ -83,40 +83,14 @@ function updateAgentSendButton() {
   $('send').disabled = !session;
 }
 
-async function loadQuota(refresh = false) {
-  const ticket = ++quotaRevision;
+function loadQuota() {
   const model = $('model').value;
-  const quota = $('quota');
-  quota.hidden = !['claude', 'codex', 'gemini'].includes(agent);
-  if (quota.hidden || !models[agent]?.length) return;
-  $('quota-group').textContent = '';
-  $('quota-values').textContent = 'Проверка квоты…';
-  $('quota-refresh').hidden = !['codex', 'gemini'].includes(agent);
+  quotaStrip.select(agent, model);
+  $('quota').hidden = agent !== 'gemini';
   $('quota-edit').hidden = agent !== 'gemini';
   const argon = /^gemini-4-argon/.test(model);
   $('quota-short-label').hidden = argon;
   $('quota-short').required = !argon;
-  try {
-    const result = await host.agentsQuota({ agent, model, refresh });
-    if (ticket !== quotaRevision) return;
-    if (!result) throw new Error('Нет данных');
-    $('quota-group').textContent = quotaLabels[result.group];
-    const windows = result.windows.filter((window) => !window.resetsAt || window.resetsAt * 1000 > Date.now());
-    const values = windows.map((window) => {
-      const period = window.minutes === 300 ? '5 ч' : window.minutes === 10080 ? 'неделя' : `${window.minutes} мин`;
-      const left = new Intl.NumberFormat('ru', { maximumFractionDigits: 2 }).format(window.remaining);
-      const reset = window.resetsAt ? ` · сброс ${new Date(window.resetsAt * 1000).toLocaleString('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : '';
-      return `${window.scope ? window.scope + ' · ' : ''}${period}: ${left}%${reset}`;
-    });
-    if (result.checkedAt && (agent === 'gemini' || Date.now() - result.checkedAt > 120000)) {
-      const tag = result.stale ? 'устарело' : 'снимок';
-      values.push(`${tag} ${new Date(result.checkedAt).toLocaleString('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`);
-    }
-    $('quota-values').textContent = windows.length ? values.join('  /  ') : agent === 'claude'
-      ? 'Клиент пока не сообщил остаток' : 'Нет актуальных данных';
-  } catch {
-    if (ticket === quotaRevision) $('quota-values').textContent = 'Нет актуальных данных';
-  }
 }
 
 const current = () => sessions.find((session) => session.id === selected.get(agent));
@@ -807,7 +781,6 @@ $('model').onchange = () => {
   loadQuota();
   agentSlashMenu?.refresh();
 };
-$('quota-refresh').onclick = () => loadQuota(true);
 $('quota-form').onsubmit = async (event) => {
   event.preventDefault();
   const model = $('model').value;

@@ -81,8 +81,8 @@ class QuotaHub {
     this.onUpdate = onUpdate;
     this.state = new Map(); // group → { windows, checkedAt, source }
     this.lastAsked = new Map(); // source → ms
-    this.shown = new Set(); // groups on screen right now
-    this.active = new Map(); // group → ms until it stays in the swarm plate
+    this.shown = new Map(); // window → groups on screen
+    this.active = new Map(); // scope → groups with running turns or a short linger
     this.pending = new Map(); // source → promise
   }
 
@@ -90,28 +90,50 @@ class QuotaHub {
   push(groupId, windows, source = 'live') {
     if (!GROUP_BY_ID.has(groupId) || !Array.isArray(windows) || !windows.length) return false;
     this.state.set(groupId, { windows, checkedAt: this.now(), source });
+    if (groupId === 'web-gemini') this.lastAsked.set(groupId, this.now());
     this.onUpdate(this.snapshot());
     return true;
   }
 
   /** The windows tell which groups they show, so their sources are asked more often. */
-  setShown(groups = []) {
-    this.shown = new Set((Array.isArray(groups) ? groups : []).filter((g) => GROUP_BY_ID.has(g)));
+  setShown(groups = [], windowId = 0) {
+    const visible = (Array.isArray(groups) ? groups : []).filter((g) => GROUP_BY_ID.has(g));
+    if (visible.length) this.shown.set(windowId, visible);
+    else this.shown.delete(windowId);
   }
 
-  /** A model of a swarm / deep research is at work: its bars stay in the plate until `lingerMs` after it ends. */
-  markActive(groupId, { done = false, lingerMs = 6000 } = {}) {
-    if (!GROUP_BY_ID.has(groupId)) return;
-    this.active.set(groupId, done ? this.now() + lingerMs : Infinity);
+  /** Track overlapping turns on the same quota and keep its bars for six seconds after the last one. */
+  track(groupId, scope) {
+    if (!GROUP_BY_ID.has(groupId)) return () => {};
+    const groups = this.active.get(scope) || new Map();
+    this.active.set(scope, groups);
+    const entry = groups.get(groupId) || { count: 0, until: Infinity };
+    groups.set(groupId, entry);
+    clearTimeout(entry.timer);
+    entry.count += 1;
+    entry.until = Infinity;
     this.onUpdate(this.snapshot());
+    let ended = false;
+    return () => {
+      if (ended) return;
+      ended = true;
+      entry.count -= 1;
+      if (entry.count) return;
+      entry.until = this.now() + 6000;
+      entry.timer = setTimeout(() => this.onUpdate(this.snapshot()), 6000);
+      entry.timer.unref();
+    };
   }
 
-  activeGroups() {
+  activity() {
     const now = this.now();
-    const out = [];
-    for (const [g, until] of this.active) {
-      if (until > now) out.push(g);
-      else this.active.delete(g);
+    const out = {};
+    for (const [scope, groups] of this.active) {
+      for (const [group, { until }] of groups) {
+        if (until <= now) groups.delete(group);
+      }
+      if (groups.size) out[scope] = [...groups.keys()];
+      else this.active.delete(scope);
     }
     return out;
   }
@@ -125,7 +147,8 @@ class QuotaHub {
     const interval = INTERVAL_MS[source];
     if (!interval) return false;
     const groups = source === 'agy' ? ['agy-gemini', 'agy-argon', 'agy-third-party'] : [source];
-    const shown = groups.some((g) => this.shown.has(g));
+    const visible = [...this.shown.values(), ...Object.values(this.activity())];
+    const shown = visible.some((list) => groups.some((g) => list.includes(g)));
     return this.now() - (this.lastAsked.get(source) || 0) >= (shown ? interval.shown : interval.hidden);
   }
 
@@ -185,7 +208,8 @@ class QuotaHub {
         stale: st ? now - st.checkedAt > STALE_MS : true,
       };
     });
-    return { at: now, groups, active: this.activeGroups() };
+    const activity = this.activity();
+    return { at: now, groups, active: activity.swarm || [], activity };
   }
 }
 

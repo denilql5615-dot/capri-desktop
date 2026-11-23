@@ -1,0 +1,67 @@
+.quota-strip,
+.quota-window {
+  --quota-text: var(--hub-text, #e8eaed);
+  --quota-muted: var(--hub-muted, #b1bac5);
+  --quota-track: #77839255;
+  --quota-fill: #90afdb;
+  color: var(--quota-text);
+  font: 13px/1.45 system-ui, sans-serif;
+}
+
+.quota-strip {
+  width: min(100%, var(--hub-stream, 760px));
+  flex: none;
+  margin: 0 auto 8px;
+}
+
+.quota-strip__direct,
+.quota-swarm__groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: 8px 20px;
+}
+
+.quota-group { display: grid; gap: 4px; }
+.quota-bar__caption { display: flex; justify-content: space-between; gap: 8px; color: var(--quota-muted); }
+.quota-strip .quota-bar__caption { font-size: 11px; }
+.quota-bar__value { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.quota-bar__meter,
+.quota-bar__track {
+  display: block;
+  width: 100%;
+  height: 3px;
+  margin-top: 2px;
+  border-radius: 2px;
+  background: var(--quota-track);
+}
+
+.quota-bar__meter::-webkit-meter-bar { border: 0; background: transparent; }
+.quota-bar__meter::-webkit-meter-optimum-value { background: var(--quota-fill); border-radius: 2px; }
+.quota-note { color: var(--quota-muted); font-size: 11px; }
+.quota-swarm { margin-top: 4px; }
+.quota-swarm__summary { cursor: pointer; color: var(--quota-muted); font-size: 12px; }
+.quota-swarm__groups { padding: 4px 0; }
+.quota-strip [hidden], .quota-strip[hidden] { display: none; }
+
+.quota-window {
+  margin: 0;
+  padding: 20px;
+  background: #17191c;
+  color-scheme: dark;
+}
+
+.quota-window__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.quota-window h1 { margin: 0; font-size: 20px; font-weight: 500; }
+.quota-window button {
+  border: 1px solid #77839265;
+  border-radius: 8px;
+  background: #252a31;
+  color: inherit;
+  font: inherit;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.quota-window button:disabled { opacity: .6; }
+.quota-window .quota-group { padding: 12px 0; border-bottom: 1px solid #7783923b; }
+.quota-window .quota-bar__meter, .quota-window .quota-bar__track { height: 4px; }

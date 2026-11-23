@@ -843,7 +843,7 @@ class PhoneBridge {
       signal?.addEventListener('abort', stop, { once: true });
       let response;
       try {
-        response = await this.d.agentSend({ ...request, signal });
+        response = await this.d.agentSend({ ...request, signal, quotaScope: 'swarm' });
       } finally {
         signal?.removeEventListener('abort', stop);
       }
@@ -1638,7 +1638,7 @@ class PhoneBridge {
             || (Array.isArray(body.history) && body.history.some((row) => this.d.externalBlocked?.(String(row?.content || ''))))) {
           return this.send(res, 403, { ok: false, error: 'Облачные модели недоступны для этого запроса.' });
         }
-        let sendPayload = { ...body, useVault: body.useVault !== false };
+        let sendPayload = { ...body, quotaScope: undefined, useVault: body.useVault !== false };
         if (rawText.trim().startsWith('/')) {
           const parsedSlash = parseSlashInput(rawText, this.slashEngine().registry());
           if (parsedSlash.chain.length > 0) {
@@ -1674,6 +1674,9 @@ class PhoneBridge {
         const refresh = url.searchParams.get('refresh') === 'true';
         const q = await this.d.agentQuota?.({ agent, model, refresh });
         return this.send(res, 200, q || {});
+      }
+      if (req.method === 'GET' && url.pathname === '/quotas/activity') {
+        return this.send(res, 200, { groups: this.d.quotaActivity?.() || [] });
       }
       if (req.method === 'POST' && url.pathname === '/agents/artifact') {
         const body = await this.readJson(req);

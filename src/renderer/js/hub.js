@@ -34,6 +34,7 @@ const T = {
 const lang = new URLSearchParams(location.search).get('lang') || 'en';
 const t = T[lang] || T.en;
 const host = window.host;
+document.querySelector('#open-quotas').onclick = () => host.openQuotas();
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
