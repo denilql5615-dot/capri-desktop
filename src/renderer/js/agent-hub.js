@@ -49,7 +49,7 @@ function estimateAgentContextPct() {
   const rows = historyId === id ? history : [];
   if (!rows.length) return 0;
   const chars = rows.reduce((acc, m) => acc + String(m.content || '').length, 0);
-  const windowTokens = ['gemma', 'faun'].includes(agent) ? 16384 : 128000;
+  const windowTokens = ['gemma', 'faun'].includes(agent) ? 32768 : 128000;
   return Math.min(100, Math.round((chars / 4 / windowTokens) * 100));
 }
 

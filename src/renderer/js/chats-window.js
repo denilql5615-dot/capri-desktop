@@ -129,7 +129,7 @@ function estimateContextPct() {
   const hist = currentHistory();
   if (!hist.length) return 0;
   const chars = hist.reduce((acc, m) => acc + String(m.content || '').length, 0);
-  return Math.min(100, Math.round((chars / 4 / 16384) * 100));
+  return Math.min(100, Math.round((chars / 4 / 32768) * 100));
 }
 
 function lastAssistantReply() {

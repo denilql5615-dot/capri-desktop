@@ -38,9 +38,11 @@ const pinned = new Set();
 const pin = (model) => model && pinned.add(model);
 const keepFor = (model, usual) => (pinned.has(model) || isAuxiliaryModel(model) ? -1 : usual);
 
-// Per-model context window rule (e.g. FAST/MAIN = 32768, auxiliary Qwen = 16384): applied uniformly
+// Per-model context window rule (FAST/MAIN/Qwen3.6 MoE = 32768, dense auxiliary Qwen3.8 = 16384): applied uniformly
 // across chat, jsonChat, pick, and warm so Ollama never reloads the model in VRAM due to mismatched num_ctx.
 const AUX_DEFAULT_CTX = 16384;
+const QWEN36_DEFAULT_CTX = 32768;
+const isQwen36Model = (model) => /(?:^|\/)capri-qwen36-heretic(?::|$)|(?:^|\/)qwen3\.6[^:/]*heretic/i.test(model || '');
 const contexts = new Map();
 let lastUsage = null;
 function setContextFor(model, numCtx) {
@@ -52,7 +54,9 @@ function setContextFor(model, numCtx) {
 function ctxFor(model, explicitCtx = null) {
   if (model && contexts.has(model)) return contexts.get(model);
   const n = Number(explicitCtx);
-  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : isAuxiliaryModel(model) ? AUX_DEFAULT_CTX : null;
+  if (Number.isFinite(n) && n > 0) return Math.trunc(n);
+  if (isQwen36Model(model)) return QWEN36_DEFAULT_CTX;
+  return isAuxiliaryModel(model) ? AUX_DEFAULT_CTX : null;
 }
 function getLastUsage() {
   return lastUsage ? { ...lastUsage } : null;
@@ -309,4 +313,4 @@ function screenModel(list = []) {
 const retryEmptyVision = (text, attempt) => attempt === 0 && !String(text || '').trim();
 const visionPrompt = (text) => String(text || '');
 
-module.exports = { AUX_DEFAULT_CTX, base, models, loadedModels, isCloud, pin, setContextFor, ctxFor, getLastUsage, account, freeModels, warm, unload, unloadAll, chat, jsonChat, pick, canSee, findSpokenModel, screenModel, retryEmptyVision, visionPrompt };
+module.exports = { AUX_DEFAULT_CTX, QWEN36_DEFAULT_CTX, base, models, loadedModels, isCloud, pin, setContextFor, ctxFor, getLastUsage, account, freeModels, warm, unload, unloadAll, chat, jsonChat, pick, canSee, findSpokenModel, screenModel, retryEmptyVision, visionPrompt };

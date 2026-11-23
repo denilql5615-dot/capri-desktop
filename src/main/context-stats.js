@@ -9,6 +9,7 @@ const ollama = require('./ollama');
 const LOCAL_CONTEXT_DEFAULTS = Object.freeze({
   fast: 32768,
   main: 32768,
+  qwen36: ollama.QWEN36_DEFAULT_CTX || 32768,
   aux: ollama.AUX_DEFAULT_CTX || 16384,
   vision: 2048,
 });
@@ -24,12 +25,12 @@ const CONTEXT_LIMITS = Object.freeze({
   auto: LOCAL_CONTEXT_DEFAULTS.fast,
   e4b: LOCAL_CONTEXT_DEFAULTS.fast,
   '26b': LOCAL_CONTEXT_DEFAULTS.main,
-  qwen36: LOCAL_CONTEXT_DEFAULTS.aux,
+  qwen36: LOCAL_CONTEXT_DEFAULTS.qwen36,
   qwen38: LOCAL_CONTEXT_DEFAULTS.aux,
   [FAST]: LOCAL_CONTEXT_DEFAULTS.fast,
   [MAIN]: LOCAL_CONTEXT_DEFAULTS.main,
   [VISION]: LOCAL_CONTEXT_DEFAULTS.vision,
-  [QWEN_MODELS.qwen36]: LOCAL_CONTEXT_DEFAULTS.aux,
+  [QWEN_MODELS.qwen36]: LOCAL_CONTEXT_DEFAULTS.qwen36,
   [QWEN_MODELS.qwen38]: LOCAL_CONTEXT_DEFAULTS.aux,
 
   // Codex (~/.codex/models_cache.json)

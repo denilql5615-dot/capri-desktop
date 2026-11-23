@@ -16,15 +16,16 @@ const ollama = require('../src/main/ollama');
 test('CONTEXT_LIMITS exposes exact verified limits for local and cloud models', () => {
   assert.equal(LOCAL_CONTEXT_DEFAULTS.fast, 32768);
   assert.equal(LOCAL_CONTEXT_DEFAULTS.main, 32768);
+  assert.equal(LOCAL_CONTEXT_DEFAULTS.qwen36, 32768);
   assert.equal(LOCAL_CONTEXT_DEFAULTS.aux, 16384);
 
   assert.equal(CONTEXT_LIMITS.e4b, 32768);
   assert.equal(CONTEXT_LIMITS['26b'], 32768);
   assert.equal(CONTEXT_LIMITS[FAST], 32768);
   assert.equal(CONTEXT_LIMITS[MAIN], 32768);
-  assert.equal(CONTEXT_LIMITS.qwen36, 16384);
+  assert.equal(CONTEXT_LIMITS.qwen36, 32768);
   assert.equal(CONTEXT_LIMITS.qwen38, 16384);
-  assert.equal(CONTEXT_LIMITS['capri-qwen36-heretic:latest'], 16384);
+  assert.equal(CONTEXT_LIMITS['capri-qwen36-heretic:latest'], 32768);
   assert.equal(CONTEXT_LIMITS['capri-qwen38-heretic:latest'], 16384);
 
   // Codex (~/.codex/models_cache.json)
@@ -68,7 +69,7 @@ test('resolveContextLimit and getContextLimits honor live ollama.ctxFor override
   assert.equal(resolveContextLimit(FAST, 'ollama'), 24576);
   assert.equal(resolveContextLimit('26b', 'ollama'), 20480);
   assert.equal(resolveContextLimit(MAIN, 'ollama'), 20480);
-  assert.equal(resolveContextLimit('hf.co/llmfan46/Qwen3.6-35B-A3B-uncensored-heretic-GGUF', 'ollama'), 16384);
+  assert.equal(resolveContextLimit('hf.co/llmfan46/Qwen3.6-35B-A3B-uncensored-heretic-GGUF', 'ollama'), 32768);
 
   const liveMap = getContextLimits();
   assert.equal(liveMap.e4b, 24576);
@@ -76,7 +77,8 @@ test('resolveContextLimit and getContextLimits honor live ollama.ctxFor override
   assert.equal(liveMap[FAST], 24576);
   assert.equal(liveMap['26b'], 20480);
   assert.equal(liveMap[MAIN], 20480);
-  assert.equal(liveMap.qwen36, 16384);
+  assert.equal(liveMap.qwen36, 32768);
+  assert.equal(liveMap.qwen38, 16384);
 });
 
 test('estimateTokens differentiates Cyrillic (~3.2 chars/tok), Latin (~4 chars/tok), and code density', () => {

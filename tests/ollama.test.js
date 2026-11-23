@@ -79,12 +79,12 @@ test('chat accepts a larger prediction budget for vision and keeps selected Qwen
   assert.equal(body.think, false);
   assert.equal(body.options.num_predict, 900);
   // The alias still needs think:false before the Ollama model catalogue has been read.
-  for (const model of ['capri-qwen36-heretic:latest', 'capri-qwen38-heretic:latest']) {
+  for (const [model, expectedCtx] of [['capri-qwen36-heretic:latest', 32768], ['capri-qwen38-heretic:latest', 16384]]) {
     await chat({ model, messages: [], numPredict: -1 }, () => {});
     assert.equal(body.model, model);
     assert.equal(body.think, false);
     assert.equal(body.keep_alive, -1);
-    assert.equal(body.options.num_ctx, 16384);
+    assert.equal(body.options.num_ctx, expectedCtx);
     assert.equal(body.options.num_predict, -1);
   }
 });
@@ -113,7 +113,7 @@ test('chat reports prompt_eval_count and eval_count via onUsage and getLastUsage
     model: 'capri-qwen36-heretic:latest',
     promptTokens: 1234,
     evalTokens: 56,
-    numCtx: 16384,
+    numCtx: 32768,
   });
   assert.deepEqual(getLastUsage(), usages[0]);
 });
