@@ -7,7 +7,7 @@
 //   - its tab stays open between questions (pin it once: it is found again after restarts);
 //   - one question at a time, a pause between them (a person's pace, not a flood);
 //   - a new chat per task, or the same chat continued by its id (the /app/<id> part of its address);
-//   - a model by role (Flash-Lite, Hydrogen, Argon), picked in its own model menu; Argon in "Задача" mode;
+//   - a model by role (Flash-Lite, Hydrogen, Neon), picked in its own model menu; always in "Задача" mode;
 //   - files attached through its upload field — only from your work folders, never keys or secrets;
 //   - nothing from a Tor request is ever sent here (the callers keep it that way).
 
@@ -171,7 +171,9 @@ async function askIn(page, prompt, { chat = null, model = null, task = null, fil
   const want = model ? (MODELS[model] || String(model)) : null;
   // Argon answers in Gemini's "Задача" (Task) mode; in plain chat it drops text questions after minutes
   // of thinking (found 2026-11-17: the same question, 4 min and dropped in chat, 20 s as a task)
-  const asTask = task ?? /(?:argon|neon)/i.test(want || '');
+  // Danyal 2026-11-24: Web Gemini works ONLY in "Задача" mode, every model — in plain chat it refuses
+  // (Hydrogen answered a council question with a canned refusal); task: false is for tests only
+  const asTask = task ?? true;
   if (asTask) {
     // its button shows up a few seconds after the page
     let on = false;
