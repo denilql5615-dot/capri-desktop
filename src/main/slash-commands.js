@@ -33,6 +33,7 @@ const OUTPUT_STYLE_HINTS = Object.freeze({
 const INSTANT_COMMAND_IDS = new Set([
   'status', 'usage', 'quota', 'context', 'tasks', 'tools', 'mcp', 'skills', 'reload-skills',
   'plugins', 'hookify', 'connectors', 'docker',
+  'analyze', 'convert', 'transcribe', 'upscale',
   'doctor', 'storage', 'permissions', 'memory', 'help', 'find', 'free', 'today', 'mail',
   'clip', 'alta', 'agents', 'harness', 'nomad', 'web', 'tor', 'copy', 'export', 'insights', 'stop',
 ]);
@@ -194,7 +195,7 @@ const BUILTIN_COMMANDS = Object.freeze([
   CMD('fork', { kind: 'session', icon: 'git-branch', description: 'Создать независимую ветку текущего диалога' }),
   CMD('effort', { kind: 'session', icon: 'sliders', argsHint: '<low|medium|high|xhigh>', description: 'Задать уровень глубины рассуждений модели' }),
   CMD('memory', { icon: 'database', argsHint: '[поиск]', description: 'Проверить память диалога и очередь pending_review' }),
-  CMD('tools', { icon: 'wrench', description: 'Список доступных инструментов в текущем режиме чата' }),
+  CMD('tools', { aliases: ['pc', 'инструменты'], icon: 'wrench', description: 'Инструменты ПК и мосты Lenovo .107 — статус и запуск' }),
   CMD('mcp', { icon: 'plug', description: 'Статус локальных MCP-серверов (capri-pim, capri-web)' }),
   CMD('pin', { kind: 'session', icon: 'pin', description: 'Закрепить или открепить текущий чат в списке' }),
   CMD('rename', { kind: 'session', icon: 'edit', argsHint: '<название>', description: 'Переименовать текущий чат или сессию агента' }),
@@ -257,6 +258,29 @@ const CONNECTOR_COMMANDS = Object.freeze([
     aliases: ['containers', 'stacks'],
     icon: 'server',
     description: 'Пульт Docker (ПК и сервер Lenovo .107) — статус и управление стеками',
+  }),
+]);
+
+const TOOLS_COMMANDS = Object.freeze([
+  CMD('analyze', {
+    icon: 'bar-chart',
+    argsHint: '<файл> [вопрос]',
+    description: 'Локальный анализ CSV/TSV/XLSX/JSON и построение графика PNG',
+  }),
+  CMD('convert', {
+    icon: 'file-text',
+    argsHint: '<файл> [docx|pdf|png|txt]',
+    description: 'Конвертация документов (MD → DOCX, Office → PDF, SVG → PNG)',
+  }),
+  CMD('transcribe', {
+    icon: 'mic',
+    argsHint: '<файл или URL>',
+    description: 'Транскрибация аудио/видео в текст через локальный Whisper',
+  }),
+  CMD('upscale', {
+    icon: 'image',
+    argsHint: '<изображение> [выход]',
+    description: 'Локальный 4x апскейл изображения через Upscayl',
   }),
 ]);
 
@@ -610,6 +634,7 @@ function buildRegistry(dynamicSkills = []) {
     ...BUILTIN_COMMANDS.filter((c) => c.section === 'commands').map((c) => c.id),
     ...PLUGIN_COMMANDS.map((c) => c.id),
     ...CONNECTOR_COMMANDS.map((c) => c.id),
+    ...TOOLS_COMMANDS.map((c) => c.id),
   ]);
   const diskById = new Map();
   for (const sk of dynamicSkills) {
@@ -618,7 +643,7 @@ function buildRegistry(dynamicSkills = []) {
   }
 
   const items = [];
-  for (const c of [...BUILTIN_COMMANDS, ...PLUGIN_COMMANDS, ...CONNECTOR_COMMANDS]) {
+  for (const c of [...BUILTIN_COMMANDS, ...PLUGIN_COMMANDS, ...CONNECTOR_COMMANDS, ...TOOLS_COMMANDS]) {
     if (c.id === 'genesis-techlead-reviewer' && diskById.has(c.id)) {
       const disk = diskById.get(c.id);
       items.push({ ...c, promptBody: disk.promptBody || '', skillPath: disk.skillPath || '' });
@@ -663,7 +688,7 @@ function parseSlashInput(rawText, registry = null) {
   while (pos < text.length) {
     while (pos < text.length && /\s/.test(text[pos])) pos += 1;
     if (text[pos] !== '/') break;
-    const m = /^\/([A-Za-z0-9_-]+)(?=\s|$)/.exec(text.slice(pos));
+    const m = /^\/([\p{L}\p{N}_-]+)(?=\s|$)/u.exec(text.slice(pos));
     if (!m) break;
     const tok = m[1].toLowerCase();
     const item = reg.bySlash.get(tok);
@@ -682,7 +707,7 @@ function parseSlashInput(rawText, registry = null) {
     if (!canContinue) break;
     // If the next token starts with '/', only consume it if it's a known command/skill; otherwise keep it in remainder.
     if (text[pos] === '/') {
-      const peek = /^\/([A-Za-z0-9_-]+)(?=\s|$)/.exec(text.slice(pos));
+      const peek = /^\/([\p{L}\p{N}_-]+)(?=\s|$)/u.exec(text.slice(pos));
       if (!peek || !reg.bySlash.has(peek[1].toLowerCase())) break;
     } else {
       break;
@@ -906,6 +931,22 @@ function buildChainPrompt({ chain, remainder, state, mode, skipSkillHints = fals
   };
 }
 
+function splitFirstArg(rawArgs) {
+  const s = String(rawArgs || '').trim();
+  if (!s) return { first: '', rest: '' };
+  if (s.startsWith('"') || s.startsWith("'")) {
+    const q = s[0];
+    const end = s.indexOf(q, 1);
+    if (end > 1) {
+      return { first: s.slice(1, end).trim(), rest: s.slice(end + 1).trim() };
+    }
+  }
+  if (fs.existsSync(s)) return { first: s, rest: '' };
+  const sp = s.search(/\s/);
+  if (sp === -1) return { first: s, rest: '' };
+  return { first: s.slice(0, sp).trim(), rest: s.slice(sp + 1).trim() };
+}
+
 class SlashCommandEngine {
   constructor(opts = {}) {
     this.skillRoots = opts.skillRoots || defaultSkillRoots();
@@ -913,6 +954,7 @@ class SlashCommandEngine {
     this.pluginsEngine = opts.pluginsEngine || opts.deps?.pluginsEngine || null;
     this.connectorsEngine = opts.connectorsEngine || opts.deps?.connectorsEngine || null;
     this.dockerEngine = opts.dockerEngine || opts.deps?.dockerEngine || null;
+    this.pcToolsEngine = opts.pcToolsEngine || opts.deps?.pcToolsEngine || null;
     this.getConfig = typeof opts.getConfig === 'function' ? opts.getConfig : () => ({});
     this.saveConfig = typeof opts.saveConfig === 'function' ? opts.saveConfig : () => {};
     this.deps = opts.deps || {};
@@ -1451,20 +1493,131 @@ class SlashCommandEngine {
       }
 
       case 'tools': {
-        const list = [
-          '• Локальный мозг (Ollama E4B / 26B)',
-          '• NOMAD / Kiwix (офлайн-библиотека)',
-          '• Tor-поиск (/tor)',
-          '• Буфер обмена (/clip)',
-          '• Планировщик (/plan, /remind)',
-        ];
-        if (!isolated) {
-          list.push('• Веб-поиск (/web), Deep Research (/deep), Совет (/council)');
-          list.push('• Proton Mail / Calendar (/mail, /today)');
-          list.push('• Облачные агенты Хаба (/agents, /harness)');
-          list.push('• Obsidian память (/remember, /save, /alta)');
+        if (this.pcToolsEngine && typeof this.pcToolsEngine.getStatus === 'function') {
+          const st = await this.pcToolsEngine.getStatus({ refresh: false }).catch(() => null);
+          if (st) {
+            const pcLine = `ПК: ${st.pc?.readyCount ?? 0}/${st.pc?.totalCount ?? 0} инструментов готово`;
+            const brLine = `Мосты .107: ${st.bridges?.readyCount ?? 0}/${st.bridges?.totalCount ?? 0} доступно`;
+            return {
+              handled: true,
+              instant: true,
+              action: 'open-catalog',
+              tab: 'tools',
+              reply: `Инструменты ПК и мосты .107:\n• ${pcLine}\n• ${brLine}`,
+            };
+          }
         }
-        return { handled: true, instant: true, reply: `Доступные инструменты (${isolated ? 'изолированный режим' : mode}):\n${list.join('\n')}` };
+        return {
+          handled: true,
+          instant: true,
+          action: 'open-catalog',
+          tab: 'tools',
+          reply: 'Открываю каталог инструментов ПК и мостов .107.',
+        };
+      }
+
+      case 'analyze': {
+        if (!args) {
+          return {
+            handled: true,
+            instant: true,
+            action: 'analyze',
+            reply: 'Укажи файл данных: /analyze <путь к CSV/TSV/XLSX/JSON> [вопрос]',
+          };
+        }
+        if (!this.pcToolsEngine || typeof this.pcToolsEngine.analyzeData !== 'function') {
+          return { handled: true, instant: true, error: 'Движок инструментов ПК не подключён.', reply: 'Движок инструментов ПК не подключён.' };
+        }
+        const { first: filePath, rest: query } = splitFirstArg(args);
+        const res = await this.pcToolsEngine.analyzeData({ filePath, query });
+        if (!res.ok) {
+          return { handled: true, instant: true, action: 'analyze', error: res.error, reply: `Ошибка анализа: ${res.error}` };
+        }
+        const summaryLines = [
+          `Анализ ${path.basename(res.file || filePath)}: ${res.rows} строк, ${res.cols} колонок.`,
+          ...Object.entries(res.numericSummary || {}).slice(0, 5).map(([k, v]) => `• ${k}: min ${v.min}, max ${v.max}, mean ${v.mean}, sum ${v.sum}`),
+        ];
+        if (res.chartPath) summaryLines.push(`График: ${res.chartPath}`);
+        return { handled: true, instant: true, action: 'analyze', result: res, reply: summaryLines.join('\n') };
+      }
+
+      case 'convert': {
+        if (!args) {
+          return {
+            handled: true,
+            instant: true,
+            action: 'convert',
+            reply: 'Укажи файл и формат: /convert <путь> [docx|pdf|png|txt]',
+          };
+        }
+        if (!this.pcToolsEngine || typeof this.pcToolsEngine.convertDocument !== 'function') {
+          return { handled: true, instant: true, error: 'Движок инструментов ПК не подключён.', reply: 'Движок инструментов ПК не подключён.' };
+        }
+        const { first: inputPath, rest } = splitFirstArg(args);
+        const targetFormat = (rest || 'docx').replace(/^--to\s+/i, '').trim().split(/\s+/)[0] || 'docx';
+        const res = await this.pcToolsEngine.convertDocument({ inputPath, targetFormat });
+        if (!res.ok) {
+          return { handled: true, instant: true, action: 'convert', error: res.error, reply: `Ошибка конвертации: ${res.error}` };
+        }
+        return {
+          handled: true,
+          instant: true,
+          action: 'convert',
+          result: res,
+          reply: `Готово (${res.format}): ${res.outputPath} (${res.bytes} байт).`,
+        };
+      }
+
+      case 'transcribe': {
+        if (!args) {
+          return {
+            handled: true,
+            instant: true,
+            action: 'transcribe',
+            reply: 'Укажи локальный аудио/видеофайл или URL: /transcribe <путь или URL>',
+          };
+        }
+        if (!this.pcToolsEngine || typeof this.pcToolsEngine.transcribeMedia !== 'function') {
+          return { handled: true, instant: true, error: 'Движок инструментов ПК не подключён.', reply: 'Движок инструментов ПК не подключён.' };
+        }
+        const { first: source } = splitFirstArg(args);
+        const res = await this.pcToolsEngine.transcribeMedia({ source: source || args, isPrivate: isolated });
+        if (!res.ok) {
+          return { handled: true, instant: true, action: 'transcribe', error: res.error, reply: res.error };
+        }
+        return {
+          handled: true,
+          instant: true,
+          action: 'transcribe',
+          result: res,
+          reply: res.wrappedText || res.text || 'Пустая расшифровка.',
+        };
+      }
+
+      case 'upscale': {
+        if (!args) {
+          return {
+            handled: true,
+            instant: true,
+            action: 'upscale',
+            reply: 'Укажи изображение: /upscale <путь к PNG/JPG/WebP> [выходной путь]',
+          };
+        }
+        if (!this.pcToolsEngine || typeof this.pcToolsEngine.upscaleImage !== 'function') {
+          return { handled: true, instant: true, error: 'Движок инструментов ПК не подключён.', reply: 'Движок инструментов ПК не подключён.' };
+        }
+        const { first: inputPath, rest: outputPath } = splitFirstArg(args);
+        const res = await this.pcToolsEngine.upscaleImage({ inputPath, outputPath: outputPath || undefined });
+        if (!res.ok) {
+          return { handled: true, instant: true, action: 'upscale', error: res.error, reply: `Ошибка апскейла: ${res.error}` };
+        }
+        return {
+          handled: true,
+          instant: true,
+          action: 'upscale',
+          result: res,
+          reply: `Изображение увеличено 4x: ${res.outputPath} (${res.bytes} байт).`,
+        };
       }
 
       case 'mcp': {
@@ -1834,6 +1987,7 @@ module.exports = {
   BUILTIN_COMMANDS,
   PLUGIN_COMMANDS,
   CONNECTOR_COMMANDS,
+  TOOLS_COMMANDS,
   COMMAND_CATEGORIES,
   DRAFT_PLUGINS,
   DRAFT_CONNECTORS,

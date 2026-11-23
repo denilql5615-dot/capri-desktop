@@ -4,7 +4,7 @@
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 export const INSTANT_COMMANDS = new Set([
-  'status', 'usage', 'quota', 'context', 'tasks', 'tools', 'mcp',
+  'status', 'usage', 'quota', 'context', 'tasks', 'tools', 'pc', 'инструменты', 'mcp',
   'skills', 'reload-skills', 'plugin', 'plugins', 'hookify',
   'connector', 'connectors', 'docker',
   'doctor', 'storage', 'permissions',
@@ -20,7 +20,7 @@ const CLOUD_ONLY_FALLBACK = new Set([
 export function parseLeadingSlash(rawText) {
   const trimmed = String(rawText || '').trimStart();
   if (!trimmed.startsWith('/')) return null;
-  const match = trimmed.match(/^\/([a-zA-Z0-9_-]+)/);
+  const match = trimmed.match(/^\/([a-zA-Zа-яА-ЯёЁ0-9_-]+)/);
   if (!match) return null;
   const cmd = match[1].toLowerCase();
   const rest = trimmed.slice(match[0].length).trim();
@@ -236,6 +236,21 @@ const ICON_PATHS = {
     ['rect', { x: 3, y: 4, width: 18, height: 12, rx: 2 }],
     ['path', { d: 'M8 20h8M12 16v4' }],
   ],
+  chart: [
+    ['path', { d: 'M4 20h16' }],
+    ['rect', { x: 6, y: 12, width: 3, height: 8, rx: 0.75 }],
+    ['rect', { x: 10.5, y: 7, width: 3, height: 13, rx: 0.75 }],
+    ['rect', { x: 15, y: 4, width: 3, height: 16, rx: 0.75 }],
+  ],
+  mic: [
+    ['rect', { x: 9, y: 3, width: 6, height: 11, rx: 3 }],
+    ['path', { d: 'M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8' }],
+  ],
+  image: [
+    ['rect', { x: 3.5, y: 4.5, width: 17, height: 15, rx: 2 }],
+    ['circle', { cx: 8.5, cy: 9.5, r: 1.5 }],
+    ['path', { d: 'M20.5 15.5l-4.5-4.5-6 6-2.5-2.5-4 4' }],
+  ],
 };
 
 const ICON_ALIAS = {
@@ -311,6 +326,12 @@ const ICON_ALIAS = {
   subtask: 'branch',
   pet: 'sparkles',
   docker: 'box',
+  pc: 'wrench',
+  'инструменты': 'wrench',
+  analyze: 'chart',
+  convert: 'file-text',
+  transcribe: 'mic',
+  upscale: 'image',
 };
 
 export function createIconSvg(name, size = 18) {
@@ -1202,6 +1223,315 @@ async function fetchDockerStatus({ refresh = false } = {}) {
   return fb;
 }
 
+const TOOL_ICON_BY_ID = {
+  'tool-data': 'chart',
+  'tool-media': 'mic',
+  'tool-docs': 'file-text',
+  'tool-kensaku': 'search',
+  'tool-upscayl': 'image',
+  'tool-penpot-mcp': 'palette',
+  'tool-blender-mcp': 'box',
+  'tool-comfy': 'sparkles',
+  'tool-agent-desktop': 'monitor',
+  'tool-whisper': 'mic',
+  'tool-proton-sync': 'mail',
+  'bridge-freshrss': 'globe',
+  'bridge-fmd': 'target',
+  'bridge-homebox': 'archive',
+  'bridge-calibre': 'book',
+};
+
+function toolItemIconName(it) {
+  return TOOL_ICON_BY_ID[it?.id] || (it?.group === 'bridges' ? 'server' : 'wrench');
+}
+
+function makeFallbackPcTool(id, name, description, opts = {}) {
+  return {
+    id,
+    group: 'pc',
+    name,
+    description,
+    category: opts.category || 'system',
+    status: opts.status || 'idle',
+    available: Boolean(opts.available),
+    running: Boolean(opts.running),
+    detail: opts.detail || 'Ожидание проверки',
+    command: opts.command || '',
+    url: opts.url || '',
+    actions: Array.isArray(opts.actions) ? [...opts.actions] : ['probe'],
+    offlineSafe: Boolean(opts.offlineSafe),
+    privacySafe: Boolean(opts.privacySafe),
+  };
+}
+
+function makeFallbackBridgeItem(id, name, description, url) {
+  return {
+    id,
+    group: 'bridges',
+    name,
+    description,
+    status: 'offline',
+    available: false,
+    url: url || '',
+    detail: 'Ожидание связи с .107',
+    actions: ['probe', 'open'],
+  };
+}
+
+export const FALLBACK_TOOLS_STATUS = {
+  checkedAt: null,
+  pc: {
+    tools: [
+      makeFallbackPcTool('tool-data', 'Data-анализатор', 'Анализ CSV, TSV, Excel и JSON с расчётом метрик и графиком PNG', {
+        category: 'data',
+        command: '/analyze',
+        actions: ['probe'],
+        offlineSafe: true,
+        privacySafe: true,
+      }),
+      makeFallbackPcTool('tool-media', 'Медиа-конспект', 'Расшифровка аудио и видео через ffmpeg и Whisper (yt-dlp для ссылок)', {
+        category: 'media',
+        command: '/transcribe',
+        actions: ['probe'],
+        offlineSafe: false,
+        privacySafe: false,
+      }),
+      makeFallbackPcTool('tool-docs', 'Конвейер документов', 'Конвертация MD → DOCX, LibreOffice → PDF, Inkscape SVG → PNG', {
+        category: 'docs',
+        command: '/convert',
+        actions: ['probe'],
+        offlineSafe: true,
+        privacySafe: true,
+      }),
+      makeFallbackPcTool('tool-kensaku', 'Kensaku Поиск по ПК', 'Полнотекстовый локальный поиск по файлам и документам на ПК', {
+        category: 'search',
+        status: 'needs_setup',
+        detail: 'Индекс не собран — нажмите Запустить',
+        actions: ['probe', 'launch'],
+        offlineSafe: true,
+        privacySafe: true,
+      }),
+      makeFallbackPcTool('tool-upscayl', 'Upscayl 4x Апскейл', 'Локальное увеличение чёткости изображений 4x на видеокарте', {
+        category: 'media',
+        command: '/upscale',
+        actions: ['probe'],
+        offlineSafe: true,
+        privacySafe: true,
+      }),
+      makeFallbackPcTool('tool-penpot-mcp', 'Penpot MCP', 'Локальный дизайн-редактор Penpot и MCP-мост :4401', {
+        category: 'creative',
+        url: 'http://127.0.0.1:9001',
+        actions: ['probe', 'open'],
+        offlineSafe: true,
+        privacySafe: true,
+      }),
+      makeFallbackPcTool('tool-blender-mcp', 'Blender 5.2.3 + MCP', '3D-движок Blender с MCP-сервером на порту :9876', {
+        category: 'creative',
+        actions: ['probe', 'start', 'stop'],
+        offlineSafe: true,
+        privacySafe: true,
+      }),
+      makeFallbackPcTool('tool-comfy', 'ComfyUI Desktop', 'Локальная генерация изображений :8000 (делит VRAM с Ollama)', {
+        category: 'creative',
+        url: 'http://127.0.0.1:8000',
+        actions: ['probe', 'open'],
+        offlineSafe: true,
+        privacySafe: true,
+      }),
+      makeFallbackPcTool('tool-agent-desktop', 'Управление окнами (agent-desktop)', 'Автоматизация окон Windows через одобренные команды', {
+        category: 'system',
+        actions: ['probe'],
+        offlineSafe: true,
+        privacySafe: true,
+      }),
+      makeFallbackPcTool('tool-whisper', 'Whisper STT', 'Локальный сервис распознавания речи на порту :8765', {
+        category: 'media',
+        actions: ['probe'],
+        offlineSafe: true,
+        privacySafe: true,
+      }),
+      makeFallbackPcTool('tool-proton-sync', 'Proton Bridge + Syncthing', 'Почтовый мост IMAP :1143 и локальная синхронизация :8384', {
+        category: 'system',
+        url: 'http://127.0.0.1:8384',
+        actions: ['probe', 'open'],
+        offlineSafe: false,
+        privacySafe: false,
+      }),
+    ],
+    readyCount: 0,
+    totalCount: 11,
+  },
+  bridges: {
+    online: false,
+    items: [
+      makeFallbackBridgeItem('bridge-freshrss', 'FreshRSS Новости', 'Агрегатор RSS-лент и источников на сервере .107', 'http://192.168.0.107:8082'),
+      makeFallbackBridgeItem('bridge-fmd', 'Find My Device', 'Поиск устройств в локальной сети на сервере .107', 'http://192.168.0.107:8083'),
+      makeFallbackBridgeItem('bridge-homebox', 'Homebox Инвентарь', 'Домашний учёт вещей и инвентаря на сервере .107', 'http://192.168.0.107:8470'),
+      makeFallbackBridgeItem('bridge-calibre', 'Calibre-Web Книги', 'Каталог и чтение электронных книг на сервере .107', 'http://192.168.0.107:8420'),
+    ],
+    readyCount: 0,
+    totalCount: 4,
+  },
+};
+
+function toolStatusDotClass(it) {
+  const st = String(it?.status || '').toLowerCase();
+  if (st === 'ready' || st === 'running' || st === 'online' || st === 'connected') return 'is-connected';
+  if (st === 'needs_setup' || st === 'idle' || st === 'partial' || st === 'starting' || st === 'stopped') return 'is-auth';
+  if (st === 'missing' || st === 'offline' || st === 'error' || st === 'unavailable') return 'is-offline';
+  if (it?.running || it?.available) return 'is-connected';
+  return 'is-offline';
+}
+
+function toolStatusFallbackLabel(it) {
+  const st = String(it?.status || '').toLowerCase();
+  if (st === 'ready') return 'Готово';
+  if (st === 'running') return 'Запущен';
+  if (st === 'online' || st === 'connected') return 'Доступен';
+  if (st === 'needs_setup') return 'Нужна настройка';
+  if (st === 'idle' || st === 'stopped') return 'Ожидает';
+  if (st === 'missing') return 'Не найден';
+  if (st === 'offline' || st === 'unavailable') return 'Офлайн';
+  return it?.available ? 'Готово' : 'Офлайн';
+}
+
+function toolDetailToneClass(it) {
+  const st = String(it?.status || '').toLowerCase();
+  if (st === 'needs_setup') return 'is-warn';
+  if (st === 'missing' || st === 'offline' || st === 'error' || st === 'unavailable') return 'is-danger';
+  return '';
+}
+
+function normalizePcToolItem(raw, fallback = null) {
+  const base = fallback || {};
+  const actions = Array.isArray(raw?.actions)
+    ? raw.actions.map((a) => String(a))
+    : (Array.isArray(base.actions) ? [...base.actions] : ['probe']);
+  return {
+    id: raw?.id || base.id || '',
+    group: raw?.group || base.group || 'pc',
+    name: raw?.name || base.name || raw?.id || '',
+    description: raw?.description ?? base.description ?? '',
+    category: raw?.category || base.category || 'system',
+    status: raw?.status || base.status || 'offline',
+    available: typeof raw?.available === 'boolean' ? raw.available : Boolean(base.available),
+    running: typeof raw?.running === 'boolean' ? raw.running : Boolean(base.running),
+    detail: raw?.detail !== undefined && raw?.detail !== null ? String(raw.detail) : (base.detail || ''),
+    command: raw?.command !== undefined && raw?.command !== null ? String(raw.command) : (base.command || ''),
+    url: raw?.url !== undefined && raw?.url !== null ? String(raw.url) : (base.url || ''),
+    actions,
+    offlineSafe: typeof raw?.offlineSafe === 'boolean' ? raw.offlineSafe : Boolean(base.offlineSafe),
+    privacySafe: typeof raw?.privacySafe === 'boolean' ? raw.privacySafe : Boolean(base.privacySafe),
+  };
+}
+
+function normalizeBridgeItem(raw, fallback = null) {
+  const base = fallback || {};
+  const actions = Array.isArray(raw?.actions)
+    ? raw.actions.map((a) => String(a))
+    : (Array.isArray(base.actions) ? [...base.actions] : ['probe', 'open']);
+  return {
+    id: raw?.id || base.id || '',
+    group: raw?.group || base.group || 'bridges',
+    name: raw?.name || base.name || raw?.id || '',
+    description: raw?.description ?? base.description ?? '',
+    status: raw?.status || base.status || 'offline',
+    available: typeof raw?.available === 'boolean' ? raw.available : Boolean(base.available),
+    url: raw?.url !== undefined && raw?.url !== null ? String(raw.url) : (base.url || ''),
+    detail: raw?.detail !== undefined && raw?.detail !== null ? String(raw.detail) : (base.detail || ''),
+    actions,
+  };
+}
+
+function normalizeToolsStatus(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      checkedAt: null,
+      pc: {
+        tools: FALLBACK_TOOLS_STATUS.pc.tools.map((t) => ({ ...t, actions: [...t.actions] })),
+        readyCount: 0,
+        totalCount: FALLBACK_TOOLS_STATUS.pc.tools.length,
+        error: '',
+      },
+      bridges: {
+        online: false,
+        items: FALLBACK_TOOLS_STATUS.bridges.items.map((b) => ({ ...b, actions: [...b.actions] })),
+        readyCount: 0,
+        totalCount: FALLBACK_TOOLS_STATUS.bridges.items.length,
+        error: '',
+      },
+      isFallback: true,
+    };
+  }
+
+  const pcFbMap = new Map(FALLBACK_TOOLS_STATUS.pc.tools.map((t) => [t.id, t]));
+  const rawTools = Array.isArray(raw.pc?.tools) && raw.pc.tools.length
+    ? raw.pc.tools
+    : FALLBACK_TOOLS_STATUS.pc.tools;
+  const tools = rawTools.map((it) => normalizePcToolItem(it, pcFbMap.get(it?.id)));
+  const pcReadyCount = Number.isFinite(Number(raw.pc?.readyCount))
+    ? Number(raw.pc.readyCount)
+    : tools.filter((t) => t.status === 'ready' || t.status === 'running' || t.available).length;
+  const pcTotalCount = Number.isFinite(Number(raw.pc?.totalCount))
+    ? Number(raw.pc.totalCount)
+    : tools.length;
+
+  const brFbMap = new Map(FALLBACK_TOOLS_STATUS.bridges.items.map((b) => [b.id, b]));
+  const rawBridges = Array.isArray(raw.bridges?.items) && raw.bridges.items.length
+    ? raw.bridges.items
+    : FALLBACK_TOOLS_STATUS.bridges.items;
+  const bridgeItems = rawBridges.map((it) => normalizeBridgeItem(it, brFbMap.get(it?.id)));
+  const brReadyCount = Number.isFinite(Number(raw.bridges?.readyCount))
+    ? Number(raw.bridges.readyCount)
+    : bridgeItems.filter((b) => b.status === 'ready' || b.status === 'online' || b.available).length;
+  const brTotalCount = Number.isFinite(Number(raw.bridges?.totalCount))
+    ? Number(raw.bridges.totalCount)
+    : bridgeItems.length;
+  const bridgesOnline = typeof raw.bridges?.online === 'boolean'
+    ? raw.bridges.online
+    : brReadyCount > 0;
+
+  return {
+    checkedAt: raw.checkedAt || Date.now(),
+    pc: {
+      tools,
+      readyCount: pcReadyCount,
+      totalCount: pcTotalCount,
+      error: raw.pc?.error ? String(raw.pc.error) : '',
+    },
+    bridges: {
+      online: bridgesOnline,
+      items: bridgeItems,
+      readyCount: brReadyCount,
+      totalCount: brTotalCount,
+      error: raw.bridges?.error ? String(raw.bridges.error) : '',
+    },
+    isFallback: false,
+  };
+}
+
+async function fetchToolsStatus({ refresh = false } = {}) {
+  const host = window.host;
+  if (typeof host?.toolsStatus === 'function') {
+    try {
+      const res = await host.toolsStatus({ refresh: Boolean(refresh) });
+      if (res && (res.pc || res.bridges)) {
+        return normalizeToolsStatus(res);
+      }
+    } catch (err) {
+      const fb = normalizeToolsStatus(null);
+      const msg = err?.message || 'Не удалось получить статус инструментов ПК';
+      fb.pc.error = msg;
+      fb.bridges.error = msg;
+      return fb;
+    }
+  }
+  const fb = normalizeToolsStatus(null);
+  fb.pc.error = 'Модуль инструментов ПК ещё не подключён в приложении';
+  fb.bridges.error = 'Мосты Lenovo .107 недоступны без связи с бэкендом';
+  return fb;
+}
+
 function openExternalUrl(url) {
   if (!url) return;
   try {
@@ -1296,7 +1626,11 @@ export const FALLBACK_SECTIONS = [
       item('status', 'Состояние локального мозга, очереди и памяти', { category: 'system' }),
       item('usage', 'Остаток квот и лимиты моделей', { aliases: ['quota'], category: 'system' }),
       item('free', 'Выгрузить модели из VRAM', { category: 'system' }),
-      item('tools', 'Список доступных инструментов', { category: 'system' }),
+      item('tools', 'Инструменты ПК и мосты .107: локальные движки и сервисы', { aliases: ['pc', 'инструменты'], category: 'system', icon: 'wrench' }),
+      item('analyze', 'Анализ CSV/Excel/JSON с расчётом метрик и графиком PNG', { kind: 'prompt', category: 'system', icon: 'chart', argsHint: '<файл> [вопрос]' }),
+      item('convert', 'Конвертация документов (MD → DOCX, Office → PDF, SVG → PNG)', { kind: 'prompt', category: 'system', icon: 'file-text', argsHint: '<файл> [docx|pdf|png]' }),
+      item('transcribe', 'Расшифровка и конспект аудио/видео через локальный Whisper', { kind: 'prompt', category: 'system', icon: 'mic', argsHint: '<файл или ссылка>' }),
+      item('upscale', 'Увеличение чёткости изображения 4x через локальный Upscayl', { kind: 'prompt', category: 'system', icon: 'image', argsHint: '<файл>' }),
       item('mcp', 'Статус MCP-подключений', { category: 'system' }),
       item('skills', 'Список установленных навыков', { category: 'system' }),
       item('plugins', 'Каталог локальных плагинов и правил', { aliases: ['plugin'], category: 'system' }),
@@ -1376,6 +1710,10 @@ const CATALOG_HERO = {
   docker: {
     title: 'Пульт Docker',
     subtitle: 'Контейнеры на ПК и старом ноуте (.107): запуск, рестарт и расход памяти.',
+  },
+  tools: {
+    title: 'Инструменты ПК и мосты .107',
+    subtitle: 'Локальные движки анализа, медиа, документов, поиска и живые сервисы домашнего сервера',
   },
   styles: {
     title: 'Стили',
@@ -2307,7 +2645,7 @@ export function attachSlashMenu({ input, container, getContext, onSelectItem, on
     }
 
     for (const sec of data.sections || []) {
-      if (sec.id === 'docker') continue;
+      if (sec.id === 'docker' || sec.id === 'tools') continue;
       let items = Array.isArray(sec.items) ? sec.items : [];
       if (sec.id === 'skills' || sec.id === 'plugins' || sec.id === 'connectors') {
         items = items.filter((it) => it.enabled !== false);
@@ -2534,6 +2872,11 @@ export async function openCatalogModal({
   let openNomadStackId = null;
   let nomadSubmodalBackdrop = null;
   const pendingDockerOps = new Set();
+  let toolsData = normalizeToolsStatus(null);
+  let toolsLoaded = false;
+  let toolsLoading = false;
+  let toolsRefreshing = false;
+  const pendingToolOps = new Set();
   let activeTab = initialTab || 'commands';
   let searchQuery = '';
   let noticeText = '';
@@ -2654,7 +2997,7 @@ export async function openCatalogModal({
   const searchInput = document.createElement('input');
   searchInput.type = 'search';
   searchInput.className = 'slash-catalog__search';
-  searchInput.placeholder = 'Поиск по командам, навыкам, плагинам, коннекторам и Docker…';
+  searchInput.placeholder = 'Поиск по командам, навыкам, плагинам, коннекторам, Docker и инструментам…';
   searchInput.setAttribute('aria-label', 'Поиск по каталогу');
   searchWrap.appendChild(searchInput);
 
@@ -2756,7 +3099,30 @@ export async function openCatalogModal({
     }
   }
 
+  function ensureToolsSectionInCatalog() {
+    if (!Array.isArray(catalog.sections)) catalog.sections = [];
+    if (catalog.sections.some((s) => s.id === 'tools')) return;
+    const toolsSec = {
+      id: 'tools',
+      title: 'Инструменты',
+      allLabel: 'Инструменты ПК и мосты .107',
+      items: [],
+    };
+    const dockerIdx = catalog.sections.findIndex((s) => s.id === 'docker');
+    if (dockerIdx >= 0) {
+      catalog.sections.splice(dockerIdx + 1, 0, toolsSec);
+    } else {
+      const stylesIdx = catalog.sections.findIndex((s) => s.id === 'styles');
+      if (stylesIdx >= 0) {
+        catalog.sections.splice(stylesIdx, 0, toolsSec);
+      } else {
+        catalog.sections.push(toolsSec);
+      }
+    }
+  }
+
   ensureDockerSectionInCatalog();
+  ensureToolsSectionInCatalog();
 
   function emitSkillsChanged(nextData) {
     skillsData = normalizeSkillsResponse(nextData, skillsData.items);
@@ -2917,6 +3283,7 @@ export async function openCatalogModal({
 
   function renderTabs() {
     ensureDockerSectionInCatalog();
+    ensureToolsSectionInCatalog();
     const sections = catalog.sections || [];
     if (!sections.some((s) => s.id === activeTab) && sections.length) {
       activeTab = sections[0].id;
@@ -2947,6 +3314,14 @@ export async function openCatalogModal({
         const tot = pcTot + srvTot;
         const run = pcRun + srvRun;
         countText = dockerLoaded && !dockerData?.isFallback ? `${run}/${tot}` : String(tot);
+      } else if (sec.id === 'tools') {
+        const pcReady = Number(toolsData?.pc?.readyCount) || 0;
+        const pcTot = Number(toolsData?.pc?.totalCount) || (toolsData?.pc?.tools?.length || 0);
+        const brReady = Number(toolsData?.bridges?.readyCount) || 0;
+        const brTot = Number(toolsData?.bridges?.totalCount) || (toolsData?.bridges?.items?.length || 0);
+        const tot = pcTot + brTot;
+        const ready = pcReady + brReady;
+        countText = toolsLoaded && !toolsData?.isFallback ? `${ready}/${tot}` : String(tot);
       } else {
         countText = String((sec.items || []).length);
       }
@@ -2965,6 +3340,8 @@ export async function openCatalogModal({
         renderModal();
         if (sec.id === 'docker' && !dockerLoaded && !dockerLoading) {
           loadDockerStatus({ refresh: false });
+        } else if (sec.id === 'tools' && !toolsLoaded && !toolsLoading) {
+          loadToolsStatus({ refresh: false });
         }
       });
       return btn;
@@ -7024,6 +7401,436 @@ export async function openCatalogModal({
     return section;
   }
 
+  async function loadToolsStatus({ refresh = false } = {}) {
+    if (refresh) {
+      if (toolsRefreshing) return;
+      toolsRefreshing = true;
+    } else {
+      if (toolsLoading) return;
+      toolsLoading = true;
+    }
+    renderModal();
+    try {
+      const next = await fetchToolsStatus({ refresh });
+      if (!document.body.contains(backdrop)) return;
+      toolsData = next;
+      toolsLoaded = true;
+      if (refresh && !next.isFallback) {
+        noticeText = 'Статус инструментов и мостов обновлён.';
+      }
+    } finally {
+      toolsLoading = false;
+      toolsRefreshing = false;
+      if (document.body.contains(backdrop)) renderModal();
+    }
+  }
+
+  async function handleToolAction({ toolId, action, label = '' }) {
+    if (!toolId || !action || pendingToolOps.has(toolId)) return;
+    const hostApi = window.host;
+    if (typeof hostApi?.toolsAction !== 'function') {
+      noticeText = 'Действия с инструментами ПК пока не подключены в приложении.';
+      renderModal();
+      return;
+    }
+
+    pendingToolOps.add(toolId);
+    noticeText = '';
+    renderModal();
+
+    try {
+      const res = await hostApi.toolsAction({ toolId, action });
+      if (!document.body.contains(backdrop)) return;
+      if (res?.ok) {
+        if (res.status && (res.status.pc || res.status.bridges)) {
+          toolsData = normalizeToolsStatus(res.status);
+          toolsLoaded = true;
+        } else {
+          const fresh = await fetchToolsStatus({ refresh: true });
+          if (document.body.contains(backdrop)) {
+            toolsData = fresh;
+            toolsLoaded = true;
+          }
+        }
+        noticeText = res.message || res.detail || `${label || toolId}: готово.`;
+      } else {
+        noticeText = res?.error || res?.message || `Не удалось выполнить действие для ${label || toolId}.`;
+      }
+    } catch (err) {
+      if (document.body.contains(backdrop)) {
+        noticeText = err?.message || `Ошибка при обращении к ${label || toolId}.`;
+      }
+    } finally {
+      pendingToolOps.delete(toolId);
+      if (document.body.contains(backdrop)) renderModal();
+    }
+  }
+
+  function matchesToolItem(it, q) {
+    if (!q) return true;
+    const hay = [
+      it.name,
+      it.description,
+      it.id,
+      it.category,
+      it.command,
+      it.detail,
+      it.url,
+      it.privacySafe ? 'приват' : '',
+    ].join(' ').toLowerCase();
+    return hay.includes(q);
+  }
+
+  function buildPcToolRow(tool) {
+    const isBusy = pendingToolOps.has(tool.id);
+    const actions = Array.isArray(tool.actions) ? tool.actions : [];
+    const st = String(tool.status || '').toLowerCase();
+    const isInactive = st === 'missing' || st === 'offline' || st === 'error' || st === 'unavailable';
+
+    const itemEl = document.createElement('div');
+    itemEl.className = `slash-docker-item${isInactive ? ' is-stopped' : ''}`;
+    itemEl.dataset.toolId = tool.id;
+
+    const row = document.createElement('div');
+    row.className = 'slash-docker-row';
+
+    const iconWrap = document.createElement('span');
+    iconWrap.className = 'slash-docker-item__icon';
+    iconWrap.appendChild(createIconSvg(toolItemIconName(tool), 17));
+
+    const main = document.createElement('div');
+    main.className = 'slash-docker-item__main';
+
+    const topLine = document.createElement('div');
+    topLine.className = 'slash-docker-item__top';
+
+    const dot = document.createElement('span');
+    dot.className = `slash-status-dot ${toolsLoading && toolsData.isFallback ? 'is-auth' : toolStatusDotClass(tool)}`;
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'slash-docker-item__name';
+    nameEl.textContent = tool.name || tool.id;
+
+    topLine.append(dot, nameEl);
+
+    if (tool.command) {
+      const cmdPill = document.createElement('span');
+      cmdPill.className = 'slash-tools-pill--cmd';
+      cmdPill.textContent = tool.command;
+      topLine.appendChild(cmdPill);
+    }
+
+    if (tool.privacySafe) {
+      const privPill = document.createElement('span');
+      privPill.className = 'slash-docker-pill slash-docker-pill--always';
+      privPill.textContent = 'Приват OK';
+      topLine.appendChild(privPill);
+    }
+
+    main.appendChild(topLine);
+    if (tool.description) {
+      const descEl = document.createElement('span');
+      descEl.className = 'slash-docker-item__desc';
+      descEl.textContent = tool.description;
+      main.appendChild(descEl);
+    }
+
+    const controls = document.createElement('div');
+    controls.className = 'slash-docker-item__controls';
+
+    const detailText = isBusy
+      ? 'Выполняю…'
+      : (tool.detail || toolStatusFallbackLabel(tool));
+    const detailTone = isBusy ? '' : toolDetailToneClass(tool);
+    const detailPill = document.createElement('span');
+    detailPill.className = `slash-docker-pill slash-tools-pill--detail${detailTone ? ` ${detailTone}` : ''}`;
+    detailPill.textContent = detailText;
+    detailPill.title = detailText;
+    controls.appendChild(detailPill);
+
+    if (actions.includes('launch')) {
+      const launchBtn = document.createElement('button');
+      launchBtn.type = 'button';
+      launchBtn.className = `slash-docker-btn${st === 'needs_setup' ? ' slash-tools-btn--primary' : ''}`;
+      launchBtn.disabled = isBusy;
+      launchBtn.append(createIconSvg('play', 13), document.createTextNode('Запустить'));
+      launchBtn.addEventListener('click', () => {
+        handleToolAction({ toolId: tool.id, action: 'launch', label: tool.name });
+      });
+      controls.appendChild(launchBtn);
+    }
+
+    if (actions.includes('start') || actions.includes('stop')) {
+      const sw = createToggleSwitch(Boolean(tool.running), {
+        label: `${tool.running ? 'Остановить' : 'Запустить'} ${tool.name || tool.id}`,
+        disabled: isBusy || st === 'missing',
+        onToggle: () => {
+          handleToolAction({
+            toolId: tool.id,
+            action: tool.running ? 'stop' : 'start',
+            label: tool.name,
+          });
+        },
+      });
+      controls.appendChild(sw);
+    }
+
+    if (tool.url && actions.includes('open')) {
+      const openBtn = document.createElement('button');
+      openBtn.type = 'button';
+      openBtn.className = 'slash-docker-btn';
+      openBtn.append(createIconSvg('external', 13), document.createTextNode('Открыть'));
+      openBtn.addEventListener('click', () => openExternalUrl(tool.url));
+      controls.appendChild(openBtn);
+    }
+
+    if (tool.command) {
+      const chatBtn = document.createElement('button');
+      chatBtn.type = 'button';
+      chatBtn.className = 'slash-docker-btn slash-tools-btn--primary';
+      chatBtn.append(createIconSvg('send', 13), document.createTextNode('В чат'));
+      chatBtn.addEventListener('click', () => {
+        const cleanCmd = String(tool.command).trim();
+        cleanup();
+        onRunCommand?.({
+          name: cleanCmd.replace(/^\//, ''),
+          slash: cleanCmd.startsWith('/') ? cleanCmd : `/${cleanCmd}`,
+          kind: 'prompt',
+          argsHint: '<путь или запрос>',
+        });
+      });
+      controls.appendChild(chatBtn);
+    }
+
+    row.append(iconWrap, main, controls);
+    itemEl.appendChild(row);
+    return itemEl;
+  }
+
+  function buildBridgeRow(bridge) {
+    const isBusy = pendingToolOps.has(bridge.id);
+    const st = String(bridge.status || '').toLowerCase();
+    const isInactive = !bridge.available && st !== 'ready' && st !== 'online' && st !== 'connected';
+
+    const itemEl = document.createElement('div');
+    itemEl.className = `slash-docker-item${isInactive ? ' is-stopped' : ''}`;
+    itemEl.dataset.bridgeId = bridge.id;
+
+    const row = document.createElement('div');
+    row.className = 'slash-docker-row';
+
+    const iconWrap = document.createElement('span');
+    iconWrap.className = 'slash-docker-item__icon';
+    iconWrap.appendChild(createIconSvg(toolItemIconName(bridge), 17));
+
+    const main = document.createElement('div');
+    main.className = 'slash-docker-item__main';
+
+    const topLine = document.createElement('div');
+    topLine.className = 'slash-docker-item__top';
+
+    const dot = document.createElement('span');
+    dot.className = `slash-status-dot ${toolsLoading && toolsData.isFallback ? 'is-auth' : toolStatusDotClass(bridge)}`;
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'slash-docker-item__name';
+    nameEl.textContent = bridge.name || bridge.id;
+
+    topLine.append(dot, nameEl);
+    main.appendChild(topLine);
+
+    if (bridge.description) {
+      const descEl = document.createElement('span');
+      descEl.className = 'slash-docker-item__desc';
+      descEl.textContent = bridge.description;
+      main.appendChild(descEl);
+    }
+
+    const controls = document.createElement('div');
+    controls.className = 'slash-docker-item__controls';
+
+    const detailText = isBusy
+      ? 'Проверяю…'
+      : (bridge.detail || toolStatusFallbackLabel(bridge));
+    const detailTone = isBusy ? '' : toolDetailToneClass(bridge);
+    const detailPill = document.createElement('span');
+    detailPill.className = `slash-docker-pill slash-tools-pill--detail${detailTone ? ` ${detailTone}` : ''}`;
+    detailPill.textContent = detailText;
+    detailPill.title = detailText;
+    controls.appendChild(detailPill);
+
+    const probeBtn = document.createElement('button');
+    probeBtn.type = 'button';
+    probeBtn.className = 'slash-docker-btn';
+    probeBtn.disabled = isBusy;
+    probeBtn.append(createIconSvg('refresh', 13), document.createTextNode('Проверить'));
+    probeBtn.addEventListener('click', () => {
+      handleToolAction({ toolId: bridge.id, action: 'probe', label: bridge.name });
+    });
+    controls.appendChild(probeBtn);
+
+    if (bridge.url) {
+      const openBtn = document.createElement('button');
+      openBtn.type = 'button';
+      openBtn.className = 'slash-docker-btn';
+      openBtn.append(createIconSvg('external', 13), document.createTextNode('Открыть'));
+      openBtn.addEventListener('click', () => openExternalUrl(bridge.url));
+      controls.appendChild(openBtn);
+    }
+
+    row.append(iconWrap, main, controls);
+    itemEl.appendChild(row);
+    return itemEl;
+  }
+
+  function buildPcToolsBlock(pcData, q) {
+    const allTools = Array.isArray(pcData?.tools) ? pcData.tools : [];
+    const filtered = q ? allTools.filter((t) => matchesToolItem(t, q)) : allTools;
+    if (q && !filtered.length) return null;
+
+    const section = document.createElement('section');
+    section.className = 'slash-docker-server';
+    section.dataset.toolsGroup = 'pc';
+
+    const head = document.createElement('div');
+    head.className = 'slash-docker-server__head';
+
+    const meta = document.createElement('div');
+    meta.className = 'slash-docker-server__meta';
+
+    const titleRow = document.createElement('div');
+    titleRow.className = 'slash-docker-server__title-row';
+
+    const readyCount = Number(pcData?.readyCount) || 0;
+    const totalCount = Number(pcData?.totalCount) || allTools.length;
+
+    const dot = document.createElement('span');
+    dot.className = `slash-status-dot ${toolsLoading && toolsData.isFallback ? 'is-auth' : (readyCount > 0 ? 'is-connected' : 'is-offline')}`;
+
+    const icon = document.createElement('span');
+    icon.className = 'slash-docker-server__icon';
+    icon.appendChild(createIconSvg('monitor', 18));
+
+    const h3 = document.createElement('h3');
+    h3.className = 'slash-docker-server__title';
+    h3.textContent = 'Инструменты на ПК';
+
+    const countPill = document.createElement('span');
+    countPill.className = 'slash-docker-server__count';
+    countPill.textContent = toolsLoading && !toolsLoaded
+      ? 'Проверка…'
+      : `${readyCount}/${totalCount} готово`;
+
+    titleRow.append(dot, icon, h3, countPill);
+    meta.appendChild(titleRow);
+
+    const actions = document.createElement('div');
+    actions.className = 'slash-docker-server__actions';
+
+    const refreshBtn = document.createElement('button');
+    refreshBtn.type = 'button';
+    refreshBtn.className = 'slash-docker-btn';
+    refreshBtn.disabled = toolsRefreshing || toolsLoading;
+    refreshBtn.append(
+      createIconSvg('refresh', 13),
+      document.createTextNode(toolsRefreshing || toolsLoading ? 'Обновляю…' : 'Обновить'),
+    );
+    refreshBtn.addEventListener('click', () => loadToolsStatus({ refresh: true }));
+    actions.appendChild(refreshBtn);
+
+    head.append(meta, actions);
+    section.appendChild(head);
+
+    if (pcData?.error && !toolsLoading) {
+      const errEl = document.createElement('p');
+      errEl.className = 'slash-docker-server__error';
+      errEl.textContent = pcData.error;
+      section.appendChild(errEl);
+    }
+
+    const list = document.createElement('div');
+    list.className = 'slash-docker-list';
+    for (const tool of filtered) {
+      list.appendChild(buildPcToolRow(tool));
+    }
+    section.appendChild(list);
+    return section;
+  }
+
+  function buildLenovoBridgesBlock(bridgesData, q) {
+    const allBridges = Array.isArray(bridgesData?.items) ? bridgesData.items : [];
+    const filtered = q ? allBridges.filter((b) => matchesToolItem(b, q)) : allBridges;
+    if (q && !filtered.length) return null;
+
+    const section = document.createElement('section');
+    section.className = 'slash-docker-server';
+    section.dataset.toolsGroup = 'bridges';
+
+    const head = document.createElement('div');
+    head.className = 'slash-docker-server__head';
+
+    const meta = document.createElement('div');
+    meta.className = 'slash-docker-server__meta';
+
+    const titleRow = document.createElement('div');
+    titleRow.className = 'slash-docker-server__title-row';
+
+    const readyCount = Number(bridgesData?.readyCount) || 0;
+    const totalCount = Number(bridgesData?.totalCount) || allBridges.length;
+    const isOnline = Boolean(bridgesData?.online || readyCount > 0);
+
+    const dot = document.createElement('span');
+    dot.className = `slash-status-dot ${toolsLoading && toolsData.isFallback ? 'is-auth' : (isOnline ? 'is-connected' : 'is-offline')}`;
+
+    const icon = document.createElement('span');
+    icon.className = 'slash-docker-server__icon';
+    icon.appendChild(createIconSvg('server', 18));
+
+    const h3 = document.createElement('h3');
+    h3.className = 'slash-docker-server__title';
+    h3.textContent = 'Мосты Lenovo .107';
+
+    const countPill = document.createElement('span');
+    countPill.className = 'slash-docker-server__count';
+    countPill.textContent = toolsLoading && !toolsLoaded
+      ? 'Проверка…'
+      : `${readyCount}/${totalCount} доступно`;
+
+    titleRow.append(dot, icon, h3, countPill);
+    meta.appendChild(titleRow);
+
+    const actions = document.createElement('div');
+    actions.className = 'slash-docker-server__actions';
+
+    const refreshBtn = document.createElement('button');
+    refreshBtn.type = 'button';
+    refreshBtn.className = 'slash-docker-btn slash-docker-btn--icon';
+    refreshBtn.title = 'Проверить мосты Lenovo .107';
+    refreshBtn.setAttribute('aria-label', 'Проверить мосты Lenovo .107');
+    refreshBtn.disabled = toolsRefreshing || toolsLoading;
+    refreshBtn.appendChild(createIconSvg('refresh', 14));
+    refreshBtn.addEventListener('click', () => loadToolsStatus({ refresh: true }));
+    actions.appendChild(refreshBtn);
+
+    head.append(meta, actions);
+    section.appendChild(head);
+
+    if (bridgesData?.error && !isOnline && !toolsLoading) {
+      const errEl = document.createElement('p');
+      errEl.className = 'slash-docker-server__error';
+      errEl.textContent = bridgesData.error;
+      section.appendChild(errEl);
+    }
+
+    const list = document.createElement('div');
+    list.className = 'slash-docker-list';
+    for (const bridge of filtered) {
+      list.appendChild(buildBridgeRow(bridge));
+    }
+    section.appendChild(list);
+    return section;
+  }
+
   function renderModal() {
     renderTabs();
     const sections = catalog.sections || [];
@@ -7224,6 +8031,36 @@ export async function openCatalogModal({
       actions.appendChild(refreshAllBtn);
       heroRow.append(copy, actions);
       hero.appendChild(heroRow);
+    } else if (sec.id === 'tools') {
+      const heroRow = document.createElement('div');
+      heroRow.className = 'slash-catalog__hero-row';
+
+      const copy = document.createElement('div');
+      copy.className = 'slash-catalog__hero-copy';
+      const h2 = document.createElement('h2');
+      h2.className = 'slash-catalog__title';
+      h2.textContent = heroInfo.title;
+      const sub = document.createElement('p');
+      sub.className = 'slash-catalog__subtitle';
+      sub.textContent = heroInfo.subtitle;
+      copy.append(h2, sub);
+
+      const actions = document.createElement('div');
+      actions.className = 'slash-catalog__hero-actions';
+
+      const refreshToolsBtn = document.createElement('button');
+      refreshToolsBtn.type = 'button';
+      refreshToolsBtn.className = 'slash-catalog__action-btn';
+      refreshToolsBtn.disabled = toolsRefreshing || toolsLoading;
+      refreshToolsBtn.append(
+        createIconSvg('refresh', 16),
+        document.createTextNode(toolsRefreshing || toolsLoading ? 'Обновляю…' : 'Обновить'),
+      );
+      refreshToolsBtn.addEventListener('click', () => loadToolsStatus({ refresh: true }));
+
+      actions.appendChild(refreshToolsBtn);
+      heroRow.append(copy, actions);
+      hero.appendChild(heroRow);
     } else {
       const h2 = document.createElement('h2');
       h2.className = 'slash-catalog__title';
@@ -7280,6 +8117,29 @@ export async function openCatalogModal({
         const empty = document.createElement('div');
         empty.className = 'slash-catalog__empty';
         empty.textContent = q ? 'По запросу контейнеры Docker не нашлись.' : 'Контейнеры Docker не найдены.';
+        frag.appendChild(empty);
+      }
+
+      body.replaceChildren(frag);
+      return;
+    }
+
+    if (sec.id === 'tools') {
+      const blocksWrap = document.createElement('div');
+      blocksWrap.className = 'slash-docker-servers';
+
+      const pcBlock = buildPcToolsBlock(toolsData.pc, q);
+      const bridgesBlock = buildLenovoBridgesBlock(toolsData.bridges, q);
+
+      if (pcBlock) blocksWrap.appendChild(pcBlock);
+      if (bridgesBlock) blocksWrap.appendChild(bridgesBlock);
+
+      if (blocksWrap.childElementCount) {
+        frag.appendChild(blocksWrap);
+      } else {
+        const empty = document.createElement('div');
+        empty.className = 'slash-catalog__empty';
+        empty.textContent = q ? 'По запросу инструменты и мосты не нашлись.' : 'Инструменты не найдены.';
         frag.appendChild(empty);
       }
 
@@ -7489,6 +8349,8 @@ export async function openCatalogModal({
 
   if (activeTab === 'docker') {
     loadDockerStatus({ refresh: false });
+  } else if (activeTab === 'tools') {
+    loadToolsStatus({ refresh: false });
   }
 
   const [liveCatalog, liveSkills, livePlugins, liveConnectors] = await Promise.all([
@@ -7506,6 +8368,7 @@ export async function openCatalogModal({
     syncPluginsIntoCatalog();
     syncConnectorsIntoCatalog();
     ensureDockerSectionInCatalog();
+    ensureToolsSectionInCatalog();
     renderModal();
   }
 }

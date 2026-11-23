@@ -41,6 +41,7 @@ const { SkillsEngine } = require('./skills-engine');
 const { PluginsEngine } = require('./plugins-engine');
 const { ConnectorsEngine, parseModelUseTag, stripModelUseTags } = require('./connectors-engine');
 const { DockerEngine } = require('./docker-engine');
+const { PcToolsEngine } = require('./pc-tools-engine');
 const SUGGESTIONS_TTL_MS = 45 * 60 * 1000; // 45 минут кэша подсказок от E4B
 const WORKER_COOLDOWN_MS = 30 * 60 * 1000; // 30 минут кулдауна для уставших воркеров Deep Research
 const RESEARCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -472,6 +473,15 @@ class PhoneBridge {
     return this._fallbackDocker;
   }
 
+  pcToolsEngine() {
+    if (this.d.pcToolsEngine) return this.d.pcToolsEngine;
+    if (this.d.slashEngine?.pcToolsEngine) return this.d.slashEngine.pcToolsEngine;
+    if (!this._fallbackPcTools) {
+      this._fallbackPcTools = new PcToolsEngine();
+    }
+    return this._fallbackPcTools;
+  }
+
   slashEngine() {
     if (this.d.slashEngine) return this.d.slashEngine;
     if (!this._fallbackSlash) {
@@ -481,6 +491,7 @@ class PhoneBridge {
         pluginsEngine: this.pluginsEngine(),
         connectorsEngine: this.connectorsEngine(),
         dockerEngine: this.dockerEngine(),
+        pcToolsEngine: this.pcToolsEngine(),
       });
     }
     return this._fallbackSlash;
@@ -951,6 +962,7 @@ class PhoneBridge {
           pluginsEngine: true,
           connectorsEngine: true,
           dockerEngine: true,
+          pcToolsEngine: true,
           privateVaultSave: Boolean(this.d.savePrivateChat),
           contextLimits,
         });
@@ -1181,6 +1193,23 @@ class PhoneBridge {
           confirm: body.confirm === true,
         });
         return this.send(res, (result.ok || result.confirmRequired) ? 200 : 400, result);
+      }
+      if (req.method === 'GET' && url.pathname === '/tools/status') {
+        const refreshRaw = url.searchParams.get('refresh');
+        const refresh = refreshRaw === '1' || refreshRaw === 'true';
+        return this.send(res, 200, await this.pcToolsEngine().getStatus({ refresh }));
+      }
+      if (req.method === 'POST' && url.pathname === '/tools/action') {
+        const body = await this.readJson(req, MAX_BODY * 2);
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          return this.send(res, 400, { ok: false, error: 'Некорректное тело запроса.' });
+        }
+        const result = await this.pcToolsEngine().runAction({
+          toolId: body.toolId,
+          action: body.action,
+          payload: body.payload,
+        });
+        return this.send(res, result.ok ? 200 : (result.blocked ? 403 : 400), result);
       }
       if (req.method === 'GET' && url.pathname === '/commands') {
         const mode = url.searchParams.get('mode') || 'chat';

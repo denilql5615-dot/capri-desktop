@@ -6,10 +6,14 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
 const { app, shell, desktopCapturer, screen } = require('electron');
 const { powershell } = require('./apps');
 const { extractDocumentText } = require('./hub-artifacts');
+const { parseKensakuResults } = require('./pc-tools-engine');
 const SNIPPET_EXTS = new Set(['.pdf', '.docx', '.xlsx', '.pptx', '.txt', '.md', '.csv']);
+const KENSAKU_CLI = 'D:\\Capri\\tools\\kensaku\\kensaku-cli-windows-x86_64.exe';
+const KENSAKU_TIMEOUT_MS = 900;
 
 const LIMIT = 8;
 const found = new Set(); // what a search showed you: the only paths she opens from here
@@ -82,11 +86,71 @@ function walked(terms, exts) {
   return hits;
 }
 
+// Fast path: local Kensaku index when available (<1s timeout). Returns [] when missing or empty.
+function kensakuSearch(query, exts = []) {
+  const cleanQuery = String(query || '').replace(/[\0\r\n]/g, ' ').trim();
+  if (!cleanQuery || !fs.existsSync(KENSAKU_CLI)) return Promise.resolve([]);
+  const cleanExts = exts.map((e) => String(e || '').replace(/[^a-z0-9]/gi, '').toLowerCase()).filter(Boolean);
+  const args = ['search', cleanQuery, '--json', '--limit', String(LIMIT * 2)];
+  if (cleanExts.length === 1) args.push('--ext', cleanExts[0]);
+
+  return new Promise((resolve) => {
+    execFile(KENSAKU_CLI, args, {
+      windowsHide: true,
+      shell: false,
+      timeout: KENSAKU_TIMEOUT_MS,
+      maxBuffer: 512 * 1024,
+    }, (err, stdout) => {
+      if (err) return resolve([]);
+      const items = parseKensakuResults(stdout).filter((item) => {
+        if (!item?.path || junk(item.path)) return false;
+        if (cleanExts.length) {
+          const ext = path.extname(item.path).slice(1).toLowerCase();
+          if (!cleanExts.includes(ext)) return false;
+        }
+        return fs.existsSync(item.path);
+      });
+      resolve(items);
+    });
+  });
+}
+
 // [{ path, name, folder, snippet? }], the newest first, at most LIMIT. `query`: words of the name; `exts`:
 // the kinds of file it is (["aep"] for an After Effects project), when that's what was asked.
 async function search({ query = '', exts = [] } = {}) {
   const terms = words(query);
   if (!terms.length && !exts.length) return [];
+
+  if (query && terms.length) {
+    const kensakuHits = await kensakuSearch(query, exts).catch(() => []);
+    if (kensakuHits.length) {
+      const kensakuByPath = new Map(kensakuHits.map((h) => [h.path, h]));
+      const results = listed(kensakuHits.map((h) => h.path));
+      if (results.length) {
+        let snippetsAdded = 0;
+        for (const item of results) {
+          const kHit = kensakuByPath.get(item.path);
+          if (kHit?.snippet) {
+            item.snippet = kHit.snippet;
+            snippetsAdded++;
+            continue;
+          }
+          if (snippetsAdded >= 2) break;
+          const ext = path.extname(item.path).toLowerCase();
+          if (!SNIPPET_EXTS.has(ext)) continue;
+          try {
+            const { text } = await extractDocumentText(item.path, { maxChars: 600 });
+            if (text) {
+              item.snippet = text.replace(/\s+/g, ' ').trim().slice(0, 400);
+              snippetsAdded++;
+            }
+          } catch { /* ignore extraction failure during search */ }
+        }
+        return results;
+      }
+    }
+  }
+
   const paths = await indexed(terms, exts);
   const rawResults = listed(paths?.length ? paths : walked(terms, exts));
   const results = rawResults.length || !paths?.length ? rawResults : listed(walked(terms, exts));

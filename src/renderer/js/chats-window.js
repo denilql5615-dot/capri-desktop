@@ -593,14 +593,16 @@ async function executeSlashCommand(rawText, { confirm = false } = {}) {
       if (prev && !busy && !toolBusy) await sendPlainMessage(prev);
       return true;
     }
-    if (cmdName === 'help' || cmdName === 'skills' || cmdName === 'plugins' || cmdName === 'plugin' || cmdName === 'hookify' || cmdName === 'connectors' || cmdName === 'connector' || cmdName === 'docker') {
+    if (cmdName === 'help' || cmdName === 'skills' || cmdName === 'plugins' || cmdName === 'plugin' || cmdName === 'hookify' || cmdName === 'connectors' || cmdName === 'connector' || cmdName === 'docker' || cmdName === 'tools' || cmdName === 'pc' || cmdName === 'инструменты') {
       const targetTab = cmdName === 'skills'
         ? 'skills'
         : (['plugins', 'plugin', 'hookify'].includes(cmdName)
           ? 'plugins'
           : (['connectors', 'connector'].includes(cmdName)
             ? 'connectors'
-            : (cmdName === 'docker' ? 'docker' : 'commands')));
+            : (cmdName === 'docker'
+              ? 'docker'
+              : (['tools', 'pc', 'инструменты'].includes(cmdName) ? 'tools' : 'commands'))));
       openActiveCatalog(targetTab, cmdName === 'hookify' ? { focusPluginId: 'hookify' } : {});
       return true;
     }
@@ -662,6 +664,11 @@ async function executeSlashCommand(rawText, { confirm = false } = {}) {
 
   if (cmdName === 'docker' && !result.handled) {
     openActiveCatalog('docker');
+    return true;
+  }
+
+  if ((cmdName === 'tools' || cmdName === 'pc' || cmdName === 'инструменты') && !result.handled) {
+    openActiveCatalog('tools');
     return true;
   }
 

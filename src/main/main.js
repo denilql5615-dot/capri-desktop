@@ -36,6 +36,7 @@ const { SkillsEngine } = require('./skills-engine');
 const { PluginsEngine } = require('./plugins-engine');
 const { ConnectorsEngine } = require('./connectors-engine');
 const { DockerEngine } = require('./docker-engine');
+const { PcToolsEngine } = require('./pc-tools-engine');
 const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
 const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('./hub-artifacts');
@@ -640,6 +641,7 @@ function ensureAgentSessions() {
       pluginsEngine: ensurePluginsEngine(),
       connectorsEngine: ensureConnectorsEngine(),
       dockerEngine: ensureDockerEngine(),
+      pcToolsEngine: ensurePcToolsEngine(),
     });
   return agentSessions;
 }
@@ -1877,11 +1879,20 @@ let skillsEngine = null;
 let pluginsEngine = null;
 let connectorsEngine = null;
 let dockerEngine = null;
+let pcToolsEngine = null;
 
 function ensureDockerEngine() {
   if (dockerEngine) return dockerEngine;
   dockerEngine = new DockerEngine();
   return dockerEngine;
+}
+
+function ensurePcToolsEngine() {
+  if (pcToolsEngine) return pcToolsEngine;
+  pcToolsEngine = new PcToolsEngine({
+    artifactsDir: path.join(app.getPath('userData'), 'tools-artifacts'),
+  });
+  return pcToolsEngine;
 }
 
 function ensureSkillsEngine() {
@@ -2001,6 +2012,7 @@ function ensureSlashEngine() {
     pluginsEngine: ensurePluginsEngine(),
     connectorsEngine: ensureConnectorsEngine(),
     dockerEngine: ensureDockerEngine(),
+    pcToolsEngine: ensurePcToolsEngine(),
     getConfig: () => config.load(),
     saveConfig: (patch) => config.save(patch),
     deps: {
@@ -2267,6 +2279,7 @@ async function applyPhone() {
       pluginsEngine: ensurePluginsEngine(),
       connectorsEngine: ensureConnectorsEngine(),
       dockerEngine: ensureDockerEngine(),
+      pcToolsEngine: ensurePcToolsEngine(),
       onConnectorsChanged: (payload) => {
         if (payload?.id === 'telegram') applyTelegram();
         broadcastConnectorsChanged();
@@ -4276,6 +4289,14 @@ function registerIpc() {
     container: payload?.container,
     action: payload?.action,
     confirm: payload?.confirm === true,
+  }));
+  ipcMain.handle('tools:status', (_e, params = {}) => ensurePcToolsEngine().getStatus({
+    refresh: params?.refresh === true || params?.refresh === 1,
+  }));
+  ipcMain.handle('tools:action', (_e, payload = {}) => ensurePcToolsEngine().runAction({
+    toolId: payload?.toolId,
+    action: payload?.action,
+    payload: payload?.payload,
   }));
   ipcMain.handle('chat:compact', (_e, payload = {}) => compactDesktopChat(payload || {}));
   ipcMain.handle('agents:compact', (event, { id, focus } = {}) => hubSessions(event).compact(id, { focus }));

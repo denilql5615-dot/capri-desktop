@@ -2583,6 +2583,42 @@
   white-space: nowrap;
 }
 
+/* ---------- PC Tools & Lenovo .107 Bridges (reuses .slash-docker-* rhythm) ---------- */
+.slash-tools-pill--cmd {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(138, 180, 248, 0.1);
+  border: 1px solid rgba(138, 180, 248, 0.24);
+  color: #8AB4F8;
+  font: 500 11px/1 var(--gem-font-mono, ui-monospace, monospace);
+  white-space: nowrap;
+}
+
+.slash-tools-pill--detail {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  line-height: 22px;
+  font-variant-numeric: tabular-nums;
+}
+
+.slash-tools-btn--primary {
+  background: rgba(138, 180, 248, 0.12);
+  border-color: rgba(138, 180, 248, 0.3);
+  color: #8AB4F8;
+}
+
+.slash-tools-btn--primary:hover:not(:disabled) {
+  background: rgba(138, 180, 248, 0.2);
+  border-color: rgba(138, 180, 248, 0.48);
+  color: #A8C7FA;
+}
+
 @media (max-width: 640px) {
   .slash-plugin-drawer {
     padding-left: 12px;
@@ -2605,7 +2641,12 @@
 
   .slash-docker-item__controls {
     width: 100%;
+    flex-wrap: wrap;
     justify-content: flex-end;
+  }
+
+  .slash-tools-pill--detail {
+    max-width: 100%;
   }
 
   .slash-docker-confirm {
