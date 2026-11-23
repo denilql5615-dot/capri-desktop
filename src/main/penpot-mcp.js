@@ -21,31 +21,38 @@ function parseReply(text) {
   throw new Error('Penpot MCP: пустой ответ');
 }
 
-async function post(fetchImpl, body, session, timeoutMs) {
+// Multi-user Penpot MCP wants the user's token (shown in the Penpot MCP plugin) on the URL.
+const endpoint = (userToken) => (userToken ? `${BASE}?userToken=${encodeURIComponent(userToken)}` : BASE);
+
+async function post(fetchImpl, body, session, timeoutMs, userToken) {
   const headers = session ? { ...HEADERS, 'mcp-session-id': session } : HEADERS;
-  const res = await fetchImpl(BASE, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+  const res = await fetchImpl(endpoint(userToken), { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok && res.status !== 202) throw new Error(`Penpot MCP: HTTP ${res.status}`);
   return { res, text: res.status === 202 ? '' : await res.text() };
 }
 
 /** Calls one Penpot MCP tool: its text result, or throws in plain words. */
-async function callTool(name, args = {}, { fetchImpl = fetch, timeoutMs = 60000 } = {}) {
+async function callTool(name, args = {}, { fetchImpl = fetch, timeoutMs = 60000, userToken = '' } = {}) {
   let first;
   try {
     first = await post(fetchImpl, {
       jsonrpc: '2.0', id: 1, method: 'initialize',
       params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'altai-re-styles', version: '1' } },
-    }, null, 8000);
+    }, null, 8000, userToken);
   } catch (err) {
     throw new Error(`Penpot MCP на :4401 не отвечает — запусти Penpot в /docker (${err.message})`);
   }
   const session = first.res.headers.get('mcp-session-id') || '';
-  await post(fetchImpl, { jsonrpc: '2.0', method: 'notifications/initialized' }, session, 8000);
-  const { text } = await post(fetchImpl, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: args } }, session, timeoutMs);
+  await post(fetchImpl, { jsonrpc: '2.0', method: 'notifications/initialized' }, session, 8000, userToken);
+  const { text } = await post(fetchImpl, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: args } }, session, timeoutMs, userToken);
   const msg = parseReply(text);
   if (msg.error) throw new Error(`Penpot MCP: ${msg.error.message || 'ошибка'}`);
   const out = (msg.result?.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('\n').trim();
-  if (msg.result?.isError) throw new Error(`Penpot: ${out || 'ошибка выполнения'}`);
+  // the server reports some failures as plain text, not as isError
+  if (msg.result?.isError || /^Tool execution failed/i.test(out)) {
+    if (/userToken/i.test(out)) throw new Error('Penpot MCP просит личный токен: открой в Penpot плагин MCP, скопируй токен и вставь его в карточке стиля → «В Penpot».');
+    throw new Error(`Penpot: ${out || 'ошибка выполнения'}`);
+  }
   return out;
 }
 

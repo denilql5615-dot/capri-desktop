@@ -106,9 +106,16 @@ function dominantColors(images, { count = 6, skipChromaKey = true } = {}) {
       if (cur) { cur.n += 1; cur.r += r; cur.g += g; cur.b += b; } else buckets.set(key, { n: 1, r, g, b });
     }
   }
+  // frequency weighted by saturation: a grey backdrop must not push the character's own colours out
   const ranked = [...buckets.values()]
-    .map((c) => ({ n: c.n, r: Math.round(c.r / c.n), g: Math.round(c.g / c.n), b: Math.round(c.b / c.n) }))
-    .sort((x, y) => y.n - x.n);
+    .map((c) => {
+      const r = Math.round(c.r / c.n);
+      const g = Math.round(c.g / c.n);
+      const b = Math.round(c.b / c.n);
+      const sat = (Math.max(r, g, b) - Math.min(r, g, b)) / 255;
+      return { n: c.n, r, g, b, score: c.n * (0.25 + sat) };
+    })
+    .sort((x, y) => y.score - x.score);
   const picked = [];
   for (const c of ranked) {
     if (picked.length >= count) break;
@@ -449,7 +456,8 @@ class StylesEngine {
     const style = this.getStyle(id);
     if (!style) return { ok: false, error: `Стиля @${id} нет.` };
     if (!this.decodeImage) return { ok: false, error: 'Разбор картинок недоступен.' };
-    const files = [...style.objects, ...style.refs];
+    // the style's own colours live in its objects; references are someone else's mood pictures
+    const files = style.objects.length ? style.objects : style.refs;
     if (!files.length) return { ok: false, error: 'В стиле нет картинок — палитру не из чего взять.' };
     const images = files.map((f) => { try { return this.decodeImage(f); } catch { return null; } }).filter(Boolean);
     const palette = dominantColors(images, { count: Math.max(2, Math.min(12, Number(count) || 6)) });

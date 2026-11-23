@@ -19,7 +19,9 @@ test('styledWorkflow chains IP-Adapter: refs as style transfer, object as linear
   assert.equal(adapters.length, 3); // two refs at most + one object
   assert.deepEqual(adapters.map(([, n]) => n.inputs.weight_type), ['style transfer', 'style transfer', 'linear']);
   assert.equal(adapters[2][1].inputs.weight, 0.5);
-  assert.deepEqual(adapters[0][1].inputs.model, ['20', 0]);
+  assert.deepEqual(adapters[0][1].inputs.model, ['1', 0]);
+  assert.deepEqual(adapters[0][1].inputs.clip_vision, ['21', 0]);
+  assert.equal(graph[20].class_type, 'IPAdapterModelLoader');
   assert.deepEqual(graph[5].inputs.model, [adapters[2][0], 0]);
   const loads = Object.values(graph).filter((n) => n.class_type === 'LoadImage').map((n) => n.inputs.image);
   assert.deepEqual(loads, ['a.png', 'b.png', 'o.png']);

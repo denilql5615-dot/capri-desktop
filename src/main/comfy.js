@@ -23,6 +23,9 @@ function desktopPort(appData) {
     return 8188;
   }
 }
+const EXTRA_MODEL_PATHS = ['D:\\Capri\\brigade\\claude\\concepts\\extra_paths.yaml'];
+const IPADAPTER_FILE = 'ip-adapter-plus_sdxl_vit-h.safetensors';
+const CLIP_VISION_FILE = 'clip_vision_h.safetensors';
 const IDLE_MS = 5 * 60 * 1000;
 const START_MS = 3 * 60 * 1000;
 const JOB_MS = 10 * 60 * 1000;
@@ -103,8 +106,9 @@ function styledWorkflow({ prompt, recipe = {}, refImages = [], objectImages = []
     ...objectImages.slice(0, 1).map((image) => ({ image, weight: recipe.objectWeight ?? 0.55, type: 'linear', end: 1 })),
   ];
   if (adapters.length) {
-    graph[20] = { class_type: 'IPAdapterUnifiedLoader', inputs: { model, preset: 'PLUS (high strength)' } };
-    model = ['20', 0];
+    // explicit loaders: the unified one looks for CLIP Vision under another file name than Brigade's
+    graph[20] = { class_type: 'IPAdapterModelLoader', inputs: { ipadapter_file: IPADAPTER_FILE } };
+    graph[21] = { class_type: 'CLIPVisionLoader', inputs: { clip_name: CLIP_VISION_FILE } };
     adapters.forEach((a, i) => {
       const load = 30 + i * 2;
       const apply = load + 1;
@@ -112,7 +116,7 @@ function styledWorkflow({ prompt, recipe = {}, refImages = [], objectImages = []
       graph[apply] = {
         class_type: 'IPAdapterAdvanced',
         inputs: {
-          model, ipadapter: ['20', 1], image: [String(load), 0], weight: a.weight, weight_type: a.type,
+          model, ipadapter: ['20', 0], clip_vision: ['21', 0], image: [String(load), 0], weight: a.weight, weight_type: a.type,
           combine_embeds: 'concat', start_at: 0, end_at: a.end, embeds_scaling: 'V only',
         },
       };
@@ -354,6 +358,8 @@ class Comfy {
     this.starting = (async () => {
       const args = ['-s', path.join('ComfyUI', 'main.py'), '--listen', '127.0.0.1', '--port', String(PORT), '--disable-auto-launch',
         '--extra-model-paths-config', where.models, '--input-directory', where.input, '--output-directory', where.output];
+      // IP-Adapter and detector folders (styles, 2.7a): Comfy Desktop's own yaml doesn't list them
+      for (const extra of EXTRA_MODEL_PATHS) if (fs.existsSync(extra)) args.push('--extra-model-paths-config', extra);
       this.proc = spawn(where.python, args, { cwd: where.root, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
       let tail = '';
       this.proc.stderr.setEncoding('utf8');
