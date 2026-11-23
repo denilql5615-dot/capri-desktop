@@ -45,6 +45,7 @@ const { parseTranscript, collectLocalTranscripts } = require('./agent-import');
 const { quotaGroup, normalizeWindow, claudeWindow, readCodexQuota, readAgyQuota } = require('./agent-quotas');
 const { QuotaHub, groupFor, GROUPS: QUOTA_GROUPS } = require('./quota-hub');
 const { readAgyLive, readSnapshot: readAgyStatusLineSnapshot, poolsToGroups } = require('./quota-agy');
+const { readClaudeUsage, mergeClaudeWindows } = require('./quota-claude');
 const { artifactPath, listArtifacts, saveUpload, extractDocumentText } = require('./hub-artifacts');
 const notes = require('./notes');
 const privateVaultCrypto = require('./private-vault-crypto');
@@ -399,6 +400,8 @@ const hubArtifactRoot = (cfg = config.load()) => path.join(workers.workDir(cfg),
 let codexQuota;
 let codexQuotaPending;
 let claudeQuotas;
+let claudeLiveWindows = [];
+let claudeCheckedAt = 0;
 const claudeQuotaFile = () => path.join(app.getPath('userData'), 'claude-quota.json');
 function getClaudeQuotas() {
   if (claudeQuotas) return claudeQuotas;
@@ -416,36 +419,50 @@ function recordClaudeQuota(event) {
   const quotas = getClaudeQuotas();
   quotas.set(`${window.scope || 'all'}:${window.minutes}`, { ...window, checkedAt: Date.now() });
   try { fs.writeFileSync(claudeQuotaFile(), JSON.stringify([...quotas.values()]), 'utf8'); } catch { /* Keep the live reading. */ }
-  quotaHub?.refresh({ force: true, groups: ['claude'] }).catch(() => {});
+  if (quotaHub) {
+    const current = readClaudeQuotaWindows();
+    if (current) quotaHub.push('claude', current.windows, 'claude', current.checkedAt);
+  }
 }
 
 // 2.8: Claude Code's status line (scripts/claude-statusline.js) leaves its plan limits here.
 const claudeStatusLineFile = () => path.join(os.homedir(), '.capri', 'quota', 'claude-statusline.json');
 
-/** Claude's 5-hour and week windows: the newer of the status line file and the stream events. */
+/** Pick the newest reading of each window, so a stream event for one period doesn't erase the other. */
 function readClaudeQuotaWindows() {
-  let fromLine = null;
+  let fromLine = [];
   try {
     const snap = JSON.parse(fs.readFileSync(claudeStatusLineFile(), 'utf8'));
     const w = snap?.windows || {};
-    const windows = [
+    fromLine = [
       w.five_hour && { remaining: 100 - w.five_hour.used, minutes: 300, resetsAt: w.five_hour.resetsAt },
       w.seven_day && { remaining: 100 - w.seven_day.used, minutes: 10080, resetsAt: w.seven_day.resetsAt },
-    ].filter(Boolean);
-    if (windows.length) fromLine = { windows, checkedAt: Number(snap.checkedAt) || 0 };
+    ].filter(Boolean).map((window) => ({ ...window, checkedAt: Number(snap.checkedAt) || 0 }));
   } catch { /* No status line reading yet. */ }
   const events = [...getClaudeQuotas().values()].filter((w) => !w.scope);
-  const fromEvents = events.length ? { windows: events, checkedAt: Math.max(...events.map((w) => w.checkedAt || 0)) } : null;
-  if (!fromLine) return fromEvents;
-  if (!fromEvents) return fromLine;
-  return fromLine.checkedAt >= fromEvents.checkedAt ? fromLine : fromEvents;
+  return mergeClaudeWindows([...events, ...fromLine, ...claudeLiveWindows]);
 }
 
 let quotaHub = null;
 function ensureQuotaHub() {
   quotaHub ??= new QuotaHub({
     readers: {
-      claude: async () => readClaudeQuotaWindows(),
+      claude: async ({ force } = {}) => {
+        const previous = readClaudeQuotaWindows();
+        const now = Date.now();
+        const interval = 5 * 60e3;
+        const fresh = previous?.windows.length === 2 && now - previous.checkedAt < interval;
+        if (force || (!fresh && now - claudeCheckedAt >= interval)) {
+          const cfg = config.load();
+          claudeCheckedAt = now;
+          const windows = await readClaudeUsage({
+            exe: workers.findClaude(), workDir: path.join(app.getPath('userData'), 'quota-claude'),
+            preferred: [cfg.claudeCwd, cfg.workDir, ROOT],
+          });
+          if (windows.length) claudeLiveWindows = windows;
+        }
+        return readClaudeQuotaWindows();
+      },
       codex: async () => readCodexQuota(workers.findCodex()),
       // 2.8b: the live Antigravity status line (a few seconds of hidden agy); the hand-entered snapshot is the fallback
       agy: async () => {

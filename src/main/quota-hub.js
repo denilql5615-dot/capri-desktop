@@ -18,7 +18,7 @@ const KIND_LABEL = { '5h': '5 часов', week: 'Неделя' };
 
 // How often a source may be asked: cheap ones every minute while their bar is on screen, costly ones less.
 const INTERVAL_MS = Object.freeze({
-  claude: { shown: 60e3, hidden: 60e3 }, // reading a file the status line writes: free
+  claude: { shown: 60e3, hidden: 60e3 }, // re-read the file, and poll /usage only when stale
   codex: { shown: 60e3, hidden: 5 * 60e3 }, // a short `codex app-server` call
   agy: { shown: 5 * 60e3, hidden: 15 * 60e3 }, // a short hidden `agy` start (2.8b)
   'web-gemini': { shown: 60e3, hidden: Infinity }, // Usage shares the conversation tab
@@ -87,9 +87,9 @@ class QuotaHub {
   }
 
   /** Live readings (a rate_limit_event in a stream, a status line file): straight in, no asking. */
-  push(groupId, windows, source = 'live') {
+  push(groupId, windows, source = 'live', checkedAt = this.now()) {
     if (!GROUP_BY_ID.has(groupId) || !Array.isArray(windows) || !windows.length) return false;
-    this.state.set(groupId, { windows, checkedAt: this.now(), source });
+    this.state.set(groupId, { windows, checkedAt, source });
     if (groupId === 'web-gemini') this.lastAsked.set(groupId, this.now());
     this.onUpdate(this.snapshot());
     return true;
@@ -152,14 +152,14 @@ class QuotaHub {
     return this.now() - (this.lastAsked.get(source) || 0) >= (shown ? interval.shown : interval.hidden);
   }
 
-  async _ask(source) {
+  async _ask(source, force) {
     if (this.pending.has(source)) return this.pending.get(source);
     const reader = this.readers[source === 'web-gemini' ? 'webGemini' : source];
     if (typeof reader !== 'function') return null;
     this.lastAsked.set(source, this.now());
     const p = (async () => {
       let data = null;
-      try { data = await reader(); } catch { data = null; }
+      try { data = await reader({ force }); } catch { data = null; }
       if (!data) return false;
       const at = this.now();
       if (source === 'agy') {
@@ -186,7 +186,7 @@ class QuotaHub {
     const wanted = new Set((groups || GROUPS.map((g) => g.id)).map((g) => this._sourceOf(g)));
     const due = [...wanted].filter((s) => this._due(s, force));
     if (!due.length) return this.snapshot();
-    const changed = await Promise.all(due.map((s) => this._ask(s)));
+    const changed = await Promise.all(due.map((s) => this._ask(s, force)));
     const snap = this.snapshot();
     if (changed.some(Boolean)) this.onUpdate(snap);
     return snap;
