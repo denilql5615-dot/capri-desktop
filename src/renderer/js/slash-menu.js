@@ -6,6 +6,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 export const INSTANT_COMMANDS = new Set([
   'status', 'usage', 'quota', 'context', 'tasks', 'tools', 'pc', 'инструменты', 'mcp',
   'phone', 'телефон', 'xiaomi',
+  'styles', 'стили', 'библиотека', 'library', 'style', 'стиль', 'voice', 'образ',
   'skills', 'reload-skills', 'plugin', 'plugins', 'hookify',
   'connector', 'connectors', 'docker',
   'doctor', 'storage', 'permissions',
@@ -1874,6 +1875,9 @@ export const FALLBACK_SECTIONS = [
       item('free', 'Выгрузить модели из VRAM', { category: 'system' }),
       item('tools', 'Инструменты ПК и мосты .107: локальные движки и сервисы', { aliases: ['pc', 'инструменты'], category: 'system', icon: 'wrench' }),
       item('phone', 'Телефон (Xiaomi 13T Pro): Health Connect, Shizuku, Organic Maps, Fossify и FMD', { aliases: ['телефон', 'xiaomi'], category: 'system', icon: 'smartphone' }),
+      item('styles', 'Библиотека: стили (бренд, личность, маскот) и образы письма', { aliases: ['стили', 'библиотека', 'library'], category: 'system', icon: 'palette' }),
+      item('style', 'Включить стиль для всех чатов или выключить', { aliases: ['стиль'], category: 'system', icon: 'palette', argsHint: '<имя|выкл>' }),
+      item('voice', 'Включить образ письма для любой модели', { aliases: ['образ'], category: 'system', icon: 'type', argsHint: '<имя|выкл>' }),
       item('analyze', 'Анализ CSV/Excel/JSON с расчётом метрик и графиком PNG', { kind: 'prompt', category: 'system', icon: 'chart', argsHint: '<файл> [вопрос]' }),
       item('convert', 'Конвертация документов (MD → DOCX, Office → PDF, SVG → PNG)', { kind: 'prompt', category: 'system', icon: 'file-text', argsHint: '<файл> [docx|pdf|png]' }),
       item('transcribe', 'Расшифровка и конспект аудио/видео через локальный Whisper', { kind: 'prompt', category: 'system', icon: 'mic', argsHint: '<файл или ссылка>' }),

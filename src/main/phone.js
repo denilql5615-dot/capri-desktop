@@ -510,6 +510,7 @@ class PhoneBridge {
         dockerEngine: this.dockerEngine(),
         pcToolsEngine: this.pcToolsEngine(),
         phoneControlEngine: this.phoneControlEngine(),
+        stylesEngine: this.d.stylesEngine || null,
       });
     }
     return this._fallbackSlash;
@@ -1771,12 +1772,15 @@ class PhoneBridge {
       ephemeral: Boolean(ephemeral),
       isCloud: false,
     });
-    const effectiveText = connCtx.cleanedText || text;
+    // 2.7a: the phone chat runs on local models only, so local-only styles and voices are fine here
+    const styleTurn = this.d.stylesEngine?.resolveTurn({ text: connCtx.cleanedText || text, isCloud: false }) || null;
+    const effectiveText = styleTurn?.cleanedText || connCtx.cleanedText || text;
     const missingFallback = (Array.isArray(flags.skills) ? flags.skills : [])
       .filter((sk) => !skillCtx.activeSkillIds.includes(sk) && !skillCtx.pausedSkillIds.includes(sk) && SKILL_NOTES[sk])
       .map((sk) => SKILL_NOTES[sk]);
     const baseSystemPrompt = baseSysParts.filter(Boolean).join('\n');
     const skillsText = [
+      styleTurn?.block,
       skillCtx.text,
       pluginCtx.text,
       connCtx.contextBlock,

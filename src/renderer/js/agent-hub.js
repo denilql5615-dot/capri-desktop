@@ -1,4 +1,5 @@
 import { appendHubText } from './hub-links.js';
+import { openStylesLibrary } from './styles-library.js';
 import {
   attachSlashMenu,
   openCatalogModal,
@@ -453,6 +454,11 @@ async function executeAgentSlashCommand(rawText, { confirm = false } = {}) {
 
   const act = normalizeSlashAction(result.action);
   const actType = act?.type || '';
+
+  if (actType === 'open-styles') {
+    openStylesLibrary();
+    return true;
+  }
 
   if (actType === 'open-catalog') {
     openCatalogModal({

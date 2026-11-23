@@ -2061,7 +2061,7 @@ function ensureSlashEngine() {
     connectorsEngine: ensureConnectorsEngine(),
     dockerEngine: ensureDockerEngine(),
     pcToolsEngine: ensurePcToolsEngine(),
-    phoneControlEngine: ensurePhoneControlEngine(),
+    phoneControlEngine: ensurePhoneControlEngine(), stylesEngine: ensureStylesEngine(),
     getConfig: () => config.load(),
     saveConfig: (patch) => config.save(patch),
     deps: {
@@ -2329,7 +2329,7 @@ async function applyPhone() {
       connectorsEngine: ensureConnectorsEngine(),
       dockerEngine: ensureDockerEngine(),
       pcToolsEngine: ensurePcToolsEngine(),
-      phoneControlEngine: ensurePhoneControlEngine(),
+      phoneControlEngine: ensurePhoneControlEngine(), stylesEngine: ensureStylesEngine(),
       onConnectorsChanged: (payload) => {
         if (payload?.id === 'telegram') applyTelegram();
         broadcastConnectorsChanged();

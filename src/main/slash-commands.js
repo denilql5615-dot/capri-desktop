@@ -32,7 +32,7 @@ const OUTPUT_STYLE_HINTS = Object.freeze({
 
 const INSTANT_COMMAND_IDS = new Set([
   'status', 'usage', 'quota', 'context', 'tasks', 'tools', 'phone', 'mcp', 'skills', 'reload-skills',
-  'plugins', 'hookify', 'connectors', 'docker',
+  'plugins', 'hookify', 'connectors', 'docker', 'styles', 'style', 'voice',
   'analyze', 'convert', 'transcribe', 'upscale',
   'doctor', 'storage', 'permissions', 'memory', 'help', 'find', 'free', 'today', 'mail',
   'clip', 'alta', 'agents', 'harness', 'nomad', 'web', 'tor', 'copy', 'export', 'insights', 'stop',
@@ -291,6 +291,13 @@ const PHONE_COMMANDS = Object.freeze([
     icon: 'smartphone',
     description: 'Телефон (Xiaomi 13T Pro) — Health Connect, Shizuku, Organic Maps, Fossify и Find My Device',
   }),
+]);
+
+// 2.7a: the Library of styles and writing voices (styles-engine.js)
+const STYLES_COMMANDS = Object.freeze([
+  CMD('styles', { aliases: ['стили', 'библиотека', 'library'], icon: 'palette', description: 'Библиотека: стили (бренд, личность, маскот) и образы письма' }),
+  CMD('style', { aliases: ['стиль'], icon: 'palette', argsHint: '<имя|выкл>', description: 'Включить стиль для всех чатов (или выключить); без имени — какой включён' }),
+  CMD('voice', { aliases: ['образ'], icon: 'type', argsHint: '<имя|выкл>', description: 'Включить образ письма — манеру, в которой пишет любая модель' }),
 ]);
 
 const DRAFT_PLUGINS = Object.freeze([
@@ -645,6 +652,7 @@ function buildRegistry(dynamicSkills = []) {
     ...CONNECTOR_COMMANDS.map((c) => c.id),
     ...TOOLS_COMMANDS.map((c) => c.id),
     ...PHONE_COMMANDS.map((c) => c.id),
+    ...STYLES_COMMANDS.map((c) => c.id),
   ]);
   const diskById = new Map();
   for (const sk of dynamicSkills) {
@@ -653,7 +661,7 @@ function buildRegistry(dynamicSkills = []) {
   }
 
   const items = [];
-  for (const c of [...BUILTIN_COMMANDS, ...PLUGIN_COMMANDS, ...CONNECTOR_COMMANDS, ...TOOLS_COMMANDS, ...PHONE_COMMANDS]) {
+  for (const c of [...BUILTIN_COMMANDS, ...PLUGIN_COMMANDS, ...CONNECTOR_COMMANDS, ...TOOLS_COMMANDS, ...PHONE_COMMANDS, ...STYLES_COMMANDS]) {
     if (c.id === 'genesis-techlead-reviewer' && diskById.has(c.id)) {
       const disk = diskById.get(c.id);
       items.push({ ...c, promptBody: disk.promptBody || '', skillPath: disk.skillPath || '' });
@@ -966,6 +974,7 @@ class SlashCommandEngine {
     this.dockerEngine = opts.dockerEngine || opts.deps?.dockerEngine || null;
     this.pcToolsEngine = opts.pcToolsEngine || opts.deps?.pcToolsEngine || null;
     this.phoneControlEngine = opts.phoneControlEngine || opts.deps?.phoneControlEngine || null;
+    this.stylesEngine = opts.stylesEngine || opts.deps?.stylesEngine || null;
     this.getConfig = typeof opts.getConfig === 'function' ? opts.getConfig : () => ({});
     this.saveConfig = typeof opts.saveConfig === 'function' ? opts.saveConfig : () => {};
     this.deps = opts.deps || {};
@@ -1527,6 +1536,32 @@ class SlashCommandEngine {
         };
       }
 
+      case 'styles':
+        return { handled: true, instant: true, action: 'open-styles', reply: 'Открываю Библиотеку стилей.' };
+
+      case 'style':
+      case 'voice': {
+        const eng = this.stylesEngine;
+        if (!eng) return { handled: true, instant: true, reply: 'Библиотека стилей недоступна.' };
+        const isStyle = id === 'style';
+        const what = isStyle ? 'Стиль' : 'Образ письма';
+        const items = isStyle ? eng.listStyles() : eng.listVoices();
+        const active = eng.getActive()[isStyle ? 'style' : 'voice'];
+        const arg = args.trim().replace(/^@/, '').toLowerCase();
+        if (!arg) {
+          const list = items.map((s) => `@${s.id} — ${s.name}`).join('\n') || 'пока ни одного';
+          return { handled: true, instant: true, action: isStyle ? 'open-styles' : undefined, reply: `${what}: ${active ? `@${active}` : 'выключен'}.\n${list}` };
+        }
+        if (['выкл', 'off', 'нет', 'none', '-'].includes(arg)) {
+          eng.setActive(isStyle ? { style: '' } : { voice: '' });
+          return { handled: true, instant: true, reply: `${what} выключен.` };
+        }
+        const hit = items.find((s) => s.id === arg || s.name.toLowerCase() === arg);
+        if (!hit) return { handled: true, instant: true, reply: `Нет такого: «${args.trim()}». Есть: ${items.map((s) => `@${s.id}`).join(', ') || 'ничего'}.` };
+        const res = eng.setActive(isStyle ? { style: hit.id } : { voice: hit.id });
+        return { handled: true, instant: true, reply: res.ok ? `${what} «${hit.name}» включён для всех чатов. Выключить: /${isStyle ? 'стиль' : 'образ'} выкл.` : res.error };
+      }
+
       case 'phone': {
         if (this.phoneControlEngine && typeof this.phoneControlEngine.getStatus === 'function') {
           const st = this.phoneControlEngine.getStatus();
@@ -2023,6 +2058,7 @@ module.exports = {
   CONNECTOR_COMMANDS,
   TOOLS_COMMANDS,
   PHONE_COMMANDS,
+  STYLES_COMMANDS,
   COMMAND_CATEGORIES,
   DRAFT_PLUGINS,
   DRAFT_CONNECTORS,

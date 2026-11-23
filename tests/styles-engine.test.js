@@ -225,3 +225,20 @@ test('library lists styles with cover and voice name', () => {
   assert.equal(lib.voices.length, 1);
   assert.equal(lib.types.mascot, 'маскот');
 });
+
+test('slash commands /стили, /стиль and /образ drive the active choice', async () => {
+  const { SlashCommandEngine } = require('../src/main/slash-commands');
+  const { engine: styles } = setup();
+  styles.saveStyle({ name: 'Claude' });
+  styles.saveVoice({ name: 'Голос' });
+  const slash = new SlashCommandEngine({ skillRoots: [], stylesEngine: styles });
+  assert.equal((await slash.run({ text: '/стили' })).action, 'open-styles');
+  assert.match((await slash.run({ text: '/стиль @claude' })).reply, /включён/);
+  assert.equal(styles.getActive().style, 'claude');
+  assert.match((await slash.run({ text: '/стиль' })).reply, /@claude/);
+  assert.match((await slash.run({ text: '/образ голос' })).reply, /включён/);
+  assert.equal(styles.getActive().voice, 'голос');
+  assert.match((await slash.run({ text: '/стиль нету' })).reply, /Нет такого/);
+  await slash.run({ text: '/стиль выкл' });
+  assert.equal(styles.getActive().style, '');
+});

@@ -5,6 +5,7 @@
 // text, never as markup: it can hold anything, a page's text she read out included.
 
 import { appendHubText } from './hub-links.js';
+import { openStylesLibrary } from './styles-library.js';
 import {
   attachSlashMenu,
   openCatalogModal,
@@ -649,6 +650,11 @@ async function executeSlashCommand(rawText, { confirm = false } = {}) {
 
   const act = normalizeSlashAction(result.action);
   const actType = act?.type || '';
+
+  if (actType === 'open-styles') {
+    openStylesLibrary();
+    return true;
+  }
 
   if (actType === 'open-catalog') {
     openCatalogModal({
