@@ -9,6 +9,7 @@ const SLUG_RE = /^[a-z0-9][a-z0-9_-]{1,40}$/;
 const MAX_LOCAL_SKILL_CHARS = 5500;
 const MAX_CLOUD_SKILL_CHARS = 14000;
 const MAX_INSTALL_FILE_BYTES = 512 * 1024;
+const AUTO_PICK_MIN_HITS = 2;
 const SOFT_LIMIT_TOKENS = 4000;
 
 const QUICK_TOGGLES = Object.freeze(['i-have-adhd', 'caveman', 'second-brain']);
@@ -347,6 +348,7 @@ function parseSkillFrontmatter(markdown) {
     name: String(meta.name || '').trim(),
     description: String(meta.description || '').trim(),
     category: String(meta.category || '').trim().toLowerCase(),
+    source: String(meta.source || '').trim().toLowerCase(),
     body,
   };
 }
@@ -420,7 +422,9 @@ function readSkillEntriesFromRoot(rootDir, isCustom = false) {
       continue;
     }
     const parsed = parseSkillFrontmatter(raw);
-    const id = normalizeSlug(parsed.name || entry.name);
+    // A Cyrillic name normalises to nothing: then the folder name is the id.
+    const fromName = normalizeSlug(parsed.name);
+    const id = isValidSlug(fromName) ? fromName : normalizeSlug(entry.name);
     if (!id) continue;
     out.push({
       id,
@@ -429,6 +433,7 @@ function readSkillEntriesFromRoot(rootDir, isCustom = false) {
       raw,
       parsed,
       isCustom: Boolean(isCustom),
+      files: listSkillFiles(path.join(rootDir, entry.name)),
     });
   }
   return out;
@@ -536,6 +541,145 @@ function scanPackSubSkills(packDir) {
   }
 
   return [...bySlug.values()];
+}
+
+// ---------------------------------------------------------------- 2.7b: attached files, auto-pick, /learn
+
+const SKILL_FILE_EXT = new Set(['.md', '.txt', '.json', '.csv', '.yaml', '.yml', '.xml', '.html']);
+const MAX_SKILL_FILES = 12;
+const MAX_ATTACH_BYTES = 512 * 1024;
+
+/** Text files that come with a skill (references, templates, examples), next to SKILL.md, two levels deep. */
+function listSkillFiles(dir) {
+  const out = [];
+  const walk = (cur, depth) => {
+    if (depth > 2 || out.length >= MAX_SKILL_FILES) return;
+    let entries;
+    try { entries = fs.readdirSync(cur, { withFileTypes: true }); } catch { return; }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const e of entries) {
+      if (out.length >= MAX_SKILL_FILES || e.name.startsWith('.') || e.name === 'node_modules') continue;
+      const full = path.join(cur, e.name);
+      if (e.isDirectory()) { walk(full, depth + 1); continue; }
+      if (depth === 0 && e.name === 'SKILL.md') continue;
+      if (!SKILL_FILE_EXT.has(path.extname(e.name).toLowerCase())) continue;
+      let size = 0;
+      try { size = fs.statSync(full).size; } catch { continue; }
+      if (size > MAX_ATTACH_BYTES) continue;
+      out.push({ rel: path.relative(dir, full).replace(/\\/g, '/'), path: full, size });
+    }
+  };
+  walk(dir, 0);
+  return out;
+}
+
+/** The skill's files as a prompt block within a char budget: every path is listed, contents go in while they fit. */
+function skillFilesBlock(skill, budget) {
+  const files = Array.isArray(skill?.files) ? skill.files : [];
+  if (!files.length || budget < 200) return '';
+  const parts = [`Файлы навыка /${skill.id} (${files.length}):`];
+  let left = budget - parts[0].length;
+  for (const f of files) {
+    let text = '';
+    try { text = fs.readFileSync(f.path, 'utf8'); } catch { continue; }
+    const head = `--- ${f.rel} ---`;
+    if (left < head.length + 80) { parts.push(`--- ${f.rel} (не влез, путь: ${f.path})`); continue; }
+    const room = left - head.length - 1;
+    const body = text.length > room ? `${text.slice(0, room - 20)}\n…(обрезано)` : text;
+    parts.push(`${head}\n${body}`);
+    left -= head.length + body.length + 2;
+  }
+  return parts.join('\n');
+}
+
+const AUTO_STOP = new Set(['сделай', 'сделать', 'можешь', 'нужно', 'чтобы', 'который', 'которые', 'этого', 'этот',
+  'пожалуйста', 'какой', 'какие', 'просто', 'давай', 'будет', 'всего', 'навык', 'skill', 'please', 'with', 'that',
+  'this', 'from', 'have', 'what', 'когда', 'потом', 'сейчас', 'очень', 'можно', 'надо', 'тебя', 'меня']);
+
+/** Rough stems for matching a request with a skill: Russian endings vary, so the first 5 letters of each word. */
+function matchStems(text) {
+  const out = new Set();
+  for (const w of String(text || '').toLowerCase().split(/[^a-zа-яё0-9]+/i)) {
+    if (w.length < 4 || AUTO_STOP.has(w)) continue;
+    out.add(w.slice(0, 5));
+  }
+  return out;
+}
+
+/** How well a request fits an own skill: distinct stems shared with its name, description and "when" list. */
+function autoPickScore(skill, reqStems) {
+  const target = matchStems(`${skill.name || ''} ${String(skill.id || '').replace(/[-_]/g, ' ')} ${skill.description || ''} ${skill.when || ''}`);
+  let hits = 0;
+  for (const st of reqStems) if (target.has(st)) hits += 1;
+  return hits;
+}
+
+const LEARN_SYSTEM = [
+  'Ты превращаешь удачно решённую задачу из диалога в переиспользуемый навык (рецепт) для ассистента.',
+  'Бери только то, что реально было в диалоге: шаги, которые сработали, и ошибки, на которых споткнулись.',
+  'Обобщи: убери частные имена файлов, даты и личные данные, оставь сам приём. Пиши по-русски, коротко.',
+  'Ответь ТОЛЬКО JSON-объектом без пояснений:',
+  '{"name":"Короткое имя","slug":"latin-slug","description":"Одна фраза: что делает и когда звать",',
+  '"when":["признак задачи"],"steps":["шаг"],"pitfalls":["ловушка и как обойти"],"check":["как проверить результат"]}',
+].join('\n');
+
+/** The tail of a dialogue as plain text for /learn. */
+function learnTranscript(history = [], maxChars = 12000) {
+  const rows = (Array.isArray(history) ? history : [])
+    .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && String(m.content || '').trim());
+  const lines = [];
+  let used = 0;
+  for (let i = rows.length - 1; i >= 0 && used < maxChars; i -= 1) {
+    const line = `${rows[i].role === 'user' ? 'Пользователь' : 'Ассистент'}: ${String(rows[i].content).trim()}`.slice(0, 3000);
+    lines.unshift(line);
+    used += line.length;
+  }
+  return lines.join('\n\n').slice(-maxChars);
+}
+
+/** The model's JSON (maybe wrapped in prose or a code fence) as a clean recipe, or null. */
+function parseLearned(text) {
+  const raw = String(text || '');
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  let obj;
+  try { obj = JSON.parse(raw.slice(start, end + 1)); } catch { return null; }
+  const list = (v) => (Array.isArray(v) ? v : (v ? [v] : []))
+    // Models often number the items themselves; the body numbers them again.
+    .map((x) => String(x || '').replace(/\s+/g, ' ').trim().replace(/^(?:\d+[.)]|[-*•])\s+/, '')).filter(Boolean).slice(0, 12);
+  const name = String(obj.name || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  const steps = list(obj.steps);
+  if (!name || !steps.length) return null;
+  return {
+    name,
+    slug: normalizeSlug(obj.slug),
+    description: String(obj.description || '').replace(/\s+/g, ' ').trim().slice(0, 200),
+    when: list(obj.when),
+    steps,
+    pitfalls: list(obj.pitfalls),
+    check: list(obj.check),
+  };
+}
+
+function learnedBody(r) {
+  const sec = (title, items, numbered = false) => (items.length
+    ? [`## ${title}`, ...items.map((x, i) => (numbered ? `${i + 1}. ${x}` : `- ${x}`)), ''] : []);
+  return [
+    `# ${r.name}`, '', r.description, '',
+    ...sec('Когда применять', r.when),
+    ...sec('Шаги', r.steps, true),
+    ...sec('Подводные камни', r.pitfalls),
+    ...sec('Проверка результата', r.check),
+  ].join('\n').trim();
+}
+
+const RU_LAT = { а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y', к: 'k', л: 'l',
+  м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'sch',
+  ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya' };
+
+function latinSlug(text) {
+  return normalizeSlug(String(text || '').toLowerCase().replace(/[а-яё]/g, (c) => RU_LAT[c] ?? '')).slice(0, 40).replace(/[-_]+$/, '');
 }
 
 function tokenizeForMatch(text) {
@@ -693,6 +837,9 @@ class SkillsEngine {
         subCount: 0,
         subSkills: [],
         isCustom: entry.isCustom,
+        learned: entry.parsed.source === 'learned',
+        files: entry.files || [],
+        when: (/## Когда применять\r?\n([\s\S]*?)(?:\r?\n## |$)/.exec(fullBody)?.[1] || '').slice(0, 400),
         isBuiltInMemo: false,
         stageNote: STAGE_NOTES[id] || null,
       });
@@ -852,7 +999,12 @@ class SkillsEngine {
       subCount: skill.subCount,
       isCustom: skill.isCustom,
       isBuiltInMemo: skill.isBuiltInMemo,
-      stageNote: skill.stageNote,
+      learned: Boolean(skill.learned),
+      filesCount: skill.files?.length || 0,
+      // The menu shows stageNote as a badge: own skills say whether /learn made them and how many files they carry.
+      stageNote: skill.stageNote || (skill.isCustom && (skill.learned || skill.files?.length)
+        ? [skill.learned ? 'Выучен' : 'Свой', skill.files?.length ? `файлов: ${skill.files.length}` : ''].filter(Boolean).join(' · ')
+        : null),
       tokens: skill.tokens,
       alwaysOnTokens: skill.alwaysOnTokens,
     };
@@ -979,9 +1131,9 @@ function compactIndexDesc(desc) {
       }
     }
 
-    const explicitBlocks = [];
     const explicitCap = isCloud ? MAX_CLOUD_SKILL_CHARS : MAX_LOCAL_SKILL_CHARS;
     const seenExplicit = new Set();
+    const chosen = [];
 
     for (const rawSlug of Array.isArray(explicitSkills) ? explicitSkills : []) {
       const slug = normalizeSlug(rawSlug);
@@ -996,21 +1148,52 @@ function compactIndexDesc(desc) {
         continue;
       }
       if (!dec.enabled) continue;
-
       activeSkillIds.add(slug);
+      chosen.push(raw);
+    }
 
+    // 2.7b auto-pick: with no skill called by hand, own skills (made by the user or by /learn) whose
+    // description fits the request come in by themselves. Built-in ones stay in the index only.
+    const autoIds = [];
+    if (!chosen.length && userText && this.getConfig()?.skillsAutoPick !== false) {
+      const reqStems = matchStems(userText);
+      if (reqStems.size >= 2) {
+        const scored = decorated
+          .filter((d) => d.enabled && !d.pausedInMode && !activeSkillIds.has(d.id) && byId.get(d.id)?.isCustom && !byId.get(d.id)?.isPack)
+          .map((d) => ({ raw: byId.get(d.id), score: autoPickScore(byId.get(d.id), reqStems) }))
+          .filter((x) => x.score >= AUTO_PICK_MIN_HITS)
+          .sort((a, b) => b.score - a.score || a.raw.id.localeCompare(b.raw.id))
+          .slice(0, isCloud ? 2 : 1);
+        for (const { raw } of scored) {
+          activeSkillIds.add(raw.id);
+          autoIds.push(raw.id);
+          chosen.push(raw);
+        }
+      }
+    }
+
+    // Stacking: several skills share one budget, so three skills never take three times the context.
+    const perSkill = chosen.length ? Math.max(1200, Math.floor(explicitCap / chosen.length)) : 0;
+    const blocks = chosen.map((raw) => {
       if (raw.isPack) {
         const matched = matchPackSubSkills(raw, userText, 2);
-        const perSubCap = Math.max(1200, Math.floor((explicitCap - 200) / Math.max(1, matched.length)));
+        const perSubCap = Math.max(600, Math.floor((perSkill - 200) / Math.max(1, matched.length)));
         const packParts = matched.map((sub) => (
           `## ${raw.id} / ${sub.slug}\n${String(sub.body || sub.description || '').trim().slice(0, perSubCap)}`
         ));
-        explicitBlocks.push(`Навык /${raw.id} (подобрано по запросу):\n${packParts.join('\n\n')}`.slice(0, explicitCap));
-      } else {
-        const fullText = String(raw.body || raw.alwaysOnPrompt || raw.description || '').trim().slice(0, explicitCap);
-        explicitBlocks.push(`Режим ${raw.id} (/${raw.id}):\n${fullText}`);
+        return `Навык /${raw.id} (подобрано по запросу):\n${packParts.join('\n\n')}`.slice(0, perSkill);
       }
-    }
+      const hasFiles = Array.isArray(raw.files) && raw.files.length > 0;
+      const bodyCap = hasFiles ? Math.floor(perSkill * 0.6) : perSkill;
+      const fullText = String(raw.body || raw.alwaysOnPrompt || raw.description || '').trim().slice(0, bodyCap);
+      const files = hasFiles ? skillFilesBlock(raw, perSkill - fullText.length - 40) : '';
+      return [`Режим ${raw.id} (/${raw.id}):\n${fullText}`, files].filter(Boolean).join('\n\n');
+    });
+    const explicitBlocks = blocks.slice(0, chosen.length - autoIds.length);
+    const autoBlocks = blocks.slice(chosen.length - autoIds.length);
+    const stackNote = explicitBlocks.length > 1
+      ? 'Навыки сложены в порядке вызова; если их правила спорят, главнее тот, что вызван раньше.\n\n'
+      : '';
 
     const alwaysOnText = alwaysOnBlocks.length
       ? `[Постоянные навыки]\n${alwaysOnBlocks.join('\n\n')}`
@@ -1019,22 +1202,28 @@ function compactIndexDesc(desc) {
       ? `[Доступные навыки (вызов через /<имя>)]\n${indexLines.join('\n')}`
       : '';
     const explicitText = explicitBlocks.length
-      ? `[Вызванные навыки]\n${explicitBlocks.join('\n\n')}`
+      ? `[Вызванные навыки]\n${stackNote}${explicitBlocks.join('\n\n')}`
+      : '';
+    const autoText = autoBlocks.length
+      ? `[Подобранные навыки — свои, по описанию; применяй, если подходят к запросу]\n${autoBlocks.join('\n\n')}`
       : '';
 
-    const text = [alwaysOnText, indexText, explicitText].filter(Boolean).join('\n\n');
+    const text = [alwaysOnText, indexText, explicitText, autoText].filter(Boolean).join('\n\n');
 
     return {
       text,
       alwaysOnText,
       indexText,
       explicitText,
+      autoText,
+      autoSkillIds: autoIds,
       activeSkillIds: [...activeSkillIds],
       pausedSkillIds: [...pausedSkillIds],
       tokens: {
         alwaysOn: estimateTokens(alwaysOnText),
         index: estimateTokens(indexText),
         explicit: estimateTokens(explicitText),
+        auto: estimateTokens(autoText),
         total: estimateTokens(text),
       },
     };
@@ -1048,7 +1237,7 @@ function compactIndexDesc(desc) {
     return this.customSkillsDir;
   }
 
-  createSkill({ name, slug, category = 'system', description = '', body = '', alwaysOn = false, mode = 'chat', ephemeral = false } = {}) {
+  createSkill({ name, slug, category = 'system', description = '', body = '', alwaysOn = false, source = '', mode = 'chat', ephemeral = false } = {}) {
     const cleanName = String(name || '').replace(/[\r\n]+/g, ' ').trim();
     const explicitSlug = typeof slug === 'string' ? slug.trim().toLowerCase() : '';
     const resolvedSlug = explicitSlug ? explicitSlug : normalizeSlug(cleanName);
@@ -1081,6 +1270,7 @@ function compactIndexDesc(desc) {
       `name: ${yamlSafe(cleanName || resolvedSlug)}`,
       `description: ${yamlSafe(cleanDesc)}`,
       `category: ${yamlSafe(normCategory)}`,
+      ...(source ? [`source: ${yamlSafe(String(source).toLowerCase())}`] : []),
       '---',
       '',
       cleanBody,
@@ -1105,6 +1295,97 @@ function compactIndexDesc(desc) {
       path: file,
       ...catalog,
     };
+  }
+
+  /** A free slug for a new own skill: never overwrites an existing skill of any kind. */
+  _freeSlug(base) {
+    const taken = new Set(this.getSkills(false).map((s) => s.id));
+    const root = (isValidSlug(base) ? base : 'learned-skill').slice(0, 36);
+    if (!taken.has(root) && !fs.existsSync(path.join(this._requireCustomDir(), root))) return root;
+    for (let i = 2; i < 100; i += 1) {
+      const cand = `${root}-${i}`;
+      if (!taken.has(cand) && !fs.existsSync(path.join(this._requireCustomDir(), cand))) return cand;
+    }
+    return `${root}-${Date.now().toString(36)}`;
+  }
+
+  /** The request /learn sends to the local model. */
+  learnMessages({ history = [], hint = '' } = {}) {
+    const transcript = learnTranscript(history);
+    return [
+      { role: 'system', content: LEARN_SYSTEM },
+      {
+        role: 'user',
+        content: [
+          hint ? `Что именно закрепить: ${hint}` : 'Закрепи главный удачный приём из этого диалога.',
+          '',
+          '<<<диалог',
+          transcript,
+          'диалог>>>',
+        ].join('\n'),
+      },
+    ];
+  }
+
+  /**
+   * /learn: a successful task from the chat becomes an own skill (SKILL.md with source "learned").
+   * `chat(messages)` must be a local model: the dialogue may hold private things. Isolated modes refuse.
+   */
+  async learnFromHistory({ history = [], hint = '', chat, mode = 'chat', ephemeral = false } = {}) {
+    const normMode = String(mode || 'chat').toLowerCase();
+    if (ephemeral === true || ['private', 'nsfw', 'tor'].includes(normMode)) {
+      return { ok: false, error: 'В изолированном режиме навыки из диалога не сохраняю.' };
+    }
+    if (typeof chat !== 'function') return { ok: false, error: 'Нет локальной модели для /learn.' };
+    if (!learnTranscript(history).trim()) return { ok: false, error: 'Диалог пуст — учиться не на чем.' };
+    let reply;
+    try {
+      reply = await chat(this.learnMessages({ history, hint }));
+    } catch (err) {
+      return { ok: false, error: `Модель не ответила: ${err?.message || err}` };
+    }
+    const recipe = parseLearned(typeof reply === 'string' ? reply : reply?.content || reply?.text || '');
+    if (!recipe) return { ok: false, error: 'Модель не собрала рецепт (нет имени или шагов). Попробуй /learn с подсказкой, что закрепить.' };
+    const slug = this._freeSlug(recipe.slug || latinSlug(recipe.name));
+    const res = this.createSkill({
+      name: recipe.name,
+      slug,
+      description: recipe.description || `Выученный навык: ${recipe.name}`,
+      body: learnedBody(recipe),
+      category: 'system',
+      source: 'learned',
+      mode,
+      ephemeral,
+    });
+    if (!res.ok) return res;
+    return { ok: true, id: slug, name: recipe.name, description: recipe.description, path: res.path, recipe };
+  }
+
+  /** Copies text files into an own skill's references/ folder; they reach the model when the skill is used. */
+  attachFiles({ id, paths = [] } = {}) {
+    const skill = this.getSkills(false).find((s) => s.id === normalizeSlug(id));
+    if (!skill) return { ok: false, error: `Навыка /${id} нет.` };
+    if (!skill.isCustom) return { ok: false, error: `/${skill.id} — встроенный навык, файлы прикладываются только к своим.` };
+    const dir = path.join(path.dirname(skill.skillPath), 'references');
+    const added = [];
+    const skipped = [];
+    for (const src of Array.isArray(paths) ? paths : []) {
+      const name = path.basename(String(src || ''));
+      const ext = path.extname(name).toLowerCase();
+      let size = -1;
+      try { size = fs.statSync(src).size; } catch {}
+      if (!SKILL_FILE_EXT.has(ext)) { skipped.push(`${name}: не текстовый файл`); continue; }
+      if (size < 0 || size > MAX_ATTACH_BYTES) { skipped.push(`${name}: нет файла или больше 512 КБ`); continue; }
+      fs.mkdirSync(dir, { recursive: true });
+      let target = path.join(dir, name);
+      for (let i = 2; fs.existsSync(target); i += 1) target = path.join(dir, `${path.basename(name, ext)}-${i}${ext}`);
+      fs.copyFileSync(src, target);
+      added.push(path.basename(target));
+    }
+    this.reload();
+    const fresh = this.getSkills(false).find((s) => s.id === skill.id);
+    if (fresh && (fresh.files?.length || 0) >= MAX_SKILL_FILES) skipped.push(`в подсказку попадут первые ${MAX_SKILL_FILES} файлов`);
+    return { ok: added.length > 0, added, skipped, files: fresh?.files || [], error: added.length ? undefined : (skipped[0] || 'Файлы не выбраны.') };
   }
 
   installSkill({ sourcePath, markdown, slug, category = 'system', confirm = false, mode = 'chat', ephemeral = false } = {}) {
@@ -1225,4 +1506,9 @@ module.exports = {
   evaluateModePause,
   defaultStandaloneRoots,
   scanPackSubSkills,
+  parseLearned,
+  learnedBody,
+  latinSlug,
+  matchStems,
+  listSkillFiles,
 };
