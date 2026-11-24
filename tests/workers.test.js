@@ -9,7 +9,7 @@ test('workerChain and runWorker cascade Claude -> Codex -> Antigravity by tier (
     'claude', 'codex', 'gemini-4-hydrogen-medium', 'claude-sonnet-5-5-medium', 'gemini-3.8-flash-high',
   ]);
   assert.deepStrictEqual(workerChain('claude', 'глубокий разбор', 'deep'), [
-    'claude', 'codex', 'gemini-4-argon-high', 'claude-opus-5-5-high', 'gemini-4-hydrogen-xhigh', 'gemini-3.8-flash-high',
+    'claude', 'codex', 'gemini-4-carbon-high', 'gemini-4-argon-high', 'claude-opus-5-5-high', 'gemini-4-hydrogen-xhigh', 'gemini-3.8-flash-high',
   ]);
   assert.deepStrictEqual(workerChain('gemini', 'Опус, сделай таблицу'), [
     'claude-opus-5-5-medium', 'gemini-4-hydrogen-medium', 'claude-sonnet-5-5-medium', 'gemini-3.8-flash-high',
@@ -42,8 +42,12 @@ test('workerChain and runWorker cascade Claude -> Codex -> Antigravity by tier (
 
 test('Antigravity: the tier picks the model; a model named at the start goes first', () => {
   assert.strictEqual(agyModel('сделай', 'routine'), 'gemini-4-hydrogen-medium');
-  assert.strictEqual(agyModel('сделай', 'deep'), 'gemini-4-argon-high');
+  assert.strictEqual(agyModel('сделай', 'deep'), 'gemini-4-carbon-high');
   assert.strictEqual(agyModel('сделай', 'mechanical'), 'gemini-3.8-flash-medium');
+  assert.strictEqual(route('Карбон, ответь'), 'gemini');
+  assert.strictEqual(agyModel('Карбон, быстро', 'mechanical'), 'gemini-4-carbon-low');
+  assert.strictEqual(agyModel('Карбон, ответь'), 'gemini-4-carbon-medium');
+  assert.strictEqual(agyModel('Карбон, разбери', 'deep'), 'gemini-4-carbon-high');
   assert.strictEqual(agyModel('Аргон, ответь'), 'gemini-4-argon-medium');
   assert.strictEqual(agyModel('Аргон, разбери', 'deep'), 'gemini-4-argon-high');
   assert.strictEqual(agyModel('Хидроген, перепиши модуль', 'deep'), 'gemini-4-hydrogen-xhigh');
@@ -139,6 +143,9 @@ test('skillHints and cheatsheet include domain references, anti-slop rules, and 
   assert.match(cheatsheet(), /NAME\.pdf\.md/);
   assert.match(cheatsheet(), /NAME\.png\.svg/);
   assert.strictEqual(WORKER_LABELS['gemini-cli-free'], 'Gemini CLI');
+  assert.strictEqual(WORKER_LABELS['gemini-4-carbon-low'], 'Gemini Carbon (low)');
+  assert.strictEqual(WORKER_LABELS['gemini-4-carbon-medium'], 'Gemini Carbon');
+  assert.strictEqual(WORKER_LABELS['gemini-4-carbon-high'], 'Gemini Carbon (high)');
   assert.strictEqual(WORKER_LABELS['gemini-4-hydrogen-xhigh'], 'Gemini Hydrogen (xhigh)');
   assert.strictEqual(WORKER_LABELS['claude-opus-5-5-medium'], 'Claude Opus 5.5');
 });

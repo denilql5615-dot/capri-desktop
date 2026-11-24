@@ -3,10 +3,10 @@
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 
-function quotaGroup(agent, model) {
-  if (agent !== 'gemini') return agent;
-  if (/^gemini-/.test(model)) return 'agy-gemini';
-  return 'agy-third-party';
+function quotaGroup(agent, model = '') {
+  if (!['gemini', 'antigravity', 'agy'].includes(agent)) return agent;
+  if (/claude|opus|sonnet|gpt|oss/i.test(model)) return 'agy-third-party';
+  return 'agy-gemini';
 }
 
 function normalizeWindow(remaining, minutes, resetsAt) {

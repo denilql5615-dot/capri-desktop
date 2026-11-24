@@ -4,7 +4,7 @@
 // 2.8b: Antigravity CLI's status line. A short hidden `agy` start (quota-agy.js) passes this script as its
 // status line for that one session (--settings, never saved): agy pipes a JSON with its quota pools, we keep
 // only remaining fractions and reset times in ~/.capri/quota/agy-statusline.json.
-// Pools: gemini-5h / gemini-weekly (Neon, Hydrogen, Flash), gemini-argon-wtu-weekly (Argon),
+// Pools: gemini-5h / gemini-weekly (Carbon, Neon, Hydrogen, Argon, Flash),
 // 3p-5h / 3p-weekly (Claude Opus/Sonnet and GPT inside Antigravity).
 
 const fs = require('fs');

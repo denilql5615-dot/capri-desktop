@@ -7,13 +7,16 @@ const assert = require('node:assert/strict');
 const { QuotaHub, GROUPS, groupFor, toBars } = require('../src/main/quota-hub');
 const { snapshot: statusSnapshot, line: statusLine } = require('../scripts/claude-statusline');
 
-test('groups: Argon shares the Neon/Hydrogen pool; Opus/Sonnet in Antigravity is its own group', () => {
+test('groups: Carbon and Argon share the Neon/Hydrogen pool; Opus/Sonnet in Antigravity is its own group', () => {
   const byId = Object.fromEntries(GROUPS.map((g) => [g.id, g]));
   assert.equal(byId['agy-argon'], undefined);
-  assert.equal(byId['agy-gemini'].label, 'Antigravity Neon/Hydrogen/Argon');
+  assert.equal(byId['agy-gemini'].label, 'Antigravity Carbon/Neon/Hydrogen/Argon');
   assert.equal(byId['agy-third-party'].label, 'Antigravity Opus/Sonnet');
   assert.equal(groupFor('claude'), 'claude');
   assert.equal(groupFor('codex', 'gpt-6.2-sol'), 'codex');
+  assert.equal(groupFor('gemini', 'gemini-4-carbon-low'), 'agy-gemini');
+  assert.equal(groupFor('gemini', 'gemini-4-carbon-medium'), 'agy-gemini');
+  assert.equal(groupFor('gemini', 'gemini-4-carbon-high'), 'agy-gemini');
   assert.equal(groupFor('gemini', 'gemini-4-argon-high'), 'agy-gemini');
   assert.equal(groupFor('gemini', 'claude-opus-5-5'), 'agy-third-party');
   assert.equal(groupFor('gemini', 'gemini-4-hydrogen'), 'agy-gemini');
@@ -36,7 +39,7 @@ test('bars: micro-labels, order, seconds or ms resets, a rolled-over window read
   assert.equal(unknownReset.remaining, 40);
   assert.equal(unknownReset.resetsAt, null);
   assert.deepEqual(toBars('agy-gemini', [{ remaining: 50, minutes: 300 }, { remaining: 70, minutes: 10080 }], now).map((b) => b.label),
-    ['Antigravity Neon/Hydrogen/Argon 5 часов', 'Antigravity Neon/Hydrogen/Argon Неделя']);
+    ['Antigravity Carbon/Neon/Hydrogen/Argon 5 часов', 'Antigravity Carbon/Neon/Hydrogen/Argon Неделя']);
 });
 
 function hub({ shown = [] } = {}) {

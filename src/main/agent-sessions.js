@@ -22,6 +22,9 @@ const MODELS = {
     ['', 'Codex · По умолчанию (GPT-6.2 Sol)'],
   ],
   gemini: [
+    ['gemini-4-carbon-low', 'Antigravity · Gemini 4 Carbon (Low)'],
+    ['gemini-4-carbon-medium', 'Antigravity · Gemini 4 Carbon (Medium)'],
+    ['gemini-4-carbon-high', 'Antigravity · Gemini 4 Carbon (High)'],
     ['gemini-4-neon-medium', 'Antigravity · Gemini 4 Neon (Medium)'],
     ['gemini-4-neon-high', 'Antigravity · Gemini 4 Neon (High)'],
     ['gemini-4-neon-xhigh', 'Antigravity · Gemini 4 Neon (Extra High)'],
@@ -182,6 +185,20 @@ const CATALOG = [
       { id: 'medium', label: 'Medium', model: '' },
       { id: 'high', label: 'High', model: '' },
       { id: 'xhigh', label: 'Extra High', model: '' },
+    ],
+  },
+  {
+    provider: 'gemini',
+    providerLabel: 'Antigravity',
+    id: 'agy-gemini-4-carbon',
+    title: 'Antigravity · Gemini 4 Carbon',
+    model: 'gemini-4-carbon-medium',
+    actualModel: 'gemini-4-carbon-medium',
+    defaultEffort: 'medium',
+    efforts: [
+      { id: 'low', label: 'Low', model: 'gemini-4-carbon-low' },
+      { id: 'medium', label: 'Medium', model: 'gemini-4-carbon-medium' },
+      { id: 'high', label: 'High', model: 'gemini-4-carbon-high' },
     ],
   },
   {
@@ -487,7 +504,8 @@ class AgentSessions {
 
   create(agent) {
     if (!Object.hasOwn(MODELS, agent)) throw new Error('Неизвестный агент.');
-    const session = { id: randomUUID(), agent, model: MODELS[agent][0][0], updated: Date.now(), messages: [] };
+    const defaultModel = agent === 'gemini' ? 'gemini-4-carbon-medium' : MODELS[agent][0][0];
+    const session = { id: randomUUID(), agent, model: defaultModel, updated: Date.now(), messages: [] };
     this.save([session, ...this.sessions]);
     return session.id;
   }

@@ -12,7 +12,7 @@ const { OUT } = require('../../scripts/agy-statusline');
 
 const SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'agy-statusline.js');
 
-/** The status line snapshot as hub windows per Antigravity group. A disabled pool window is left out. */
+/** The status line snapshot as hub windows per Antigravity group (Carbon/Neon/Hydrogen/Argon/Flash share agy-gemini). A disabled pool window is left out. */
 function poolsToGroups(snap) {
   const p = snap?.pools || {};
   const win = (key, minutes) => {

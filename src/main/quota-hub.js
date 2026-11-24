@@ -8,8 +8,8 @@
 const GROUPS = Object.freeze([
   { id: 'claude', label: 'Claude', kinds: ['5h', 'week'] },
   { id: 'codex', label: 'Codex', kinds: ['5h', 'week'] },
-  // 2026-11-24: Google moved Argon into the shared Neon/Hydrogen pool (no separate weekly Argon quota)
-  { id: 'agy-gemini', label: 'Antigravity Neon/Hydrogen/Argon', kinds: ['5h', 'week'] },
+  // 2026-11-24: Carbon, Neon, Hydrogen, Argon and Flash share one Antigravity Gemini pool
+  { id: 'agy-gemini', label: 'Antigravity Carbon/Neon/Hydrogen/Argon', kinds: ['5h', 'week'] },
   { id: 'agy-third-party', label: 'Antigravity Opus/Sonnet', kinds: ['5h', 'week'] },
   { id: 'web-gemini', label: 'Web Gemini', kinds: ['5h', 'week'] },
 ]);

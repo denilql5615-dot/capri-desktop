@@ -102,6 +102,9 @@ test('cloud catalog matches HZ-1 target table, resolves default Codex to gpt-6.2
   const codexKeys = MODELS.codex.map(([k]) => k);
   assert.deepEqual(codexKeys, ['gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-6.1-terra', '']);
   const agyKeys = MODELS.gemini.map(([k]) => k);
+  assert.ok(agyKeys.includes('gemini-4-carbon-low'));
+  assert.ok(agyKeys.includes('gemini-4-carbon-medium'));
+  assert.ok(agyKeys.includes('gemini-4-carbon-high'));
   assert.ok(agyKeys.includes('gemini-4-neon-high'));
   assert.ok(agyKeys.includes('gemini-4-argon-low'));
   assert.ok(agyKeys.includes('gemini-4-hydrogen-high'));

@@ -3,7 +3,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { quotaGroup, codexWindows, claudeWindow, parseAgyStatusLineQuota } = require('../src/main/agent-quotas');
 
-test('Antigravity: Argon shares the Gemini pool, Claude/GPT are separate', () => {
+test('Antigravity: Carbon and Argon share the Gemini pool, Claude/GPT are separate', () => {
+  assert.equal(quotaGroup('gemini', 'gemini-4-carbon-low'), 'agy-gemini');
+  assert.equal(quotaGroup('gemini', 'gemini-4-carbon-medium'), 'agy-gemini');
+  assert.equal(quotaGroup('gemini', 'gemini-4-carbon-high'), 'agy-gemini');
   assert.equal(quotaGroup('gemini', 'gemini-4-argon-medium'), 'agy-gemini');
   assert.equal(quotaGroup('gemini', 'gemini-pro-orchestrator-g1-pro'), 'agy-gemini');
   assert.equal(quotaGroup('gemini', 'gemini-3.8-flash-high'), 'agy-gemini');

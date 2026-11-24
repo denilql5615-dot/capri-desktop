@@ -42,6 +42,9 @@ test('CONTEXT_LIMITS exposes exact verified limits for local and cloud models', 
   assert.equal(CONTEXT_LIMITS['claude-haiku-5-5'], 1000000);
 
   // Antigravity & Gemini Web
+  assert.equal(CONTEXT_LIMITS['gemini-4-carbon-low'], 1048576);
+  assert.equal(CONTEXT_LIMITS['gemini-4-carbon-medium'], 1048576);
+  assert.equal(CONTEXT_LIMITS['gemini-4-carbon-high'], 1048576);
   assert.equal(CONTEXT_LIMITS['gemini-4-neon-high'], 1048576);
   assert.equal(CONTEXT_LIMITS['gemini-4-argon-high'], 1048576);
   assert.equal(CONTEXT_LIMITS['gemini-4-hydrogen-xhigh'], 1048576);

@@ -50,6 +50,9 @@ const CONTEXT_LIMITS = Object.freeze({
   'claude-haiku-5-5': 1000000,
 
   // Antigravity (Gemini + Claude 5.5 Vertex reserve)
+  'gemini-4-carbon-low': 1048576,
+  'gemini-4-carbon-medium': 1048576,
+  'gemini-4-carbon-high': 1048576,
   'gemini-4-neon-low': 1048576,
   'gemini-4-neon-medium': 1048576,
   'gemini-4-neon-high': 1048576,

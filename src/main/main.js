@@ -528,7 +528,15 @@ function startQuotaActivity(group, scope) {
   const hub = ensureQuotaHub();
   const end = hub.track(group, scope);
   if (group !== 'web-gemini') void hub.refresh({ groups: [group] }).catch(() => {});
-  return end;
+  let finished = false;
+  return () => {
+    if (finished) return;
+    finished = true;
+    end();
+    if (group && group !== 'claude' && group !== 'web-gemini') {
+      void hub.refresh({ force: true, groups: [group] }).catch(() => {});
+    }
+  };
 }
 
 const agyQuotaFile = () => path.join(app.getPath('userData'), 'antigravity-quota.json');
@@ -1998,7 +2006,7 @@ function runtimeInventoryNote({ isolated = false, ephemeral = false, privateMode
   ].join(', ');
   const cloudList = isolated
     ? 'отключены в текущем изолированном режиме'
-    : 'Claude (Opus 5.5, Sonnet 5.5, Haiku 5.5), Codex (GPT-6.2 Sol, GPT-6.2 Astra, GPT-6.1 Terra), Antigravity (Gemini 4 Neon, Gemini 4 Argon, Gemini 4 Hydrogen, Gemini 3.8 Flash, резерв Claude 5.5, Оркестратор), Gemini Web (Neon/Hydrogen · Задачи)';
+    : 'Claude (Opus 5.5, Sonnet 5.5, Haiku 5.5), Codex (GPT-6.2 Sol, GPT-6.2 Astra, GPT-6.1 Terra), Antigravity (Gemini 4 Carbon, Gemini 4 Neon, Gemini 4 Argon, Gemini 4 Hydrogen, Gemini 3.8 Flash, резерв Claude 5.5, Оркестратор), Gemini Web (Neon/Hydrogen · Задачи)';
   const vaultState = privateMode
     ? 'Приватный Vault (строго локально)'
     : (ephemeral || localMode === 'nsfw' || useVault === false ? 'выключен для этого чата (Obsidian off)' : 'включён');
@@ -4804,7 +4812,9 @@ function registerIpc() {
   ipcMain.handle('agents:send', async (event, { id, agent, model, effort, text, retry, files, history, skills }) => {
     const sessions = hubSessions(event);
     const promptText = retry === true ? text : await withUploadedFiles(id, text, files);
-    return sessions.send(id, model, promptText, retry === true, false, false, { effort, agent, history, skills });
+    const targetAgent = (typeof agent === 'string' && agent.trim()) ? agent.trim() : sessions.list().find((s) => s.id === id)?.agent;
+    return withQuota(groupFor(targetAgent, model), 'companion', () =>
+      sessions.send(id, model, promptText, retry === true, false, false, { effort, agent, history, skills }));
   });
   ipcMain.handle('agents:pick-file', async (event) => {
     hubSessions(event);

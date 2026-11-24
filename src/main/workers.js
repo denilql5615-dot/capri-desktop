@@ -17,21 +17,21 @@ const { claudeActivity, codexActivity, agyActivity } = require('./cloud-activity
 // how speech-to-text spells them too; a letter just before is another word ("телеклод")
 const CLAUDE_RE = /(?<![а-яёa-z])(клод|клауд|клоуд|claude|антропик|anthropic)/i;
 const CODEX_RE = /(?<![а-яёa-z])(кодекс|кодэкс|codex)/i;
-const GEMINI_RE = /(?<![а-яёa-z])(гемини|джемини|gemini|аргон|argon|хидроген|гидроген|hydrogen|антиграв|antigravity)/i;
+const GEMINI_RE = /(?<![а-яёa-z])(гемини|джемини|gemini|карбон|carbon|аргон|argon|хидроген|гидроген|hydrogen|антиграв|antigravity)/i;
 // a model of Antigravity named at the start ("Опус, …", "Хидроген: …"): that one, first
-const AGY_RESERVE_RE = /^\s*(опус|opus|соннет|сонет|sonnet|флеш|флэш|flash|хидроген|гидроген|hydrogen|аргон|argon|осс|oss|gpt-oss)(?=\s*[,：:]|\s*$)/i;
+const AGY_RESERVE_RE = /^\s*(опус|opus|соннет|сонет|sonnet|флеш|флэш|flash|хидроген|гидроген|hydrogen|карбон|carbon|аргон|argon|осс|oss|gpt-oss)(?=\s*[,：:]|\s*$)/i;
 
 // Antigravity by how hard the task is (router tiers; the role map: vault GENESIS/Модели — роли агентов):
 //   mechanical — Flash for errands, GPT-OSS as the cheap reserve;
 //   routine    — Hydrogen (everyday code and agent work, fast), Claude Sonnet in Antigravity as a second Claude quota;
-//   complex    — Hydrogen high (its coding beats Argon's at the same cost), Opus, then Argon;
-//   deep       — Argon high (hardest reasoning and research, fewest made-up facts), Opus high, Hydrogen xhigh.
+//   complex    — Hydrogen high (its coding beats Argon's at the same cost), Opus, Carbon medium, then Argon;
+//   deep       — Carbon high (top flagship reasoning), Argon high, Opus high, Hydrogen xhigh.
 // Flash closes every chain: the last resort when the rest are out.
 const AGY_BY_TIER = {
   mechanical: ['gemini-3.8-flash-medium', 'gemini-4-hydrogen-low', 'gpt-oss-120b-medium'],
   routine: ['gemini-4-hydrogen-medium', 'claude-sonnet-5-5-medium', 'gemini-3.8-flash-high'],
-  complex: ['gemini-4-hydrogen-high', 'claude-opus-5-5-medium', 'gemini-4-argon-medium', 'gemini-3.8-flash-high'],
-  deep: ['gemini-4-argon-high', 'claude-opus-5-5-high', 'gemini-4-hydrogen-xhigh', 'gemini-3.8-flash-high'],
+  complex: ['gemini-4-hydrogen-high', 'claude-opus-5-5-medium', 'gemini-4-carbon-medium', 'gemini-4-argon-medium', 'gemini-3.8-flash-high'],
+  deep: ['gemini-4-carbon-high', 'gemini-4-argon-high', 'claude-opus-5-5-high', 'gemini-4-hydrogen-xhigh', 'gemini-3.8-flash-high'],
 };
 const agyTier = (tier) => (AGY_BY_TIER[tier] ? tier : 'routine');
 
@@ -43,6 +43,7 @@ function agyModel(text, tier = 'routine') {
   if (/^(соннет|сонет|sonnet)$/.test(name || '')) return hard ? 'claude-sonnet-5-5-high' : 'claude-sonnet-5-5-medium';
   if (/^(флеш|флэш|flash)$/.test(name || '')) return 'gemini-3.8-flash-high';
   if (/^(хидроген|гидроген|hydrogen)$/.test(name || '')) return t === 'deep' ? 'gemini-4-hydrogen-xhigh' : hard ? 'gemini-4-hydrogen-high' : 'gemini-4-hydrogen-medium';
+  if (/^(карбон|carbon)$/.test(name || '')) return t === 'mechanical' ? 'gemini-4-carbon-low' : hard ? 'gemini-4-carbon-high' : 'gemini-4-carbon-medium';
   if (/^(аргон|argon)$/.test(name || '')) return hard ? 'gemini-4-argon-high' : 'gemini-4-argon-medium';
   if (/^(осс|oss|gpt-oss)$/.test(name || '')) return 'gpt-oss-120b-medium';
   return AGY_BY_TIER[t][0];
@@ -959,9 +960,9 @@ function askGemini(cfg, messages, onDelta, signal, {
 
 const AGY_CHAIN = AGY_BY_TIER.routine;
 const AGY_LABEL = (id) => {
-  const m = String(id).match(/^(gemini-4-neon|gemini-4-argon|gemini-4-hydrogen|gemini-3\.8-flash|claude-opus-5-5|claude-sonnet-5-5|gpt-oss-120b)-(low|medium|high|xhigh)$/);
+  const m = String(id).match(/^(gemini-4-carbon|gemini-4-neon|gemini-4-argon|gemini-4-hydrogen|gemini-3\.8-flash|claude-opus-5-5|claude-sonnet-5-5|gpt-oss-120b)-(low|medium|high|xhigh)$/);
   if (!m) return null;
-  const name = { 'gemini-4-neon': 'Gemini Neon', 'gemini-4-argon': 'Gemini Argon', 'gemini-4-hydrogen': 'Gemini Hydrogen', 'gemini-3.8-flash': 'Gemini Flash', 'claude-opus-5-5': 'Claude Opus 5.5', 'claude-sonnet-5-5': 'Claude Sonnet 5.5', 'gpt-oss-120b': 'GPT-OSS 120B' }[m[1]];
+  const name = { 'gemini-4-carbon': 'Gemini Carbon', 'gemini-4-neon': 'Gemini Neon', 'gemini-4-argon': 'Gemini Argon', 'gemini-4-hydrogen': 'Gemini Hydrogen', 'gemini-3.8-flash': 'Gemini Flash', 'claude-opus-5-5': 'Claude Opus 5.5', 'claude-sonnet-5-5': 'Claude Sonnet 5.5', 'gpt-oss-120b': 'GPT-OSS 120B' }[m[1]];
   return m[2] === 'medium' ? name : `${name} (${m[2]})`;
 };
 const WORKER_LABELS = new Proxy({
