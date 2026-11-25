@@ -82,6 +82,31 @@ function workflow({ prompt, her = true, seed = Math.floor(Math.random() * 2 ** 4
 }
 
 /**
+ * A picture by Danyal's profile (comfy-profile.js) and the model's own settings, for her tool harness:
+ * the plain NoobAI graph, no LoRA of her, the profile's words added to the prompt and its negative to the
+ * negative, size / steps / CFG / seed as asked (a seed given again = the same picture, changed only as asked).
+ */
+const PROFILE_NEGATIVE = 'blurry, text, watermark, signature, worst quality, low quality, bad anatomy, bad hands, extra fingers';
+function profileWorkflow({ prompt, positiveExtra = [], negative = '', width = 832, height = 1216, steps = 30, cfg = 6.5, seed } = {}) {
+  const s = Number.isFinite(Number(seed)) && Number(seed) >= 0 ? Math.floor(Number(seed)) : Math.floor(Math.random() * 2 ** 48);
+  const positive = [String(prompt || '').trim(), ...positiveExtra].filter(Boolean).join(', ');
+  const neg = [String(negative || '').trim(), PROFILE_NEGATIVE].filter(Boolean).join(', ');
+  const graph = {
+    1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: CHECKPOINT } },
+    2: { class_type: 'CLIPTextEncode', inputs: { text: positive, clip: ['1', 1] } },
+    3: { class_type: 'CLIPTextEncode', inputs: { text: neg, clip: ['1', 1] } },
+    4: { class_type: 'EmptyLatentImage', inputs: { width, height, batch_size: 1 } },
+    5: {
+      class_type: 'KSampler',
+      inputs: { seed: s, steps, cfg, sampler_name: 'euler_ancestral', scheduler: 'normal', denoise: 1, model: ['1', 0], positive: ['2', 0], negative: ['3', 0], latent_image: ['4', 0] },
+    },
+    6: { class_type: 'VAEDecode', inputs: { samples: ['5', 0], vae: ['1', 2] } },
+    7: { class_type: 'SaveImage', inputs: { filename_prefix: 'capri_profile', images: ['6', 0] } },
+  };
+  return { graph, positive, negative: neg, seed: s, width, height, steps, cfg };
+}
+
+/**
  * A picture in a saved style (styles-engine comfyRecipe): NoobAI with the style's words; its reference pictures
  * through IP-Adapter Plus "style transfer" (the way Brigade's Claude got Monet's look) and its object picture
  * at a lower plain weight for who/what is drawn. `images`: names in ComfyUI's input folder, refs then object.
@@ -381,6 +406,15 @@ class Comfy {
     this.proc = null;
   }
 
+  /** One picture by profile and settings (profileWorkflow): { png, prompt, negative, seed, width, height, steps, cfg }. */
+  drawCustom(request) {
+    return this.enqueue(() => this.session(async () => {
+      const w = profileWorkflow(request);
+      const png = await this.submit(w.graph);
+      return { png, prompt: w.positive, negative: w.negative, seed: w.seed, width: w.width, height: w.height, steps: w.steps, cfg: w.cfg };
+    }));
+  }
+
   /** One picture: { png (Buffer), prompt (what was drawn) }. In turn with any other. */
   draw(request) {
     return this.enqueue(() => this.session(() => this.picture(request)));
@@ -531,5 +565,5 @@ class Comfy {
 }
 
 module.exports = {
-  Comfy, locate, desktopPort, workflow, styledWorkflow, checkWorkflow, fillWorkflow, loadWorkflow, videoGraph, missingVideoModels, has14BVideoModels, VIDEO_MODELS, VIDEO_MODELS_14B, PLACEHOLDER, PORT, HER,
+  Comfy, locate, desktopPort, workflow, profileWorkflow, styledWorkflow, checkWorkflow, fillWorkflow, loadWorkflow, videoGraph, missingVideoModels, has14BVideoModels, VIDEO_MODELS, VIDEO_MODELS_14B, PLACEHOLDER, PORT, HER,
 };
