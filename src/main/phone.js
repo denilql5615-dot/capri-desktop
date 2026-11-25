@@ -16,7 +16,9 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { MAX_UPLOAD_BYTES } = require('./hub-artifacts');
+const { MAX_UPLOAD_BYTES, extractDocumentText } = require('./hub-artifacts');
+const { registerArtifact, getArtifact, mimeFor, extractLinks } = require('./artifacts');
+const { createDocument } = require('./document-create');
 
 const MAX_BODY = 64 * 1024;
 const MAX_RESEARCH_REPORT_BYTES = 256 * 1024;
@@ -25,6 +27,7 @@ const AUDIO_MAX = 20;
 const TURNS = 12;
 const CHAT_REQUEST_LIMIT = 64;
 const CHAT_REQUEST_TTL_MS = 20 * 60 * 1000;
+const PHONE_ASK_TIMEOUT_MS = 2 * 60 * 1000; // her question on the phone: no answer in two minutes = no
 const ISOLATED_CHAT_REQUEST_TTL_MS = 2 * 60 * 1000;
 const CHAT_STOPPED = { reply: 'Запрос остановлен.', brain: 'stopped', pose: '' };
 const CHAT_ABORTED = { ...CHAT_STOPPED, brain: 'error' };
@@ -44,6 +47,7 @@ const { DockerEngine } = require('./docker-engine');
 const { PcToolsEngine } = require('./pc-tools-engine');
 const { PhoneControlEngine } = require('./phone-control-engine');
 const { ActivityJournal } = require('./activity-journal');
+const { ToolHarness } = require('./tool-harness');
 const SUGGESTIONS_TTL_MS = 45 * 60 * 1000; // 45 минут кэша подсказок от E4B
 const WORKER_COOLDOWN_MS = 30 * 60 * 1000; // 30 минут кулдауна для уставших воркеров Deep Research
 const RESEARCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -351,26 +355,7 @@ function controlPatch(body) {
   return body;
 }
 
-function mimeFor(name) {
-  const ext = path.extname(name || '').toLowerCase();
-  switch (ext) {
-    case '.png': return 'image/png';
-    case '.jpg': case '.jpeg': return 'image/jpeg';
-    case '.webp': return 'image/webp';
-    case '.gif': return 'image/gif';
-    case '.mp4': return 'video/mp4';
-    case '.webm': return 'video/webm';
-    case '.mov': return 'video/quicktime';
-    case '.pdf': return 'application/pdf';
-    case '.txt': return 'text/plain; charset=utf-8';
-    case '.md': return 'text/markdown; charset=utf-8';
-    case '.csv': return 'text/csv; charset=utf-8';
-    case '.wav': return 'audio/wav';
-    case '.mp3': return 'audio/mpeg';
-    case '.json': return 'application/json; charset=utf-8';
-    default: return 'application/octet-stream';
-  }
-}
+// mimeFor is imported from ./artifacts
 
 function parsePromptFlags(rawText, body = {}) {
   const validMode = Object.hasOwn(DEFAULT_SUGGESTIONS, body.mode) || body.mode === 'tor';
@@ -436,6 +421,33 @@ class PhoneBridge {
     this._fallbackConnectors = null;
     this._fallbackDocker = null;
     this._fallbackPhoneControl = null;
+    this._fallbackHarness = null;
+  }
+
+  toolHarness() {
+    if (this.d.toolHarness) return this.d.toolHarness;
+    if (!this._fallbackHarness) {
+      this._fallbackHarness = new ToolHarness({
+        penpotMcp: this.d.penpotMcp || null,
+        dockerEngine: this.dockerEngine(),
+        connectorsEngine: this.connectorsEngine(),
+        openSite: this.d.openSite || null,
+        webSearch: this.d.webSearch || null,
+        obsidianSearch: this.d.obsidianSearch || null,
+        generateImage: this.d.photo ? ((prompt) => this.d.photo(prompt, 'photo', [])) : null,
+        saveGalleryBuffer: this.d.saveGalleryBuffer || null,
+        getPresentonConfig: this.d.getPresentonConfig || null,
+        terminal: this.d.terminal || null,
+        askUser: this.d.askUser || null,
+        pcToolsEngine: this.d.pcToolsEngine || null,
+        phoneControlEngine: this.d.phoneControlEngine || null,
+        torState: this.d.torState || null,
+        createDocument,
+        registerArtifact,
+        extractLinks,
+      });
+    }
+    return this._fallbackHarness;
   }
 
   skillsEngine() {
@@ -1356,6 +1368,13 @@ class PhoneBridge {
         }
         return this.send(res, 200, result);
       }
+      if (req.method === 'POST' && url.pathname === '/chat/confirm') {
+        const body = await this.readJson(req);
+        const finish = typeof body.id === 'string' ? this.phoneAsks?.get(body.id) : null;
+        if (!finish) return this.send(res, 404, { error: 'Вопрос уже закрыт.' });
+        finish(body.answer === 'yes' ? 'yes' : 'no');
+        return this.send(res, 200, { ok: true });
+      }
       if (req.method === 'POST' && url.pathname === '/chat/compact') {
         const body = await this.readJson(req, MAX_BODY * 8);
         if (body.history !== undefined) {
@@ -1397,6 +1416,49 @@ class PhoneBridge {
         if (!file) return this.send(res, 404, { error: 'no picture' });
         res.writeHead(200, { 'content-type': /\.webm$/i.test(name) ? 'video/webm' : 'image/png', 'content-length': file.length });
         return res.end(file);
+      }
+      if (req.method === 'GET' && url.pathname.startsWith('/files/')) {
+        const id = decodeURIComponent(url.pathname.slice('/files/'.length));
+        const art = getArtifact(id);
+        if (!art) return this.send(res, 404, { error: 'file not found' });
+        let stat;
+        try {
+          stat = fs.statSync(art.path);
+          if (!stat.isFile()) return this.send(res, 404, { error: 'file not found' });
+        } catch {
+          return this.send(res, 404, { error: 'file not found' });
+        }
+        const total = stat.size;
+        const headers = {
+          'Content-Type': art.mime || mimeFor(art.name),
+          'X-Content-Type-Options': 'nosniff',
+          'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(art.name)}`,
+          'Accept-Ranges': 'bytes',
+        };
+        if (path.extname(art.name).toLowerCase() === '.svg' || art.mime === 'image/svg+xml') {
+          headers['Content-Security-Policy'] = "default-src 'none'";
+        }
+        const range = req.headers.range;
+        if (typeof range === 'string' && range.startsWith('bytes=')) {
+          const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+          if (!m || (!m[1] && !m[2])) {
+            res.writeHead(416, { 'Content-Range': `bytes */${total}` });
+            return res.end();
+          }
+          const start = m[1] ? Number.parseInt(m[1], 10) : Math.max(0, total - Number.parseInt(m[2], 10));
+          const end = m[2] ? Math.min(total - 1, Number.parseInt(m[2], 10)) : total - 1;
+          if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || start > end || end >= total) {
+            res.writeHead(416, { 'Content-Range': `bytes */${total}` });
+            return res.end();
+          }
+          headers['Content-Range'] = `bytes ${start}-${end}/${total}`;
+          headers['Content-Length'] = end - start + 1;
+          res.writeHead(206, headers);
+          return fs.createReadStream(art.path, { start, end }).pipe(res);
+        }
+        headers['Content-Length'] = total;
+        res.writeHead(200, headers);
+        return fs.createReadStream(art.path).pipe(res);
       }
       if (req.method === 'GET' && url.pathname.startsWith('/audio/')) {
         this.pruneAudio();
@@ -1627,10 +1689,31 @@ class PhoneBridge {
         const images = Array.isArray(body.files)
           ? body.files.filter((f) => f && String(f.mime || '').startsWith('image/') && f.data).map((f) => String(f.data)).slice(0, 4)
           : [];
-        if (!rawText && !images.length) return this.send(res, 400, { error: 'empty' });
+        const docAttachments = Array.isArray(body.files)
+          ? body.files.filter((f) => f && !String(f.mime || '').startsWith('image/') && f.name && typeof f.data === 'string').slice(0, 4)
+          : [];
+        if (!rawText && !images.length && !docAttachments.length) return this.send(res, 400, { error: 'empty' });
         const imagePrompt = images.length > 1
           ? 'Кратко опиши каждое прикреплённое изображение по порядку.'
           : 'Кратко опиши прикреплённое изображение.';
+        const extractedBlocks = [];
+        for (const f of docAttachments) {
+          const safeName = path.basename(String(f.name)).replace(/[<>|"\x00-\x1f?*\\/]/g, '_');
+          if (!safeName) continue;
+          const bytes = Buffer.from(f.data, 'base64');
+          if (!bytes.length || bytes.length > MAX_UPLOAD_BYTES) continue;
+          const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'capri-chat-att-'));
+          const tmpFile = path.join(tmpDir, safeName);
+          try {
+            fs.writeFileSync(tmpFile, bytes);
+            const { text: docText } = await extractDocumentText(tmpFile, { maxChars: 6000 });
+            if (docText) {
+              extractedBlocks.push(`[Вложение: ${safeName}]\n${docText}`);
+            }
+          } catch { /* ignore unreadable attachment */ } finally {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+          }
+        }
         const flags = parsePromptFlags(rawText, body);
         if (body.model !== undefined && !PHONE_MODEL_KEYS.includes(body.model)) {
           return this.send(res, 400, { error: 'Выбранная модель недоступна на ПК.' });
@@ -1670,6 +1753,12 @@ class PhoneBridge {
           flags.history = body.history.map(({ role, content }) => ({ role, content }));
         }
         flags.images = images;
+        if (extractedBlocks.length) {
+          const attachmentText = extractedBlocks.join('\n\n').slice(0, 12000);
+          flags.text = flags.text
+            ? `${flags.text}\n\n${attachmentText}`
+            : `Проанализируй прикреплённые файлы.\n\n${attachmentText}`;
+        }
         if (!flags.text && !images.length) return this.send(res, 400, { error: 'empty' });
         if (!flags.text) flags.text = imagePrompt;
         if (body.privateChatId !== undefined) {
@@ -1740,6 +1829,24 @@ class PhoneBridge {
             streamHold = '';
             toolTagDetected = false;
           };
+          // A red-line step asks on the phone itself: the question goes down this stream, the answer comes
+          // back as POST /chat/confirm. Without a stream there is nobody to ask, and the harness says no.
+          flags.askUser = ({ line, why } = {}, askSignal) => new Promise((resolve) => {
+            const asks = (this.phoneAsks ||= new Map());
+            const id = crypto.randomUUID();
+            const finish = (answer) => {
+              clearTimeout(timer);
+              askSignal?.removeEventListener?.('abort', cancel);
+              asks.delete(id);
+              resolve(answer === 'yes' ? 'yes' : 'no');
+            };
+            const cancel = () => finish('no');
+            const timer = setTimeout(cancel, PHONE_ASK_TIMEOUT_MS);
+            if (askSignal?.aborted || res.destroyed || res.writableEnded) return cancel();
+            askSignal?.addEventListener?.('abort', cancel, { once: true });
+            asks.set(id, finish);
+            sendSse({ type: 'confirm', id, line: String(line || ''), why: why ? String(why) : null });
+          });
         }
         const signal = entry?.abort.signal;
         const activityRunId = requestId || (typeof body.activityId === 'string' && RESEARCH_ID.test(body.activityId) ? body.activityId : null);
@@ -2019,12 +2126,16 @@ class PhoneBridge {
       .filter((sk) => !skillCtx.activeSkillIds.includes(sk) && !skillCtx.pausedSkillIds.includes(sk) && SKILL_NOTES[sk])
       .map((sk) => SKILL_NOTES[sk]);
     const baseSystemPrompt = baseSysParts.filter(Boolean).join('\n');
+    const toolActionHint = flags.btw !== true
+      ? 'Если просят сделать действие в инструменте (Penpot, Presenton, Docker, веб-поиск, Obsidian) — сразу вызови tool call. Не переспрашивай мелкие детали (подставь сам: русский, 5 слайдов) и не выводи код/JSON вместо вызова.'
+      : '';
     const skillsText = [
       styleTurn?.block,
       skillCtx.text,
       pluginCtx.text,
       connCtx.contextBlock,
       connCtx.hintsBlock,
+      toolActionHint,
       ...missingFallback,
       flags.slashSystemHint,
     ].filter(Boolean).join('\n\n');
@@ -2056,80 +2167,68 @@ class PhoneBridge {
       opts.onActivity = flags.onActivity;
       if (typeof flags.onDelta === 'function') opts.onDelta = flags.onDelta;
       const requestSignal = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
-      let firstChat = await this.d.chat(messages, requestSignal, opts);
-      requestSignal.throwIfAborted();
-      let brain = firstChat?.brain;
-      let context = firstChat?.context;
-      let reply = String(firstChat?.text || '').trim();
-      const usedConnectors = [...connCtx.usedConnectorIds];
-
-      // Up to 3 sequential tool/connector calls via [[use:<id> <query>]]
-      let loopMessages = [...messages];
-      for (let stepIdx = 0; stepIdx < 3; stepIdx += 1) {
-        const useTag = parseModelUseTag(reply);
-        if (!useTag) break;
-        const stepDef = this.connectorsEngine().findDefinition(useTag.id);
-        const stepQuery = useTag.query || effectiveText;
-        const step = {
-          id: `connector-use-${useTag.id}-${stepIdx}`,
-          kind: 'connector',
-          name: useTag.id,
-          ...(stepDef?.name && { label: stepDef.name }),
-          detail: { input: stepQuery.slice(0, 200) },
-        };
-        flags.onActivity?.({ ...step, state: 'running' });
-        const followRes = await this.connectorsEngine().queryConnector({
-          id: useTag.id,
-          query: stepQuery,
-          mode: skillMode,
-          ephemeral: Boolean(ephemeral),
-          isCloud: false,
-        });
-        flags.onActivity?.({ ...step, state: followRes.ok ? 'done' : 'failed', ...(followRes.ok ? {} : { error: followRes.error }) });
-        const followPayload = followRes.ok
-          ? followRes.reply
-          : `Инструмент/коннектор ${useTag.id} вернул ошибку: ${followRes.error || 'недоступен'}`;
-        if (followRes.ok && !usedConnectors.includes(useTag.id)) {
-          usedConnectors.push(useTag.id);
-        }
-        flags.onStreamReset?.();
-        loopMessages = [
-          ...loopMessages,
-          { role: 'assistant', content: reply },
-          {
-            role: 'user',
-            content: `[Результат коннектора ${useTag.id}]\n${followPayload}\n\nПродолжи выполнение запроса. Если нужен ещё один коннектор/инструмент — вызови [[use:<id> <запрос>]], иначе сразу дай чёткий финальный ответ пользователю без тега [[use:...]].`,
+      const useTools = flags.btw !== true && typeof this.toolHarness === 'function';
+      let turnIndex = 0;
+      const harnessRes = useTools
+        ? await this.toolHarness().runLoop({
+          messages,
+          ctx: {
+            origin: flags.origin || 'phone',
+            mode: skillMode,
+            ephemeral: Boolean(ephemeral),
+            isolated,
+            initialConnectors: connCtx.usedConnectorIds,
+            ...(typeof flags.askUser === 'function' && { askUser: flags.askUser }),
           },
-        ];
-        const nextChat = await this.d.chat(loopMessages, requestSignal, opts);
-        requestSignal.throwIfAborted();
-        const nextRaw = String(nextChat?.text || '').trim();
-        if (nextRaw) {
-          reply = nextRaw;
-          brain = nextChat?.brain || brain;
-          context = nextChat?.context || context;
-        } else {
-          reply = stripModelUseTags(reply) || followPayload;
-          break;
-        }
-      }
-      reply = stripModelUseTags(reply);
+          runTurn: ({ messages: turnMsgs, tools, onDelta: turnDelta, signal: turnSignal }) => {
+            const isContinuation = turnIndex > 0;
+            turnIndex += 1;
+            return this.d.chat(turnMsgs, turnSignal, {
+              ...opts,
+              skipPrep: isContinuation,
+              tools,
+              onDelta: turnDelta,
+            });
+          },
+          onActivity: flags.onActivity,
+          onDelta: flags.onDelta,
+          onStreamReset: flags.onStreamReset,
+          parseUseTag: parseModelUseTag,
+          stripUseTags: stripModelUseTags,
+          fallbackQuery: effectiveText,
+          signal: requestSignal,
+        })
+        : await this.d.chat(messages, requestSignal, opts);
+      requestSignal.throwIfAborted();
+      const brain = harnessRes?.brain;
+      const context = harnessRes?.context;
+      const reply = stripModelUseTags(String(harnessRes?.text || '').trim());
+      const usedConnectors = Array.isArray(harnessRes?.connectors) ? harnessRes.connectors : [...connCtx.usedConnectorIds];
+      const toolImage = harnessRes?.image || null;
+      const artifacts = Array.isArray(harnessRes?.artifacts) ? harnessRes.artifacts : [];
+      const links = Array.isArray(harnessRes?.links) && harnessRes.links.length
+        ? harnessRes.links
+        : extractLinks(reply);
 
-      if (!reply) return { reply: 'Модель промолчала. Спроси ещё раз, покороче.', brain };
+      if (!reply && !toolImage && !artifacts.length) return { reply: 'Модель промолчала. Спроси ещё раз, покороче.', brain };
+      const finalReplyText = reply || 'Готово.';
       if (!isolated && flags.btw !== true && flags.history === undefined) {
-        this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
+        this.turns.push({ role: 'user', content: text }, { role: 'assistant', content: finalReplyText });
       }
       const contextStats = context || buildContextStats({
         model: brain || flags.requestedModel || 'auto',
         provider: 'ollama',
         systemPrompt: baseSystemPrompt,
         skillsText,
-        messages: [...historySlice, userMsg, { role: 'assistant', content: reply }],
+        messages: [...historySlice, userMsg, { role: 'assistant', content: finalReplyText }],
       });
       return {
-        reply,
+        reply: finalReplyText,
         brain,
         context: contextStats,
+        ...(toolImage && { image: toolImage }),
+        ...(artifacts.length && { artifacts }),
+        ...(links.length && { links }),
         ...(usedConnectors.length && { connectors: usedConnectors }),
         ...(pluginCtx.warnings?.length && { warnings: pluginCtx.warnings }),
         ...(flags.btw === true && { btw: true }),
@@ -2160,8 +2259,9 @@ class PhoneBridge {
         return { reply: 'Браузерный поиск сейчас недоступен. Результатов нет.', brain: 'error', pose: '' };
       }
     }
-    const media = !isolated && !isBtw && !flags.deepResearch && this.d.photo && (flags.forceDraw ? 'photo' : this.d.mediaKind?.(text));
-    const { reply, brain, image, context, connectors, warnings } = media ? await this.media(text, media, flags)
+    const skipMediaBypass = /(?:penpot|пенпот|presenton|презентон)/i.test(text);
+    const media = !isolated && !isBtw && !flags.deepResearch && this.d.photo && (flags.forceDraw ? 'photo' : (skipMediaBypass ? null : this.d.mediaKind?.(text)));
+    const { reply, brain, image, artifacts, links, context, connectors, warnings } = media ? await this.media(text, media, flags)
       : (!isolated && !isBtw && !flags.deepResearch && (!flags.requestedModel || flags.requestedModel === 'auto') && await this.switchModel(text))
         || await this.reply(flags, signal);
     if (signal?.aborted) return CHAT_ABORTED;
@@ -2171,12 +2271,15 @@ class PhoneBridge {
       this.d.log?.({ said: text, answer: image ? `${reply}\n[[photo:${image}]]` : reply });
       this.d.indexTurnMemory?.({ said: text, answer: reply });
     }
+    const finalLinks = Array.isArray(links) && links.length ? links : extractLinks(reply);
     const out = {
       reply,
       brain,
       pose: '',
       ...(isBtw && { btw: true }),
       ...(image && { image: `/gallery/${image}` }),
+      ...(artifacts?.length && { artifacts }),
+      ...(finalLinks.length && { links: finalLinks }),
       ...(context && { context }),
       ...(connectors?.length && { connectors }),
       ...(warnings?.length && { warnings }),

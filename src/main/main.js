@@ -58,6 +58,10 @@ const webMcp = require('./web-mcp');
 const pimIcs = require('./pim-ics');
 const telegram = require('./telegram');
 const { Planner, syncReminders } = require('./planner');
+const { createTerminalTool } = require('./terminal-tool');
+const { ToolHarness } = require('./tool-harness');
+const { registerArtifact, getArtifact, extractLinks, artifactsDir, mimeFor: artifactMimeFor } = require('./artifacts');
+const { createDocument } = require('./document-create');
 const phonepack = require('./phonepack');
 const web = require('./web');
 const capriBrowser = require('./browser');
@@ -189,16 +193,26 @@ function forgetChats() {
 // capri://app/...        -> files of this repo
 // capri://usersounds/... -> the user's own sound overrides
 // capri://gallery/...    -> her pictures ("скинь фото", comfy.js)
+// capri://artifacts/...  -> registered tool/file artifacts
 function serveProtocol() {
   protocol.handle('capri', (request) => {
     const url = new URL(request.url);
-    const base = url.host === 'usersounds' ? userSoundsDir() : url.host === 'gallery' ? galleryDir() : ROOT;
-    const target = path.resolve(base, '.' + decodeURIComponent(url.pathname));
-    if (target !== base && !target.startsWith(base + path.sep)) {
-      return new Response('forbidden', { status: 403 });
+    let target = null;
+    if (url.host === 'artifacts') {
+      const id = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
+      const art = getArtifact(id);
+      if (!art) return new Response('not found', { status: 404 });
+      target = art.path;
+    } else {
+      const base = url.host === 'usersounds' ? userSoundsDir() : url.host === 'gallery' ? galleryDir() : ROOT;
+      target = path.resolve(base, '.' + decodeURIComponent(url.pathname));
+      if (target !== base && !target.startsWith(base + path.sep)) {
+        return new Response('forbidden', { status: 403 });
+      }
     }
-    if (/\.webm$/i.test(target) && fs.existsSync(target)) {
+    if (/\.(?:webm|mp4)$/i.test(target) && fs.existsSync(target)) {
       const buf = fs.readFileSync(target);
+      const mime = /\.mp4$/i.test(target) ? 'video/mp4' : 'video/webm';
       const m = /^bytes=(\d+)-(\d*)$/.exec(request.headers.get('range') || '');
       if (m) {
         const start = Number(m[1]);
@@ -207,10 +221,11 @@ function serveProtocol() {
           return new Response(buf.subarray(start, end + 1), {
             status: 206,
             headers: {
-              'Content-Type': 'video/webm',
+              'Content-Type': mime,
               'Content-Range': `bytes ${start}-${end}/${buf.length}`,
               'Accept-Ranges': 'bytes',
               'Content-Length': String(end - start + 1),
+              'X-Content-Type-Options': 'nosniff',
             },
           });
         }
@@ -218,11 +233,19 @@ function serveProtocol() {
       return new Response(buf, {
         status: 200,
         headers: {
-          'Content-Type': 'video/webm',
+          'Content-Type': mime,
           'Accept-Ranges': 'bytes',
           'Content-Length': String(buf.length),
+          'X-Content-Type-Options': 'nosniff',
         },
       });
+    }
+    if (url.host === 'artifacts' && fs.existsSync(target)) {
+      const buf = fs.readFileSync(target);
+      const mime = artifactMimeFor(target);
+      const headers = { 'Content-Type': mime, 'X-Content-Type-Options': 'nosniff' };
+      if (/\.svg$/i.test(target)) headers['Content-Security-Policy'] = "default-src 'none'";
+      return new Response(buf, { status: 200, headers });
     }
     return net.fetch(pathToFileURL(target).toString());
   });
@@ -2767,13 +2790,15 @@ async function applyPhone() {
         const withVault = (opts.ephemeral || torSensitive) && !opts.ephemeral
           ? withNotes(messages, { vaultOnly: isPrivate, branch })
           : messages;
-        const prepared = (opts.ephemeral || torSensitive)
-          ? {
-            messages: withVault,
-            memoryText: lastUserSuffix(messages, withVault),
-            toolsText: '',
-          }
-          : await prepLocal(cfg, messages, { explicitModel: requestedModel, mobile: opts.mobile, useVault: opts.useVault, onActivity: opts.onActivity });
+        const prepared = opts.skipPrep
+          ? { messages, memoryText: '', toolsText: '' }
+          : (opts.ephemeral || torSensitive)
+            ? {
+              messages: withVault,
+              memoryText: lastUserSuffix(messages, withVault),
+              toolsText: '',
+            }
+            : await prepLocal(cfg, messages, { explicitModel: requestedModel, mobile: opts.mobile, useVault: opts.useVault, onActivity: opts.onActivity });
         prepared.numPredict = opts.numPredict ?? prepared.numPredict;
         const torAfterPrep = torSensitive || messagesHaveTor(prepared.messages);
         const autoOverride = !model ? pickMobileAutoOverride() : undefined;
@@ -2792,14 +2817,18 @@ async function applyPhone() {
             persistFallback: !opts.localOnly && !model,
             strictModel: Boolean(requestedModel),
             model,
+            tools: opts.tools,
+            returnTurn: Boolean(opts.tools),
             onActivity: opts.onActivity,
             onUsage: (u) => { usage = u; },
             onSuccess: ({ model: okModel }) => { usedModel = okModel; },
           },
         );
         const directRole = requestedModel || autoOverride;
-        const text = brains.isRole(directRole) ? await brains.withModel(directRole, generate, signal)
+        const rawTurn = brains.isRole(directRole) ? await brains.withModel(directRole, generate, signal)
           : (model || pickModel(cfg)) === brains.main ? await brains.runMain(generate) : await generate();
+        const text = typeof rawTurn === 'string' ? rawTurn : String(rawTurn?.text || '');
+        const toolCalls = typeof rawTurn === 'string' ? [] : (Array.isArray(rawTurn?.toolCalls) ? rawTurn.toolCalls : []);
         const finalModel = usedModel || cfg.provider;
         const baseSys = opts.contextParts?.systemPrompt ?? messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
         const systemPrompt = [baseSys, isRp ? brainsLib.RP_PROMPT : ''].filter(Boolean).join('\n\n');
@@ -2815,7 +2844,7 @@ async function applyPhone() {
           actualPromptTokens: usage?.promptTokens,
           actualEvalTokens: usage?.evalTokens,
         });
-        return { text, brain: finalModel, context };
+        return { text, toolCalls, brain: finalModel, context, usage };
       },
       saveObsidianResearch: async ({ query, markdown }) => {
         const dir = notesDir();
@@ -2914,7 +2943,12 @@ async function applyPhone() {
       },
       freeVram: async () => {
         const text = await quickAnswer('освободи память');
-        return { ok: true, text };
+        return {
+        ok: true,
+        text,
+        ...(turnArtifacts.length && { artifacts: turnArtifacts }),
+        ...(turnLinks.length && { links: turnLinks }),
+      };
       },
       getClipboard: async () => String((await clipboard.readText()) || ''),
       setClipboard: async (text) => {
@@ -3008,6 +3042,19 @@ async function applyPhone() {
         }
         return artifactPath(hubArtifactRoot(), run, name);
       },
+      penpotMcp: require('./penpot-mcp'),
+      terminal: createTerminalTool({ torState }),
+      askUser,
+      openSite: (url) => launch.site(url),
+      obsidianSearch: (q) => notes.searchVault(notesDir(), q, 4),
+      saveGalleryBuffer: (buf, ext = 'png') => {
+        fs.mkdirSync(galleryDir(), { recursive: true });
+        const name = photo.galleryName(new Date(), Math.random(), ext);
+        fs.writeFileSync(path.join(galleryDir(), name), buf);
+        return name;
+      },
+      resolveGalleryFile: (name) => (photo.GALLERY_FILE.test(name) ? path.join(galleryDir(), name) : null),
+      getPresentonConfig: () => ({ url: 'http://127.0.0.1:5100', apiKey: config.load().apiKeys?.presenton || '' }),
       agentArtifactAction: async ({ id, run, name, action }) => {
         const history = ensureAgentSessions().history(id);
         if (!history.some((message) => message.artifacts?.some((item) => item.run === run && item.name === name))) {
@@ -3571,12 +3618,15 @@ async function chatWithFallback(cfg, prepared, send, signal, streamed, onSwitch,
     try {
       const generate = () => duringActivity(opts?.onActivity, 'generation', () =>
         withQuota(cfg.provider === 'claude' ? 'claude' : null, 'chat', () =>
-          llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict, onUsage: opts?.onUsage }, send, signal)));
+          opts?.tools?.length
+            ? llm.chatTurn(cfg.provider, llmConfig(cfg), { model, messages, tools: opts.tools, numPredict, onUsage: opts?.onUsage }, send, signal)
+            : llm.chat(cfg.provider, llmConfig(cfg), { model, messages, numPredict, onUsage: opts?.onUsage }, send, signal)));
       const needsSwap = cfg.provider === 'ollama' && model && (isAuxiliaryModel(model) || brains.auxiliary);
-      const text = needsSwap ? await brains.withModel(model, generate, signal) : await generate();
+      const result = needsSwap ? await brains.withModel(model, generate, signal) : await generate();
+      const text = typeof result === 'string' ? result : String(result?.text || '');
       if (opts?.persistFallback !== false && model !== pickModel(cfg)) updateConfig({ chatModel: model });
       try { opts?.onSuccess?.({ model, local: attemptLocal, text }); } catch {}
-      return text;
+      return opts?.returnTurn ? (typeof result === 'string' ? { text: result, toolCalls: [], usage: null } : result) : text;
     } catch (err) {
       if (opts?.strictModel || isAuxiliaryModel(model) || signal.aborted || streamed() || !['busy', 'gone', 'signin'].includes(err.code)) {
         try { opts?.onAttemptError?.({ model, local: attemptLocal, err }); } catch {}
@@ -4399,6 +4449,8 @@ function registerIpc() {
         }
       };
       let text;
+      let turnArtifacts = [];
+      let turnLinks = [];
       if (['claude', 'codex', 'gemini', 'computer', 'photo', 'video'].includes(worker)) {
         const genStart = Date.now();
         let workerOutcome = 'completed';
@@ -4593,35 +4645,79 @@ function registerIpc() {
             text = TOR_CLOUD_BLOCK_MSG;
             send(text);
           } else {
-          text = await chatWithFallback(
-            cfg,
-            toSend,
-            send,
-            abort.signal,
-            () => streamed,
-            (nextModel) => {
-              turnEscalated = false;
-              if (!llm.isLocal(cfg.provider, cfg, nextModel)) hintDelivered = false;
-              try { brainChatGlue?.onModelSwitch(shadowTurn); } catch {}
-            },
-            {
-              localOnly: torAfterPrep || prepared?.stylesLocalOnly === true,
-              onActivity: activity.publish,
-              onSuccess: ({ model, local }) => {
-                answeredModel = model;
-                answeredLocal = Boolean(local);
+            const runLocalTurn = (turnMsgs, tools, turnDelta, turnSignal, returnTurn = false) => chatWithFallback(
+              cfg,
+              { ...toSend, messages: turnMsgs },
+              turnDelta,
+              turnSignal,
+              () => streamed,
+              (nextModel) => {
+                turnEscalated = false;
+                if (!llm.isLocal(cfg.provider, cfg, nextModel)) hintDelivered = false;
+                try { brainChatGlue?.onModelSwitch(shadowTurn); } catch {}
               },
-              onAttemptError: ({ model, err }) => {
-                const torTouchedTurn = torState.isQuarantined() || Boolean(shadowTurn?.wasTorCancelled?.());
-                const aborted = abort.signal.aborted || err?.message === 'stopped'
-                  || err?.name === 'AbortError' || err?.code === 'ABORT_ERR';
-                if (turnEscalated && !recordedMainError && model === brains.main && !torTouchedTurn && !aborted) {
-                  recordedMainError = true;
-                  try { getBrainInfluencePolicy().recordOutcome({ escalated: true, error: true }); } catch {}
-                }
+              {
+                localOnly: torAfterPrep || prepared?.stylesLocalOnly === true,
+                tools,
+                returnTurn,
+                onActivity: activity.publish,
+                onSuccess: ({ model, local }) => {
+                  answeredModel = model;
+                  answeredLocal = Boolean(local);
+                },
+                onAttemptError: ({ model, err }) => {
+                  const torTouchedTurn = torState.isQuarantined() || Boolean(shadowTurn?.wasTorCancelled?.());
+                  const aborted = abort.signal.aborted || err?.message === 'stopped'
+                    || err?.name === 'AbortError' || err?.code === 'ABORT_ERR';
+                  if (turnEscalated && !recordedMainError && model === brains.main && !torTouchedTurn && !aborted) {
+                    recordedMainError = true;
+                    try { getBrainInfluencePolicy().recordOutcome({ escalated: true, error: true }); } catch {}
+                  }
+                },
               },
-            },
-          );
+            );
+            if (localTurn && cfg.rp !== true) {
+              const desktopHarness = new ToolHarness({
+                penpotMcp: require('./penpot-mcp'),
+                dockerEngine: ensureDockerEngine(),
+                connectorsEngine: ensureConnectorsEngine(),
+                pcToolsEngine: ensurePcToolsEngine(),
+                phoneControlEngine: ensurePhoneControlEngine(),
+                terminal: createTerminalTool({ torState }),
+                askUser,
+                torState,
+                openSite: (u) => launch.site(u),
+                webSearch: (q) => agentWeb.search({ query: q, read: 0 }),
+                obsidianSearch: (q) => notes.searchVault(notesDir(), q, 4),
+                generateImage: (prompt) => photoTask(prompt, []),
+                saveGalleryBuffer: (buf, ext = 'png') => {
+                  fs.mkdirSync(galleryDir(), { recursive: true });
+                  const name = photo.galleryName(new Date(), Math.random(), ext);
+                  fs.writeFileSync(path.join(galleryDir(), name), buf);
+                  return name;
+                },
+                resolveGalleryFile: (name) => (photo.GALLERY_FILE.test(name) ? path.join(galleryDir(), name) : null),
+                getPresentonConfig: () => ({ url: 'http://127.0.0.1:5100', apiKey: config.load().apiKeys?.presenton || '' }),
+                createDocument,
+                registerArtifact,
+                extractLinks,
+                artifactsDir,
+              });
+              const hRes = await desktopHarness.runLoop({
+                messages: toSend.messages,
+                ctx: { mode: 'chat', ephemeral: false, isolated: torAfterPrep || torState.isQuarantined(), origin: 'pc' },
+                runTurn: ({ messages: m, tools, onDelta, signal: s }) => runLocalTurn(m, tools, onDelta, s, true),
+                onActivity: activity.publish,
+                onDelta: send,
+                onStreamReset: () => { streamed = false; },
+                signal: abort.signal,
+              });
+              text = hRes.text;
+              turnArtifacts = Array.isArray(hRes.artifacts) ? hRes.artifacts : [];
+              turnLinks = Array.isArray(hRes.links) ? hRes.links : [];
+            } else {
+              text = await runLocalTurn(toSend.messages, undefined, send, abort.signal, false);
+            }
           }
           genLatencyMs = Math.max(0, Date.now() - genStart);
           const canCommitMain = turnEscalated && answeredModel === brains.main && !torAfterPrep && !torState.isQuarantined();
@@ -4661,7 +4757,12 @@ function registerIpc() {
         recentTurns = [{ role: 'user', content: yourWords(messages) }, { role: 'assistant', content: text }];
         toVault(cfg, actualWorker, yourWords(messages), text);
       }
-      return { ok: true, text };
+      return {
+        ok: true,
+        text,
+        ...(turnArtifacts.length && { artifacts: turnArtifacts }),
+        ...(turnLinks.length && { links: turnLinks }),
+      };
     } catch (err) {
       activityState = 'failed';
       return { ok: false, error: abort.signal.aborted ? 'stopped' : err.message, code: err.code || null };
@@ -4762,6 +4863,22 @@ function registerIpc() {
     chatLog.write(chatsFile(), chatLog.add(chatLog.read(chatsFile()), message));
     chatsWin?.webContents.send('chats:changed');
   });
+  ipcMain.handle('artifact:open', async (_e, id) => {
+    const art = getArtifact(String(id || ''));
+    if (!art) return 'Артефакт не найден или устарел.';
+    return shell.openPath(art.path);
+  });
+  ipcMain.handle('artifact:reveal', async (_e, id) => {
+    const art = getArtifact(String(id || ''));
+    if (!art) return false;
+    shell.showItemInFolder(art.path);
+    return true;
+  });
+  ipcMain.handle('artifact:src', (_e, id) => {
+    const art = getArtifact(String(id || ''));
+    return art ? `capri://artifacts/${encodeURIComponent(art.id)}` : null;
+  });
+
   ipcMain.handle('chats:list', () => chatLog.list(chatLog.read(chatsFile())));
   ipcMain.handle('chats:rename', (_e, { id, title } = {}) => {
     const store = chatLog.read(chatsFile());
