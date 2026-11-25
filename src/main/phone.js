@@ -999,10 +999,12 @@ class PhoneBridge {
       const pack = this.d.sprites?.() || null;
       if (req.method === 'GET' && url.pathname === '/ping') {
         const contextLimits = typeof this.d.contextLimits === 'function' ? this.d.contextLimits() : getContextLimits();
+        const port = this.server?.address()?.port;
         return this.send(res, 200, {
           ok: true,
           pose: '',
           sprites: pack?.version || '',
+          addresses: port ? addresses(port) : [],
           isolatedChat: true,
           modelSelection: true,
           chatRecovery: true,
