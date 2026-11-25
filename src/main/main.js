@@ -652,7 +652,9 @@ function ensureAgentSessions() {
         text: lastUser,
         isCloud: !['gemma', 'faun'].includes(agent),
       }).block;
-      const combinedHints = isRp ? '' : [styleBlock, skillsCtx.text, pluginsCtx.text, connectorContext, hints].filter(Boolean).join('\n\n');
+      // the cloud mode rules (Obsidian GENESIS/Правила режимов/Облако.md) for every cloud agent
+      const cloudRules = isCloudAgent ? modeRulesText('cloud') : '';
+      const combinedHints = isRp ? '' : [cloudRules, styleBlock, skillsCtx.text, pluginsCtx.text, connectorContext, hints].filter(Boolean).join('\n\n');
       if (meta?.ephemeral || meta?.privateMode || meta?.localOnly || meta?.mode === 'private' || meta?.mode === 'nsfw') {
         throw new Error('Облачные модели недоступны в этом режиме.');
       }
@@ -808,6 +810,7 @@ function ensureAgentSessions() {
       return { text, artifacts: [], actualModel: model, context };
     }, (id, delta) => chatsWin?.webContents.send('agents:update', { id, delta }), {
       notifyActivity: (payload) => sendActivity('agents:activity', payload),
+      artifactRoot: () => hubArtifactRoot(),
       skillsEngine: ensureSkillsEngine(),
       pluginsEngine: ensurePluginsEngine(),
       connectorsEngine: ensureConnectorsEngine(),
@@ -853,6 +856,19 @@ function hubSessions(event) {
 
 // Her long memory: notes in your Obsidian vault (notes.js)
 const notesDir = () => notes.dirOf({ notesDir: config.load().notesDir, appData: app.getPath('appData'), documents: app.getPath('documents') });
+// Rules per mode (mode-rules.js): editable notes in Obsidian GENESIS/Правила режимов, defaults written once
+const modeRules = require('./mode-rules');
+let modeRulesReady = false;
+// the vault root (notesDir is her own sub-folder C.A.P.R.ICapri; GENESIS and 20_Крона live at the root)
+function vaultRootDir() {
+  const d = notesDir();
+  return path.basename(d).toLowerCase() === 'capri' ? path.dirname(d) : d;
+}
+function modeRulesText(mode) {
+  const dir = vaultRootDir();
+  if (!modeRulesReady) { modeRulesReady = true; modeRules.ensureDefaults(dir); }
+  return modeRules.rulesFor(dir, { mode, rp: config.load().rp === true });
+}
 
 function recentPhoneHistoryPrompt(said, messages) {
   try {
@@ -2169,7 +2185,10 @@ function ensureConnectorsEngine() {
         }
         return kiwix.fromLocalFirst((url) => kiwix.search(q, { url, lang: 'en', limit: 4 }), config.load().kiwixUrl);
       },
-      webSearch: async (q) => agentWeb.search({ query: q, read: 1 }),
+      webSearch: async (q, opts = {}) => {
+        refuseTorOnMain(q);
+        return agentWeb.search({ query: q, read: 1, journal: opts.journal !== false });
+      },
       webRead: async (url) => agentWeb.read({ url }),
       openSite: (url) => launch.site(url),
       openFreeTube: (q) => launch.youtube(q),
@@ -2466,7 +2485,8 @@ function ensureSlashEngine() {
         return links.join('\n') || 'По этому запросу ничего не нашлось.';
       },
       torText: async (q) => {
-        const found = await agentWeb.search({ query: q, tor: true, read: 0 });
+        // only through the Tor isolator: agentWeb.search ignored a `tor` flag and went on the open web
+        const found = await harnessWebSearch(q, { node: 'tor', read: 0 });
         const links = (found?.results || []).slice(0, 5).map((item) => `${item.title || item.url} — ${item.url}`);
         return links.join('\n') || 'Через Tor ничего не нашлось.';
       },
@@ -2691,6 +2711,9 @@ async function applyPhone() {
     phoneBridge = new phone.PhoneBridge({
       token: phoneToken,
       persona: phonePersona,
+      modeRules: (mode) => modeRulesText(mode),
+      comfyDraw: (args, opts) => harnessComfyDraw(args, opts),
+      comfyProfile: comfyProfileDeps,
       skillsEngine: ensureSkillsEngine(),
       pluginsEngine: ensurePluginsEngine(),
       connectorsEngine: ensureConnectorsEngine(),
@@ -2733,7 +2756,9 @@ async function applyPhone() {
         });
       },
       externalBlocked: (query) => torState.isQuarantined() || hasSecret(query) || messagesHaveTor([{ role: 'user', content: query }]),
-      webSearch: (query) => agentWeb.search({ query, read: 0 }),
+      webSearch: (query, opts = {}) => harnessWebSearch(query, opts),
+      webRead: (url, opts = {}) => harnessWebRead(url, opts),
+      webResearch: (args, opts = {}) => harnessWebResearch(args, opts),
       readPim: readPimTool,
       chat: async (messages, signal, opts = {}) => {
         if (brains.visionRunning) throw new Error(brainsLib.VISION_BUSY);
@@ -3354,6 +3379,46 @@ async function planPhoto(said, history, signal) {
   return photo.parsePlan(answer, said);
 }
 
+// The ComfyUI agent for her tool harness (comfy-profile.js, Danyal 2026-11-25): a picture by his taste
+// profile for the mode. Ordinary chat goes to her gallery; 18+ and private go to their own folders, never
+// to the shared gallery (encrypting those folders is a separate step).
+const comfyProfileLib = require('./comfy-profile');
+const comfyProfileDeps = {
+  read: (scope) => comfyProfileLib.read(vaultRootDir(), scope),
+  update: (scope, patch) => comfyProfileLib.update(vaultRootDir(), scope, patch),
+};
+async function harnessComfyDraw(args = {}, { scope = 'chat' } = {}) {
+  const said = String(args.prompt || '').trim();
+  if (!said) return { ok: false, error: 'Нужен промпт.' };
+  const mediaGuard = guardMediaGeneration({ torState, messages: [{ role: 'user', content: said }], tor });
+  if (!mediaGuard.ok) return { ok: false, error: mediaGuard.error };
+  if (!comfy.installed) return { ok: false, error: 'ComfyUI на этом ПК не найден (нужен Comfy Desktop).' };
+  const p = comfyProfileLib.read(vaultRootDir(), scope);
+  const useProfile = args.use_profile !== false;
+  const pick = (key) => comfyProfileLib.clamp(key, args[key] ?? p[key]) ?? p[key];
+  const res = await comfy.drawCustom({
+    prompt: said,
+    positiveExtra: useProfile ? p.positive : [],
+    negative: [args.negative, useProfile ? p.negative.join(', ') : ''].filter(Boolean).join(', '),
+    width: pick('width'),
+    height: pick('height'),
+    steps: pick('steps'),
+    cfg: pick('cfg'),
+    seed: args.seed,
+  });
+  const chat = scope === 'chat';
+  const dir = chat ? galleryDir() : path.join(workers.workDir(config.load()), scope === 'nsfw' ? 'media-18' : 'media-private');
+  const name = chat ? photo.galleryName() : `${new Date().toISOString().replace(/[:.]/g, '-')}-${res.seed}.png`;
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, name);
+  fs.writeFileSync(file, res.png);
+  if (chat) {
+    fs.writeFileSync(path.join(dir, photo.metaName(name)), JSON.stringify({ said, prompt: res.prompt, seed: res.seed, at: Date.now() }, null, 2));
+    chatsWin?.webContents.send('gallery:changed');
+  }
+  return { ok: true, path: file, image: chat ? name : null, prompt: res.prompt, negative: res.negative, seed: res.seed, width: res.width, height: res.height, steps: res.steps, cfg: res.cfg };
+}
+
 /** A picture for what you said: into her gallery; her line with [[photo:<file>]], which her chats draw. */
 async function photoTask(said, history = [], signal) {
   const mediaGuard = guardMediaGeneration({
@@ -3890,6 +3955,109 @@ const agentWeb = createAgentWeb({
     try { routerJournalInstance?.torTouched(); } catch {}
   },
 });
+
+// Her harness web on two nodes (Danyal 2026-11-25): 'main' = SearXNG + plain reads + her browser;
+// 'tor' = only the Tor isolator (private mode, Tor mode) — never anything outside Tor, never the cloud.
+const webResearchLib = require('./web-research');
+const refangUrl = (u) => String(u || '').replace(/^hxxp(s?):\/\//i, 'http$1://').replace(/\[\.\]/g, '.');
+const isoPage = (p) => ({ url: p.url_defanged, title: p.title, text: p.text });
+function torJobAllowed() {
+  const cfg = config.load();
+  if (cfg.tor === false) throw new Error('узел Tor выключен в трее');
+  if (cfg.torIsolator !== 'on') throw new Error('Tor-изолятор выключен: мимо него через Tor не хожу');
+  return cfg;
+}
+function refuseTorOnMain(text) {
+  if (require('./tor-guard').hasTorSignal(String(text || ''), tor)) {
+    throw new Error('Запрос про Tor/даркнет/.onion: только через узел Tor (режим Приват или «через тор»).');
+  }
+}
+async function harnessWebSearch(query, { read = 0, node = 'main', journal = true } = {}) {
+  if (node !== 'tor') {
+    refuseTorOnMain(query);
+    return agentWeb.search({ query, read, journal });
+  }
+  torJobAllowed();
+  const endTor = torState.enterSession({ inChat: true });
+  try {
+    const res = await torIsolator.runJob({ mode: 'search', query, node: tor.wantsDark(query) ? 'dark' : 'tor', read: Math.min(read, 5), limit: 8 });
+    return {
+      node: 'tor',
+      results: (res.results || []).map((r) => ({ title: r.title, url: r.url_defanged, snippet: r.snippet })),
+      pages: (res.pages || []).map(isoPage),
+    };
+  } finally {
+    endTor?.();
+  }
+}
+async function harnessWebRead(url, { node = 'main' } = {}) {
+  if (node !== 'tor') {
+    refuseTorOnMain(url);
+    return agentWeb.read({ url });
+  }
+  torJobAllowed();
+  const endTor = torState.enterSession({ inChat: true });
+  try {
+    const real = refangUrl(url);
+    const res = await torIsolator.runJob({ mode: 'read', urls: [real], node: /\.onion(?:[/:]|$)/i.test(real) ? 'dark' : 'tor' });
+    const p = res.pages?.[0];
+    return { url: p?.url_defanged || url, title: p?.title || '', text: p?.text || '', blocked: !p?.text };
+  } finally {
+    endTor?.();
+  }
+}
+async function harnessWebResearch(args = {}, { node = 'main', journal = true } = {}) {
+  if (node === 'tor') {
+    const cfg = torJobAllowed();
+    const isoNode = tor.wantsDark([args.question, ...(args.queries || [])].join(' ')) ? 'dark' : 'tor';
+    const endTor = torState.enterSession({ inChat: true });
+    try {
+      const res = await webResearchLib.research({ ...args, node: 'tor' }, {
+        isolatorSearch: async ({ query, read, limit }) => {
+          const r = await torIsolator.runJob({ mode: 'search', query, node: isoNode, read, limit });
+          return { results: (r.results || []).map((x) => ({ title: x.title, url: x.url_defanged, snippet: x.snippet })), pages: (r.pages || []).map(isoPage) };
+        },
+        isolatorRead: async (urls) => {
+          const r = await torIsolator.runJob({ mode: 'read', urls: urls.map(refangUrl), node: isoNode });
+          return { pages: (r.pages || []).map(isoPage) };
+        },
+      });
+      // Tor findings only to the encrypted Tor safe (torSafe: on), never to Obsidian or the cloud
+      if (res.ok && res.record) {
+        const safeRes = await torSafe.recordSearchIfEnabled({ cfg, query: args.question, result: { isolator: true, ...res.record } })
+          .catch(() => ({ saved: false }));
+        if (safeRes.saved) { rebuildTray(); res.output += '\n(Находки записаны в зашифрованный Tor-сейф.)'; }
+        res.safeSaved = Boolean(safeRes.saved);
+      }
+      return res;
+    } finally {
+      endTor?.();
+    }
+  }
+  refuseTorOnMain([args.question, ...(args.queries || [])].join(' '));
+  const cfg = config.load();
+  const res = await webResearchLib.research({ ...args, node: 'main' }, {
+    searxSearch: (q) => web.search(q, { url: cfg.searxUrl || web.DEFAULT_URL, limit: 12 }),
+    fetchPage: (u) => web.fetchPage(u, { chars: 12000 }),
+    browserRead: async (urls) => {
+      const s = await capriBrowser.openSession(browserOpts(cfg));
+      try { return await s.readMany(urls); } finally { await s.close(); }
+    },
+  });
+  // the general search log only from ordinary chat: 18+ and private never write here
+  if (journal && res.ok && cfg.vaultSearch !== false && !hasSecret(args.question)) {
+    try {
+      notes.appendSearch(notesDir(), {
+        question: args.question,
+        via: 'глубокий веб-поиск Альтаир (web_research)',
+        results: res.sources || [],
+        read: (res.sources || []).map((s) => s.url),
+        answer: '(ответ писала модель)',
+      });
+    } catch (err) { console.warn('[capri] research log:', err.message); }
+  }
+  return res;
+}
 
 // Her ordinary council (council.js, agreed with Danyal 2026-11-24), each member only thinking: Claude
 // Sonnet 5.5 Medium in plan mode, Antigravity Hydrogen High and Neon Medium, and the Web Gemini pair
@@ -4687,9 +4855,13 @@ function registerIpc() {
                 askUser,
                 torState,
                 openSite: (u) => launch.site(u),
-                webSearch: (q) => agentWeb.search({ query: q, read: 0 }),
+                webSearch: (q, opts = {}) => harnessWebSearch(q, opts),
+                webRead: (url, opts = {}) => harnessWebRead(url, opts),
+                webResearch: (args, opts = {}) => harnessWebResearch(args, opts),
                 obsidianSearch: (q) => notes.searchVault(notesDir(), q, 4),
                 generateImage: (prompt) => photoTask(prompt, []),
+                comfyDraw: (args, opts) => harnessComfyDraw(args, opts),
+                comfyProfile: comfyProfileDeps,
                 saveGalleryBuffer: (buf, ext = 'png') => {
                   fs.mkdirSync(galleryDir(), { recursive: true });
                   const name = photo.galleryName(new Date(), Math.random(), ext);

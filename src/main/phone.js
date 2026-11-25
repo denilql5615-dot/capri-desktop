@@ -433,8 +433,12 @@ class PhoneBridge {
         connectorsEngine: this.connectorsEngine(),
         openSite: this.d.openSite || null,
         webSearch: this.d.webSearch || null,
+        webRead: this.d.webRead || null,
+        webResearch: this.d.webResearch || null,
         obsidianSearch: this.d.obsidianSearch || null,
         generateImage: this.d.photo ? ((prompt) => this.d.photo(prompt, 'photo', [])) : null,
+        comfyDraw: this.d.comfyDraw || null,
+        comfyProfile: this.d.comfyProfile || null,
         saveGalleryBuffer: this.d.saveGalleryBuffer || null,
         getPresentonConfig: this.d.getPresentonConfig || null,
         terminal: this.d.terminal || null,
@@ -2088,6 +2092,9 @@ class PhoneBridge {
     if (ephemeral) baseSysParts.push('Временный чат: не ссылайся на долговременную память и не сохраняй факты.');
     if (privateMode) baseSysParts.push('Режим Приват (Vault): строго локальная обработка, данные и контекст только из Vault, выход в облако запрещён.');
     const skillMode = flags.localMode || (privateMode ? 'private' : 'chat');
+    // the mode's own rules (Obsidian GENESIS/Правила режимов): chat, task, 18+ (and 18+ RP), private
+    const modeRulesBlock = typeof this.d.modeRules === 'function' ? this.d.modeRules(skillMode) : '';
+    if (modeRulesBlock) baseSysParts.push(modeRulesBlock);
     const pluginCtx = this.pluginsEngine().buildPromptContext({
       mode: skillMode,
       ephemeral: Boolean(ephemeral),
@@ -2176,7 +2183,15 @@ class PhoneBridge {
             origin: flags.origin || 'phone',
             mode: skillMode,
             ephemeral: Boolean(ephemeral),
-            isolated,
+            // Private and 18+ get every tool (Danyal 2026-11-25); the model stays local (localOnly above).
+            // The network: private and Tor mode only through the Tor isolator, 18+ the open web, a temporary
+            // chat or a message with a secret / Tor context none.
+            isolated: Boolean(ephemeral),
+            webNode: ephemeral ? null
+              : (privateMode || flags.localMode === 'tor') ? 'tor'
+                : (this.d.externalBlocked?.(text) ? null : 'main'),
+            // the general search log (Obsidian) only from ordinary chat
+            journal: !(ephemeral || privateMode || flags.localMode === 'nsfw' || flags.localMode === 'tor'),
             initialConnectors: connCtx.usedConnectorIds,
             ...(typeof flags.askUser === 'function' && { askUser: flags.askUser }),
           },

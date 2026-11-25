@@ -435,3 +435,113 @@ test('ToolHarness: a refused call repeated in the same turn is refused again wit
   assert.equal(outputs.length, 2);
   assert.ok(outputs.every((o) => /ОТКАЗАНО ПОЛЬЗОВАТЕЛЕМ/.test(o)));
 });
+
+test('ToolHarness: a bare promise ("щас соберу ссылки") is nudged into a tool call, not taken as the answer', async () => {
+  const searches = [];
+  const harness = new ToolHarness({
+    webSearch: async (q, opts) => {
+      searches.push([q, opts?.read]);
+      return {
+        results: [{ title: 'Node.js', url: 'https://nodejs.org/', snippet: 'Run JavaScript everywhere' }],
+        pages: [{ url: 'https://nodejs.org/', title: 'Node.js', text: 'Node.js is a JavaScript runtime.' }],
+      };
+    },
+  });
+  const seen = [];
+  let step = 0;
+  const res = await harness.runLoop({
+    messages: [{ role: 'user', content: 'найди сайт node' }],
+    ctx: { origin: 'phone' },
+    async runTurn({ messages }) {
+      step += 1;
+      seen.push(messages.at(-1).content);
+      if (step === 1) return { text: 'Щас соберу ссылки, это займёт пару секунд…', toolCalls: [] };
+      if (step === 2) return { text: '', toolCalls: [{ function: { name: 'web_search', arguments: { query: 'node' } } }] };
+      return { text: 'Официальный сайт: https://nodejs.org/', toolCalls: [] };
+    },
+  });
+  assert.match(seen[1], /пообещала действие/);
+  assert.deepEqual(searches, [['node', 2]]);
+  assert.match(seen[2], /https:\/\/nodejs\.org\//);
+  assert.match(seen[2], /Текст страницы/);
+  assert.match(seen[2], /источников/);
+  assert.equal(res.text, 'Официальный сайт: https://nodejs.org/');
+  assert.ok(res.links.some((l) => l.url === 'https://nodejs.org/'));
+});
+
+test('ToolHarness: web_read returns page text and refuses non-http links', async () => {
+  const harness = new ToolHarness({ webRead: async (url) => ({ url, title: 'T', text: 'body text' }) });
+  const tool = harness.getTools({}).find((t) => t.name === 'web_read');
+  assert.ok(tool);
+  const ok = await tool.execute({ url: 'https://example.com/a' });
+  assert.equal(ok.ok, true);
+  assert.match(ok.output, /body text/);
+  const bad = await tool.execute({ url: 'file:///C:/x' });
+  assert.equal(bad.ok, false);
+  assert.equal(harness.getTools({ isolated: true }).some((t) => t.name === 'web_read'), false);
+});
+
+test('ToolHarness webNode: private (tor) and 18+ (main) both get web tools on their own node; none hides them', async () => {
+  const calls = [];
+  const harness = new ToolHarness({
+    webSearch: async (q, opts) => { calls.push(['search', opts?.node]); return { results: [{ url: 'hxxp://a[.]onion/', title: 'a' }], pages: [] }; },
+    webRead: async (u, opts) => { calls.push(['read', u, opts?.node]); return { text: 'page', title: 't' }; },
+    webResearch: async (args, opts) => { calls.push(['research', opts?.node, opts?.journal]); return { ok: true, output: 'r', links: [] }; },
+    openSite: async () => {},
+  });
+  const names = (ctx) => harness.getTools(ctx).map((t) => t.name);
+  assert.ok(names({ webNode: 'tor' }).includes('web_research'));
+  assert.ok(!names({ webNode: 'tor' }).includes('web_open'));
+  assert.ok(names({ webNode: 'main' }).includes('web_open'));
+  assert.ok(!names({ webNode: null }).includes('web_search'));
+  assert.ok(!names({ isolated: true }).includes('web_research'));
+
+  const torTools = harness.getTools({ webNode: 'tor', journal: false });
+  await torTools.find((t) => t.name === 'web_search').execute({ query: 'q' });
+  await torTools.find((t) => t.name === 'web_read').execute({ url: 'hxxp://a[.]onion/' });
+  await torTools.find((t) => t.name === 'web_research').execute({ question: 'q', queries: ['a'] });
+  assert.deepEqual(calls, [['search', 'tor'], ['read', 'hxxp://a[.]onion/', 'tor'], ['research', 'tor', false]]);
+});
+
+test('ToolHarness: asked to search the web but answered from memory → one nudge to web_research', async () => {
+  const researched = [];
+  const harness = new ToolHarness({
+    webSearch: async () => ({ results: [] }),
+    webResearch: async (args) => { researched.push(args); return { ok: true, output: 'Источники: [1] https://x.org', links: [{ url: 'https://x.org' }] }; },
+  });
+  let step = 0;
+  const seen = [];
+  const res = await harness.runLoop({
+    messages: [{ role: 'user', content: 'прочеши глубоко интернет и сравни модели' }],
+    ctx: { webNode: 'main' },
+    async runTurn({ messages }) {
+      step += 1;
+      seen.push(messages.at(-1).content);
+      if (step === 1) return { text: 'По памяти: лучшие такие-то.', toolCalls: [] };
+      if (step === 2) return { text: '', toolCalls: [{ function: { name: 'web_research', arguments: { question: 'сравни модели', queries: ['a', 'b'] } } }] };
+      return { text: 'Ответ со ссылками [1] https://x.org', toolCalls: [] };
+    },
+  });
+  assert.match(seen[1], /Вызови web_research/);
+  assert.equal(researched.length, 1);
+  assert.equal(res.text, 'Ответ со ссылками [1] https://x.org');
+});
+
+test('ToolHarness: a made-up markdown image is removed when the real picture is attached', async () => {
+  const harness = new ToolHarness({
+    comfyDraw: async () => ({ ok: true, path: null, image: 'pic.png', prompt: 'cat', negative: '', seed: 1, width: 832, height: 1216, steps: 30, cfg: 6.5 }),
+  });
+  let step = 0;
+  const res = await harness.runLoop({
+    messages: [{ role: 'user', content: 'нарисуй кота' }],
+    ctx: {},
+    async runTurn() {
+      step += 1;
+      return step === 1
+        ? { text: '', toolCalls: [{ function: { name: 'comfy_generate', arguments: { prompt: 'cat' } } }] }
+        : { text: 'Держи кота.\n\n![cat](https://image_url_placeholder)', toolCalls: [] };
+    },
+  });
+  assert.equal(res.text, 'Держи кота.');
+  assert.equal(res.image, 'pic.png');
+});
