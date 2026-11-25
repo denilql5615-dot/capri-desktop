@@ -55,3 +55,39 @@ test('the feed updates one row per step, ignores an earlier turn, shows the last
   assert.equal(steps.children.length, 4);
   assert.equal(rows()[0][1], 'Смотрю тесты.');
 });
+
+test('step.icon, step.label, awaiting state, and expanded detail with target/exitCode render safely', async (t) => {
+  const { connectAgentActivity } = await import('../src/renderer/js/agent-activity.js');
+  global.document = { createElement: () => new Element() };
+  t.after(() => { delete global.document; });
+  const list = new Element();
+  let emit;
+  connectAgentActivity({ onAgentActivity: (listener) => { emit = listener; } }, list, () => 'chat');
+  emit({ id: 'chat', runId: 'r1', agent: 'local', event: { kind: 'turn', state: 'running' } });
+  emit({
+    id: 'chat',
+    runId: 'r1',
+    agent: 'local',
+    event: {
+      id: 't1',
+      kind: 'command',
+      name: 'terminal_run',
+      icon: 'terminal',
+      label: 'Терминал',
+      state: 'awaiting',
+      detail: { command: 'rm -rf temp', target: 'D:\\Capri\\temp', exitCode: 1, output: 'denied' },
+    },
+  });
+  const [head, steps] = list.children[0].children;
+  assert.equal(head.children[0].textContent, 'Терминал · Ждёт подтверждения');
+  const row = steps.children[0];
+  assert.ok(row.children[0].innerHTML.includes('<svg'));
+  assert.equal(row.children[1].textContent, 'Терминал');
+  assert.equal(row.children[2].textContent, 'Ждёт подтверждения');
+  row.onclick();
+  const detailBox = row.children[3];
+  assert.ok(detailBox.textContent.includes('$ rm -rf temp'));
+  assert.ok(detailBox.textContent.includes('→ D:\\Capri\\temp'));
+  assert.ok(detailBox.textContent.includes('exit 1'));
+  assert.ok(detailBox.textContent.includes('denied'));
+});

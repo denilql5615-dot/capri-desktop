@@ -5,6 +5,7 @@
 // text, never as markup: it can hold anything, a page's text she read out included.
 
 import { appendHubText } from './hub-links.js';
+import { renderArtifacts, guessKindFromName } from './artifact-cards.js';
 import { openStylesLibrary } from './styles-library.js';
 import {
   attachSlashMenu,
@@ -230,7 +231,7 @@ function renderList() {
   $('.hud__count').textContent = chats.length ? String(chats.length) : '';
 }
 
-function line(role, content, at, q, isolated = false) {
+function line(role, content, at, q, isolated = false, meta = null) {
   const item = el('li', `line ${role === 'user' ? 'is-you' : 'is-her'}`);
   const who = el('div', 'line__who');
   who.append(el('span', 'line__name', role === 'user' ? t.you : t.her), el('span', 'line__at', at ? time(at) : t.typing));
@@ -244,22 +245,40 @@ function line(role, content, at, q, isolated = false) {
   }
   // a picture she sent ("скинь фото"): its mark becomes the picture under her words
   const photos = [...content.matchAll(PHOTO_MARK)].map((m) => m[1]);
+  const fileMarkers = [...content.matchAll(FILE_MARK)].map((m) => ({
+    id: m[1],
+    name: m[2],
+    kind: guessKindFromName(m[2]),
+  }));
   const text = el('p', 'line__text');
   if (isolated) text.append(marked(content, q));
-  else appendHubText(text, content.replace(PHOTO_MARK, '').trim(), (part) => marked(part, q));
+  else appendHubText(text, content.replace(PHOTO_MARK, '').replace(FILE_MARK, '').trim(), (part) => marked(part, q));
   item.append(who, text);
   for (const name of isolated ? [] : photos) {
-    const clip = /\.webm$/i.test(name); // a clip she sent ("скинь видео"): looped, silent
+    const clip = /\.(?:webm|mp4)$/i.test(name); // a clip she sent ("скинь видео"): looped, silent
     const img = el(clip ? 'video' : 'img', 'line__photo');
     img.src = `capri://gallery/${name}`;
     if (clip) Object.assign(img, { muted: true, loop: true, autoplay: true, playsInline: true });
     else img.alt = '';
     item.append(img);
   }
+  if (!isolated) {
+    const byId = new Map();
+    for (const art of (Array.isArray(meta?.artifacts) ? meta.artifacts : [])) {
+      if (art?.id) byId.set(art.id, art);
+    }
+    for (const art of fileMarkers) {
+      if (!byId.has(art.id)) byId.set(art.id, art);
+    }
+    const artifacts = [...byId.values()];
+    const links = Array.isArray(meta?.links) ? meta.links : [];
+    if (artifacts.length || links.length) renderArtifacts(item, artifacts, links, { host });
+  }
   return item;
 }
 
-const PHOTO_MARK = /\[\[photo:(\d{8}-\d{6}-[0-9a-f]{4}\.(?:png|webm))\]\]/g;
+const PHOTO_MARK = /\[\[photo:(\d{8}-\d{6}-[0-9a-f]{4}\.(?:png|webm|mp4))\]\]/g;
+const FILE_MARK = /\[\[file:([A-Za-z0-9_-]{4,80})\|([^\]\n|]{1,180})\]\]/g;
 
 function renderLog({ keepScroll = false } = {}) {
   const separate = usesTool();
@@ -279,7 +298,7 @@ function renderLog({ keepScroll = false } = {}) {
   const turn = toolTurns.get(toolKey());
   const messages = separate ? [turn?.question, turn?.answer].filter(Boolean) : chat?.messages || [];
   const plainText = separate && !['research', 'search'].includes(chatMode);
-  const lines = messages.map((m) => line(m.role, m.content, m.at, q, plainText));
+  const lines = messages.map((m) => line(m.role, m.content, m.at, q, plainText, m));
   // her answer coming, under the live chat (or the new one)
   if (!separate && busy && streamed && (current === live || (!current && !live))) lines.push(line('assistant', streamed, null, ''));
   const isEmpty = lines.length === 0;
@@ -436,7 +455,13 @@ async function sendPlainMessage(text) {
       const result = await host.chatsRunTool({ text, mode: chatMode, ephemeral: temporary, images });
       if (result.stopped) hint(research ? t.stopped : t.localStopped);
       else {
-        turn.answer = { role: 'assistant', content: result.reply, at: Date.now() };
+        turn.answer = {
+          role: 'assistant',
+          content: result.reply,
+          ...(Array.isArray(result.artifacts) && { artifacts: result.artifacts }),
+          ...(Array.isArray(result.links) && { links: result.links }),
+          at: Date.now(),
+        };
         hint(null);
       }
     } catch (err) {

@@ -191,6 +191,11 @@ contextBridge.exposeInMainWorld('host', {
   roblox: (query) => ipcRenderer.invoke('apps:roblox', query),
   searchFiles: (query) => ipcRenderer.invoke('files:search', query),
   openFile: (file, reveal) => ipcRenderer.invoke('files:open', { file, reveal }),
+  artifacts: {
+    open: (id) => ipcRenderer.invoke('artifact:open', id),
+    reveal: (id) => ipcRenderer.invoke('artifact:reveal', id),
+    src: (id) => ipcRenderer.invoke('artifact:src', id),
+  },
   screenshot: () => ipcRenderer.invoke('files:screenshot'),
   webSearch: (query, how) => ipcRenderer.invoke('web:search', query, how || {}), // how.tor: her Tor node
   council: (question, how) => ipcRenderer.invoke('council:run', question, how || {}), // her council of models (council.js)

@@ -43,6 +43,8 @@
 
 .agent-activity__step.is-running,
 .agent-activity__step.is-message { color: var(--hub-text); }
+.agent-activity__step.is-awaiting,
+.agent-activity__step.is-awaiting .agent-activity__status { color: var(--hub-warn, #fbbc04); }
 .agent-activity__step.is-failed,
 .agent-activity__step.is-failed .agent-activity__status { color: #f28b82; }
 .agent-activity__step[tabindex] { cursor: pointer; }

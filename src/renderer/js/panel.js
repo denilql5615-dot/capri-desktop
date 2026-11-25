@@ -413,7 +413,7 @@ export class Panel {
   // A picture she sent, under her line, in her chat (capri://gallery/...): placed again once it's loaded.
   showPhoto(src) {
     if (!this.current?.chat) return;
-    if (/\.webm$/i.test(src)) {
+    if (/\.(?:webm|mp4)$/i.test(src)) {
       this.photo.hidden = true;
       this.clip.onloadeddata = () => this.place();
       this.clip.src = src;

@@ -5,6 +5,7 @@
 // model's context). Logos: brand-logos.js.
 import { brandSvg } from './brand-logos.js';
 import { quotaBrand } from './quota-scale.js';
+import { iconSvg } from './step-icons.js';
 
 const phases = {
   memory: 'Подбираю контекст из памяти', tools: 'Готовлю инструменты', connectors: 'Подключаю коннекторы',
@@ -12,10 +13,11 @@ const phases = {
 };
 const tools = { Read: 'Прочитано', Grep: 'Поиск по файлам', Glob: 'Поиск файлов', WebSearch: 'Google Search', WebFetch: 'Чтение страницы', TodoWrite: 'План задачи' };
 const KINDS = new Set(['thinking', 'message', 'command', 'tool', 'file', 'skill', 'connector', 'search', 'worker']);
-const states = { running: 'Думаю…', done: 'Готово', failed: 'Ошибка', stopped: 'Остановлено' };
+const states = { running: 'Думаю…', awaiting: 'Ждёт подтверждения', done: 'Готово', failed: 'Ошибка', stopped: 'Остановлено' };
 const STORE = 'altai.activity.v1';
 
 export function stepLabel(step) {
+  if (step.label) return String(step.label);
   const first = (s) => String(s || '').split('\n')[0].slice(0, 90);
   switch (step.kind) {
     case 'phase': return phases[step.name] || `Этап ${step.name}`;
@@ -32,6 +34,10 @@ export function stepLabel(step) {
 }
 
 function logoFor(step) {
+  if (step.icon) {
+    const icon = iconSvg(step.icon);
+    if (icon) return icon;
+  }
   if (step.kind === 'search' && /websearch|google/i.test(step.name || '')) return brandSvg('google');
   return brandSvg(quotaBrand(step.source));
 }
@@ -59,8 +65,10 @@ function turnRow(turn) {
 
 function render(turn) {
   const steps = [...turn.steps.values()];
-  const running = [...steps].reverse().find((s) => s.state === 'running' && s.kind !== 'message');
-  turn.status.textContent = turn.state === 'running' ? (running ? stepLabel(running) : states.running) : states[turn.state];
+  const active = [...steps].reverse().find((s) => (s.state === 'awaiting' || s.state === 'running') && s.kind !== 'message');
+  turn.status.textContent = turn.state === 'running'
+    ? (active ? (active.state === 'awaiting' ? `${stepLabel(active)} · ${states.awaiting}` : stepLabel(active)) : states.running)
+    : (states[turn.state] || '');
   turn.chevron.textContent = steps.length ? (turn.expanded ? '⌄' : '›') : '';
   turn.head.setAttribute('aria-expanded', String(Boolean(turn.expanded)));
   const shown = turn.expanded ? steps : steps.slice(-3);
@@ -71,17 +79,20 @@ function render(turn) {
     const svg = logoFor(step);
     if (svg) logo.innerHTML = svg;
     const caption = el('span', 'agent-activity__caption', stepLabel(step));
+    const pending = step.state === 'running' || step.state === 'awaiting';
     const state = el('span', 'agent-activity__status',
-      step.state === 'running' && turn.state !== 'running' ? (turn.state === 'stopped' ? states.stopped : 'Без подтверждения') : (step.kind === 'message' ? '' : states[step.state]));
+      pending && turn.state !== 'running' ? (turn.state === 'stopped' ? states.stopped : 'Без подтверждения') : (step.kind === 'message' ? '' : (states[step.state] || '')));
     item.append(logo, caption, state);
-    const detail = step.detail && (step.detail.command || step.detail.output || step.detail.input);
-    if (detail || step.error) {
+    const d = step.detail;
+    const hasDetail = d && (d.command || d.target || d.input || d.output || Number.isInteger(d.exitCode));
+    if (hasDetail || step.error) {
       item.tabIndex = 0;
       item.onclick = () => {
         const open = item.querySelector?.('.agent-activity__detail');
         if (open) return open.remove();
         const box = el('pre', 'agent-activity__detail');
-        box.textContent = [step.detail?.command && `$ ${step.detail.command}`, step.detail?.input, step.detail?.output, step.error && `Ошибка: ${step.error}`]
+        const meta = [d?.target && `→ ${d.target}`, Number.isInteger(d?.exitCode) && `exit ${d.exitCode}`].filter(Boolean).join(' · ');
+        box.textContent = [d?.command && `$ ${d.command}`, meta, d?.input, d?.output, step.error && `Ошибка: ${step.error}`]
           .filter(Boolean).join('\n\n');
         item.append(box);
       };
@@ -98,7 +109,10 @@ function save(id, turn) {
   try {
     const all = load();
     all[id] = { at: Date.now(), state: turn.state, steps: [...turn.steps.values()].slice(-60).map(({ detail, ...rest }) => ({ ...rest, ...(detail && { detail: {
-      ...(detail.command && { command: String(detail.command).slice(0, 300) }), ...(detail.input && { input: String(detail.input).slice(0, 200) }),
+      ...(detail.command && { command: String(detail.command).slice(0, 300) }),
+      ...(detail.target && { target: String(detail.target).slice(0, 200) }),
+      ...(detail.input && { input: String(detail.input).slice(0, 200) }),
+      ...(Number.isInteger(detail.exitCode) && { exitCode: detail.exitCode }),
     } }) })) };
     const keys = Object.keys(all).sort((a, b) => all[b].at - all[a].at);
     for (const key of keys.slice(40)) delete all[key];
