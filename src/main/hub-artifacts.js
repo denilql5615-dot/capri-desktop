@@ -6,9 +6,10 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 
+const CODE_EXTS = ['.py', '.js', '.ts', '.kt', '.ps1', '.json', '.html', '.css', '.yml', '.yaml', '.xml', '.sh', '.sql', '.log'];
 const ALLOWED = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.mp4', '.webm', '.mov',
-  '.pdf', '.docx', '.xlsx', '.pptx', '.txt', '.md', '.csv', '.wav', '.mp3']);
-const TEXT_EXTS = new Set(['.txt', '.md', '.csv']);
+  '.pdf', '.docx', '.xlsx', '.pptx', '.txt', '.md', '.csv', '.wav', '.mp3', ...CODE_EXTS]);
+const TEXT_EXTS = new Set(['.txt', '.md', '.csv', ...CODE_EXTS]);
 const MARKITDOWN_EXTS = new Set(['.pdf', '.docx', '.xlsx', '.pptx']);
 const validRun = (run) => typeof run === 'string' && /^[0-9a-f-]{36}$/i.test(run);
 const validName = (name) => typeof name === 'string' && !/[\\/:]/.test(name) && ALLOWED.has(path.extname(name).toLowerCase());
