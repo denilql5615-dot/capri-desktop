@@ -683,8 +683,16 @@ function modePauseReason(item, { mode = 'chat', ephemeral = false, isCloud = fal
   if (item.vaultOnly && ephemeral) {
     return 'Пауза во временном чате (vaultOnly)';
   }
+  // Private and Tor: the network only through Tor (Danyal 2026-11-18 / 2026-11-25), so connectors that
+  // go out to the open web pause; local ones (Obsidian, NOMAD, Docker, files…) FreshRSS's local copy and your Proton mail stay.
+  if ((normMode === 'private' || normMode === 'tor' || torQuarantined) && !item.offlineSafe && !OPEN_WEB_SAFE_LOCAL.has(item.id)) {
+    return normMode === 'private'
+      ? 'Пауза в Привате: этот коннектор ходит в открытую сеть, а здесь сеть только через Tor'
+      : 'Пауза в Tor-режиме: этот коннектор ходит в открытую сеть';
+  }
   return null;
 }
+const OPEN_WEB_SAFE_LOCAL = new Set(['freshrss', 'proton-pim']); // local copy of feeds; your own mail through the local Proton Bridge (not a web search)
 
 function fenceUntrusted(id, body) {
   const safeBody = String(body || '')
@@ -2057,6 +2065,8 @@ class ConnectorsEngine {
   }
 
   async executeReadOnlyQuery(def, query, { mode = 'chat', ephemeral = false, isCloud = false } = {}) {
+    // the general search log (Obsidian) only from ordinary chat: never from 18+, private, Tor or a temporary chat
+    const journal = !ephemeral && !ISOLATED_MODES.has(String(mode || 'chat').toLowerCase());
     const q = String(query || '').trim();
     const cfg = this.getConfig() || {};
 
@@ -2147,7 +2157,7 @@ class ConnectorsEngine {
           }
         }
         if (typeof this.deps.webSearch === 'function') {
-          const found = await this.deps.webSearch(q);
+          const found = await this.deps.webSearch(q, { journal });
           const rows = Array.isArray(found?.results) ? found.results.slice(0, 5) : [];
           const pages = Array.isArray(found?.pages) ? found.pages : [];
           if (wantsOpen && rows[0]?.url && typeof this.deps.openSite === 'function') {
@@ -2233,7 +2243,7 @@ class ConnectorsEngine {
           };
         }
         if (typeof this.deps.webSearch === 'function') {
-          const found = await this.deps.webSearch(`site:youtube.com ${q}`);
+          const found = await this.deps.webSearch(`site:youtube.com ${q}`, { journal });
           const rows = Array.isArray(found?.results) ? found.results.slice(0, 3) : [];
           return {
             fenced: true,

@@ -30,6 +30,8 @@ const WRAPPER_HEADS = new Set([
   'bash', 'bash.exe', 'sh', 'wsl', 'wsl.exe', 'perl', 'ruby',
 ]);
 const NETWORK_READ_RE = /\b(?:Invoke-WebRequest|iwr|Invoke-RestMethod|irm|curl|curl\.exe|wget)\b/i;
+// Anything that opens a connection out: blocked in private / Tor mode (the network there is Tor only).
+const NET_TOOL_RE = /\b(?:git\s+(?:pull|fetch|clone|push|ls-remote|submodule)|(?:npm|pnpm|yarn)\s+(?:i|install|ci|update|add|publish)|pip3?\s+install|py\s+-m\s+pip|winget|choco|scoop|ssh|scp|sftp|ping|nslookup|Resolve-DnsName|Test-NetConnection|Test-Connection|Start-BitsTransfer|Net\.WebClient|HttpClient|Send-MailMessage|gh|yt-dlp|ollama\s+pull|docker\s+(?:pull|push|login))\b/i;
 const INSTALL_OR_SYSTEM_CMDS = new Set([
   'winget', 'winget.exe', 'choco', 'scoop', 'msiexec', 'msiexec.exe',
   'reg', 'reg.exe', 'bcdedit', 'shutdown', 'restart-computer', 'stop-computer',
@@ -503,6 +505,15 @@ function createTerminalTool({ torState = null, spawnImpl, execFileImpl } = {}) {
       }
       const cwd = args.cwd || DEFAULT_CWD;
       const classified = classifyCommand(args.command, { cwd });
+      // Private / Tor mode: the network only through Tor, so the terminal never reaches the open web itself.
+      if (ctx.webNode === 'tor' && (classified.cls === 'NETWORK_SEND' || readsNetwork(args.command) || NET_TOOL_RE.test(String(args.command || '')))) {
+        return {
+          decision: 'deny',
+          cls: classified.cls,
+          line: `Выполнить в PowerShell: ${String(args.command || '').slice(0, 140)}`,
+          why: 'В Привате сеть только через Tor: терминал в открытую сеть не ходит. Для поиска — web_search / web_research.',
+        };
+      }
       // Full agentic workspace access (like Claude Code / Codex), the same from the PC and the phone (Danyal 2026-11-25):
       // READ_ONLY, FILE_WRITE and dev/exec commands run at once; red lines (DELETE, CREDENTIAL_ACCESS,
       // NETWORK_SEND, installs, hidden calls) ask. The phone asks on the phone (the harness picks the asker).

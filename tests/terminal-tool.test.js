@@ -179,3 +179,14 @@ test('after text from the web the turn asks before any changing command, reads s
   assert.equal(tool.gate({ command: 'Get-ChildItem D:/Capri' }, ctx).decision, 'allow');
   assert.equal(tool.gate({ command: 'git status' }, { origin: 'phone', untrusted: true }).decision, 'allow');
 });
+
+test('private / Tor mode: the terminal works but never reaches the open web itself', () => {
+  const tool = createTerminalTool({ torState: { isQuarantined: () => false } });
+  const ctx = { origin: 'phone', webNode: 'tor' };
+  for (const command of ['curl https://example.com', 'git pull', 'npm install x', 'ping 8.8.8.8', 'ssh host', 'yt-dlp URL']) {
+    assert.equal(tool.gate({ command }, ctx).decision, 'deny', command);
+  }
+  assert.equal(tool.gate({ command: 'Get-ChildItem D:/Capri' }, ctx).decision, 'allow');
+  assert.equal(tool.gate({ command: 'node --test' }, ctx).decision, 'allow');
+  assert.equal(tool.isAvailable({ webNode: 'tor' }), true);
+});
