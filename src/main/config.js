@@ -24,11 +24,11 @@ const DEFAULTS = {
   brainInfluenceAbStart: '2026-11-18', // first experiment day (group B, UTC+5) when brainInfluence is 'ab'
   routerJournal: 'off', // 'off' | 'on' (Stage 7a router decision & outcome journal; off by default)
   memoryRootLookup: 'off', // 'off' | 'on' (approved offline NOMAD root lookup in normal chat; off by default)
-  searxUrl: 'http://192.168.0.108:8888', // her web search (web.js): our SearXNG on the home server, out through Proton on the PC
+  searxUrl: 'http://192.168.0.107:8888', // her web search (web.js): our SearXNG on the home server, out through Proton on the PC
   capriBrowser: 'auto', // her browser (browser.js): 'auto' = your Windows default, or a name (LibreWolf, Brave…), or a path to an exe
   capriBrowserProfile: '', // a profile folder of yours for her (e.g. Camoufox MAIN); '' = her own profile per browser
   capriBrowserProfileName: '', // its name, for the tray
-  capriBrowserPort: 9339, // the control port she attaches to on 127.0.0.1 when that profile's browser runs
+  capriBrowserPort: 19339, // the control port she attaches to on 127.0.0.1 when that profile's browser runs
   // her Tor node (tor.js): asked "через тор" — tor.exe here, her own Camoufox profile TOR, its own window
   tor: true,
   torExe: 'D:\\Capri\\tools\\tor\\tor\\tor.exe',

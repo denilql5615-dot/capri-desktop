@@ -202,7 +202,7 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 // extension updates off) and only puts them back on a clean exit. Instead the browser runs as itself with
 // a control port on 127.0.0.1, started by her or by you, and she attaches: her own window, closed after;
 // the browser, its tabs and the profile stay as they were.
-const DEFAULT_PORT = 9339;
+const DEFAULT_PORT = 19339;
 
 /** The profile is open in a browser right now (Firefox holds parent.lock while running). */
 function profileBusy(dir, io = fs) {
