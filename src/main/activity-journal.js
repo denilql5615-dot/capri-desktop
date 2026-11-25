@@ -18,8 +18,8 @@ const MAX_ENTRIES = 160;
 const MAX_TURNS = 400;
 const MAX_AGE_MS = 30 * 24 * 3600e3;
 const LIVE_MS = 15 * 60e3;
-const KINDS = new Set(['turn', 'phase', 'thinking', 'message', 'command', 'tool', 'file', 'skill', 'connector', 'service', 'search']);
-const STATES = new Set(['running', 'done', 'failed', 'stopped']);
+const KINDS = new Set(['turn', 'phase', 'thinking', 'message', 'command', 'tool', 'file', 'skill', 'connector', 'service', 'search', 'worker']);
+const STATES = new Set(['running', 'awaiting', 'done', 'failed', 'stopped']);
 
 const SECRET_PATTERNS = [
   /\b(?:sk|pk|rk|ghp|gho|ghs|github_pat|xox[abpr]|AIza|ya29)[-_A-Za-z0-9]{12,}/g,
@@ -53,10 +53,12 @@ function clean(event, { isolated }) {
     if (kind === 'phase') out.name = name(event.name);
     return out;
   }
-  for (const key of ['name', 'agent', 'group', 'model']) {
+  for (const key of ['name', 'agent', 'group', 'model', 'icon']) {
     const v = name(event[key]);
     if (v) out[key] = v;
   }
+  const label = safeText(event.label, 120);
+  if (label) out.label = label;
   if (Array.isArray(event.files)) {
     const files = event.files.slice(0, 16).map((f) => name(String(f || '').split(/[\\/]/).slice(-3).join('/'))).filter(Boolean);
     if (files.length) out.files = files;
@@ -68,9 +70,13 @@ function clean(event, { isolated }) {
   const detail = event.detail && typeof event.detail === 'object' ? event.detail : null;
   if (detail) {
     const d = {};
+    const tool = safeText(detail.tool, 120);
+    const target = safeText(detail.target, 300);
     const command = safeText(detail.command, 600);
     const input = safeText(detail.input, 600);
-    const output = safeText(detail.output, 2000, { tail: true });
+    const output = safeText(detail.output, 1500, { tail: true });
+    if (tool) d.tool = tool;
+    if (target) d.target = target;
     if (command) d.command = command;
     if (input) d.input = input;
     if (output) d.output = output;
@@ -126,7 +132,7 @@ class ActivityJournal {
     const turn = this.turns.get(id);
     if (!turn || turn.done) return;
     for (const e of turn.entries.values()) {
-      if (e.state === 'running') { e.state = state === 'done' ? 'done' : state; e.v = ++turn.version; }
+      if (e.state === 'running' || e.state === 'awaiting') { e.state = state === 'done' ? 'done' : state; e.v = ++turn.version; }
     }
     const last = [...turn.entries.values()].filter((e) => e.kind !== 'turn').at(-1);
     if (last?.kind === 'message' && state === 'done') turn.entries.delete(last.key);

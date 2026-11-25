@@ -70,3 +70,31 @@ test('unknown kinds and bad ids are ignored', () => {
   assert.equal(j.add(ID, 'k', { kind: 'eval', name: 'x' }), null);
   assert.equal(j.read('nothing-here-123'), null);
 });
+
+test('journal keeps icon, label, awaiting state, detail.tool/target/exitCode and caps output at 1500 chars', () => {
+  const j = new ActivityJournal();
+  j.begin(ID);
+  j.add(ID, 'r1:term', {
+    kind: 'command',
+    name: 'terminal',
+    icon: 'terminal',
+    label: 'Терминал · git status',
+    state: 'awaiting',
+    detail: {
+      tool: 'terminal_run',
+      target: 'D:\\Capri\\capri-desktop',
+      command: 'git status',
+      exitCode: 0,
+      output: 'A'.repeat(1600) + 'TAIL',
+    },
+  });
+  const entry = j.read(ID, 0).entries[0];
+  assert.equal(entry.icon, 'terminal');
+  assert.equal(entry.label, 'Терминал · git status');
+  assert.equal(entry.state, 'awaiting');
+  assert.equal(entry.detail.tool, 'terminal_run');
+  assert.equal(entry.detail.target, 'D:\\Capri\\capri-desktop');
+  assert.equal(entry.detail.exitCode, 0);
+  assert.ok(entry.detail.output.endsWith('TAIL'));
+  assert.equal(entry.detail.output.length, 1501);
+});
