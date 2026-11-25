@@ -147,6 +147,7 @@ test('multi-provider cloud session preserves full history across Codex -> Antigr
       agent,
       model,
       count: messages.length,
+      handoff: messages.some((m) => m.role === 'system' && /перешёл к тебе от другой модели/.test(m.content)),
       sameProviderContiguous: meta.sameProviderContiguous,
       hydratedFromHistory: meta.hydratedFromHistory,
       webChatId: meta.session?.webChatId || null,
@@ -179,7 +180,10 @@ test('multi-provider cloud session preserves full history across Codex -> Antigr
   });
   assert.equal(r2.ok, true);
   assert.equal(r2.provider, 'gemini');
-  assert.equal(seenCalls[1].count, 5);
+  // a provider change adds one handoff note (agent-sessions buildHandoffNote)
+  assert.equal(seenCalls[1].count, 6);
+  assert.equal(seenCalls[1].handoff, true);
+  assert.equal(seenCalls[0].handoff, false);
   assert.equal(seenCalls[1].sameProviderContiguous, false);
 
   const r3 = await hub.send(id, 'gemini-web-neon', 'turn 3 on gemini web', false, false, true, {
@@ -187,7 +191,8 @@ test('multi-provider cloud session preserves full history across Codex -> Antigr
   });
   assert.equal(r3.ok, true);
   assert.equal(r3.provider, 'gemini-web');
-  assert.equal(seenCalls[2].count, 7);
+  assert.equal(seenCalls[2].count, 8);
+  assert.equal(seenCalls[2].handoff, true);
   assert.equal(seenCalls[2].sameProviderContiguous, false);
   assert.equal(seenCalls[2].webChatId, null);
 
@@ -196,6 +201,7 @@ test('multi-provider cloud session preserves full history across Codex -> Antigr
   });
   assert.equal(r4.ok, true);
   assert.equal(seenCalls[3].count, 9);
+  assert.equal(seenCalls[3].handoff, false);
   assert.equal(seenCalls[3].sameProviderContiguous, true);
   assert.equal(seenCalls[3].webChatId, 'webchat-12345678');
 
@@ -205,7 +211,8 @@ test('multi-provider cloud session preserves full history across Codex -> Antigr
   });
   assert.equal(r5.ok, true);
   assert.equal(r5.provider, 'claude');
-  assert.equal(seenCalls[4].count, 11);
+  assert.equal(seenCalls[4].count, 12);
+  assert.equal(seenCalls[4].handoff, true);
   assert.equal(seenCalls[4].sameProviderContiguous, false);
   assert.equal(seenCalls[4].webChatId, null);
 
