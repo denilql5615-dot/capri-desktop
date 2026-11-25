@@ -1216,6 +1216,19 @@ class PhoneBridge {
         const result = this.connectorsEngine().saveHealthSummary(body || {});
         return this.send(res, result.ok ? 200 : 400, result);
       }
+      if (req.method === 'POST' && url.pathname === '/memory/save-branch') {
+        const body = await this.readJson(req, MAX_BODY * 2);
+        if (!this.d.saveBranchMemory) {
+          return this.send(res, 503, { ok: false, error: 'Сохранение веток памяти недоступно на ПК.' });
+        }
+        const result = this.d.saveBranchMemory({
+          branch: body.branch || 'private',
+          said: body.said || '',
+          answer: body.answer || '',
+          summary: body.summary || '',
+        });
+        return this.send(res, result?.ok ? 200 : 400, result || { ok: false });
+      }
       if (req.method === 'POST' && url.pathname === '/connectors/configure') {
         const body = await this.readJson(req, MAX_BODY * 2);
         if (!body || typeof body !== 'object' || Array.isArray(body) || !String(body.id || '').trim()) {
@@ -1695,11 +1708,43 @@ class PhoneBridge {
           entry = { owner, fingerprint, state: 'queued', abort: new AbortController(), timer: null, result: null };
           this.chatRequests.set(requestId, entry);
         }
+        const wantsStream = body.stream === true || /\btext\/event-stream\b/i.test(req.headers.accept || '');
+        if (wantsStream) {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+          });
+          let streamHold = '';
+          let toolTagDetected = false;
+          const sendSse = (obj) => {
+            if (!res.destroyed && !res.writableEnded) res.write(`data: ${JSON.stringify(obj)}\n\n`);
+          };
+          flags.onDelta = (piece) => {
+            if (!piece || toolTagDetected) return;
+            streamHold += piece;
+            if (streamHold.length < 10) {
+              if ('[[use:'.startsWith(streamHold.trimStart())) return;
+            }
+            if (/\[\[use:/i.test(streamHold)) {
+              toolTagDetected = true;
+              streamHold = '';
+              return;
+            }
+            sendSse({ type: 'delta', text: streamHold });
+            streamHold = '';
+          };
+          flags.onStreamReset = () => {
+            streamHold = '';
+            toolTagDetected = false;
+          };
+        }
         const signal = entry?.abort.signal;
-        if (entry) {
+        const activityRunId = requestId || (typeof body.activityId === 'string' && RESEARCH_ID.test(body.activityId) ? body.activityId : null);
+        if (activityRunId) {
           // an isolated or Tor-touching turn keeps phases only, in memory (activity-journal.js)
-          this.journal.begin(requestId, { isolated: isolated || Boolean(this.d.externalBlocked?.(flags.text)) });
-          flags.onActivity = (event) => this.journal.add(requestId, `local:${event.id || event.name}`, { agent: 'altair', group: 'local', ...event });
+          this.journal.begin(activityRunId, { isolated: isolated || Boolean(this.d.externalBlocked?.(flags.text)) });
+          flags.onActivity = (event) => this.journal.add(activityRunId, `local:${event.id || event.name}`, { agent: 'altair', group: 'local', ...event });
         }
         const turn = this.queue.then(() => {
           signal?.throwIfAborted();
@@ -1720,8 +1765,23 @@ class PhoneBridge {
             return stopped ? CHAT_STOPPED : result;
           });
           entry.result = response;
+        } else if (activityRunId) {
+          response = turn.then((result) => {
+            this.journal.finish(activityRunId, result.brain === 'error' ? 'failed' : 'done');
+            return result;
+          }, (err) => {
+            this.journal.finish(activityRunId, 'failed');
+            throw err;
+          });
         }
         const result = await response;
+        if (wantsStream) {
+          if (!res.destroyed && !res.writableEnded) {
+            res.write(`data: ${JSON.stringify({ type: 'done', ...result })}\n\n`);
+            res.end();
+          }
+          return;
+        }
         if (!res.destroyed) return this.send(res, 200, result);
         return;
       }
@@ -1792,6 +1852,19 @@ class PhoneBridge {
             };
           }
         }
+        const wantsAgentStream = body.stream === true || /\btext\/event-stream\b/i.test(req.headers.accept || '');
+        if (wantsAgentStream) {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+          });
+          sendPayload.onDelta = (piece) => {
+            if (piece && !res.destroyed && !res.writableEnded) {
+              res.write(`data: ${JSON.stringify({ type: 'delta', text: String(piece) })}\n\n`);
+            }
+          };
+        }
         const activityId = typeof body.activityId === 'string' && RESEARCH_ID.test(body.activityId) ? body.activityId : null;
         if (activityId) {
           this.journal.begin(activityId);
@@ -1804,6 +1877,13 @@ class PhoneBridge {
           result = await this.d.agentSend?.(sendPayload);
         } finally {
           if (activityId) this.journal.finish(activityId, result?.ok === false ? 'failed' : result?.stopped ? 'stopped' : 'done');
+        }
+        if (wantsAgentStream) {
+          if (!res.destroyed && !res.writableEnded) {
+            res.write(`data: ${JSON.stringify({ type: 'done', ...(result || { ok: false }) })}\n\n`);
+            res.end();
+          }
+          return;
         }
         return this.send(res, 200, result || { ok: false });
       }
@@ -1923,13 +2003,13 @@ class PhoneBridge {
       mode: skillMode,
       ephemeral: Boolean(ephemeral),
       isCloud: false,
+      onActivity: flags.onActivity,
     });
     // 2.7a: the phone chat runs on local models only, so local-only styles and voices are fine here
     const styleTurn = this.d.stylesEngine?.resolveTurn({ text: connCtx.cleanedText || text, isCloud: false }) || null;
     const act = flags.onActivity;
     if (act) {
       for (const id of skillCtx.activeSkillIds || []) act({ id: `skill-${id}`, kind: 'skill', name: id, state: 'done' });
-      for (const id of connCtx.usedConnectorIds || []) act({ id: `connector-${id}`, kind: 'connector', name: id, state: 'done' });
       if (styleTurn?.block) act({ id: 'style', kind: 'skill', name: styleTurn.styleName || styleTurn.name || 'Writing Style', state: 'done' });
     }
     const effectiveText = styleTurn?.cleanedText || connCtx.cleanedText || text;
@@ -1972,21 +2052,33 @@ class PhoneBridge {
         ...(flags.localMode && { localMode: flags.localMode }),
       };
       opts.onActivity = flags.onActivity;
+      if (typeof flags.onDelta === 'function') opts.onDelta = flags.onDelta;
       const requestSignal = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
-      const firstChat = await this.d.chat(messages, requestSignal, opts);
+      let firstChat = await this.d.chat(messages, requestSignal, opts);
       requestSignal.throwIfAborted();
       let brain = firstChat?.brain;
       let context = firstChat?.context;
       let reply = String(firstChat?.text || '').trim();
       const usedConnectors = [...connCtx.usedConnectorIds];
 
-      const useTag = parseModelUseTag(reply);
-      if (useTag) {
-        const step = { id: `connector-use-${useTag.id}`, kind: 'connector', name: useTag.id };
+      // Up to 3 sequential tool/connector calls via [[use:<id> <query>]]
+      let loopMessages = [...messages];
+      for (let stepIdx = 0; stepIdx < 3; stepIdx += 1) {
+        const useTag = parseModelUseTag(reply);
+        if (!useTag) break;
+        const stepDef = this.connectorsEngine().findDefinition(useTag.id);
+        const stepQuery = useTag.query || effectiveText;
+        const step = {
+          id: `connector-use-${useTag.id}-${stepIdx}`,
+          kind: 'connector',
+          name: useTag.id,
+          ...(stepDef?.name && { label: stepDef.name }),
+          detail: { input: stepQuery.slice(0, 200) },
+        };
         flags.onActivity?.({ ...step, state: 'running' });
         const followRes = await this.connectorsEngine().queryConnector({
           id: useTag.id,
-          query: useTag.query || effectiveText,
+          query: stepQuery,
           mode: skillMode,
           ephemeral: Boolean(ephemeral),
           isCloud: false,
@@ -1994,29 +2086,32 @@ class PhoneBridge {
         flags.onActivity?.({ ...step, state: followRes.ok ? 'done' : 'failed', ...(followRes.ok ? {} : { error: followRes.error }) });
         const followPayload = followRes.ok
           ? followRes.reply
-          : `Коннектор ${useTag.id} не ответил: ${followRes.error || 'ошибка'}`;
-        const followMessages = [
-          ...messages,
-          { role: 'assistant', content: reply },
-          {
-            role: 'user',
-            content: `[Результат коннектора ${useTag.id} (только чтение)]\n${followPayload}\n\nДай итоговый ответ пользователю по этим данным, без тега [[use:...]].`,
-          },
-        ];
-        const secondChat = await this.d.chat(followMessages, requestSignal, opts);
-        requestSignal.throwIfAborted();
-        const cleanedFollow = stripModelUseTags(secondChat?.text || '');
-        if (cleanedFollow) {
-          reply = cleanedFollow;
-          brain = secondChat?.brain || brain;
-          context = secondChat?.context || context;
-        } else {
-          reply = stripModelUseTags(reply) || followPayload;
-        }
+          : `Инструмент/коннектор ${useTag.id} вернул ошибку: ${followRes.error || 'недоступен'}`;
         if (followRes.ok && !usedConnectors.includes(useTag.id)) {
           usedConnectors.push(useTag.id);
         }
+        flags.onStreamReset?.();
+        loopMessages = [
+          ...loopMessages,
+          { role: 'assistant', content: reply },
+          {
+            role: 'user',
+            content: `[Результат коннектора ${useTag.id}]\n${followPayload}\n\nПродолжи выполнение запроса. Если нужен ещё один коннектор/инструмент — вызови [[use:<id> <запрос>]], иначе сразу дай чёткий финальный ответ пользователю без тега [[use:...]].`,
+          },
+        ];
+        const nextChat = await this.d.chat(loopMessages, requestSignal, opts);
+        requestSignal.throwIfAborted();
+        const nextRaw = String(nextChat?.text || '').trim();
+        if (nextRaw) {
+          reply = nextRaw;
+          brain = nextChat?.brain || brain;
+          context = nextChat?.context || context;
+        } else {
+          reply = stripModelUseTags(reply) || followPayload;
+          break;
+        }
       }
+      reply = stripModelUseTags(reply);
 
       if (!reply) return { reply: 'Модель промолчала. Спроси ещё раз, покороче.', brain };
       if (!isolated && flags.btw !== true && flags.history === undefined) {
@@ -2064,7 +2159,7 @@ class PhoneBridge {
       }
     }
     const media = !isolated && !isBtw && !flags.deepResearch && this.d.photo && (flags.forceDraw ? 'photo' : this.d.mediaKind?.(text));
-    const { reply, brain, image, context, warnings } = media ? await this.media(text, media, flags)
+    const { reply, brain, image, context, connectors, warnings } = media ? await this.media(text, media, flags)
       : (!isolated && !isBtw && !flags.deepResearch && (!flags.requestedModel || flags.requestedModel === 'auto') && await this.switchModel(text))
         || await this.reply(flags, signal);
     if (signal?.aborted) return CHAT_ABORTED;
@@ -2072,6 +2167,7 @@ class PhoneBridge {
     // Временные чаты (ephemeral), приватный Vault (privateMode), 18+ (localOnly), btw и useVault: false не утекают в общий лог чатов
     if (brain !== 'error' && brain !== 'guard' && !isolated && !isBtw && flags.useVault !== false && !/^новый разговор/i.test(text)) {
       this.d.log?.({ said: text, answer: image ? `${reply}\n[[photo:${image}]]` : reply });
+      this.d.indexTurnMemory?.({ said: text, answer: reply });
     }
     const out = {
       reply,
@@ -2080,6 +2176,7 @@ class PhoneBridge {
       ...(isBtw && { btw: true }),
       ...(image && { image: `/gallery/${image}` }),
       ...(context && { context }),
+      ...(connectors?.length && { connectors }),
       ...(warnings?.length && { warnings }),
     };
     if (voice && brain !== 'error') {

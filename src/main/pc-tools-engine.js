@@ -442,11 +442,15 @@ class PcToolsEngine {
       }
 
       case 'tool-media': {
-        const [ytRes, ffRes, whisperUp] = await Promise.all([
-          this.safeExec(this.paths.ytDlpBin, ['--version']),
-          this.safeExec(this.paths.ffmpegBin, ['-version']),
+        let [ytRes, ffRes, whisperUp] = await Promise.all([
+          this.safeExec(this.paths.ytDlpBin, ['--version'], 8000),
+          this.safeExec(this.paths.ffmpegBin, ['-version'], 8000),
           this.checkTcpImpl('127.0.0.1', 8765),
         ]);
+        if (!ytRes.ok && process.env.LOCALAPPDATA) {
+          const wingetYt = path.join(process.env.LOCALAPPDATA, 'Microsoft', 'WinGet', 'Links', 'yt-dlp.exe');
+          if (this.existsImpl(wingetYt)) ytRes = await this.safeExec(wingetYt, ['--version'], 8000);
+        }
         const ready = ytRes.ok && ffRes.ok && whisperUp;
         const partial = ffRes.ok && (ytRes.ok || whisperUp);
         const parts = [
@@ -571,13 +575,23 @@ class PcToolsEngine {
       }
 
       case 'tool-comfy': {
-        const open = await this.checkTcpImpl('127.0.0.1', 8000);
+        const comfy = require('./comfy');
+        const appData = process.env.APPDATA || '';
+        const deskPort = appData && typeof comfy.desktopPort === 'function' ? comfy.desktopPort(appData) : 8188;
+        const [pCapri, pDesk] = await Promise.all([
+          this.checkTcpImpl('127.0.0.1', 8189),
+          this.checkTcpImpl('127.0.0.1', deskPort),
+        ]);
+        const openPort = pCapri ? 8189 : (pDesk ? deskPort : 0);
+        const installed = Boolean(appData && typeof comfy.locate === 'function' && comfy.locate(appData));
         return {
           ...base,
-          running: Boolean(open),
-          ready: Boolean(open),
-          status: open ? 'running' : 'idle',
-          detail: open ? 'Запущен :8000 · делит VRAM с Ollama' : 'Порт :8000 выключен',
+          running: Boolean(openPort),
+          ready: Boolean(openPort || installed),
+          status: openPort ? 'running' : (installed ? 'idle' : 'missing'),
+          detail: openPort
+            ? `Запущен :${openPort} · делит VRAM с Ollama`
+            : (installed ? 'Comfy Desktop установлен · автозапуск при генерации' : 'ComfyUI Desktop не найден'),
         };
       }
 

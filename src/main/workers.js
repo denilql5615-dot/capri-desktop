@@ -425,7 +425,10 @@ function askClaude(cfg, messages, onDelta, signal, { desktop = false, home = nul
       clearTimeout(timer);
       if (signal.aborted) return reject(new Error('stopped'));
       const finalOut = String(result?.result || all || '').trim();
-      if (result?.is_error || /you've hit your .*limit|rate.?limit|quota exceeded/i.test(finalOut)) {
+      if (result?.is_error || /you've hit your .*limit|rate.?limit|quota exceeded|failed to authenticate|oauth session expired/i.test(finalOut)) {
+        if (/failed to authenticate|oauth session expired/i.test(finalOut)) {
+          return reject(new Error('Claude требует повторного входа на ПК: выполни «claude auth login» в терминале.'));
+        }
         return reject(new Error(finalOut || 'Claude Code не справился'));
       }
       if (!result && !finalOut) return reject(new Error(errors.trim().slice(0, 300) || 'Claude Code ничего не ответил'));

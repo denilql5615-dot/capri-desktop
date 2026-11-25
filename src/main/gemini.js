@@ -188,33 +188,45 @@ async function askIn(page, prompt, { chat = null, model = null, task = null, fil
     if (!on) throw new Error('у Gemini не нашлось режима «Задача»');
     await pause(2500);
   }
-  if (want && !before.model.toLowerCase().includes(want.toLowerCase())) {
+  const MODEL_ALIASES = {
+    'Flash-Lite': ['flash-lite', 'быстрая', 'fast', 'повседневные дела'],
+    Hydrogen: ['hydrogen', '4 hydrogen', 'думающая', 'thinking'],
+    Neon: ['neon', '4 neon', 'глубокий анализ', 'deep think', 'pro'],
+  };
+  const wantList = want ? (MODEL_ALIASES[want] || [want.toLowerCase()]) : [];
+  if (want && !wantList.some((w) => before.model.toLowerCase().includes(w))) {
     // the page wires its switcher a moment after it shows: open the menu until its items are there
     let opened = false;
     for (let i = 0; i < 4 && !opened; i++) {
       await pause(1500);
       await page.evaluate(() => { const b = document.querySelector('bard-mode-switcher button'); if (b) b.click(); });
       await pause(1200);
-      opened = await page.evaluate(() => document.querySelectorAll('[role=menuitemradio], [role=menuitem]').length > 0);
+      opened = await page.evaluate(() => document.querySelectorAll('[role=menuitemradio], [role=menuitem], [role=option]').length > 0);
     }
-    const picked = await page.evaluate((name) => {
-      // its menu: gem-menu[role=menu] > gem-menu-item[role=menuitemradio], one per model
-      const want = name.toLowerCase();
-      const item = [...document.querySelectorAll('[role=menuitemradio], [role=menuitem]')]
-        .find((e) => (e.innerText || e.textContent || '').replace(/\s+/g, ' ').toLowerCase().includes(want));
-      if (!item) return false;
+    const pickRes = await page.evaluate((aliases) => {
+      const items = [...document.querySelectorAll('[role=menuitemradio], [role=menuitem], [role=option], mat-option, button')]
+        .filter((e) => e.offsetParent !== null && (e.innerText || e.textContent || '').trim());
+      const menuLabels = [...document.querySelectorAll('[role=menuitemradio], [role=menuitem], [role=option]')]
+        .map((e) => (e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim())
+        .filter(Boolean);
+      const item = items.find((e) => {
+        const txt = (e.innerText || e.textContent || '').replace(/\s+/g, ' ').toLowerCase();
+        return aliases.some((a) => txt.includes(a));
+      });
+      if (!item) return { ok: false, labels: menuLabels.slice(0, 8) };
       item.click();
-      return true;
-    }, want);
-    if (!picked) {
+      return { ok: true, labels: menuLabels.slice(0, 8) };
+    }, wantList);
+    if (!pickRes.ok) {
       await page.keyboard.press('Escape');
-      throw new Error(`в меню Gemini нет модели «${want}»`);
+      const seen = pickRes.labels.length ? ` (найдено: ${pickRes.labels.join(', ')})` : '';
+      throw new Error(`в меню Gemini нет модели «${want}»${seen}`);
     }
     // the switch settles a few seconds after the click: a question sent before it hangs and is dropped
     for (let i = 0; i < 10; i++) {
       await pause(1000);
-      const now = await page.evaluate(() => ((document.querySelector('bard-mode-switcher') || {}).innerText || '').replace(/\s+/g, ' '));
-      if (now.toLowerCase().includes(want.toLowerCase()) && i >= 2) break;
+      const now = await page.evaluate(() => ((document.querySelector('bard-mode-switcher') || {}).innerText || '').replace(/\s+/g, ' ').toLowerCase());
+      if (wantList.some((a) => now.includes(a)) && i >= 2) break;
     }
     await page.keyboard.press('Escape').catch(() => {});
     await pause(1500);

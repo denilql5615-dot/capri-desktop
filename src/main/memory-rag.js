@@ -76,12 +76,17 @@ function normalizeLayer(layer) {
   return raw || 'regular';
 }
 
-function isCardAllowed(card, { vaultOnly = false, includeTor = false } = {}) {
+function isCardAllowed(card, { vaultOnly = false, includeTor = false, branch = '' } = {}) {
   const source = normalizeText(card?.source).trim();
   const layer = normalizeLayer(card?.layer);
-  if (source === 'tor' && !includeTor) return false;
+  const cardBranch = normalizeText(card?.branch).trim();
+  const wantBranch = normalizeText(branch).trim();
+  if (source === 'tor' && !includeTor && wantBranch !== 'tor') return false;
+  if (cardBranch && cardBranch !== wantBranch && !vaultOnly) return false;
   if (vaultOnly) return source === 'vault' || layer === 'vault' || card?.vault === true;
-  if (source === 'vault' || layer === 'vault' || card?.vault === true) return false;
+  if (source === 'vault' || layer === 'vault' || card?.vault === true) {
+    return Boolean(wantBranch && cardBranch && cardBranch === wantBranch);
+  }
   return true;
 }
 
@@ -212,6 +217,8 @@ function computeProvenance(card) {
     if (hasLink || hasQuote) return 0.85;
     return 0.75;
   }
+  if (source === 'council_verdict' || source === 'deep_research') return 0.90;
+  if (source === 'branch_memory') return 0.85;
   if (source === 'user_remember') return 0.75;
   if (source === 'chat_extract') return 0.55;
   return 0.30;
@@ -302,7 +309,7 @@ function getCardStemSignature(card) {
   return stems(`${card.title || ''} ${card.topic || ''} ${card.body || ''} ${card.text || ''}`);
 }
 
-function rankCards(cards, query, { limit = 3, nowMs = Date.now(), minScore = 0.12, vaultOnly = false, includeTor = false } = {}) {
+function rankCards(cards, query, { limit = 3, nowMs = Date.now(), minScore = 0.12, vaultOnly = false, includeTor = false, branch = '' } = {}) {
   if (!Array.isArray(cards) || !cards.length) return [];
   const queryWords = query instanceof Set ? query : stems(query);
   if (!queryWords.size) return [];
@@ -311,7 +318,7 @@ function rankCards(cards, query, { limit = 3, nowMs = Date.now(), minScore = 0.1
   const candidates = [];
   for (const card of cards) {
     if (!card || typeof card !== 'object') continue;
-    const { score, factors } = scoreCard(card, queryWords, nowMs, rawQuery, { vaultOnly, includeTor });
+    const { score, factors } = scoreCard(card, queryWords, nowMs, rawQuery, { vaultOnly, includeTor, branch });
     if (score > 0 && score >= minScore) {
       candidates.push({
         card,

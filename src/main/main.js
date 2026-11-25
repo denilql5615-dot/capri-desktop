@@ -484,7 +484,12 @@ function ensureQuotaHub() {
           });
           if (windows.length) claudeLiveWindows = windows;
         }
-        return readClaudeQuotaWindows();
+        const merged = readClaudeQuotaWindows();
+        if (merged?.checkedAt && now - merged.checkedAt > 90 * 60e3) {
+          // Drop stale cached readings older than 90m when CLI refresh cannot obtain live usage (e.g. expired OAuth)
+          return { windows: [], checkedAt: null, error: 'Не удалось обновить лимиты Claude (проверь вход claude auth login)' };
+        }
+        return merged;
       },
       codex: async () => readCodexQuota(workers.findCodex()),
       // 2.8b: the live Antigravity status line (a few seconds of hidden agy); the hand-entered snapshot is the fallback
@@ -931,18 +936,22 @@ function initPrivateVault() {
 
 // Her notes that fit your last message, put right by it for this answer: small local models mostly go by
 // the last thing they read (chat.js does the same with her mood), up in her persona they'd skip them
-function withNotes(messages, { vaultOnly = false, matchedOnly = false, includeRecentPhone = false } = {}) {
+function withNotes(messages, { vaultOnly = false, matchedOnly = false, includeRecentPhone = false, branch = '' } = {}) {
   const at = messages.map((m) => m.role).lastIndexOf('user');
   const said = messages[at]?.content;
   if (typeof said !== 'string') return messages;
   const dir = notesDir();
   const privateDir = config.load().privateVaultDir;
+  const searchOpts = { branch, includeTor: branch === 'tor' };
   const recalled = [
     vaultOnly ? '' : notes.prompt(notes.recall(notes.list(dir), said, { matchedOnly })),
     notes.vaultPrompt(vaultOnly
-      ? notes.searchPrivateVault(privateDir, dir, said, { key: privateVaultKey(privateDir) })
-      : notes.searchVault(dir, said)),
-    (!vaultOnly && includeRecentPhone) ? recentPhoneHistoryPrompt(said, messages) : '',
+      ? [
+        ...notes.searchPrivateVault(privateDir, dir, said, { key: privateVaultKey(privateDir) }),
+        ...notes.searchVault(dir, said, undefined, { branch: branch || 'private' }),
+      ]
+      : notes.searchVault(dir, said, undefined, searchOpts)),
+    (!vaultOnly && !branch && includeRecentPhone) ? recentPhoneHistoryPrompt(said, messages) : '',
   ].filter(Boolean).join('\n\n');
   if (!recalled) return messages;
   return messages.map((m, i) => (i === at ? { ...m, content: `${said}
@@ -2127,8 +2136,51 @@ function ensureConnectorsEngine() {
         }
         return matches;
       },
-      kiwixSearch: async (q) => kiwix.fromLocalFirst((url) => kiwix.search(q, { url, limit: 4 }), config.load().kiwixUrl),
-      webSearch: async (q) => agentWeb.search({ query: q, read: 0 }),
+      kiwixSearch: async (q) => {
+        const hasRu = /[а-яё]/i.test(String(q || ''));
+        if (hasRu) {
+          try {
+            const ruRows = await kiwix.fromLocalFirst((url) => kiwix.search(q, { url, lang: 'ru', limit: 4 }), config.load().kiwixUrl);
+            if (ruRows.length) return ruRows;
+          } catch {}
+        }
+        return kiwix.fromLocalFirst((url) => kiwix.search(q, { url, lang: 'en', limit: 4 }), config.load().kiwixUrl);
+      },
+      webSearch: async (q) => agentWeb.search({ query: q, read: 1 }),
+      webRead: async (url) => agentWeb.read({ url }),
+      openSite: (url) => launch.site(url),
+      openFreeTube: (q) => launch.youtube(q),
+      findFreeTube: () => launch.findFreeTube(),
+      penpotQuery: async (q) => {
+        const mcp = require('./penpot-mcp');
+        const tools = await mcp.listTools();
+        const toolList = tools.map((t) => t.name).join(', ') || 'нет';
+        const wantCode = /экран|слой|страниц|page|inspect|цвет|объект/i.test(String(q || ''));
+        if (wantCode && tools.some((t) => t.name === 'get_page' || t.name === 'execute_code')) {
+          const toolName = tools.some((t) => t.name === 'get_page') ? 'get_page' : 'execute_code';
+          const args = toolName === 'execute_code'
+            ? { code: 'return { page: penpot.currentPage?.name, selection: penpot.selection?.length || 0, shapes: penpot.currentPage?.findAll().slice(0, 20).map(s => ({ name: s.name, type: s.type })) || [] };' }
+            : {};
+          try {
+            const res = await mcp.callTool(toolName, args);
+            return `Penpot MCP (:4401) активен.\nИнструменты (${tools.length}): ${toolList}\nСцена: ${res}`;
+          } catch (e) {
+            const msg = String(e?.message || '');
+            if (/No userToken found|authentication/i.test(msg)) {
+              return `Penpot MCP (:4401) активен.\nИнструменты (${tools.length}): ${toolList}\nСцена не открыта: открой макет в Penpot (http://localhost:9001) с активным MCP-плагином, чтобы читать и править слои.`;
+            }
+            return `Penpot MCP (:4401) активен.\nИнструменты (${tools.length}): ${toolList}\nЗапрос сцены: ${msg}`;
+          }
+        }
+        return `Penpot MCP (:4401) активен. Доступные инструменты (${tools.length}): ${toolList}`;
+      },
+      comfyStatus: () => ({ installed: Boolean(comfy.installed), running: Boolean(comfy.active) }),
+      generateImage: (q) => photoTask(q, [], undefined),
+      hasLibreOffice: () => {
+        const tools = ensurePcToolsEngine();
+        return tools.existsImpl(tools.paths.sofficeBin);
+      },
+      convertDocument: (payload) => ensurePcToolsEngine().convertDocument(payload),
       dockerEngine: ensureDockerEngine(),
       rcloneStatus: () => ensureRcloneDrive().cachedStatus(),
       refreshRclone: () => ensureRcloneDrive().status(),
@@ -2552,6 +2604,64 @@ function ensureActivityJournal() {
   return activityJournal;
 }
 
+async function processCouncilOutcome(query, result) {
+  const dir = notesDir();
+  const root = path.basename(dir).toLowerCase() === 'capri' ? path.dirname(dir) : dir;
+  const canPersist = !shouldSkipChatPersistence({ torState, messages: [{ role: 'user', content: query }], tor }) && !hasSecret(query);
+  let noteFile = '';
+  if (canPersist) {
+    try { noteFile = council.writeCouncil(root, result); } catch (err) { console.warn('[capri] council write:', err.message); }
+    const facts = council.extractFor(result.verdict);
+    if (facts.length) {
+      const today = new Date().toISOString().slice(0, 10);
+      try {
+        notes.indexKnowledgeFacts({
+          dir,
+          facts,
+          topicPrefix: String(query || '').split('\n')[0].slice(0, 48),
+          source: 'council_verdict',
+          link: noteFile ? `obsidian://${path.relative(root, noteFile).replace(/\\/g, '/')}` : `capri://council/${today}`,
+          today,
+        });
+      } catch (err) { console.warn('[capri] council rag:', err.message); }
+    }
+  }
+  if (!result.verdict) {
+    return { reply: council.rectorFailedReply(result), noteFile, rawVerdict: null };
+  }
+  const cleanFallback = council.stripInternalSections(result.verdict);
+  const cfg = config.load();
+  const synthModel = (cfg.provider === 'ollama' && brains.ready(chatModels))
+    ? (brains.mainActive() ? brains.main : brains.fast)
+    : pickModel(cfg);
+  if (cfg.provider === 'ollama' && synthModel && !brains.visionRunning) {
+    try {
+      const synth = await ollama.chat({
+        model: synthModel,
+        messages: [
+          {
+            role: 'system',
+            content: [
+              'Ты — Альтаир. Ректор совета моделей уже проанализировал ответы экспертов и подготовил вердикт ниже.',
+              'Переработай этот вердикт в свой чёткий, живой и структурированный финальный ответ пользователю на русском языке.',
+              'Правила: 1) Опирайся на проверенные факты из вердикта и выжимки; 2) Полностью убери системные пометки («Участник A/B/C», «Выжимка для Геммы», внутренние подсказки для модели); 3) Пиши уверенно, ясно и по делу, в своём стиле.',
+            ].join('\n'),
+          },
+          { role: 'user', content: `Вопрос пользователя:\n${query}\n\nИтог ректора:\n${result.verdict.slice(0, 10000)}` },
+        ],
+        numPredict: 1600,
+      }, () => {});
+      const cleanSynth = council.stripInternalSections(synth);
+      if (cleanSynth && cleanSynth.length >= 40) {
+        return { reply: cleanSynth, noteFile, rawVerdict: result.verdict };
+      }
+    } catch (err) {
+      console.warn('[capri] council altair synth:', err.message);
+    }
+  }
+  return { reply: cleanFallback, noteFile, rawVerdict: result.verdict };
+}
+
 async function applyPhone() {
   const { phone: p } = config.load();
   if (!phoneBridge) {
@@ -2573,8 +2683,9 @@ async function applyPhone() {
           ...councilMembers(config.load(), null, { signal, notifyActivity, rector }),
           signal,
         });
+        const processed = await processCouncilOutcome(query, result);
         return {
-          reply: result.verdict || council.rectorFailedReply(result),
+          reply: processed.reply,
           rector: result.rector, rectorFailed: !result.verdict, rectorError: result.rectorError || undefined,
         };
       },
@@ -2651,8 +2762,10 @@ async function applyPhone() {
         }
         const isRp = opts.localMode === 'nsfw' && !brainsLib.isEmergency(said);
         if (isRp) messages = brainsLib.withRp(messages);
-        const withVault = (opts.ephemeral || torSensitive) && opts.source === 'vault' && !hasTor && !torState.isQuarantined()
-          ? withNotes(messages, { vaultOnly: true })
+        const isPrivate = opts.privateMode === true || opts.localMode === 'private' || opts.source === 'vault';
+        const branch = isPrivate ? 'private' : (opts.localMode === 'nsfw' ? 'nsfw' : (hasTor ? 'tor' : ''));
+        const withVault = (opts.ephemeral || torSensitive) && !opts.ephemeral
+          ? withNotes(messages, { vaultOnly: isPrivate, branch })
           : messages;
         const prepared = (opts.ephemeral || torSensitive)
           ? {
@@ -2670,7 +2783,7 @@ async function applyPhone() {
         const generate = () => chatWithFallback(
           cfg,
           prepared,
-          () => {},
+          typeof opts.onDelta === 'function' ? opts.onDelta : () => {},
           signal,
           () => false,
           (nextModel) => { usedModel = nextModel; },
@@ -2716,7 +2829,65 @@ async function applyPhone() {
           dest = path.join(outDir, `${stamp} — DeepResearch — ${slug}-${i}.md`);
         }
         await fs.promises.writeFile(dest, `# Deep Research: ${query}\n\n${markdown}\n`, 'utf8');
+        if (!shouldSkipChatPersistence({ torState, messages: [{ role: 'user', content: query }], tor }) && !hasSecret(query)) {
+          const facts = String(markdown || '').split('\n')
+            .map((l) => l.trim())
+            .filter((l) => /^[-*]\s+\S{15,}|^\d+\.\s+\S{15,}/.test(l))
+            .map((l) => l.replace(/^(?:[-*]|\d+\.)\s+/, '').slice(0, 500))
+            .slice(0, 6);
+          if (facts.length) {
+            try {
+              notes.indexKnowledgeFacts({
+                dir,
+                facts,
+                topicPrefix: String(query || '').slice(0, 44),
+                source: 'deep_research',
+                link: `obsidian://${path.relative(vaultRoot, dest).replace(/\\/g, '/')}`,
+                today: stamp,
+              });
+            } catch {}
+          }
+        }
         return true;
+      },
+      indexTurnMemory: ({ said, answer }) => {
+        if (!said || !answer || notes.isSmallTalk(said) || hasSecret(said)) return;
+        if (shouldSkipChatPersistence({ torState, messages: [{ role: 'user', content: said }], tor })) return;
+        const cfg = config.load();
+        const model = cfg.provider === 'ollama' ? (brains.mainActive() ? null : brains.fast) : null;
+        if (!model || brains.visionRunning || chats.size) return;
+        const dir = notesDir();
+        const known = notes.list(dir).map((n) => n.title);
+        const conv = [{ role: 'user', content: said }, { role: 'assistant', content: answer }];
+        void ollama.jsonChat({ model, messages: notes.extractMessages(conv, known), schema: notes.EXTRACT_SCHEMA })
+          .then((raw) => {
+            const facts = notes.parseFacts(raw);
+            if (!facts.length) return;
+            const today = new Date().toISOString().slice(0, 10);
+            notes.indexKnowledgeFacts({
+              dir,
+              facts: facts.map((f) => ({ topic: f.title, text: f.text, quote: f.quote || said })),
+              source: 'chat_extract',
+              link: `capri://chat/${today}`,
+              today,
+            });
+          })
+          .catch(() => {});
+      },
+      saveBranchMemory: ({ branch = 'private', said = '', answer = '', summary = '' }) => {
+        const cleanBranch = String(branch || 'private').replace(/[^a-zа-яё0-9_-]+/gi, '').toLowerCase() || 'private';
+        const text = String(summary || [said ? `Запрос: ${said}` : '', answer ? `Итог: ${answer}` : ''].filter(Boolean).join('\n')).trim();
+        if (!text || hasSecret(text)) return { ok: false, error: 'Нет безопасного содержимого для сохранения.' };
+        const today = new Date().toISOString().slice(0, 10);
+        const saved = notes.indexKnowledgeFacts({
+          dir: notesDir(),
+          facts: [{ topic: (said || text).split(/\s+/).slice(0, 5).join(' '), text: text.slice(0, 1600), quote: (said || text).slice(0, 260) }],
+          source: 'branch_memory',
+          link: `capri://branch/${cleanBranch}/${today}`,
+          branch: cleanBranch,
+          today,
+        });
+        return { ok: saved.length > 0, branch: cleanBranch, saved };
       },
       speak: (text) => (config.load().voice.tts ? speech.speak(text, config.load().voice) : Promise.resolve(null)),
       event: (kind) => PHONE_REACT[kind] && sendCommand('phone', { kind: PHONE_REACT[kind] }),
@@ -2794,7 +2965,7 @@ async function applyPhone() {
       },
       agentCreate: async (agent) => ensureAgentSessions().create(agent),
       agentHistory: async (id) => ensureAgentSessions().history(id),
-      agentSend: async ({ id, agent, model, effort, text, retry, files, queue, history, ephemeral, privateMode, localOnly, mode, useVault, signal, quotaScope, notifyActivity }) => {
+      agentSend: async ({ id, agent, model, effort, text, retry, files, queue, history, ephemeral, privateMode, localOnly, mode, useVault, signal, quotaScope, notifyActivity, onDelta }) => {
         signal?.throwIfAborted();
         if (ephemeral === true || privateMode === true || localOnly === true || mode === 'private' || mode === 'nsfw') {
           throw new Error('Облачные модели недоступны в этом режиме.');
@@ -2822,7 +2993,7 @@ async function applyPhone() {
         const baseText = String(text || '').trim() || (Array.isArray(files) && files.length ? 'Разбери прикреплённое вложение.' : '');
         const promptText = await withUploadedFiles(id, baseText, files);
         signal?.throwIfAborted();
-        const sendOpts = { effort, agent: targetAgent, history, ephemeral, privateMode, localOnly, mode, useVault: useVault !== false, notifyActivity };
+        const sendOpts = { effort, agent: targetAgent, history, ephemeral, privateMode, localOnly, mode, useVault: useVault !== false, notifyActivity, onDelta };
         if (queue === true && retry !== true) return mgr.enqueue(id, chosenModel, promptText, sendOpts);
         return withQuota(groupFor(targetAgent, chosenModel), quotaScope, () =>
           mgr.send(id, chosenModel, promptText, retry === true, false, true, sendOpts));
@@ -5172,12 +5343,12 @@ function registerIpc() {
         onEvent: (e) => console.warn(`[capri] совет · ${e.phase} · ${e.member}: ${e.status}${e.seconds ? ` (${e.seconds} с)` : ''}${e.error ? ` — ${e.error}` : ''}`),
       });
       const dir = notesDir();
-      const root = path.basename(dir).toLowerCase() === 'capri' ? path.dirname(dir) : dir;
-      const file = council.writeCouncil(root, result);
+      const processed = await processCouncilOutcome(q, result);
       return {
-        verdict: result.verdict || council.rectorFailedReply(result), judge: result.rector, rectorFailed: !result.verdict,
+        verdict: processed.reply, judge: result.rector, rectorFailed: !result.verdict,
         members: result.round1.map((r) => r.member), failed: result.failed,
-        extract: council.extractFor(result.verdict), file, note: path.relative(root, file).replace(/\\/g, '/'),
+        extract: council.extractFor(result.verdict), file: processed.noteFile,
+        note: processed.noteFile ? path.relative(path.basename(notesDir()).toLowerCase() === 'capri' ? path.dirname(notesDir()) : notesDir(), processed.noteFile).replace(/\\/g, '/') : '',
       };
     } catch (err) {
       console.warn('[capri] council:', err.message);

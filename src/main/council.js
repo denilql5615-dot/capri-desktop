@@ -211,10 +211,36 @@ async function runCouncil(question, { members, judge, onEvent = () => {}, crossR
   };
 }
 
-/** The extract for Gemma: the "- …" lines under «Выжимка для Геммы». */
+/** Removes internal Gemma/RAG extract sections before showing verdict to the user directly. */
+function stripInternalSections(verdict) {
+  return String(verdict || '')
+    .replace(/\n*(?:#{1,4}\s*|\*\*\s*)?Выжимка для Геммы(?:\s*[:—-]|$|\n)[\s\S]*$/i, '')
+    .replace(/\bУчастник\s+[A-H]\b/gi, 'одна из моделей')
+    .trim();
+}
+
+/** The extract for Gemma: bullet or paragraph lines under «Выжимка для Геммы», or key takeaways from «Решение». */
 function extractFor(verdict) {
-  const m = String(verdict || '').match(/##\s*Выжимка для Геммы\s*\n([\s\S]*?)(?:\n##\s|$)/i);
-  return m ? m[1].split('\n').map((l) => l.trim()).filter((l) => /^[-*]\s+\S/.test(l)).map((l) => l.replace(/^[-*]\s+/, '')) : [];
+  const raw = String(verdict || '');
+  const m = raw.match(/(?:^|\n)\s*(?:#{1,4}\s*|\*\*\s*)?Выжимка для Геммы[^\n]*\n([\s\S]*?)(?=\n\s*(?:#{1,4}\s+|\*\*Кто есть кто|Кто есть кто)|$)/i);
+  if (m) {
+    const lines = m[1].split('\n').map((l) => l.trim()).filter(Boolean);
+    const bullets = lines
+      .filter((l) => /^[-*•]\s+\S/.test(l))
+      .map((l) => l.replace(/^[-*•]\s+/, '').trim());
+    if (bullets.length) return bullets;
+    return lines
+      .filter((l) => l.length >= 20 && !/^\*\*Кто есть кто/i.test(l))
+      .map((l) => l.replace(/^\d+[.)]\s+/, '').trim())
+      .slice(0, 15);
+  }
+  const sol = raw.match(/(?:^|\n)\s*(?:#{1,4}\s*|\*\*\s*)?Решение[^\n]*\n([\s\S]*?)(?=\n\s*(?:#{1,4}\s+|Почему так|Разногласия)|$)/i);
+  if (!sol) return [];
+  return sol[1]
+    .split('\n')
+    .map((l) => l.trim().replace(/^[-*•]\s+/, '').replace(/^\d+[.)]\s+/, ''))
+    .filter((l) => l.length >= 24)
+    .slice(0, 8);
 }
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -234,4 +260,4 @@ function writeCouncil(vaultRoot, result, { at = Date.now() } = {}) {
   return file;
 }
 
-module.exports = { runCouncil, writeCouncil, extractFor, pickRector, rectorFailedReply, RECTORS, runCli, claudeRunner, codexRunner, ROUND1, ROUND2, VERDICT, HOST_VOICE };
+module.exports = { runCouncil, writeCouncil, extractFor, stripInternalSections, pickRector, rectorFailedReply, RECTORS, runCli, claudeRunner, codexRunner, ROUND1, ROUND2, VERDICT, HOST_VOICE };

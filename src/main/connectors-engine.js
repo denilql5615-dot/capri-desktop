@@ -20,11 +20,12 @@ const SYNC_ONLY_CONNECTORS = new Set([
   'gemini-notebook',
 ]);
 const PROBE_TIMEOUT_MS = 2500;
-const HTTP_TIMEOUT_MS = 6000;
-const TURN_CONNECTOR_TIMEOUT_MS = 5000;
-const MAX_AUTO_CONNECTORS = 2;
-const MAX_HINTS_TOKENS = 120;
-const MAX_SNIPPET_CHARS = 2200;
+const HTTP_TIMEOUT_MS = 8000;
+const TOOL_QUERY_TIMEOUT_MS = 25000;
+const TURN_CONNECTOR_TIMEOUT_MS = 18000;
+const MAX_AUTO_CONNECTORS = 3;
+const MAX_HINTS_TOKENS = 260;
+const MAX_SNIPPET_CHARS = 2400;
 
 const ISOLATED_MODES = new Set(['private', 'nsfw', 'tor']);
 const GOOGLE_WORKSPACE_SERVICES = Object.freeze([
@@ -331,6 +332,118 @@ const CURATED_CONNECTORS = Object.freeze([
     url: '',
     hintTopic: 'тренировки Wger (локально)',
   },
+  {
+    id: 'opennotebook',
+    name: 'OpenNotebook',
+    category: 'knowledge',
+    icon: 'book',
+    description: 'Локальные блокноты и база источников на :5055 / :8502',
+    aliases: ['open-notebook', 'opennote', 'блокнот'],
+    cloudOnly: false,
+    localOnly: false,
+    vaultOnly: false,
+    offlineSafe: true,
+    localSafe: true,
+    transport: 'local-http',
+    url: 'http://127.0.0.1:5055',
+    hintTopic: 'блокноты и источники OpenNotebook',
+  },
+  {
+    id: 'freshrss',
+    name: 'FreshRSS Новости',
+    category: 'knowledge',
+    icon: 'globe',
+    description: 'Серверный агрегатор RSS-подписок и новостей на Lenovo .107:8082',
+    aliases: ['rss', 'news', 'новости', 'лента'],
+    cloudOnly: false,
+    localOnly: false,
+    vaultOnly: false,
+    offlineSafe: false,
+    localSafe: true,
+    transport: 'http',
+    url: 'http://192.168.0.107:8082',
+    hintTopic: 'новости и RSS FreshRSS',
+  },
+  {
+    id: 'freetube',
+    name: 'FreeTube',
+    category: 'knowledge',
+    icon: 'play',
+    description: 'Поиск роликов YouTube и запуск в локальном FreeTube.exe',
+    aliases: ['фритюб', 'tube'],
+    cloudOnly: false,
+    localOnly: true,
+    vaultOnly: false,
+    offlineSafe: false,
+    localSafe: true,
+    transport: 'desktop-app',
+    url: '',
+    hintTopic: 'поиск и запуск видео в FreeTube',
+  },
+  {
+    id: 'penpot',
+    name: 'Penpot MCP',
+    category: 'dev',
+    icon: 'code',
+    description: 'Дизайн-макеты Penpot и MCP-сервер (:4401)',
+    aliases: ['пенпот', 'penpot-mcp', 'design'],
+    cloudOnly: false,
+    localOnly: true,
+    vaultOnly: false,
+    offlineSafe: true,
+    localSafe: true,
+    transport: 'local-http',
+    url: 'http://127.0.0.1:4401/mcp',
+    hintTopic: 'инспекция и инструменты Penpot MCP',
+  },
+  {
+    id: 'comfyui',
+    name: 'ComfyUI Генерация',
+    category: 'dev',
+    icon: 'cpu',
+    description: 'Генерация изображений и планов ComfyUI на локальном GPU',
+    aliases: ['comfy', 'комфи', 'draw'],
+    cloudOnly: false,
+    localOnly: true,
+    vaultOnly: false,
+    offlineSafe: true,
+    localSafe: true,
+    transport: 'local-http',
+    url: 'http://127.0.0.1:8188',
+    hintTopic: 'ComfyUI и генерация изображений',
+  },
+  {
+    id: 'libreoffice',
+    name: 'LibreOffice Конвертер',
+    category: 'dev',
+    icon: 'file-text',
+    description: 'Конвертация документов (MD → DOCX, Office → PDF, SVG → PNG)',
+    aliases: ['soffice', 'convert', 'конвертер'],
+    cloudOnly: false,
+    localOnly: true,
+    vaultOnly: false,
+    offlineSafe: true,
+    localSafe: true,
+    transport: 'cli',
+    url: '',
+    hintTopic: 'конвертация файлов LibreOffice/DOCX/PDF',
+  },
+  {
+    id: 'docker',
+    name: 'Docker Контейнеры',
+    category: 'dev',
+    icon: 'server',
+    description: 'Состояние контейнеров и стеков на ПК и сервере Lenovo .107',
+    aliases: ['containers', 'докер'],
+    cloudOnly: false,
+    localOnly: true,
+    vaultOnly: false,
+    offlineSafe: true,
+    localSafe: true,
+    transport: 'cli',
+    url: '',
+    hintTopic: 'статус Docker-контейнеров ПК и .107',
+  },
 ]);
 
 const GREETING_ONLY_RE = /^(?:привет|здравствуй(?:те)?|добр(?:ое|ый|ого)\s+(?:утро|день|вечер)|хай|hello|hi|hey|спасибо|благодарю|ок|окей|ладно|пока|как\s+дела|что\s+нового|кто\s+ты|что\s+умеешь)(?:[,\s]+капри)?[\s!?.…]*$/i;
@@ -357,8 +470,36 @@ const AUTO_TRIGGERS = Object.freeze([
     re: /(?:в\s+nomad|в\s+kiwix|в\s+номад|по\s+офлайн[- ]?библиотек)/i,
   },
   {
+    id: 'opennotebook',
+    re: /(?:opennotebook|опеннотбук|опен\s*ноутбук|в\s+блокнот(?:е|ах)\s+(?:памяти|altai|капри)|посмотри\s+(?:в\s+)?ноутбук[е]?)/i,
+  },
+  {
+    id: 'freshrss',
+    re: /(?:freshrss|фрешрсс|rss[- ]?лент|свежие\s+новости\s+из\s+подписок|что\s+в\s+freshrss)/i,
+  },
+  {
+    id: 'freetube',
+    re: /(?:freetube|фритюб|фритуб|запусти\s+(?:видос|видео|ролик)|открой\s+(?:видос|видео|ролик))/i,
+  },
+  {
+    id: 'penpot',
+    re: /(?:penpot|пенпот)/i,
+  },
+  {
+    id: 'comfyui',
+    re: /(?:comfyui|комфи|comfy\s*ui)/i,
+  },
+  {
+    id: 'libreoffice',
+    re: /(?:libreoffice|либрофис|soffice|сконвертируй\s+в\s+(?:pdf|docx|png))/i,
+  },
+  {
+    id: 'docker',
+    re: /(?:докер|docker|контейнер(?:ы|ах|ов)?\s+(?:на\s+пк|на\s+\.?107|запущен))/i,
+  },
+  {
     id: 'capri-web',
-    re: /(?:найди\s+в\s+(?:сети|интернете)|погугли|поищи\s+в\s+вебе|поищи\s+в\s+интернете)/i,
+    re: /(?:найди\s+(?:в\s+(?:сети|интернете)|ссылк)|погугли|поищи\s+в\s+(?:вебе|интернете)|открой\s+(?:браузер|сайт|страниц|ссылк)|прочитай\s+(?:страниц|сайт|ссылк)|собери\s+(?:информац|базу).{0,30}(?:браузер|сети|интернет)|https?:\/\/[^\s]+)/i,
   },
   {
     id: 'science-search',
@@ -444,17 +585,18 @@ function isIsolatedMode({ mode = 'chat', ephemeral = false } = {}) {
   return ephemeral === true || ISOLATED_MODES.has(String(mode || '').toLowerCase());
 }
 
-function modePauseReason(item, { mode = 'chat', ephemeral = false, torQuarantined = false } = {}) {
+function modePauseReason(item, { mode = 'chat', ephemeral = false, isCloud = false, torQuarantined = false } = {}) {
   const normMode = String(mode || 'chat').toLowerCase();
+  // Local model keeps shared access to tools and memory across private / nsfw / tor;
+  // only cloud forwarding and ephemeral auto-persistence are restricted.
   if (item.cloudOnly) {
     if (ephemeral) return 'Пауза во временном чате (cloudOnly)';
     if (torQuarantined || normMode === 'tor') return 'Пауза в Tor-режиме (cloudOnly)';
-    if (normMode === 'private') return 'Пауза в режиме Приват (cloudOnly)';
-    if (normMode === 'nsfw') return 'Пауза в режиме 18+ (cloudOnly)';
+    if (isCloud && normMode === 'private') return 'Пауза в режиме Приват (cloudOnly)';
+    if (isCloud && normMode === 'nsfw') return 'Пауза в режиме 18+ (cloudOnly)';
   }
-  if (item.vaultOnly) {
-    if (ephemeral) return 'Пауза во временном чате (vaultOnly)';
-    if (normMode === 'nsfw') return 'Пауза в режиме 18+ (vaultOnly)';
+  if (item.vaultOnly && ephemeral) {
+    return 'Пауза во временном чате (vaultOnly)';
   }
   return null;
 }
@@ -807,6 +949,37 @@ class ConnectorsEngine {
         }
         return { status: 'not_configured', detail: 'Дайджест ещё не собирался' };
       }
+      case 'opennotebook':
+        return { status: 'offline', detail: 'Ожидает проверки (:5055)' };
+      case 'freshrss':
+        return { status: 'offline', detail: 'Ожидает проверки (.107:8082)' };
+      case 'freetube': {
+        const hasFt = typeof this.deps?.findFreeTube === 'function' ? Boolean(this.deps.findFreeTube()) : false;
+        return hasFt
+          ? { status: 'connected', detail: 'FreeTube.exe установлен' }
+          : { status: 'not_configured', detail: 'FreeTube.exe не найден' };
+      }
+      case 'penpot':
+        return { status: 'offline', detail: 'Ожидает проверки MCP (:4401)' };
+      case 'comfyui': {
+        const st = typeof this.deps?.comfyStatus === 'function' ? this.deps.comfyStatus() : null;
+        if (st?.running) return { status: 'connected', detail: 'ComfyUI активен' };
+        if (st?.installed) return { status: 'connected', detail: 'Comfy Desktop готов к запуску' };
+        return { status: 'not_configured', detail: 'Comfy Desktop не найден' };
+      }
+      case 'libreoffice': {
+        const ok = typeof this.deps?.hasLibreOffice === 'function' ? Boolean(this.deps.hasLibreOffice()) : false;
+        return ok
+          ? { status: 'connected', detail: 'soffice.exe + конвертер документов' }
+          : { status: 'not_configured', detail: 'LibreOffice (soffice.exe) не найден' };
+      }
+      case 'docker': {
+        const cached = typeof this.deps?.dockerEngine?.getCachedStatus === 'function' ? this.deps.dockerEngine.getCachedStatus() : null;
+        const pcUp = cached?.pc?.stacks?.filter((s) => s.running).length ?? 0;
+        return cached
+          ? { status: 'connected', detail: `ПК: ${pcUp} стеков активно` }
+          : { status: 'offline', detail: 'Ожидает проверки Docker' };
+      }
       default: {
         if (def.isCustom) {
           if (def.transport === 'stdio') {
@@ -891,6 +1064,51 @@ class ConnectorsEngine {
           status = syncRes.status;
           detail = syncRes.detail;
           latencyMs = Date.now() - started;
+          break;
+        }
+        case 'freetube':
+        case 'comfyui':
+        case 'libreoffice': {
+          const syncRes = this.inspectSyncState(def);
+          status = syncRes.status;
+          detail = syncRes.detail;
+          latencyMs = Date.now() - started;
+          break;
+        }
+        case 'opennotebook': {
+          const probe = await this.probeTcpImpl('127.0.0.1', 5055, PROBE_TIMEOUT_MS);
+          latencyMs = probe.latencyMs;
+          status = probe.ok ? 'connected' : 'offline';
+          detail = probe.ok ? '127.0.0.1:5055 активен' : 'OpenNotebook (:5055) выключен';
+          break;
+        }
+        case 'freshrss': {
+          const probe = await this.probeTcpImpl('192.168.0.107', 8082, PROBE_TIMEOUT_MS);
+          latencyMs = probe.latencyMs;
+          status = probe.ok ? 'connected' : 'offline';
+          detail = probe.ok ? '192.168.0.107:8082 активен' : 'FreshRSS (.107:8082) недоступен';
+          break;
+        }
+        case 'penpot': {
+          const probe = await this.probeTcpImpl('127.0.0.1', 4401, PROBE_TIMEOUT_MS);
+          latencyMs = probe.latencyMs;
+          status = probe.ok ? 'connected' : 'offline';
+          detail = probe.ok ? 'MCP :4401 активен' : 'Penpot MCP (:4401) выключен';
+          break;
+        }
+        case 'docker': {
+          if (typeof this.deps?.dockerEngine?.getStatus === 'function') {
+            const st = await this.deps.dockerEngine.getStatus({ refresh: false }).catch(() => null);
+            latencyMs = Date.now() - started;
+            const pcUp = st?.pc?.stacks?.filter((s) => s.running).length ?? 0;
+            const srvUp = st?.lenovo?.stacks?.filter((s) => s.running).length ?? 0;
+            const online = Boolean(st?.pc?.online ?? st?.pc?.available ?? st?.lenovo?.online ?? st?.lenovo?.available);
+            status = online ? 'connected' : 'offline';
+            detail = `ПК: ${pcUp} · .107: ${srvUp}`;
+          } else {
+            status = 'not_configured';
+            detail = 'Docker-движок не подключён';
+          }
           break;
         }
         case 'nomad-kiwix': {
@@ -1036,9 +1254,9 @@ class ConnectorsEngine {
     return { ok: true, ...this.listConnectors({ mode, ephemeral }) };
   }
 
-  decorateConnector(def, { stateMap, cfg, mode = 'chat', ephemeral = false, torQuarantined = false } = {}) {
+  decorateConnector(def, { stateMap, cfg, mode = 'chat', ephemeral = false, isCloud = false, torQuarantined = false } = {}) {
     const enabled = stateMap[def.id]?.enabled !== undefined ? Boolean(stateMap[def.id].enabled) : true;
-    const pauseReason = modePauseReason(def, { mode, ephemeral, torQuarantined });
+    const pauseReason = modePauseReason(def, { mode, ephemeral, isCloud, torQuarantined });
     const pausedInMode = Boolean(pauseReason);
     const health = this.getCachedHealth(def);
     const wgerCfg = def.id === 'wger' ? cfg?.connectorsConfig?.wger : null;
@@ -1081,7 +1299,7 @@ class ConnectorsEngine {
     return item;
   }
 
-  listConnectors({ mode = 'chat', ephemeral = false, torQuarantined = false } = {}) {
+  listConnectors({ mode = 'chat', ephemeral = false, isCloud = false, torQuarantined = false } = {}) {
     const stateMap = this.getEnabledStateMap();
     const defs = this.allDefinitions();
     const cfg = this.getConfig() || {};
@@ -1091,6 +1309,7 @@ class ConnectorsEngine {
       cfg,
       mode,
       ephemeral,
+      isCloud,
       torQuarantined,
     }));
 
@@ -1690,19 +1909,32 @@ class ConnectorsEngine {
   }
 
   buildConnectorHints({ mode = 'chat', ephemeral = false, isCloud = false, torQuarantined = false } = {}) {
-    const catalog = this.listConnectors({ mode, ephemeral, torQuarantined });
+    const catalog = this.listConnectors({ mode, ephemeral, isCloud, torQuarantined });
     const eligible = catalog.items.filter((i) => i.enabled && !i.pausedInMode && !(isCloud && i.localOnly));
     if (eligible.length === 0) return '';
 
-    const prefix = 'Если нужен внешний источник, ответь одной строкой [[use:<id> <запрос>]]. Коннекторы: ';
-    const ids = [];
-    for (const item of eligible) {
-      const candidate = `${prefix}${[...ids, item.id].join(', ')}.`;
-      if (estimateTokens(candidate) > MAX_HINTS_TOKENS) break;
-      ids.push(item.id);
+    const header = isCloud
+      ? 'Если нужен внешний источник, ответь одной строкой [[use:<id> <запрос>]]. Коннекторы: '
+      : [
+          'У тебя ЕСТЬ доступ к инструментам и программам ПК. НЕ пиши «я всего лишь текстовая модель» или «у меня нет доступа» — если нужны данные, браузер, видео, файлы, блокноты или генерация, сразу вызови нужный инструмент одной строкой [[use:<id> <запрос>]] (я сразу выполню и верну результат):',
+        ].join(' ');
+    if (isCloud) {
+      const ids = [];
+      for (const item of eligible) {
+        const candidate = `${header}${[...ids, item.id].join(', ')}.`;
+        if (estimateTokens(candidate) > MAX_HINTS_TOKENS) break;
+        ids.push(item.id);
+      }
+      return ids.length ? `${header}${ids.join(', ')}.` : '';
     }
-    if (ids.length === 0) return '';
-    return `${prefix}${ids.join(', ')}.`;
+    const lines = [header];
+    for (const item of eligible) {
+      const line = `- ${item.id}: ${item.hintTopic || item.name}`;
+      const candidate = [...lines, line].join('\n');
+      if (estimateTokens(candidate) > MAX_HINTS_TOKENS) break;
+      lines.push(line);
+    }
+    return lines.length > 1 ? lines.join('\n') : '';
   }
 
   async executeReadOnlyQuery(def, query, { mode = 'chat', ephemeral = false, isCloud = false } = {}) {
@@ -1712,7 +1944,24 @@ class ConnectorsEngine {
     switch (def.id) {
       case 'proton-pim': {
         if (typeof this.deps.pim?.read === 'function') {
-          const res = await this.deps.pim.read(q || 'последние письма и расписание на сегодня');
+          const isCal = /(?:календар|расписан|встреч|событи|план[ыа]|сегодня|завтра|недел|понедельник|вторник|сред[ау]|четверг|пятниц|суббот|воскресень)/i.test(q);
+          const isMail = /(?:почт|письм|ящик|mail|inbox)/i.test(q);
+          if (isCal && !isMail) {
+            const calQ = /^что\s+у\s+меня|расписание|какие\s+планы/i.test(q) && q.length <= 80 ? q : 'что у меня сегодня';
+            const res = await this.deps.pim.read(calQ);
+            const txt = typeof res === 'string' ? res : (res?.reply || JSON.stringify(res));
+            return { fenced: true, text: txt };
+          }
+          if (isCal && isMail) {
+            const [mRes, cRes] = await Promise.all([
+              this.deps.pim.read('покажи свежие письма').catch((e) => ({ reply: `Почта: ${e.message}` })),
+              this.deps.pim.read('что у меня сегодня').catch((e) => ({ reply: `Календарь: ${e.message}` })),
+            ]);
+            const mTxt = typeof mRes === 'string' ? mRes : (mRes?.reply || JSON.stringify(mRes));
+            const cTxt = typeof cRes === 'string' ? cRes : (cRes?.reply || JSON.stringify(cRes));
+            return { fenced: true, text: `${mTxt}\n\n${cTxt}` };
+          }
+          const res = await this.deps.pim.read('покажи свежие письма');
           const txt = typeof res === 'string' ? res : (res?.reply || JSON.stringify(res));
           return { fenced: true, text: txt };
         }
@@ -1756,11 +2005,42 @@ class ConnectorsEngine {
       }
 
       case 'capri-web': {
+        const urlMatch = /https?:\/\/[^\s"'<>]+/i.exec(q);
+        const wantsOpen = /(?:открой|запусти)\s+(?:в\s+)?(?:браузер|сайт|ссылк|страниц)/i.test(q);
+        if (urlMatch && typeof this.deps.webRead === 'function') {
+          try {
+            const page = await this.deps.webRead(urlMatch[0]);
+            if (wantsOpen && typeof this.deps.openSite === 'function') {
+              await this.deps.openSite(urlMatch[0]).catch(() => {});
+            }
+            const title = page?.title || urlMatch[0];
+            const text = String(page?.text || '').slice(0, 1600);
+            return {
+              fenced: true,
+              text: `${title} — ${urlMatch[0]}\n${text || '(страница не вернула текст)'}`,
+            };
+          } catch (err) {
+            if (wantsOpen && typeof this.deps.openSite === 'function') {
+              const opened = await this.deps.openSite(urlMatch[0]).catch(() => false);
+              if (opened) return { fenced: true, text: `Открыта страница в браузере: ${urlMatch[0]}` };
+            }
+            return { fenced: true, text: `Не удалось прочитать ${urlMatch[0]}: ${err.message}` };
+          }
+        }
         if (typeof this.deps.webSearch === 'function') {
           const found = await this.deps.webSearch(q);
-          const rows = Array.isArray(found?.results) ? found.results.slice(0, 4) : [];
-          const text = rows.length
-            ? rows.map((r) => `- ${r.title || r.url} — ${r.url}${r.snippet ? `\n  ${String(r.snippet).slice(0, 220)}` : ''}`).join('\n')
+          const rows = Array.isArray(found?.results) ? found.results.slice(0, 5) : [];
+          const pages = Array.isArray(found?.pages) ? found.pages : [];
+          if (wantsOpen && rows[0]?.url && typeof this.deps.openSite === 'function') {
+            await this.deps.openSite(rows[0].url).catch(() => {});
+          }
+          const lines = rows.map((r, i) => {
+            const pageText = pages[i]?.text ? `\n  Фрагмент: ${String(pages[i].text).replace(/\s+/g, ' ').slice(0, 320)}` : '';
+            const snip = r.snippet ? `\n  ${String(r.snippet).slice(0, 220)}` : '';
+            return `- ${r.title || r.url} — ${r.url}${snip}${pageText}`;
+          });
+          const text = lines.length
+            ? lines.join('\n')
             : (typeof found === 'string' ? found : 'В веб-поиске результатов нет.');
           return { fenced: true, text };
         }
@@ -1976,6 +2256,141 @@ class ConnectorsEngine {
         };
       }
 
+      case 'opennotebook': {
+        try {
+          const nbRes = await this.fetchImpl('http://127.0.0.1:5055/api/notebooks', {
+            signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+          });
+          if (!nbRes.ok) return { fenced: false, text: `OpenNotebook вернул HTTP ${nbRes.status}.` };
+          const rawNb = await nbRes.json();
+          const notebooks = Array.isArray(rawNb) ? rawNb : (Array.isArray(rawNb?.value) ? rawNb.value : []);
+          const active = notebooks.filter((n) => !n.archived);
+          if (!active.length) return { fenced: false, text: 'В OpenNotebook нет активных блокнотов.' };
+          const target = active[0];
+          const srcRes = await this.fetchImpl(
+            `http://127.0.0.1:5055/api/sources?notebook_id=${encodeURIComponent(target.id)}&limit=50&offset=0`,
+            { signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) },
+          );
+          const rawSrc = srcRes.ok ? await srcRes.json() : [];
+          const sources = Array.isArray(rawSrc) ? rawSrc : (Array.isArray(rawSrc?.value) ? rawSrc.value : []);
+          const terms = q.toLowerCase().split(/\s+/).filter((w) => w.length >= 3);
+          const matched = terms.length
+            ? sources.filter((s) => terms.some((t) => `${s.title || ''} ${s.full_text || ''}`.toLowerCase().includes(t)))
+            : sources;
+          const picks = (matched.length ? matched : sources).slice(0, 8);
+          const lines = [
+            `OpenNotebook (блокнотов: ${active.length}, основной: «${target.name}», источников: ${sources.length}):`,
+            ...picks.map((s) => `- ${s.title || s.id}${s.full_text ? `: ${String(s.full_text).replace(/\s+/g, ' ').slice(0, 220)}` : ''}`),
+          ];
+          return { fenced: false, text: lines.join('\n') };
+        } catch (err) {
+          return { fenced: false, text: `OpenNotebook (:5055) не отвечает: ${err.message}. Проверь стек OpenNotebook в Docker.` };
+        }
+      }
+
+      case 'freshrss': {
+        try {
+          const base = String(cfg.freshrssUrl || 'http://192.168.0.107:8082').replace(/\/+$/, '');
+          const res = await this.fetchImpl(`${base}/i/`, { signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
+          if (!res.ok) return { fenced: true, text: `FreshRSS (${base}) вернул HTTP ${res.status}.` };
+          const html = await res.text();
+          const titles = [];
+          const re = /class="[^"]*(?:item_title|flux_header)[^"]*"[^>]*>([\s\S]{3,160}?)<\/a>/gi;
+          let m;
+          while ((m = re.exec(html)) !== null && titles.length < 10) {
+            const clean = m[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+            if (clean && !titles.includes(clean)) titles.push(clean);
+          }
+          return {
+            fenced: true,
+            text: titles.length
+              ? `FreshRSS (${base}), заголовки:\n${titles.map((t) => `- ${t}`).join('\n')}`
+              : `FreshRSS работает (${base}), но публичная лента требует входа в веб-интерфейс (или включи чтение без пароля для LAN).`,
+          };
+        } catch (err) {
+          return { fenced: true, text: `FreshRSS (.107:8082) недоступен: ${err.message}` };
+        }
+      }
+
+      case 'freetube': {
+        if (typeof this.deps.openFreeTube === 'function') {
+          const res = await this.deps.openFreeTube(q || 'ComfyUI tutorial');
+          if (!res) return { fenced: false, text: 'Укажи, какое видео найти для FreeTube.' };
+          const title = res.title || q || 'поиск YouTube';
+          return {
+            fenced: false,
+            text: res.player === 'FreeTube'
+              ? `Запустила в FreeTube: «${title}»${res.url ? ` (${res.url})` : ''}`
+              : `Открыто в браузере (FreeTube.exe не найден): «${title}»${res.url ? ` (${res.url})` : ''}`,
+          };
+        }
+        return { fenced: false, text: 'Обработчик FreeTube не подключён.' };
+      }
+
+      case 'penpot': {
+        if (typeof this.deps.penpotQuery === 'function') {
+          const out = await this.deps.penpotQuery(q);
+          return { fenced: true, text: String(out || 'Penpot MCP не вернул данных.') };
+        }
+        return { fenced: true, text: 'Penpot MCP (:4401) не подключён.' };
+      }
+
+      case 'comfyui': {
+        const drawWant = /(?:сгенерир|нарисуй|сделай\s+картин|скинь\s+фото|выполни\s+генерац)/i.test(q);
+        if (drawWant && typeof this.deps.generateImage === 'function') {
+          const out = await this.deps.generateImage(q);
+          return { fenced: false, text: String(out || 'Генерация ComfyUI выполнена.') };
+        }
+        const st = typeof this.deps.comfyStatus === 'function' ? this.deps.comfyStatus() : null;
+        return {
+          fenced: false,
+          text: st?.installed
+            ? `ComfyUI Desktop установлен (${st.running ? 'сейчас запущен на порту Comfy' : 'готов к автозапуску при генерации, VRAM 8 ГБ делится с Ollama'}). Для запуска генерации опиши кадр или попроси «нарисуй ...».`
+            : 'ComfyUI Desktop не найден на этом ПК.',
+        };
+      }
+
+      case 'libreoffice': {
+        const pathMatch = /(?:[A-Za-z]:\\[^\s"'<>]+|\/[^\s"'<>]+)/.exec(q);
+        const fmtMatch = /\b(pdf|docx|png|txt)\b/i.exec(q);
+        if (pathMatch && typeof this.deps.convertDocument === 'function') {
+          const out = await this.deps.convertDocument({
+            inputPath: pathMatch[0],
+            targetFormat: fmtMatch ? fmtMatch[1].toLowerCase() : 'pdf',
+          });
+          return {
+            fenced: false,
+            text: out?.ok
+              ? `Сконвертировано (${out.format}): ${out.outputPath} (${out.bytes || 0} байт)`
+              : `Ошибка конвертации: ${out?.error || 'не удалось'}`,
+          };
+        }
+        const ok = typeof this.deps.hasLibreOffice === 'function' ? Boolean(this.deps.hasLibreOffice()) : false;
+        return {
+          fenced: false,
+          text: ok
+            ? 'LibreOffice (soffice.exe) и конвейер документов готовы: укажи путь к файлу и формат (pdf / docx / png / txt) для конвертации.'
+            : 'LibreOffice (soffice.exe) не найден на ПК.',
+        };
+      }
+
+      case 'docker': {
+        if (typeof this.deps.dockerEngine?.getStatus === 'function') {
+          const st = await this.deps.dockerEngine.getStatus({ refresh: true });
+          const fmtHost = (name, host) => {
+            if (!(host?.online ?? host?.available)) return `${name}: недоступен`;
+            const up = (host.stacks || []).filter((s) => s.running).map((s) => `${s.name}${s.port ? ` (:${s.port})` : ''}`);
+            const down = (host.stacks || []).filter((s) => !s.running).map((s) => s.name);
+            return `${name} — запущены: ${up.join(', ') || 'нет'}; остановлены: ${down.join(', ') || 'нет'}`;
+          };
+          return {
+            fenced: false,
+            text: [fmtHost('ПК', st.pc), fmtHost('Lenovo .107', st.lenovo)].join('\n'),
+          };
+        }
+        return { fenced: false, text: 'Docker-движок не подключён.' };
+      }
+
       default: {
         if (!def.isCustom) return { fenced: true, text: 'Коннектор не поддерживает чтение.' };
         if (def.transport === 'stdio') {
@@ -2002,7 +2417,7 @@ class ConnectorsEngine {
     const def = this.findDefinition(id);
     if (!def) return { ok: false, error: `Коннектор «${id}» не найден.` };
 
-    const catalog = this.listConnectors({ mode, ephemeral, torQuarantined });
+    const catalog = this.listConnectors({ mode, ephemeral, isCloud, torQuarantined });
     const item = catalog.items.find((i) => i.id === def.id);
     if (!item?.enabled) return { ok: false, error: `Коннектор «${def.name}» выключен.` };
     if (item.pausedInMode) return { ok: false, error: item.pauseReason || `Коннектор «${def.name}» на паузе в этом режиме.` };
@@ -2010,10 +2425,17 @@ class ConnectorsEngine {
       return { ok: false, error: `Локальный коннектор «${def.name}» запрещён для облачных моделей.` };
     }
 
+    const queryTimeoutMs = ['capri-web', 'youtube'].includes(def.id)
+      ? Math.max(TURN_CONNECTOR_TIMEOUT_MS, 45000)
+      : def.id === 'nomad-kiwix'
+        ? Math.max(TURN_CONNECTOR_TIMEOUT_MS, 32000)
+        : (['comfyui', 'libreoffice', 'docker', 'opennotebook'].includes(def.id)
+          ? Math.max(TURN_CONNECTOR_TIMEOUT_MS, TOOL_QUERY_TIMEOUT_MS)
+          : HTTP_TIMEOUT_MS);
     try {
       const res = await withTimeout(
         this.executeReadOnlyQuery(def, query, { mode, ephemeral, isCloud }),
-        HTTP_TIMEOUT_MS,
+        queryTimeoutMs,
         def.id,
       );
       const formatted = res.fenced ? fenceUntrusted(def.id, res.text) : String(res.text || '').slice(0, MAX_SNIPPET_CHARS);
@@ -2033,7 +2455,7 @@ class ConnectorsEngine {
     onActivity,
   } = {}) {
     const { ids: mentionedIds, cleanedText } = this.parseConnectorMentions(text);
-    const catalog = this.listConnectors({ mode, ephemeral, torQuarantined });
+    const catalog = this.listConnectors({ mode, ephemeral, isCloud, torQuarantined });
     const byId = new Map(catalog.items.map((i) => [i.id, i]));
 
     const isAllowed = (item) => Boolean(item && item.enabled && !item.pausedInMode && !(isCloud && item.localOnly));
@@ -2061,15 +2483,51 @@ class ConnectorsEngine {
       const results = await Promise.all(selectedIds.map(async (id) => {
         const def = this.findDefinition(id);
         if (!def) return null;
+        const stepId = `connector-ctx-${def.id}`;
+        try {
+          onActivity?.({
+            id: stepId,
+            kind: 'connector',
+            name: def.id,
+            detail: { input: queryInput.slice(0, 200) },
+            state: 'running',
+          });
+        } catch {}
+        const stepTimeout = ['capri-web', 'youtube'].includes(def.id)
+          ? Math.max(timeoutMs, 45000)
+          : def.id === 'nomad-kiwix'
+            ? Math.max(timeoutMs, 32000)
+            : (['comfyui', 'libreoffice', 'docker', 'opennotebook'].includes(def.id)
+              ? Math.max(timeoutMs, TOOL_QUERY_TIMEOUT_MS)
+              : timeoutMs);
         try {
           const out = await withTimeout(
             this.executeReadOnlyQuery(def, queryInput, { mode, ephemeral, isCloud }),
-            timeoutMs,
+            stepTimeout,
             def.id,
           );
           const body = out.fenced ? fenceUntrusted(def.id, out.text) : String(out.text || '').slice(0, MAX_SNIPPET_CHARS);
+          try {
+            onActivity?.({
+              id: stepId,
+              kind: 'connector',
+              name: def.id,
+              detail: { input: queryInput.slice(0, 200) },
+              state: 'done',
+            });
+          } catch {}
           return { id: def.id, name: def.name, body };
         } catch (err) {
+          try {
+            onActivity?.({
+              id: stepId,
+              kind: 'connector',
+              name: def.id,
+              detail: { input: queryInput.slice(0, 200) },
+              error: err?.message || 'ошибка',
+              state: 'failed',
+            });
+          } catch {}
           return {
             id: def.id,
             name: def.name,

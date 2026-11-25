@@ -49,4 +49,22 @@ async function callTool(name, args = {}, { fetchImpl = fetch, timeoutMs = 60000 
   return out;
 }
 
-module.exports = { callTool, parseReply };
+async function listTools({ fetchImpl = fetch, timeoutMs = 15000 } = {}) {
+  let first;
+  try {
+    first = await post(fetchImpl, {
+      jsonrpc: '2.0', id: 1, method: 'initialize',
+      params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'altai-re-tools', version: '1' } },
+    }, null, 6000);
+  } catch (err) {
+    throw new Error(`Penpot MCP на :4401 не отвечает (${err.message})`);
+  }
+  const session = first.res.headers.get('mcp-session-id') || '';
+  await post(fetchImpl, { jsonrpc: '2.0', method: 'notifications/initialized' }, session, 6000);
+  const { text } = await post(fetchImpl, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }, session, timeoutMs);
+  const msg = parseReply(text);
+  if (msg.error) throw new Error(`Penpot MCP: ${msg.error.message || 'ошибка'}`);
+  return Array.isArray(msg.result?.tools) ? msg.result.tools : [];
+}
+
+module.exports = { callTool, listTools, parseReply };

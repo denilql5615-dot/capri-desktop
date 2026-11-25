@@ -531,5 +531,5 @@ class Comfy {
 }
 
 module.exports = {
-  Comfy, locate, workflow, styledWorkflow, checkWorkflow, fillWorkflow, loadWorkflow, videoGraph, missingVideoModels, has14BVideoModels, VIDEO_MODELS, VIDEO_MODELS_14B, PLACEHOLDER, PORT, HER,
+  Comfy, locate, desktopPort, workflow, styledWorkflow, checkWorkflow, fillWorkflow, loadWorkflow, videoGraph, missingVideoModels, has14BVideoModels, VIDEO_MODELS, VIDEO_MODELS_14B, PLACEHOLDER, PORT, HER,
 };

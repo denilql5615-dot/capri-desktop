@@ -477,10 +477,10 @@ async function youtube(query) {
   const ftExe = WIN ? findFreeTube() : null;
   if (ftExe) {
     spawn(ftExe, [targetUrl], { detached: true, windowsHide: false, stdio: 'ignore' }).on('error', () => {}).unref();
-    return { title: video?.title || null, player: 'FreeTube' };
+    return { title: video?.title || null, player: 'FreeTube', url: targetUrl };
   }
   await shell.openExternal(targetUrl);
-  return { title: video?.title || null };
+  return { title: video?.title || null, url: targetUrl };
 }
 
 // A Roblox game by its name ("steal a brain rot"): the first one Roblox's own search gives, started

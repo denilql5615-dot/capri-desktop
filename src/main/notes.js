@@ -225,7 +225,8 @@ function markdownCandidate(parsed, title, relative, { privateRoot = false, histo
     status,
     topic: unquote(parsed.meta.topic),
     source: unquote(parsed.meta.source) || (privateRoot ? 'vault' : ''),
-    vault: privateRoot || unquote(parsed.meta.vault) === 'true',
+    branch: unquote(parsed.meta.branch),
+    vault: privateRoot || unquote(parsed.meta.vault) === 'true' || Boolean(unquote(parsed.meta.branch)),
     link: unquote(parsed.meta.link),
     quote: unquote(parsed.meta.quote),
     created: unquote(parsed.meta.created || parsed.meta['создано']) || fallbackDate,
@@ -233,8 +234,8 @@ function markdownCandidate(parsed, title, relative, { privateRoot = false, histo
   };
 }
 
-function rankAndFormat(candidates, said, { limit = VAULT_MATCHED, vaultOnly = false } = {}) {
-  return memoryRag.rankCards(candidates, said, { limit, vaultOnly }).map((item) => ({
+function rankAndFormat(candidates, said, { limit = VAULT_MATCHED, vaultOnly = false, includeTor = false, branch = '' } = {}) {
+  return memoryRag.rankCards(candidates, said, { limit, vaultOnly, includeTor, branch }).map((item) => ({
     title: item.title,
     text: item.text,
     score: item.score,
@@ -249,7 +250,7 @@ function rankAndFormat(candidates, said, { limit = VAULT_MATCHED, vaultOnly = fa
 
 // The rest of the Obsidian vault: only a few notes that match this message. Her own Capri/ notes are
 // still handled by list()/recall(), so their metadata and index keep their old meaning.
-function searchVault(dir, said, limit = VAULT_MATCHED, { history = false, journalDir = null, vaultOnly = false } = {}) {
+function searchVault(dir, said, limit = VAULT_MATCHED, { history = false, journalDir = null, vaultOnly = false, includeTor = false, branch = '' } = {}) {
   const words = stems(said);
   if (!words.size) return [];
   const root = path.basename(dir).toLowerCase() === 'capri' ? path.dirname(dir) : dir;
@@ -280,7 +281,7 @@ function searchVault(dir, said, limit = VAULT_MATCHED, { history = false, journa
     const title = path.basename(file, path.extname(file));
     return markdownCandidate(parsed, title, relative, { history, said });
   }).filter(Boolean);
-  return rankAndFormat(candidates, said, { limit, vaultOnly });
+  return rankAndFormat(candidates, said, { limit, vaultOnly, includeTor, branch });
 }
 
 function privateVaultRoot(dir, commonNotesDir) {
@@ -837,8 +838,70 @@ function writePendingCandidate(dir, payload = {}, today = new Date().toISOString
   return name;
 }
 
+/**
+ * Saves verified knowledge cards directly into 20_Крона (or an isolated branch under 20_Крона/Ветки/<branch>)
+ * so the 5-factor RAG immediately indexes every council, deep-research, or confirmed chat turn.
+ */
+function indexKnowledgeFacts({
+  dir,
+  facts = [],
+  topicPrefix = '',
+  source = 'council_verdict',
+  link = '',
+  branch = '',
+  today = new Date().toISOString().slice(0, 10),
+} = {}) {
+  if (!dir || !Array.isArray(facts) || !facts.length) return [];
+  const root = vaultRoot(dir);
+  const cleanBranch = String(branch || '').replace(/[^a-zа-яё0-9_-]+/gi, '').toLowerCase();
+  const targetDir = cleanBranch
+    ? path.join(root, '20_Крона', 'Ветки', cleanBranch)
+    : path.join(root, '20_Крона');
+  fs.mkdirSync(targetDir, { recursive: true });
+  const created = String(today || new Date().toISOString().slice(0, 10)).trim();
+  const saved = [];
+
+  for (const item of facts.slice(0, 15)) {
+    const rawText = typeof item === 'string' ? item : (item?.text || item?.claim || '');
+    const text = String(rawText || '').trim().slice(0, MAX_TEXT);
+    if (!text) continue;
+    const rawTopic = typeof item === 'object' && item?.topic
+      ? item.topic
+      : (typeof item === 'object' && item?.title ? item.title : `${topicPrefix ? `${topicPrefix} — ` : ''}${text.split(/\s+/).slice(0, 5).join(' ')}`);
+    const topic = String(rawTopic || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 90);
+    const baseName = fileName(topic);
+    if (!baseName) continue;
+
+    const quote = String((typeof item === 'object' && item?.quote) || text).replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 320);
+    const uid = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const slug = baseName.toLowerCase().replace(/[^a-zа-яё0-9]+/gi, '-').replace(/^-+|-+$/g, '') || 'fact';
+    const cardId = `${slug}-${uid}`;
+    const frontmatter = [
+      '---',
+      `id: ${sanitizeYamlLine(cardId)}`,
+      'status: verified',
+      'layer: "20_крона"',
+      `topic: ${sanitizeYamlLine(topic)}`,
+      `source: ${sanitizeYamlLine(source)}`,
+      `link: ${sanitizeYamlLine(link || `capri://${source}/${created}`)}`,
+      `quote: ${sanitizeYamlLine(quote)}`,
+      ...(cleanBranch ? [`branch: ${sanitizeYamlLine(cleanBranch)}`, 'vault: true'] : []),
+      `created: ${sanitizeYamlLine(created)}`,
+      `updated: ${sanitizeYamlLine(created)}`,
+      '---',
+      '',
+      text,
+      '',
+    ].join('\n');
+
+    const { name } = writeUniquePendingFile(targetDir, baseName, frontmatter);
+    saved.push(name);
+  }
+  return saved;
+}
+
 module.exports = {
-  INDEX, TYPES, EXTRACT_SCHEMA, PLAN_DIR, RAW_DIR, OUT_DIR, PENDING_REVIEW_DIR, dirOf, fileName, list, searchVault, searchPrivateVault, savePrivateChat, savePrivateNote, write, writePendingCandidate, writeIndex, writePlanNote,
+  INDEX, TYPES, EXTRACT_SCHEMA, PLAN_DIR, RAW_DIR, OUT_DIR, PENDING_REVIEW_DIR, dirOf, fileName, list, searchVault, searchPrivateVault, savePrivateChat, savePrivateNote, write, writePendingCandidate, indexKnowledgeFacts, writeIndex, writePlanNote,
   appendChat, appendSearch, writeOutput,
   recall, prompt, vaultPrompt, extractMessages, parseFacts,
   isSmallTalk, prepareCloudObsidianMessages, extractRelevantExcerpt,

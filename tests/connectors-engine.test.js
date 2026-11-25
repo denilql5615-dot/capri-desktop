@@ -205,7 +205,7 @@ function makeFixtureEnv() {
   };
 }
 
-test('ConnectorsEngine exposes 15 curated connectors across 4 ordered categories with exact flags', () => {
+test('ConnectorsEngine exposes 22 curated connectors across 4 ordered categories with exact flags', () => {
   const env = makeFixtureEnv();
   try {
     const listed = env.engine.listConnectors({ mode: 'chat', ephemeral: false });
@@ -214,10 +214,10 @@ test('ConnectorsEngine exposes 15 curated connectors across 4 ordered categories
       listed.categories.map((c) => c.title),
       ['Почта, календарь и связь', 'Память, знания и медиа', 'Код, модели и инфраструктура', 'Здоровье и личный спорт'],
     );
-    assert.equal(CURATED_CONNECTORS.length, 15);
-    assert.equal(listed.items.length, 15);
-    assert.equal(listed.stats.total, 15);
-    assert.equal(listed.stats.enabled, 15);
+    assert.equal(CURATED_CONNECTORS.length, 22);
+    assert.equal(listed.items.length, 22);
+    assert.equal(listed.stats.total, 22);
+    assert.equal(listed.stats.enabled, 22);
 
     const byId = new Map(listed.items.map((i) => [i.id, i]));
     assert.equal(byId.get('proton-pim').cloudOnly, true);
@@ -246,11 +246,11 @@ test('Privacy & mode boundaries: cloudOnly, vaultOnly, offlineSafe, and localOnl
   try {
     env.engine.saveHealthSummary({ steps: 9420, sleepHours: 7.4, avgHr: 64, restingHr: 54 });
 
-    // 1. Private mode: cloudOnly pauses, obsidian (vaultOnly) stays active, nomad & github stay active, health stays active locally
-    const privList = env.engine.listConnectors({ mode: 'private', ephemeral: false });
-    const privMap = new Map(privList.items.map((i) => [i.id, i]));
-    assert.equal(privMap.get('proton-pim').pausedInMode, true);
-    assert.equal(privMap.get('science-search').pausedInMode, true);
+    // 1. Private mode: cloud-forwarded turns pause cloudOnly; local model keeps shared access to tools & obsidian
+    const privCloudMap = new Map(env.engine.listConnectors({ mode: 'private', ephemeral: false, isCloud: true }).items.map((i) => [i.id, i]));
+    assert.equal(privCloudMap.get('proton-pim').pausedInMode, true);
+    assert.equal(privCloudMap.get('science-search').pausedInMode, true);
+    const privMap = new Map(env.engine.listConnectors({ mode: 'private', ephemeral: false }).items.map((i) => [i.id, i]));
     assert.equal(privMap.get('obsidian').pausedInMode, false);
     assert.equal(privMap.get('nomad-kiwix').pausedInMode, false);
     assert.equal(privMap.get('github').pausedInMode, false);
@@ -258,14 +258,17 @@ test('Privacy & mode boundaries: cloudOnly, vaultOnly, offlineSafe, and localOnl
     // Global enabled flag is never mutated by mode pausing
     assert.equal(privMap.get('proton-pim').enabled, true);
 
-    // 2. Ephemeral / NSFW: both cloudOnly and vaultOnly pause
-    for (const ctx of [{ mode: 'chat', ephemeral: true }, { mode: 'nsfw', ephemeral: false }]) {
-      const m = new Map(env.engine.listConnectors(ctx).items.map((i) => [i.id, i]));
-      assert.equal(m.get('obsidian').pausedInMode, true);
-      assert.equal(m.get('capri-web').pausedInMode, true);
-      assert.equal(m.get('nomad-kiwix').pausedInMode, false);
-      assert.equal(m.get('github').pausedInMode, false);
-    }
+    // 2. Ephemeral pauses both cloudOnly and vaultOnly; NSFW pauses cloudOnly for cloud but keeps local tools shared
+    const ephMap = new Map(env.engine.listConnectors({ mode: 'chat', ephemeral: true }).items.map((i) => [i.id, i]));
+    assert.equal(ephMap.get('obsidian').pausedInMode, true);
+    assert.equal(ephMap.get('capri-web').pausedInMode, true);
+    assert.equal(ephMap.get('nomad-kiwix').pausedInMode, false);
+    assert.equal(ephMap.get('github').pausedInMode, false);
+    const nsfwCloudMap = new Map(env.engine.listConnectors({ mode: 'nsfw', ephemeral: false, isCloud: true }).items.map((i) => [i.id, i]));
+    assert.equal(nsfwCloudMap.get('capri-web').pausedInMode, true);
+    const nsfwLocalMap = new Map(env.engine.listConnectors({ mode: 'nsfw', ephemeral: false, isCloud: false }).items.map((i) => [i.id, i]));
+    assert.equal(nsfwLocalMap.get('obsidian').pausedInMode, false);
+    assert.equal(nsfwLocalMap.get('comfyui').pausedInMode, false);
 
     // 3. localOnly MUST NEVER leak to cloud (even with explicit @health or @wger!)
     const cloudCtx = await env.engine.resolveTurnContext({
@@ -401,7 +404,7 @@ test('Health probe cache uses 30s TTL and checkAll populates all connectors', as
 
     const all = await env.engine.checkAll();
     assert.equal(all.ok, true);
-    assert.equal(all.items.length, 15);
+    assert.equal(all.items.length, 22);
   } finally {
     fs.rmSync(env.base, { recursive: true, force: true });
   }
@@ -481,8 +484,8 @@ test('SlashCommandEngine wires live connectors section and /connectors command',
     const connSec = catalog.sections.find((s) => s.id === 'connectors');
     assert.ok(connSec);
     assert.equal(connSec.stage, undefined);
-    assert.equal(connSec.items.length, 15);
-    assert.equal(connSec.items.find((i) => i.id === 'proton-pim').pausedInMode, true);
+    assert.equal(connSec.items.length, 22);
+    assert.equal(connSec.items.find((i) => i.id === 'proton-pim').pausedInMode, false);
     assert.equal(connSec.items.find((i) => i.id === 'obsidian').pausedInMode, false);
 
     const cmdRes = await slash.run({ text: '/connectors', mode: 'chat' });
@@ -535,8 +538,8 @@ test('PhoneBridge exposes /connectors HTTP endpoints, /ping flag, and 1-step [[u
 
     const list = await reqJson('GET', '/connectors?mode=private&ephemeral=false');
     assert.equal(list.status, 200);
-    assert.equal(list.data.items.length, 15);
-    assert.equal(list.data.items.find((i) => i.id === 'proton-pim').pausedInMode, true);
+    assert.equal(list.data.items.length, 22);
+    assert.equal(list.data.items.find((i) => i.id === 'proton-pim').pausedInMode, false);
 
     const tog = await reqJson('POST', '/connectors/toggle', { id: 'youtube', enabled: false });
     assert.equal(tog.status, 200);
