@@ -217,6 +217,17 @@ function restoreClaude(saved) {
 
 const isChatSession = (id) => Boolean(id) && id === claudeSession;
 
+async function chatTurn(id, cfg, { model, messages, tools, numPredict, numCtx, onUsage }, onDelta, signal) {
+  const p = endpoint(id, cfg);
+  // Stop hints apply strictly to local Ollama turns; filter them out for Ollama cloud/remote or other providers.
+  const cleaned = p.kind === 'ollama' && isLocal(id, cfg, model)
+    ? (Array.isArray(messages) ? messages : [])
+    : stripBrainHints(messages);
+  if (p.kind === 'ollama') return ollama.chatTurn({ model, messages: cleaned, tools, numPredict, numCtx, onUsage }, onDelta, signal);
+  const text = await chat(id, cfg, { model, messages, numPredict, numCtx, onUsage }, onDelta, signal);
+  return { text, toolCalls: [], usage: null };
+}
+
 async function chat(id, cfg, { model, messages, numPredict, numCtx, onUsage }, onDelta, signal) {
   const p = endpoint(id, cfg);
   // Stop hints apply strictly to local Ollama turns; filter them out for Ollama cloud/remote or other providers.
@@ -238,4 +249,4 @@ function isLocal(id, cfg, model) {
   return Boolean(PROVIDERS[id].local);
 }
 
-module.exports = { isLocal, PROVIDERS, CLAUDE_MODES, models, warm, chat, resetClaude, isChatSession, claudeMemory, restoreClaude };
+module.exports = { isLocal, PROVIDERS, CLAUDE_MODES, models, warm, chat, chatTurn, resetClaude, isChatSession, claudeMemory, restoreClaude };

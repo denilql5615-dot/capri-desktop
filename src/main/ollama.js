@@ -150,8 +150,8 @@ async function unloadAll() {
   return names;
 }
 
-// Her answer, streamed: onDelta(piece) as it comes, resolves with all of it.
-async function chat({ model, messages, numPredict = 240, keepAlive = '5m', numCtx = null, onUsage = null }, onDelta, signal) {
+// One turn against `/api/chat`, streamed: supports optional native `tools` JSON Schemas and returns `{ text, toolCalls, usage }`.
+async function chatTurn({ model, messages, tools = null, numPredict = 240, keepAlive = '5m', numCtx = null, onUsage = null }, onDelta = () => {}, signal) {
   // cloud models think before they answer, and that counts in num_predict: kept short, with room for it
   const thinking = canThink(model);
   const thinks = isCloud(model) && thinking;
@@ -164,9 +164,10 @@ async function chat({ model, messages, numPredict = 240, keepAlive = '5m', numCt
       messages,
       stream: true,
       keep_alive: keepFor(model, keepAlive),
+      ...(Array.isArray(tools) && tools.length && { tools }),
       // a local thinking model (gemma4, qwen3, qwen3.5) thinks by default and spends all 240 tokens on it: she'd answer "…"
       ...(thinking && { think: thinks ? 'low' : false }),
-      options: { temperature: 0.85, num_predict: thinks ? 1200 : numPredict, ...(effectiveCtx && { num_ctx: effectiveCtx }) },
+      options: { temperature: Array.isArray(tools) && tools.length ? 0.35 : 0.85, num_predict: thinks ? 1200 : numPredict, ...(effectiveCtx && { num_ctx: effectiveCtx }) },
     }),
     signal,
   });
@@ -175,9 +176,16 @@ async function chat({ model, messages, numPredict = 240, keepAlive = '5m', numCt
   let buffer = '';
   let text = '';
   let thinkingChars = 0;
+  let usage = null;
+  const toolCalls = [];
   const consume = (msg) => {
     if (msg.error) throw new Error(msg.error);
     thinkingChars += String(msg.message?.thinking || '').length;
+    if (Array.isArray(msg.message?.tool_calls) && msg.message.tool_calls.length) {
+      for (const tc of msg.message.tool_calls) {
+        if (tc && tc.function) toolCalls.push(tc);
+      }
+    }
     const piece = msg.message?.content || ''; // a thinking model's reasoning comes apart, and is left out
     if (piece) {
       text += piece;
@@ -187,7 +195,7 @@ async function chat({ model, messages, numPredict = 240, keepAlive = '5m', numCt
     const hasPrompt = Number.isFinite(msg.prompt_eval_count) && msg.prompt_eval_count >= 0;
     const hasEval = Number.isFinite(msg.eval_count) && msg.eval_count >= 0;
     if (hasPrompt || hasEval) {
-      const usage = {
+      usage = {
         model,
         promptTokens: hasPrompt ? Math.trunc(msg.prompt_eval_count) : null,
         evalTokens: hasEval ? Math.trunc(msg.eval_count) : null,
@@ -196,9 +204,11 @@ async function chat({ model, messages, numPredict = 240, keepAlive = '5m', numCt
       lastUsage = usage;
       try { onUsage?.(usage); } catch {}
     }
-    if (!text.trim()) console.warn('[capri] empty Ollama answer', model, {
-      thinkingChars, doneReason: msg.done_reason || '', evalCount: msg.eval_count || 0,
-    });
+    if (!text.trim() && toolCalls.length === 0) {
+      console.warn('[capri] empty Ollama answer', model, {
+        thinkingChars, doneReason: msg.done_reason || '', evalCount: msg.eval_count || 0,
+      });
+    }
     return true;
   };
   for await (const chunk of res.body) {
@@ -207,7 +217,7 @@ async function chat({ model, messages, numPredict = 240, keepAlive = '5m', numCt
     while ((nl = buffer.indexOf('\n')) >= 0) {
       const line = buffer.slice(0, nl).trim();
       buffer = buffer.slice(nl + 1);
-      if (line && consume(JSON.parse(line))) return text;
+      if (line && consume(JSON.parse(line))) return { text, toolCalls, usage };
     }
   }
   signal?.throwIfAborted();
@@ -215,9 +225,15 @@ async function chat({ model, messages, numPredict = 240, keepAlive = '5m', numCt
   if (tail) {
     let finalFrame;
     try { finalFrame = JSON.parse(tail); } catch { /* the socket may have closed inside a frame */ }
-    if (finalFrame && consume(finalFrame)) return text;
+    if (finalFrame && consume(finalFrame)) return { text, toolCalls, usage };
   }
   throw Object.assign(new Error('Ollama прервал ответ до подтверждения завершения.'), { code: 'incomplete' });
+}
+
+// Her answer, streamed: onDelta(piece) as it comes, resolves with all of it.
+async function chat(opts, onDelta = () => {}, signal) {
+  const res = await chatTurn(opts, onDelta, signal);
+  return res.text;
 }
 
 // One step of a task (agent.js): her answer as JSON held to `schema`. Not streamed, no thinking aloud
@@ -313,4 +329,4 @@ function screenModel(list = []) {
 const retryEmptyVision = (text, attempt) => attempt === 0 && !String(text || '').trim();
 const visionPrompt = (text) => String(text || '');
 
-module.exports = { AUX_DEFAULT_CTX, QWEN36_DEFAULT_CTX, base, models, loadedModels, isCloud, pin, setContextFor, ctxFor, getLastUsage, account, freeModels, warm, unload, unloadAll, chat, jsonChat, pick, canSee, findSpokenModel, screenModel, retryEmptyVision, visionPrompt };
+module.exports = { AUX_DEFAULT_CTX, QWEN36_DEFAULT_CTX, base, models, loadedModels, isCloud, pin, setContextFor, ctxFor, getLastUsage, account, freeModels, warm, unload, unloadAll, chat, chatTurn, jsonChat, pick, canSee, findSpokenModel, screenModel, retryEmptyVision, visionPrompt };
