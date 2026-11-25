@@ -9,7 +9,9 @@ const {
   ConnectorsEngine,
   CONNECTOR_CATEGORIES,
   CURATED_CONNECTORS,
+  CONNECTOR_IDS,
   MAX_HINTS_TOKENS,
+  resolveConnectorAlias,
   parseModelUseTag,
   stripModelUseTags,
   sanitizeDigestMarkdown,
@@ -205,7 +207,7 @@ function makeFixtureEnv() {
   };
 }
 
-test('ConnectorsEngine exposes 22 curated connectors across 4 ordered categories with exact flags', () => {
+test('ConnectorsEngine exposes 23 curated connectors across 4 ordered categories with exact flags', () => {
   const env = makeFixtureEnv();
   try {
     const listed = env.engine.listConnectors({ mode: 'chat', ephemeral: false });
@@ -214,10 +216,10 @@ test('ConnectorsEngine exposes 22 curated connectors across 4 ordered categories
       listed.categories.map((c) => c.title),
       ['Почта, календарь и связь', 'Память, знания и медиа', 'Код, модели и инфраструктура', 'Здоровье и личный спорт'],
     );
-    assert.equal(CURATED_CONNECTORS.length, 22);
-    assert.equal(listed.items.length, 22);
-    assert.equal(listed.stats.total, 22);
-    assert.equal(listed.stats.enabled, 22);
+    assert.equal(CURATED_CONNECTORS.length, 23);
+    assert.equal(listed.items.length, 23);
+    assert.equal(listed.stats.total, 23);
+    assert.equal(listed.stats.enabled, 23);
 
     const byId = new Map(listed.items.map((i) => [i.id, i]));
     assert.equal(byId.get('proton-pim').cloudOnly, true);
@@ -404,7 +406,7 @@ test('Health probe cache uses 30s TTL and checkAll populates all connectors', as
 
     const all = await env.engine.checkAll();
     assert.equal(all.ok, true);
-    assert.equal(all.items.length, 22);
+    assert.equal(all.items.length, 23);
   } finally {
     fs.rmSync(env.base, { recursive: true, force: true });
   }
@@ -484,7 +486,7 @@ test('SlashCommandEngine wires live connectors section and /connectors command',
     const connSec = catalog.sections.find((s) => s.id === 'connectors');
     assert.ok(connSec);
     assert.equal(connSec.stage, undefined);
-    assert.equal(connSec.items.length, 22);
+    assert.equal(connSec.items.length, 23);
     assert.equal(connSec.items.find((i) => i.id === 'proton-pim').pausedInMode, false);
     assert.equal(connSec.items.find((i) => i.id === 'obsidian').pausedInMode, false);
 
@@ -538,7 +540,7 @@ test('PhoneBridge exposes /connectors HTTP endpoints, /ping flag, and 1-step [[u
 
     const list = await reqJson('GET', '/connectors?mode=private&ephemeral=false');
     assert.equal(list.status, 200);
-    assert.equal(list.data.items.length, 22);
+    assert.equal(list.data.items.length, 23);
     assert.equal(list.data.items.find((i) => i.id === 'proton-pim').pausedInMode, false);
 
     const tog = await reqJson('POST', '/connectors/toggle', { id: 'youtube', enabled: false });
@@ -773,6 +775,128 @@ test('PhoneBridge POST /connectors/configure configures connectors and fires onC
     assert.equal(changedPayloads[0].id, 'wger');
   } finally {
     await bridge.stop();
+    fs.rmSync(env.base, { recursive: true, force: true });
+  }
+});
+
+test('Fuzzy Russian routing, resolveConnectorAlias, CONNECTOR_IDS, and MAX_HINTS_TOKENS=420', () => {
+  assert.equal(MAX_HINTS_TOKENS, 420);
+  assert.equal(CONNECTOR_IDS.length, CURATED_CONNECTORS.length);
+  assert.ok(CONNECTOR_IDS.includes('presenton'));
+  assert.ok(CONNECTOR_IDS.includes('freshrss'));
+
+  assert.equal(resolveConnectorAlias('почта'), 'proton-pim');
+  assert.equal(resolveConnectorAlias('Глянь Почту'), 'proton-pim');
+  assert.equal(resolveConnectorAlias('рсс'), 'freshrss');
+  assert.equal(resolveConnectorAlias('новости'), 'freshrss');
+  assert.equal(resolveConnectorAlias('номад'), 'nomad-kiwix');
+  assert.equal(resolveConnectorAlias('ноутбук'), 'opennotebook');
+  assert.equal(resolveConnectorAlias('opennotebook'), 'opennotebook');
+  assert.equal(resolveConnectorAlias('преза'), 'presenton');
+  assert.equal(resolveConnectorAlias('слайды'), 'presenton');
+  assert.equal(resolveConnectorAlias('хаггингфейс'), 'huggingface');
+  assert.equal(resolveConnectorAlias('неизвестный_инструмент'), null);
+
+  const env = makeFixtureEnv();
+  try {
+    const active = env.engine.listConnectors().items;
+    assert.deepEqual(env.engine.detectAutoConnectors('Глянь почту, всё ли ок?', active), ['proton-pim']);
+    assert.deepEqual(env.engine.detectAutoConnectors('Поищи модели на хаггингфейс', active), ['huggingface']);
+    assert.deepEqual(env.engine.detectAutoConnectors('Найди доки по electron', active), ['context7']);
+    assert.deepEqual(env.engine.detectAutoConnectors('Вруби видос про linux', active), ['freetube']);
+    assert.deepEqual(env.engine.detectAutoConnectors('Что там на гитхабе?', active), ['github']);
+    assert.deepEqual(env.engine.detectAutoConnectors('Перегони в пдф отчёт', active), ['libreoffice']);
+    assert.deepEqual(env.engine.detectAutoConnectors('Покажи новости из рсс', active), ['freshrss']);
+    assert.deepEqual(env.engine.detectAutoConnectors('Что там по докерам и контейнерам?', active), ['docker']);
+    assert.deepEqual(env.engine.detectAutoConnectors('Поищи в номаде про радио', active), ['nomad-kiwix']);
+    // presenton must NOT be auto-triggered as pre-fetch context
+    assert.deepEqual(env.engine.detectAutoConnectors('Сделай слайды или презу', active), []);
+
+    const hints = env.engine.buildConnectorHints({ mode: 'chat', isCloud: false });
+    assert.ok(hints.includes('presenton'));
+    assert.ok(hints.includes('docker'));
+    assert.ok(estimateTokens(hints) <= MAX_HINTS_TOKENS, `Hints too long: ${estimateTokens(hints)}`);
+  } finally {
+    fs.rmSync(env.base, { recursive: true, force: true });
+  }
+});
+
+test('FreshRSS falls back to read-only SSH + docker exec php PDO when HTTP :8082 requires login', async () => {
+  const env = makeFixtureEnv();
+  const sshCalls = [];
+  const engine = new ConnectorsEngine({
+    userDataDir: env.userDataDir,
+    getConfig: () => ({}),
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => '<html><body><form action="/i/?c=auth&a=login"></form></body></html>',
+    }),
+    execFileImpl: async (cmd, args, opts) => {
+      sshCalls.push({ cmd, args, opts });
+      return {
+        stdout: JSON.stringify([
+          { title: 'AI Privacy Post', link: 'https://example.com/1&amp;x=1', feed: 'Proton Blog' },
+          { title: 'Kernel Update', link: 'https://example.com/2', feed: 'Habr' },
+        ]),
+        stderr: '',
+      };
+    },
+  });
+  try {
+    const def = engine.findDefinition('freshrss');
+    const out = await engine.executeReadOnlyQuery(def, 'новости');
+    assert.equal(out.fenced, true);
+    assert.equal(sshCalls.length, 1);
+    assert.equal(sshCalls[0].cmd, 'ssh');
+    assert.ok(sshCalls[0].args.includes('danyal@192.168.0.107'));
+    const remoteArg = String(sshCalls[0].args[sshCalls[0].args.length - 1] || '');
+    assert.ok(remoteArg.includes('capri-stack-freshrss-1') && remoteArg.includes('php -r'));
+    const b64Match = remoteArg.match(/base64_decode\("([A-Za-z0-9+/=]+)"\)/);
+    assert.ok(b64Match, 'expected base64 PHP payload');
+    const decodedPhp = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    assert.ok(decodedPhp.includes('SQLITE_OPEN_READONLY') && decodedPhp.includes('SELECT '));
+    assert.match(out.text, /\[Proton Blog\] AI Privacy Post \(https:\/\/example\.com\/1&x=1\)/);
+    assert.match(out.text, /\[Habr\] Kernel Update/);
+  } finally {
+    fs.rmSync(env.base, { recursive: true, force: true });
+  }
+});
+
+
+test('huggingface and science-search strip noisy Russian words and resolveTurnContext emits icon', async () => {
+  const { ICON_BY_CONNECTOR, CONNECTOR_IDS } = require('../src/main/connectors-engine');
+  for (const id of CONNECTOR_IDS) {
+    assert.ok(ICON_BY_CONNECTOR[id], `Missing icon for ${id}`);
+  }
+
+  const fetchedUrls = [];
+  const activities = [];
+  const env = makeFixtureEnv();
+  env.engine.fetchImpl = async (url) => {
+    fetchedUrls.push(String(url));
+    if (String(url).includes('huggingface.co')) {
+      return { ok: true, status: 200, async json() { return [{ id: 'Qwen/Qwen2.5-7B', downloads: 100, likes: 10 }]; } };
+    }
+    if (String(url).includes('openalex.org')) {
+      return { ok: true, status: 200, async json() { return { results: [{ title: 'Melatonin study', publication_year: 2024, cited_by_count: 5 }] }; } };
+    }
+    return { ok: true, status: 200, async json() { return {}; } };
+  };
+  try {
+    await env.engine.queryConnector({ id: 'huggingface', query: 'найди модель qwen на хаггингфейс' });
+    assert.ok(fetchedUrls.some((u) => u.includes('search=qwen')));
+
+    await env.engine.queryConnector({ id: 'science-search', query: 'поищи научные статьи про мелатонин' });
+    assert.ok(fetchedUrls.some((u) => u.includes(encodeURIComponent('мелатонин')) && !u.includes(encodeURIComponent('научные'))));
+
+    await env.engine.resolveTurnContext({
+      text: '[[use:huggingface qwen]]',
+      mode: 'chat',
+      onActivity: (ev) => activities.push(ev),
+    });
+    assert.ok(activities.some((a) => a.name === 'huggingface' && a.icon === 'sparkle'));
+  } finally {
     fs.rmSync(env.base, { recursive: true, force: true });
   }
 });

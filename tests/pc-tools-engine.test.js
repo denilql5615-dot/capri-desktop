@@ -112,6 +112,8 @@ test('PcToolsEngine catalog has exact 11 PC tools and 4 Lenovo bridges with 20s 
     'tool-proton-sync',
   ];
   assert.deepEqual(PC_TOOLS_CATALOG.map((t) => t.id), expectedToolIds);
+  const comfyTool = PC_TOOLS_CATALOG.find((t) => t.id === 'tool-comfy');
+  assert.equal(comfyTool.url, 'http://127.0.0.1:8188');
   assert.deepEqual(
     LENOVO_BRIDGES_CATALOG.map((b) => b.id),
     ['bridge-freshrss', 'bridge-fmd', 'bridge-homebox', 'bridge-calibre'],

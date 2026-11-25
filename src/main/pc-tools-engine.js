@@ -110,11 +110,11 @@ const PC_TOOLS_CATALOG = Object.freeze([
     id: 'tool-comfy',
     name: 'ComfyUI Desktop',
     command: '',
-    url: 'http://127.0.0.1:8000',
+    url: 'http://127.0.0.1:8188',
     actions: ['probe', 'open'],
     offlineSafe: true,
     privacySafe: true,
-    description: 'Генерация изображений и апскейл (:8000, делит VRAM с Ollama)',
+    description: 'Генерация изображений и апскейл (:8188, делит VRAM с Ollama)',
   },
   {
     id: 'tool-agent-desktop',

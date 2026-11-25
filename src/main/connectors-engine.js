@@ -24,7 +24,7 @@ const HTTP_TIMEOUT_MS = 8000;
 const TOOL_QUERY_TIMEOUT_MS = 25000;
 const TURN_CONNECTOR_TIMEOUT_MS = 18000;
 const MAX_AUTO_CONNECTORS = 3;
-const MAX_HINTS_TOKENS = 260;
+const MAX_HINTS_TOKENS = 420;
 const MAX_SNIPPET_CHARS = 2400;
 
 const ISOLATED_MODES = new Set(['private', 'nsfw', 'tor']);
@@ -394,7 +394,23 @@ const CURATED_CONNECTORS = Object.freeze([
     localSafe: true,
     transport: 'local-http',
     url: 'http://127.0.0.1:4401/mcp',
-    hintTopic: 'инспекция и инструменты Penpot MCP',
+    hintTopic: 'рисование, редактирование и экспорт макетов в Penpot MCP (:4401)',
+  },
+  {
+    id: 'presenton',
+    name: 'Presenton Презентации',
+    category: 'dev',
+    icon: 'layers',
+    description: 'Локальный AI-генератор презентаций PPTX на порту :5100',
+    aliases: ['презентон', 'slides', 'pptx', 'презентация'],
+    cloudOnly: false,
+    localOnly: true,
+    vaultOnly: false,
+    offlineSafe: true,
+    localSafe: true,
+    transport: 'local-http',
+    url: 'http://127.0.0.1:5100',
+    hintTopic: 'создание презентаций и слайдов в Presenton (:5100)',
   },
   {
     id: 'comfyui',
@@ -451,7 +467,7 @@ const GREETING_ONLY_RE = /^(?:привет|здравствуй(?:те)?|доб�
 const AUTO_TRIGGERS = Object.freeze([
   {
     id: 'proton-pim',
-    re: /(?:проверь|посмотри|покажи|найди|есть\s+ли|что\s+(?:в|по|на))\s+(?:почт|письм|входящ|календар|встреч|расписани)|(?:новые?\s+письм|мо[ия]\s+(?:письм|почт|встреч)|(?:на|в)\s+календар[ея]\s+(?:сегодня|завтра|недел))/i,
+    re: /(?:проверь|посмотри|глянь|покажи|найди|есть\s+ли|что\s+(?:в|по|на)|че\s+(?:в|по|на))\s+(?:почт|письм|входящ|календар|встреч|расписани)|(?:новые?\s+письм|мо[ия]\s+(?:письм|почт|встреч)|(?:на|в)\s+календар[ея]\s+(?:сегодня|завтра|недел))/i,
   },
   {
     id: 'google-workspace',
@@ -467,7 +483,7 @@ const AUTO_TRIGGERS = Object.freeze([
   },
   {
     id: 'nomad-kiwix',
-    re: /(?:в\s+nomad|в\s+kiwix|в\s+номад|по\s+офлайн[- ]?библиотек)/i,
+    re: /(?:(?:в\s+|по\s+)?(?:nomad|kiwix|номад[аеу]?|кивикс[а-я]*)|по\s+офлайн[- ]?библиотек)/i,
   },
   {
     id: 'opennotebook',
@@ -475,11 +491,11 @@ const AUTO_TRIGGERS = Object.freeze([
   },
   {
     id: 'freshrss',
-    re: /(?:freshrss|фрешрсс|rss[- ]?лент|свежие\s+новости\s+из\s+подписок|что\s+в\s+freshrss)/i,
+    re: /(?:freshrss|фрешрсс|rss[- ]?лент|свежие\s+новости(?:\s+из\s+подписок)?|что\s+(?:в|по)\s+(?:freshrss|рсс|rss|новост[яи]х?)|(?:глянь|покажи|проверь|читай|почитай)\s+(?:новости|рсс|rss))/i,
   },
   {
     id: 'freetube',
-    re: /(?:freetube|фритюб|фритуб|запусти\s+(?:видос|видео|ролик)|открой\s+(?:видос|видео|ролик))/i,
+    re: /(?:freetube|фритюб|фритуб|(?:запусти|открой|вруби|включи)\s+(?:видос|видео|ролик|ютуб))/i,
   },
   {
     id: 'penpot',
@@ -491,11 +507,11 @@ const AUTO_TRIGGERS = Object.freeze([
   },
   {
     id: 'libreoffice',
-    re: /(?:libreoffice|либрофис|soffice|сконвертируй\s+в\s+(?:pdf|docx|png))/i,
+    re: /(?:libreoffice|либрофис|soffice|stirling|(?:сконвертируй|перегони|переведи)\s+в\s+(?:pdf|пдф|docx|png))/i,
   },
   {
     id: 'docker',
-    re: /(?:докер|docker|контейнер(?:ы|ах|ов)?\s+(?:на\s+пк|на\s+\.?107|запущен))/i,
+    re: /(?:докер[а-я]*|docker|контейнер(?:ы|ах|ов)?(?:\s+(?:на\s+пк|на\s+\.?107|запущен|статус))?)/i,
   },
   {
     id: 'capri-web',
@@ -503,7 +519,7 @@ const AUTO_TRIGGERS = Object.freeze([
   },
   {
     id: 'science-search',
-    re: /(?:научн[а-яё]+\s+стат|pubmed|openalex|arxiv|клиническ[а-яё]+\s+исследовани|мета-?анализ\s+исследован)/i,
+    re: /(?:научн[а-я]+\s+стат|pubmed|openalex|arxiv|клиническ[а-я]+\s+исследовани|мета-?анализ\s+исследован)/i,
   },
   {
     id: 'youtube',
@@ -515,29 +531,98 @@ const AUTO_TRIGGERS = Object.freeze([
   },
   {
     id: 'github',
-    re: /(?:git\s+status|git\s+log|статус\s+репозитор|последн[а-яё]+\s+коммит[а-яё]*|что\s+в\s+(?:репо|capri-desktop|genesis-src|capri-android-ref))/i,
+    re: /(?:git\s+status|git\s+log|на\s+(?:гитхаб[е]?|github)|в\s+(?:гитхаб[е]?|github)|статус\s+репозитор|последн[а-я]+\s+коммит[а-я]*|что\s+в\s+(?:репо|capri-desktop|genesis-src|capri-android-ref)|репозитори[а-я]+\s+(?:на\s+)?(?:гитхаб|github))/i,
   },
   {
     id: 'huggingface',
-    re: /(?:huggingface|hugging\s+face|модел[а-яё]+\s+(?:на\s+)?hf\b|gguf\s+(?:на|модел|кванты))/i,
+    re: /(?:huggingface|hugging\s*face|хаг+инг\s*фейс|модел[а-я]+\s+(?:на\s+)?(?:hf|хф)\b|на\s+(?:hf|хф)\b|gguf\s+(?:на|модел|кванты))/i,
   },
   {
     id: 'context7',
-    re: /(?:context7|документаци[а-яё]+\s+библиотек|доки\s+(?:библиотеки|по\s+библиотек|api\s+context7))/i,
+    re: /(?:context7|контекст\s*7|документаци[а-я]+\s+(?:библиотек|по\s+[a-z0-9_.-]+)|доки\s+(?:библиотеки|по\s+(?:библиотек|[a-zа-я0-9_.-]+)|api\s+context7))/i,
   },
   {
     id: 'home-server',
-    re: /(?:сервер\s+(?:lenovo|леново|107)|домашн[а-яё]+\s+сервер|статус\s+(?:\.107|сервера\s+lenovo))/i,
+    re: /(?:сервер\s+(?:lenovo|леново|107)|домашн[а-я]+\s+сервер|статус\s+(?:\.107|сервера\s+lenovo))/i,
   },
   {
     id: 'health-connect',
-    re: /(?:мо[ёе]\s+здоровь|сколько\s+шагов|как\s+(?:я\s+)?спал|пульс\s+за|сон\s+и\s+шаги|health\s+connect|zepp\s+life|показател[а-яё]+\s+(?:сна|пульса|шагов))/i,
+    re: /(?:мо[её]\s+здоровь|сколько\s+шагов|как\s+(?:я\s+)?спал|пульс\s+за|сон\s+и\s+шаги|health\s+connect|zepp\s+life|показател[а-я]+\s+(?:сна|пульса|шагов))/i,
   },
   {
     id: 'wger',
-    re: /(?:мо[яи]\s+тренировк|программ[а-яё]+\s+тренировок|упражнени[а-яё]+\s+в\s+wger|статистик[а-яё]+\s+wger)/i,
+    re: /(?:мо[яи]\s+тренировк|программ[а-я]+\s+тренировок|упражнени[а-я]+\s+в\s+wger|статистик[а-я]+\s+wger)/i,
   },
 ]);
+
+const CONNECTOR_IDS = Object.freeze(CURATED_CONNECTORS.map((c) => c.id));
+const CONNECTOR_ID_SET = new Set(CONNECTOR_IDS);
+
+function normalizeFuzzyRu(text) {
+  return String(text || '').toLowerCase().replace(/ё/g, 'е').trim();
+}
+
+const RU_CONNECTOR_ALIASES = Object.freeze([
+  ['proton-pim', ['почта', 'почту', 'почте', 'письма', 'письмо', 'входящие', 'календарь', 'встречи', 'расписание', 'протон', 'pim']],
+  ['google-workspace', ['гугл диск', 'гугл докс', 'гугл таблицы', 'гугл презентации', 'гугл', 'gdrive', 'gdocs', 'gsheets', 'gslides', 'gmail']],
+  ['telegram', ['телеграм', 'телега', 'тг', 'tg']],
+  ['obsidian', ['обсидиан', 'заметки', 'база знаний', 'волт', 'vault']],
+  ['nomad-kiwix', ['номад', 'кивикс', 'энциклопедия', 'офлайн библиотека', 'nomad', 'kiwix']],
+  ['capri-web', ['веб поиск', 'интернет', 'браузер', 'веб', 'searxng']],
+  ['science-search', ['научные статьи', 'наука', 'пабмед', 'pubmed', 'arxiv', 'openalex']],
+  ['youtube', ['ютуб', 'youtube', 'yt']],
+  ['gemini-notebook', ['дайджест', 'gemini notebook', 'notebooklm']],
+  ['github', ['гитхаб', 'гит', 'репозиторий', 'репозитории', 'репо', 'коммиты', 'github', 'git']],
+  ['huggingface', ['хаггингфейс', 'хаггинг фейс', 'hugging face', 'хф', 'hf', 'gguf']],
+  ['context7', ['контекст7', 'context7', 'доки', 'документация', 'c7']],
+  ['home-server', ['домашний сервер', 'леново', 'сервер', '107', '.107', 'lenovo']],
+  ['health-connect', ['здоровье', 'шаги', 'сон', 'пульс', 'зепп', 'zepp', 'health']],
+  ['wger', ['тренировки', 'тренировка', 'спорт', 'зал', 'фитнес', 'wger']],
+  ['opennotebook', ['опенноутбук', 'опен ноутбук', 'ноутбук', 'блокнот', 'opennotebook']],
+  ['freshrss', ['фрешрсс', 'рсс', 'rss', 'новости', 'лента', 'подписки', 'freshrss']],
+  ['freetube', ['фритюб', 'фритуб', 'видос', 'видео', 'ролик', 'freetube']],
+  ['penpot', ['пенпот', 'макеты', 'дизайн', 'penpot']],
+  ['presenton', ['презентон', 'презентация', 'презентацию', 'преза', 'слайды', 'pptx', 'presenton']],
+  ['comfyui', ['комфиуи', 'комфи', 'comfy', 'картинка', 'генерация']],
+  ['libreoffice', ['либрофис', 'либра', 'конвертер', 'пдф', 'pdf', 'docx', 'stirling', 'soffice']],
+  ['docker', ['докер', 'контейнеры', 'контейнер', 'docker']],
+]);
+
+const EXACT_ALIAS_MAP = new Map();
+for (const id of CONNECTOR_IDS) {
+  EXACT_ALIAS_MAP.set(id, id);
+}
+for (const c of CURATED_CONNECTORS) {
+  if (Array.isArray(c.aliases)) {
+    for (const a of c.aliases) {
+      const norm = normalizeFuzzyRu(a);
+      if (norm && !EXACT_ALIAS_MAP.has(norm)) EXACT_ALIAS_MAP.set(norm, c.id);
+    }
+  }
+}
+const PHRASE_ALIAS_LIST = [];
+for (const [id, phrases] of RU_CONNECTOR_ALIASES) {
+  for (const p of phrases) {
+    const norm = normalizeFuzzyRu(p);
+    if (!norm) continue;
+    if (!EXACT_ALIAS_MAP.has(norm)) EXACT_ALIAS_MAP.set(norm, id);
+    PHRASE_ALIAS_LIST.push({ id, phrase: norm });
+  }
+}
+PHRASE_ALIAS_LIST.sort((a, b) => b.phrase.length - a.phrase.length);
+
+function resolveConnectorAlias(text) {
+  const norm = normalizeFuzzyRu(text).replace(/^@+/, '');
+  if (!norm) return null;
+  if (CONNECTOR_ID_SET.has(norm)) return norm;
+  if (EXACT_ALIAS_MAP.has(norm)) return EXACT_ALIAS_MAP.get(norm);
+  for (const { id, phrase } of PHRASE_ALIAS_LIST) {
+    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(?:^|[\\s,.:;!?()\\[\\]])${escaped}(?:$|[\\s,.:;!?()\\[\\]])`);
+    if (re.test(norm)) return id;
+  }
+  return null;
+}
 
 const SECRET_STRIP_PATTERNS = Object.freeze([
   /-----BEGIN (?:RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/gi,
@@ -718,6 +803,32 @@ function sanitizeDigestMarkdown(rawText) {
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
+const ICON_BY_CONNECTOR = {
+  'proton-pim': 'mail',
+  'google-workspace': 'doc',
+  telegram: 'mail',
+  obsidian: 'memory',
+  'nomad-kiwix': 'book',
+  'capri-web': 'search',
+  'science-search': 'search',
+  youtube: 'play',
+  'gemini-notebook': 'book',
+  github: 'github',
+  huggingface: 'sparkle',
+  context7: 'book',
+  'home-server': 'server',
+  'health-connect': 'health',
+  wger: 'health',
+  opennotebook: 'book',
+  freshrss: 'news',
+  freetube: 'play',
+  penpot: 'design',
+  presenton: 'slides',
+  comfyui: 'image',
+  libreoffice: 'doc',
+  docker: 'docker',
+};
+
 class ConnectorsEngine {
   constructor(opts = {}) {
     this.userDataDir = opts.userDataDir || defaultUserDataDir();
@@ -736,6 +847,7 @@ class ConnectorsEngine {
       ? opts.probeTcp
       : (typeof opts.deps?.probeTcp === 'function' ? opts.deps.probeTcp : probeTcp);
     this.execGitImpl = typeof opts.execGit === 'function' ? opts.execGit : null;
+    this.execFileImpl = typeof opts.execFileImpl === 'function' ? opts.execFileImpl : runExecFile;
     this.geminiConfigFile = opts.geminiConfigFile || defaultGeminiConfigFile();
     this.geminiPluginDataDir = opts.geminiPluginDataDir || defaultGeminiPluginDataDir();
     this.geminiAccountsFiles = Array.isArray(opts.geminiAccountsFiles)
@@ -961,6 +1073,8 @@ class ConnectorsEngine {
       }
       case 'penpot':
         return { status: 'offline', detail: 'Ожидает проверки MCP (:4401)' };
+      case 'presenton':
+        return { status: 'offline', detail: 'Ожидает проверки (:5100)' };
       case 'comfyui': {
         const st = typeof this.deps?.comfyStatus === 'function' ? this.deps.comfyStatus() : null;
         if (st?.running) return { status: 'connected', detail: 'ComfyUI активен' };
@@ -1094,6 +1208,13 @@ class ConnectorsEngine {
           latencyMs = probe.latencyMs;
           status = probe.ok ? 'connected' : 'offline';
           detail = probe.ok ? 'MCP :4401 активен' : 'Penpot MCP (:4401) выключен';
+          break;
+        }
+        case 'presenton': {
+          const probe = await this.probeTcpImpl('127.0.0.1', 5100, PROBE_TIMEOUT_MS);
+          latencyMs = probe.latencyMs;
+          status = probe.ok ? 'connected' : 'offline';
+          detail = probe.ok ? 'Presenton :5100 активен' : 'Presenton (:5100) выключен';
           break;
         }
         case 'docker': {
@@ -1890,7 +2011,7 @@ class ConnectorsEngine {
   }
 
   detectAutoConnectors(text, activeItems = []) {
-    const q = String(text || '').trim();
+    const q = normalizeFuzzyRu(text);
     if (!q || GREETING_ONLY_RE.test(q)) return [];
     const activeById = new Map(
       (Array.isArray(activeItems) ? activeItems : [])
@@ -1915,9 +2036,7 @@ class ConnectorsEngine {
 
     const header = isCloud
       ? 'Если нужен внешний источник, ответь одной строкой [[use:<id> <запрос>]]. Коннекторы: '
-      : [
-          'У тебя ЕСТЬ доступ к инструментам и программам ПК. НЕ пиши «я всего лишь текстовая модель» или «у меня нет доступа» — если нужны данные, браузер, видео, файлы, блокноты или генерация, сразу вызови нужный инструмент одной строкой [[use:<id> <запрос>]] (я сразу выполню и верну результат):',
-        ].join(' ');
+      : 'У тебя ЕСТЬ инструменты (вызывай function calls или [[use:<id> <запрос>]]). НЕ отказывай фразой «нет доступа» и не вываливай код вместо вызова:';
     if (isCloud) {
       const ids = [];
       for (const item of eligible) {
@@ -2048,7 +2167,10 @@ class ConnectorsEngine {
       }
 
       case 'science-search': {
-        const term = q.replace(/^(?:найди|поищи|статьи|научные)\s+/i, '').trim() || 'longevity';
+        const term = q
+          .replace(/(?:^|\s)(?:найди|поищи|покажи|научные|научную|статьи|статью|исследования|работы|публикации|про|о|об|по|на\s+тему|в\s+pubmed|в\s+openalex)(?=\s|$)/gi, ' ')
+          .replace(/\s+/g, ' ')
+          .trim() || 'longevity';
         const parts = [];
         try {
           const oaRes = await this.fetchImpl(
@@ -2157,7 +2279,10 @@ class ConnectorsEngine {
       }
 
       case 'huggingface': {
-        const term = q.replace(/^(?:найди|модели|gguf|на|hf)\s+/gi, '').trim() || 'qwen';
+        const term = q
+          .replace(/(?:^|\s)(?:найди|поищи|покажи|модель|модели|на|в|с|хаггингфейс|хаггинг\s*фейс|huggingface|hugging\s*face|hf|gguf)(?=\s|$)/gi, ' ')
+          .replace(/\s+/g, ' ')
+          .trim() || 'qwen';
         const res = await this.fetchImpl(
           `https://huggingface.co/api/models?search=${encodeURIComponent(term)}&limit=5&sort=downloads`,
           { signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) },
@@ -2289,27 +2414,78 @@ class ConnectorsEngine {
       }
 
       case 'freshrss': {
+        const base = String(cfg.freshrssUrl || 'http://192.168.0.107:8082').replace(/\/+$/, '');
+        let httpStatus = 0;
+        let httpErr = '';
         try {
-          const base = String(cfg.freshrssUrl || 'http://192.168.0.107:8082').replace(/\/+$/, '');
           const res = await this.fetchImpl(`${base}/i/`, { signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
-          if (!res.ok) return { fenced: true, text: `FreshRSS (${base}) вернул HTTP ${res.status}.` };
-          const html = await res.text();
-          const titles = [];
-          const re = /class="[^"]*(?:item_title|flux_header)[^"]*"[^>]*>([\s\S]{3,160}?)<\/a>/gi;
-          let m;
-          while ((m = re.exec(html)) !== null && titles.length < 10) {
-            const clean = m[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
-            if (clean && !titles.includes(clean)) titles.push(clean);
+          httpStatus = res.status;
+          if (res.ok) {
+            const html = await res.text();
+            const titles = [];
+            const re = /class="[^"]*(?:item_title|flux_header)[^"]*"[^>]*>([\s\S]{3,160}?)<\/a>/gi;
+            let m;
+            while ((m = re.exec(html)) !== null && titles.length < 15) {
+              const clean = m[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+              if (clean && !titles.includes(clean)) titles.push(clean);
+            }
+            if (titles.length > 0) {
+              return {
+                fenced: true,
+                text: `FreshRSS (${base}), заголовки:\n${titles.map((t) => `- ${t}`).join('\n')}`,
+              };
+            }
           }
-          return {
-            fenced: true,
-            text: titles.length
-              ? `FreshRSS (${base}), заголовки:\n${titles.map((t) => `- ${t}`).join('\n')}`
-              : `FreshRSS работает (${base}), но публичная лента требует входа в веб-интерфейс (или включи чтение без пароля для LAN).`,
-          };
         } catch (err) {
-          return { fenced: true, text: `FreshRSS (.107:8082) недоступен: ${err.message}` };
+          httpErr = err?.message || 'ошибка HTTP';
         }
+
+        // Fallback: read-only SQLite SELECT inside capri-stack-freshrss-1 via SSH + php PDO
+        const keyPath = path.join(os.homedir(), '.ssh', 'capri_server');
+        const hasCustomExec = this.execFileImpl !== runExecFile;
+        if (hasCustomExec || fs.existsSync(keyPath)) {
+          try {
+            const phpCode = '$db = new PDO("sqlite:/var/www/FreshRSS/data/users/DeNatrix/db.sqlite", null, null, [PDO::SQLITE_ATTR_OPEN_FLAGS => PDO::SQLITE_OPEN_READONLY]); $rows = $db->query("SELECT e.title, e.link, f.name AS feed FROM entry e LEFT JOIN feed f ON e.id_feed = f.id ORDER BY e.date DESC LIMIT 15")->fetchAll(PDO::FETCH_ASSOC); echo json_encode($rows, JSON_UNESCAPED_UNICODE);';
+            const b64 = Buffer.from(phpCode, 'utf8').toString('base64');
+            const remoteCmd = `docker exec capri-stack-freshrss-1 php -r 'eval(base64_decode("${b64}"));'`;
+            const sshArgs = [
+              '-o', 'BatchMode=yes',
+              '-o', 'ConnectTimeout=6',
+              '-i', keyPath,
+              'danyal@192.168.0.107',
+              remoteCmd,
+            ];
+            const out = await this.execFileImpl('ssh', sshArgs, { timeout: HTTP_TIMEOUT_MS, maxBuffer: 256 * 1024 });
+            const rows = JSON.parse(String(out?.stdout || '[]').trim() || '[]');
+            if (Array.isArray(rows) && rows.length > 0) {
+              const lines = rows.slice(0, 15).map((r) => {
+                const feed = String(r?.feed || 'RSS').replace(/\s+/g, ' ').trim().slice(0, 48);
+                const title = String(r?.title || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+                const link = String(r?.link || '').replace(/&amp;/g, '&').replace(/\s+/g, '').slice(0, 180);
+                return link ? `- [${feed}] ${title} (${link})` : `- [${feed}] ${title}`;
+              });
+              return {
+                fenced: true,
+                text: `FreshRSS (SQLite, последние ${lines.length}):\n${lines.join('\n')}`,
+              };
+            }
+          } catch (sshErr) {
+            if (httpErr) {
+              return { fenced: true, text: `FreshRSS (.107:8082) недоступен: ${httpErr}; SSH-резерв: ${sshErr.message}` };
+            }
+          }
+        }
+
+        if (httpErr) {
+          return { fenced: true, text: `FreshRSS (.107:8082) недоступен: ${httpErr}` };
+        }
+        if (httpStatus && httpStatus !== 200) {
+          return { fenced: true, text: `FreshRSS (${base}) вернул HTTP ${httpStatus}.` };
+        }
+        return {
+          fenced: true,
+          text: `FreshRSS работает (${base}), но публичная лента требует входа в веб-интерфейс (или включи чтение без пароля для LAN).`,
+        };
       }
 
       case 'freetube': {
@@ -2333,6 +2509,14 @@ class ConnectorsEngine {
           return { fenced: true, text: String(out || 'Penpot MCP не вернул данных.') };
         }
         return { fenced: true, text: 'Penpot MCP (:4401) не подключён.' };
+      }
+
+      case 'presenton': {
+        if (typeof this.deps.presentonCreate === 'function') {
+          const out = await this.deps.presentonCreate(q);
+          return { fenced: false, text: String(out || 'Presenton не вернул результата.') };
+        }
+        return { fenced: false, text: 'Presenton (:5100) вызывается через инструмент presenton_create.' };
       }
 
       case 'comfyui': {
@@ -2484,11 +2668,13 @@ class ConnectorsEngine {
         const def = this.findDefinition(id);
         if (!def) return null;
         const stepId = `connector-ctx-${def.id}`;
+        const stepIcon = ICON_BY_CONNECTOR[def.id] || 'attach';
         try {
           onActivity?.({
             id: stepId,
             kind: 'connector',
             name: def.id,
+            icon: stepIcon,
             detail: { input: queryInput.slice(0, 200) },
             state: 'running',
           });
@@ -2512,6 +2698,7 @@ class ConnectorsEngine {
               id: stepId,
               kind: 'connector',
               name: def.id,
+              icon: stepIcon,
               detail: { input: queryInput.slice(0, 200) },
               state: 'done',
             });
@@ -2523,6 +2710,7 @@ class ConnectorsEngine {
               id: stepId,
               kind: 'connector',
               name: def.id,
+              icon: stepIcon,
               detail: { input: queryInput.slice(0, 200) },
               error: err?.message || 'ошибка',
               state: 'failed',
@@ -2565,11 +2753,14 @@ module.exports = {
   ConnectorsEngine,
   CONNECTOR_CATEGORIES,
   CURATED_CONNECTORS,
+  CONNECTOR_IDS,
+  ICON_BY_CONNECTOR,
   STATUS_LABELS,
   HEALTH_TTL_MS,
   MAX_HINTS_TOKENS,
   isIsolatedMode,
   fenceUntrusted,
+  resolveConnectorAlias,
   parseModelUseTag,
   stripModelUseTags,
   sanitizeDigestMarkdown,

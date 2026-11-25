@@ -28,13 +28,13 @@ async function post(fetchImpl, body, session, timeoutMs) {
   return { res, text: res.status === 202 ? '' : await res.text() };
 }
 
-/** Calls one Penpot MCP tool: its text result, or throws in plain words. */
-async function callTool(name, args = {}, { fetchImpl = fetch, timeoutMs = 60000 } = {}) {
+/** Calls one Penpot MCP tool and returns structured `{ text, images }`. */
+async function callToolRaw(name, args = {}, { fetchImpl = fetch, timeoutMs = 60000 } = {}) {
   let first;
   try {
     first = await post(fetchImpl, {
       jsonrpc: '2.0', id: 1, method: 'initialize',
-      params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'altai-re-styles', version: '1' } },
+      params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'altai-re-tools', version: '1' } },
     }, null, 8000);
   } catch (err) {
     throw new Error(`Penpot MCP на :4401 не отвечает — запусти Penpot в /docker (${err.message})`);
@@ -44,9 +44,19 @@ async function callTool(name, args = {}, { fetchImpl = fetch, timeoutMs = 60000 
   const { text } = await post(fetchImpl, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: args } }, session, timeoutMs);
   const msg = parseReply(text);
   if (msg.error) throw new Error(`Penpot MCP: ${msg.error.message || 'ошибка'}`);
-  const out = (msg.result?.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('\n').trim();
+  const content = Array.isArray(msg.result?.content) ? msg.result.content : [];
+  const out = content.filter((c) => c.type === 'text').map((c) => c.text).join('\n').trim();
+  const images = content
+    .filter((c) => c.type === 'image' && typeof c.data === 'string' && c.data.length > 0)
+    .map((c) => ({ data: c.data, mimeType: c.mimeType || 'image/png' }));
   if (msg.result?.isError) throw new Error(`Penpot: ${out || 'ошибка выполнения'}`);
-  return out;
+  return { text: out, images };
+}
+
+/** Calls one Penpot MCP tool: its text result, or throws in plain words. */
+async function callTool(name, args = {}, opts = {}) {
+  const res = await callToolRaw(name, args, opts);
+  return res.text;
 }
 
 async function listTools({ fetchImpl = fetch, timeoutMs = 15000 } = {}) {
@@ -67,4 +77,4 @@ async function listTools({ fetchImpl = fetch, timeoutMs = 15000 } = {}) {
   return Array.isArray(msg.result?.tools) ? msg.result.tools : [];
 }
 
-module.exports = { callTool, listTools, parseReply };
+module.exports = { callTool, callToolRaw, listTools, parseReply };
