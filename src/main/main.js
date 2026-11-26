@@ -3604,6 +3604,10 @@ async function harnessComfyDraw(args = {}, { scope = 'chat', images = [], userTe
     faceDetail: personTrigger && loras.length
       ? { denoise: 0.6, prompt: [`${personTrigger}, 1girl, solo, close-up, face focus, portrait`, (said.match(/[^,]*\bwig\b[^,]*/i) || [''])[0].trim()].filter(Boolean).join(', ') }
       : null,
+    // then her real face from her photos (ReActor face model <trigger>.safetensors), when one was built
+    faceSwap: personTrigger && loras.length && comfyDrawers.faceModelFor(personTrigger, app.getPath('appData'))
+      ? { model: comfyDrawers.faceModelFor(personTrigger, app.getPath('appData')), restore: 0.4 }
+      : null,
   });
   // a picture with a real face (his or from a photo he sent) never goes to the shared gallery
   if (faceBuffers.length && scope === 'chat') scope = 'private';

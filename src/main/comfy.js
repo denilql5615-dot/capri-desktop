@@ -108,6 +108,15 @@ const CONTROLNET_UNION = 'xinsir-union-promax-sdxl.safetensors';
 const LOOK_IPADAPTER = 'ip-adapter-plus_sdxl_vit-h.safetensors';
 const FACE_DETECTOR = 'bbox/face_yolov8m.pt'; // Impact Subpack, in the shared models\ultralytics\bbox
 
+/** The ReActor face model of a person LoRA (models\reactor\faces\<slug>.safetensors of the ComfyUI install, built
+ *  from her own photos), or null when there is none. */
+function faceModelFor(slug, appData) {
+  const where = locate(appData);
+  const file = `${String(slug || '').toLowerCase()}.safetensors`;
+  if (!where || !slug) return null;
+  return fs.existsSync(path.join(where.root, 'ComfyUI', 'models', 'reactor', 'faces', file)) ? file : null;
+}
+
 /** Comfy Desktop's model-paths file has no ultralytics folders, so the face detector of the shared models isn't
  *  seen: a second paths file (ours, in temp) adds them. Null when there's nothing to add. */
 function extraModelPaths(modelsYaml, dir = os.tmpdir()) {
@@ -233,7 +242,7 @@ function profileWorkflow({
   prompt, positiveExtra = [], negative = '', width = 832, height = 1216, steps = 30, cfg = 6.5, seed,
   checkpoint = CHECKPOINT, sampler = 'euler_ancestral', scheduler = 'normal', negativeBase = PROFILE_NEGATIVE, faceImage = null, faceWeight = 0.85,
   poseImage = null, poseMode = 'pose', lookImage = null, faceImages = null, lookImages = null, facePad = 0, loras = [],
-  faceDetail = null,
+  faceDetail = null, faceSwap = null,
 } = {}) {
   // several angles of the face or the look (Danyal 2026-11-26): batched, the adapter averages them
   const faces = (faceImages && faceImages.length ? faceImages : (faceImage ? [faceImage] : [])).slice(0, 10);
@@ -342,6 +351,22 @@ function profileWorkflow({
       },
     };
     graph[7].inputs.images = ['82', 0];
+  }
+  // her real face (Danyal 2026-11-26, ReActor): a face model built from her own photos
+  // (models\reactor\faces\<slug>.safetensors) swapped onto the drawn face, GFPGAN on top — the LoRA and the face
+  // pass draw the head, the wig and the light, the swap brings her features
+  if (faceSwap?.model) {
+    graph[84] = { class_type: 'ReActorLoadFaceModel', inputs: { face_model: faceSwap.model } };
+    graph[85] = {
+      class_type: 'ReActorFaceSwap',
+      inputs: {
+        enabled: true, input_image: graph[7].inputs.images, swap_model: 'inswapper_128.onnx', facedetection: 'retinaface_resnet50',
+        face_restore_model: 'GFPGANv1.4.pth', face_restore_visibility: Number.isFinite(Number(faceSwap.restore)) ? Number(faceSwap.restore) : 0.7,
+        codeformer_weight: 0.5, detect_gender_input: 'no', detect_gender_source: 'no', input_faces_index: '0', source_faces_index: '0',
+        console_log_level: 1, face_model: ['84', 0],
+      },
+    };
+    graph[7].inputs.images = ['85', 0];
   }
   return { graph, positive, negative: neg, seed: s, width, height, steps, cfg };
 }
@@ -847,5 +872,5 @@ class Comfy {
 }
 
 module.exports = {
-  Comfy, locate, desktopPort, extraModelPaths, FACE_DETECTOR, workflow, profileWorkflow, inpaintWorkflow, SAM3, frameFor, DRAWERS, FRAMES, FACEID, CONTROLNET_UNION, POSE_MODES, styledWorkflow, checkWorkflow, fillWorkflow, loadWorkflow, videoGraph, missingVideoModels, has14BVideoModels, VIDEO_MODELS, VIDEO_MODELS_14B, PLACEHOLDER, PORT, HER,
+  Comfy, locate, desktopPort, extraModelPaths, faceModelFor, FACE_DETECTOR, workflow, profileWorkflow, inpaintWorkflow, SAM3, frameFor, DRAWERS, FRAMES, FACEID, CONTROLNET_UNION, POSE_MODES, styledWorkflow, checkWorkflow, fillWorkflow, loadWorkflow, videoGraph, missingVideoModels, has14BVideoModels, VIDEO_MODELS, VIDEO_MODELS_14B, PLACEHOLDER, PORT, HER,
 };

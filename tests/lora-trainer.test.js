@@ -152,6 +152,18 @@ test('profileWorkflow faceDetail: the face redrawn with the LoRA (not the look a
   assert.deepEqual(w.graph[7].inputs.images, ['82', 0]);
 });
 
+test('profileWorkflow faceSwap: her face model swapped on top of the face pass, saved last', () => {
+  const { profileWorkflow } = require('../src/main/comfy');
+  const w = profileWorkflow({ prompt: 'lyana', seed: 1, loras: [{ name: 'lyana.safetensors' }], faceDetail: { denoise: 0.6 }, faceSwap: { model: 'lyana.safetensors', restore: 0.4 } });
+  assert.equal(w.graph[84].inputs.face_model, 'lyana.safetensors');
+  assert.deepEqual(w.graph[85].inputs.input_image, ['82', 0]);
+  assert.equal(w.graph[85].inputs.face_restore_visibility, 0.4);
+  assert.deepEqual(w.graph[7].inputs.images, ['85', 0]);
+  const noPass = profileWorkflow({ prompt: 'lyana', seed: 1, faceSwap: { model: 'lyana.safetensors' } });
+  assert.deepEqual(noPass.graph[85].inputs.input_image, ['6', 0]);
+  assert.equal(profileWorkflow({ prompt: 'x', seed: 1 }).graph[85], undefined);
+});
+
 test('extraModelPaths: the ultralytics folders of the shared models, base path from the real entry, not the comment', () => {
   const { extraModelPaths } = require('../src/main/comfy');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xmp-'));
