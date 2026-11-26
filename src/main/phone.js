@@ -23,6 +23,28 @@ const { createDocument } = require('./document-create');
 const MAX_BODY = 64 * 1024;
 const MAX_CHAT_IMAGES = 10; // pictures in one phone message (references for ComfyUI, Danyal 2026-11-26)
 const MAX_CHAT_IMAGE_BYTES = 1.5 * 1024 * 1024;
+// files of a phone message (documents, video, music…): 10 in all with the pictures, 20 MB each (the phone refuses
+// bigger ones), the request as a whole up to ~60 MB of them
+const MAX_CHAT_FILES = 10;
+const MAX_CHAT_FILE_BYTES = 20 * 1024 * 1024;
+const MAX_CHAT_FILES_TOTAL = 60 * 1024 * 1024;
+const AUDIO_RE = /^audio\/|\.(mp3|m4a|aac|ogg|opus|wav|flac|amr)$/i;
+const VIDEO_RE = /^video\/|\.(mp4|mov|mkv|webm|3gp|avi)$/i;
+
+/** Three stills of a video (start, middle, end) as base64 JPEG, by ffmpeg; [] if ffmpeg is not there. */
+async function videoStills(file, count = 3) {
+  const { execFile } = require('child_process');
+  const run = (bin, args) => new Promise((ok) => execFile(bin, args, { windowsHide: true, timeout: 60000, maxBuffer: 1 << 20 }, (err, out) => ok(err ? null : String(out))));
+  const dur = Number(await run('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file])) || 0;
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const at = dur > 0 ? (dur * (0.1 + 0.8 * (count === 1 ? 0.5 : i / (count - 1)))) : i;
+    const jpg = `${file}.${i}.jpg`;
+    await run('ffmpeg', ['-y', '-v', 'error', '-ss', at.toFixed(2), '-i', file, '-frames:v', '1', '-vf', 'scale=1280:-2', jpg]);
+    try { out.push(fs.readFileSync(jpg).toString('base64')); } catch {}
+  }
+  return out;
+}
 const MAX_RESEARCH_REPORT_BYTES = 256 * 1024;
 const AUDIO_TTL_MS = 10 * 60 * 1000;
 const AUDIO_MAX = 20;
@@ -443,6 +465,7 @@ class PhoneBridge {
         comfyInpaint: this.d.comfyInpaint || null,
         comfyProfile: this.d.comfyProfile || null,
         loraTrainer: this.d.loraTrainer || null,
+        loraLooks: this.d.loraLooks || null,
         saveGalleryBuffer: this.d.saveGalleryBuffer || null,
         getPresentonConfig: this.d.getPresentonConfig || null,
         terminal: this.d.terminal || null,
@@ -1690,8 +1713,8 @@ class PhoneBridge {
         return this.send(res, 200, { state: entry.state });
       }
       if (req.method === 'POST' && url.pathname === '/chat') {
-        // up to 10 pictures (phone sends them shrunk to ~1600 px, a few hundred KB each) or one document
-        const body = await this.readJson(req, MAX_BODY + Math.ceil((MAX_CHAT_IMAGES * MAX_CHAT_IMAGE_BYTES + MAX_UPLOAD_BYTES) / 3) * 4);
+        // up to 10 attachments: pictures (shrunk to ~1600 px on the phone) and files (documents, video, music)
+        const body = await this.readJson(req, MAX_BODY + Math.ceil((MAX_CHAT_IMAGES * MAX_CHAT_IMAGE_BYTES + MAX_CHAT_FILES_TOTAL) / 3) * 4);
         if (body.text != null && typeof body.text !== 'string') return this.send(res, 400, { error: 'Некорректный текст сообщения.' });
         const rawText = (body.text ?? '').replace(/\u0000/g, '').trim();
         if (rawText.length > 24000) return this.send(res, 400, { error: 'Сообщение длиннее 24 000 символов.' });
@@ -1699,7 +1722,7 @@ class PhoneBridge {
           ? body.files.filter((f) => f && String(f.mime || '').startsWith('image/') && f.data).map((f) => String(f.data)).slice(0, MAX_CHAT_IMAGES)
           : [];
         const docAttachments = Array.isArray(body.files)
-          ? body.files.filter((f) => f && !String(f.mime || '').startsWith('image/') && f.name && typeof f.data === 'string').slice(0, 4)
+          ? body.files.filter((f) => f && !String(f.mime || '').startsWith('image/') && f.name && typeof f.data === 'string').slice(0, MAX_CHAT_FILES)
           : [];
         if (!rawText && !images.length && !docAttachments.length) return this.send(res, 400, { error: 'empty' });
         const imagePrompt = images.length > 1
@@ -1710,16 +1733,38 @@ class PhoneBridge {
           const safeName = path.basename(String(f.name)).replace(/[<>|"\x00-\x1f?*\\/]/g, '_');
           if (!safeName) continue;
           const bytes = Buffer.from(f.data, 'base64');
-          if (!bytes.length || bytes.length > MAX_UPLOAD_BYTES) continue;
+          const mime = String(f.mime || '');
+          const sizeMb = (bytes.length / 1048576).toFixed(1);
+          // every file is named to the model, even one she cannot read (it was dropped silently before)
+          if (!bytes.length || bytes.length > MAX_CHAT_FILE_BYTES) {
+            extractedBlocks.push(`[Вложение: ${safeName} (${mime || 'файл'}, ${sizeMb} МБ) — слишком большое, не разбирала]`);
+            continue;
+          }
           const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'capri-chat-att-'));
           const tmpFile = path.join(tmpDir, safeName);
           try {
             fs.writeFileSync(tmpFile, bytes);
-            const { text: docText } = await extractDocumentText(tmpFile, { maxChars: 6000 });
-            if (docText) {
-              extractedBlocks.push(`[Вложение: ${safeName}]\n${docText}`);
+            const isAudio = AUDIO_RE.test(mime) || AUDIO_RE.test(safeName);
+            const isVideo = !isAudio && (VIDEO_RE.test(mime) || VIDEO_RE.test(safeName));
+            if (isAudio || isVideo) {
+              // speech by Whisper (the PC's own), a video also as three stills she can see
+              const parts = [`[Вложение: ${safeName} (${isVideo ? 'видео' : 'аудио'}, ${sizeMb} МБ)]`];
+              if (isVideo && images.length < MAX_CHAT_IMAGES) {
+                const stills = await videoStills(tmpFile, Math.min(3, MAX_CHAT_IMAGES - images.length));
+                images.push(...stills);
+                if (stills.length) parts.push(`Кадры из видео (начало, середина, конец) приложены картинками ${images.length - stills.length + 1}–${images.length}.`);
+              }
+              const tr = typeof this.d.transcribeMedia === 'function' ? await this.d.transcribeMedia(tmpFile).catch(() => null) : null;
+              if (tr?.ok && tr.text) parts.push(`Расшифровка речи:\n${String(tr.text).slice(0, 6000)}`);
+              else parts.push('Речи не разобрала (тишина, музыка или нет распознавания).');
+              extractedBlocks.push(parts.join('\n'));
+            } else {
+              const { text: docText } = await extractDocumentText(tmpFile, { maxChars: 6000 });
+              extractedBlocks.push(docText
+                ? `[Вложение: ${safeName}]\n${docText}`
+                : `[Вложение: ${safeName} (${mime || 'файл'}, ${sizeMb} МБ) — прочитать содержимое не могу]`);
             }
-          } catch { /* ignore unreadable attachment */ } finally {
+          } catch { extractedBlocks.push(`[Вложение: ${safeName} — не открылось]`); } finally {
             fs.rmSync(tmpDir, { recursive: true, force: true });
           }
         }

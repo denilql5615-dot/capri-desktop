@@ -316,6 +316,15 @@ test('bridge: token, chat with the phone note, voice, events, control', async ()
     assert.equal(seen.messages.at(-1).content, 'Кратко опиши каждое прикреплённое изображение по порядку.');
     assert.deepStrictEqual(seen.messages.at(-1).images, ['first', 'second']);
 
+    // ten attachments of a message all arrive: 4 pictures + 6 documents (documents were cut to 4)
+    const pics = ['p1', 'p2', 'p3', 'p4'].map((data) => ({ mime: 'image/png', data }));
+    const docs = [1, 2, 3, 4, 5, 6].map((i) => ({ name: `note${i}.txt`, mime: 'text/plain', data: Buffer.from(`текст номер ${i}`).toString('base64') }));
+    const unknown = { name: 'blob.bin', mime: 'application/octet-stream', data: Buffer.from([0, 1, 2]).toString('base64') };
+    await post('/chat', { text: 'что тут', files: [...pics, ...docs.slice(0, 5), unknown] });
+    const said = JSON.stringify(seen.messages);
+    for (const i of [1, 2, 3, 4, 5]) assert.match(said, new RegExp(`текст номер ${i}`));
+    assert.match(said, /blob\.bin \(application\/octet-stream/);
+
     await post('/event', { kind: 'pet' });
     await post('/event', { kind: 'rm -rf' });
     assert.deepStrictEqual(seen.events, ['pet']);
