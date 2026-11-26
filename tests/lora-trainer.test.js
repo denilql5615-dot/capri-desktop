@@ -126,6 +126,47 @@ test('LoraTrainer.list: the main LoRA of a character first, other files of it ma
   assert.equal(by.other_style.alt, undefined);
 });
 
+test('LoraTrainer.list: an old version of a real person LoRA keeps her guard', () => {
+  const { dir, t } = sandbox();
+  fs.mkdirSync(path.join(dir, 'lora', 'lyana'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'lora', 'lyana', 'meta.json'), JSON.stringify({ name: 'lyana', trigger: 'lyana', kind: 'person', real_person: true }));
+  for (const n of ['lyana', 'lyana_v1', 'other_style']) fs.writeFileSync(path.join(dir, 'models', 'loras', `${n}.safetensors`), 'x');
+  const by = Object.fromEntries(t.list().map((l) => [l.name, l]));
+  assert.equal(by.lyana_v1.real_person, true);
+  assert.equal(by.lyana_v1.kind, 'person');
+  assert.equal(by.other_style.real_person, undefined);
+});
+
+test('profileWorkflow faceDetail: the face redrawn with the LoRA (not the look adapter), saved instead of the raw picture', () => {
+  const { profileWorkflow, FACE_DETECTOR } = require('../src/main/comfy');
+  const plain = profileWorkflow({ prompt: 'x', seed: 1, loras: [{ name: 'lyana.safetensors' }] });
+  assert.equal(plain.graph[82], undefined);
+  const w = profileWorkflow({ prompt: 'lyana, knight', seed: 1, loras: [{ name: 'lyana.safetensors' }], lookImages: ['look.png'], faceDetail: { denoise: 0.6, prompt: 'lyana, close-up' } });
+  assert.equal(w.graph[80].inputs.model_name, FACE_DETECTOR);
+  assert.equal(w.graph[81].inputs.text, 'lyana, close-up');
+  assert.deepEqual(w.graph[81].inputs.clip, ['30', 1]);
+  assert.equal(w.graph[82].class_type, 'FaceDetailer');
+  assert.deepEqual(w.graph[82].inputs.model, ['30', 0]); // the LoRA, the look adapter (63) left out
+  assert.deepEqual(w.graph[5].inputs.model, ['63', 0]);
+  assert.equal(w.graph[82].inputs.denoise, 0.6);
+  assert.deepEqual(w.graph[7].inputs.images, ['82', 0]);
+});
+
+test('extraModelPaths: the ultralytics folders of the shared models, base path from the real entry, not the comment', () => {
+  const { extraModelPaths } = require('../src/main/comfy');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xmp-'));
+  const base = path.join(dir, 'models');
+  fs.mkdirSync(path.join(base, 'ultralytics', 'bbox'), { recursive: true });
+  const yaml = path.join(dir, 'inst.yaml');
+  fs.writeFileSync(yaml, `#   comfy.desktop:\n#     base_path: '...'\n\ncomfy.desktop_0:\n  base_path: '${base}'\n  'loras': 'loras/'\n`);
+  const file = extraModelPaths(yaml, dir);
+  const text = fs.readFileSync(file, 'utf8');
+  assert.match(text, /ultralytics_bbox: ultralytics\/bbox\//);
+  assert.ok(text.includes(`base_path: '${base}'`));
+  fs.rmSync(path.join(base, 'ultralytics'), { recursive: true });
+  assert.equal(extraModelPaths(yaml, dir), null);
+});
+
 test('inpaintWorkflow: SAM 3 mask by words, grown, LoRA on the drawer, original pasted back outside the mask', () => {
   const { inpaintWorkflow, SAM3 } = require('../src/main/comfy');
   const w = inpaintWorkflow({ image: 'src.png', target: 'jacket', prompt: 'sleeveless bodysuit', loras: [{ name: 'gemini_brigade_v2.safetensors' }], denoise: 0.85, grow: 30, seed: 7 });
@@ -196,4 +237,37 @@ test('comfy_generate: "нарисуй Gemini" without a lora picks the main LoRA
   });
   assert.equal(drawn[0].lora, 'gemini_brigade_v2');
   assert.match(toolDesc, /gemini_brigade_v2 = gemini_brigade \/ gemini/);
+});
+
+test('person LoRA: each photo captioned by describe() (what changes), real_person in the list, captioning before training', async () => {
+  const { dir, t } = sandbox();
+  const meta = t.prepare({ name: 'kira_cos', kind: 'person', subject: '1girl, solo', images: [PNG, PNG, PNG, PNG, PNG], drawers: DRAWERS });
+  assert.equal(meta.real_person, true);
+  let n = 0;
+  await t.caption('kira_cos', async () => { n += 1; return n === 1 ? 'red wig, twin tails,\nmaid costume, full body.' : 'black bodysuit'; });
+  const data = path.join(dir, 'lora', 'kira_cos', 'dataset');
+  assert.equal(fs.readFileSync(path.join(data, '0001.txt'), 'utf8'), 'kira_cos, 1girl, solo, red wig, twin tails, maid costume, full body');
+  assert.equal(fs.readFileSync(path.join(data, '0002.txt'), 'utf8'), 'kira_cos, 1girl, solo, black bodysuit');
+  fs.writeFileSync(path.join(dir, 'models', 'loras', 'kira_cos.safetensors'), 'x');
+  assert.equal(t.list().find((l) => l.name === 'kira_cos').real_person, true);
+});
+
+test('cleanCaption: the values out of a small vision model\'s template answers, no "none" or category names', () => {
+  const { cleanCaption } = require('../src/main/lora-trainer');
+  assert.equal(cleanCaption('framing (upper body), pose (hand raised), costume and clothes with colours (red jacket, yellow pants), accessories (glasses), props (none)'), 'upper body, hand raised, red jacket, yellow pants, glasses');
+  assert.equal(cleanCaption('framing, upper body, costume, pink blazer, wig, black wig, makeup, props, background, lighting, photo style'), 'upper body, pink blazer, black wig');
+  assert.equal(cleanCaption('no changes'), '');
+  assert.equal(cleanCaption('none'), '');
+  assert.equal(cleanCaption('- red wig\n- twin tails.\n- no props'), 'red wig, twin tails');
+});
+
+test('real person LoRA: dressed samples with a no-nudity negative; explicit requests recognised', () => {
+  const { t, dir } = sandbox();
+  t.prepare({ name: 'lyana', kind: 'person', subject: '1girl, solo', images: [PNG, PNG, PNG, PNG, PNG], drawers: DRAWERS });
+  const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'lora', 'lyana', 'config.json'), 'utf8'));
+  assert.match(cfg.samples[0].prompt, /fully clothed/);
+  assert.match(cfg.samples[0].negative_prompt, /nude/);
+  const { REAL_PERSON_BLOCK } = require('../src/main/lora-trainer');
+  for (const bad of ['lyana, nude on a bed', 'нарисуй её голой', 'lyana in lingerie']) assert.ok(REAL_PERSON_BLOCK.test(bad), bad);
+  for (const ok of ['lyana, red wig, maid dress, city street', 'lyana as a knight in armor']) assert.ok(!REAL_PERSON_BLOCK.test(ok), ok);
 });

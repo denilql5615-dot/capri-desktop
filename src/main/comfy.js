@@ -106,6 +106,21 @@ const FACEID = { ipadapter: 'ip-adapter-faceid-plusv2_sdxl.bin', lora: 'ip-adapt
 // A photo or a drawn figure → DWPose skeleton (openpose); a rough sketch or stick figure → scribble lines.
 const CONTROLNET_UNION = 'xinsir-union-promax-sdxl.safetensors';
 const LOOK_IPADAPTER = 'ip-adapter-plus_sdxl_vit-h.safetensors';
+const FACE_DETECTOR = 'bbox/face_yolov8m.pt'; // Impact Subpack, in the shared models\ultralytics\bbox
+
+/** Comfy Desktop's model-paths file has no ultralytics folders, so the face detector of the shared models isn't
+ *  seen: a second paths file (ours, in temp) adds them. Null when there's nothing to add. */
+function extraModelPaths(modelsYaml, dir = os.tmpdir()) {
+  try {
+    const base = (fs.readFileSync(modelsYaml, 'utf8').match(/^\s+base_path:\s*'([^']+)'/m) || [])[1]; // not the commented example above it
+    if (!base || !fs.existsSync(path.join(base, 'ultralytics'))) return null;
+    const file = path.join(dir, 'capri-comfy-extra-paths.yaml');
+    fs.writeFileSync(file, `capri_extra:\n  base_path: '${base}'\n  ultralytics: ultralytics/\n  ultralytics_bbox: ultralytics/bbox/\n  ultralytics_segm: ultralytics/segm/\n`);
+    return file;
+  } catch {
+    return null;
+  }
+}
 const POSE_MODES = {
   pose: { type: 'openpose', strength: 0.85, end: 0.8 },
   sketch: { type: 'hed/pidi/scribble/ted', strength: 0.6, end: 0.7 },
@@ -218,6 +233,7 @@ function profileWorkflow({
   prompt, positiveExtra = [], negative = '', width = 832, height = 1216, steps = 30, cfg = 6.5, seed,
   checkpoint = CHECKPOINT, sampler = 'euler_ancestral', scheduler = 'normal', negativeBase = PROFILE_NEGATIVE, faceImage = null, faceWeight = 0.85,
   poseImage = null, poseMode = 'pose', lookImage = null, faceImages = null, lookImages = null, facePad = 0, loras = [],
+  faceDetail = null,
 } = {}) {
   // several angles of the face or the look (Danyal 2026-11-26): batched, the adapter averages them
   const faces = (faceImages && faceImages.length ? faceImages : (faceImage ? [faceImage] : [])).slice(0, 10);
@@ -261,6 +277,7 @@ function profileWorkflow({
     };
     model = ['45', 0];
   }
+  const faceModel = model; // the face pass: LoRA (+FaceID), never the look adapter (it paints the costume into the face)
   // the look of a character (build, clothes, colours) from another picture: IP-Adapter Plus on content, ending
   // early and lighter when a pose is given, so the picture's own pose doesn't fight the pose reference
   if (looks.length) {
@@ -305,6 +322,27 @@ function profileWorkflow({
     class_type: 'KSampler',
     inputs: { seed: s, steps, cfg, sampler_name: sampler, scheduler, denoise: 1, model, ...cond, latent_image: ['4', 0] },
   };
+  // the face pass (Danyal 2026-11-26, a person LoRA): on a full-body frame her face is 60–80 px and no LoRA can draw
+  // her features that small. The face is found (YOLO), cut out, redrawn big with the LoRA and pasted back; light
+  // denoise keeps the wig, the pose and the light.
+  if (faceDetail) {
+    const fd = typeof faceDetail === 'object' ? faceDetail : {};
+    const facePrompt = String(fd.prompt || `close-up, face focus, portrait, ${positive}`);
+    graph[80] = { class_type: 'UltralyticsDetectorProvider', inputs: { model_name: FACE_DETECTOR } };
+    graph[81] = { class_type: 'CLIPTextEncode', inputs: { text: facePrompt, clip: clipRef } };
+    graph[82] = {
+      class_type: 'FaceDetailer',
+      inputs: {
+        image: ['6', 0], model: faceModel, clip: clipRef, vae: ['1', 2], guide_size: 1024, guide_size_for: true, max_size: 1024,
+        seed: s, steps: Math.min(steps, 30), cfg, sampler_name: sampler, scheduler, positive: ['81', 0], negative: ['3', 0],
+        denoise: Number.isFinite(Number(fd.denoise)) ? Number(fd.denoise) : 0.45, feather: 8, noise_mask: true, force_inpaint: true,
+        bbox_threshold: 0.5, bbox_dilation: 10, bbox_crop_factor: 2.5, sam_detection_hint: 'center-1', sam_dilation: 0,
+        sam_threshold: 0.93, sam_bbox_expansion: 0, sam_mask_hint_threshold: 0.7, sam_mask_hint_use_negative: 'False',
+        drop_size: 10, bbox_detector: ['80', 0], wildcard: '', cycle: 1,
+      },
+    };
+    graph[7].inputs.images = ['82', 0];
+  }
   return { graph, positive, negative: neg, seed: s, width, height, steps, cfg };
 }
 
@@ -594,6 +632,8 @@ class Comfy {
     this.starting = (async () => {
       const args = ['-s', path.join('ComfyUI', 'main.py'), '--listen', '127.0.0.1', '--port', String(PORT), '--disable-auto-launch',
         '--extra-model-paths-config', where.models, '--input-directory', where.input, '--output-directory', where.output];
+      const extra = extraModelPaths(where.models);
+      if (extra) args.push('--extra-model-paths-config', extra);
       this.proc = spawn(where.python, args, { cwd: where.root, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
       let tail = '';
       this.proc.stderr.setEncoding('utf8');
@@ -807,5 +847,5 @@ class Comfy {
 }
 
 module.exports = {
-  Comfy, locate, desktopPort, workflow, profileWorkflow, inpaintWorkflow, SAM3, frameFor, DRAWERS, FRAMES, FACEID, CONTROLNET_UNION, POSE_MODES, styledWorkflow, checkWorkflow, fillWorkflow, loadWorkflow, videoGraph, missingVideoModels, has14BVideoModels, VIDEO_MODELS, VIDEO_MODELS_14B, PLACEHOLDER, PORT, HER,
+  Comfy, locate, desktopPort, extraModelPaths, FACE_DETECTOR, workflow, profileWorkflow, inpaintWorkflow, SAM3, frameFor, DRAWERS, FRAMES, FACEID, CONTROLNET_UNION, POSE_MODES, styledWorkflow, checkWorkflow, fillWorkflow, loadWorkflow, videoGraph, missingVideoModels, has14BVideoModels, VIDEO_MODELS, VIDEO_MODELS_14B, PLACEHOLDER, PORT, HER,
 };

@@ -772,6 +772,7 @@ function buildToolRegistry(deps = {}, ctx = {}) {
           drawer: { type: 'string', enum: ['art', 'photo', 'portrait'], description: 'The checkpoint it is trained for.' },
           subject: { type: 'string', description: 'Tags common to all pictures, like "1girl, solo".' },
           outfit: { type: 'string', description: 'When all pictures show one costume: a latin tag for it (like "gemini_outfit"), so it can be called whole or swapped for other clothes.' },
+          kind: { type: 'string', enum: ['character', 'person'], description: 'person = a real person in many looks (a cosplayer): each photo is captioned by the vision model with what changes (costume, wig, makeup), so the LoRA keeps only the face and body; her pictures stay private. character = one drawn character or style.' },
           images: { type: 'string', description: 'Attached picture numbers: "all", "1-8", "1,3,5".' },
           paths: { type: 'string', description: 'Folders, images or archives on the PC, separated by ";".' },
         },
@@ -785,7 +786,7 @@ function buildToolRegistry(deps = {}, ctx = {}) {
         }
         if (args.action === 'status') {
           const s = await t.status();
-          return { ok: true, output: s.running ? `Обучается ${s.slug}: эпоха ${s.epoch}/${s.epochs}, идёт ${s.minutes} мин${s.etaMin != null ? `, осталось ~${s.etaMin} мин` : ''}.` : 'Сейчас ничего не обучается.' };
+          return { ok: true, output: !s.running ? 'Сейчас ничего не обучается.' : s.phase === 'captioning' ? `${s.slug}: подписываю фото, ${s.captioned}/${s.toCaption}; потом обучение (${s.epochs} эпох).` : `Обучается ${s.slug}: эпоха ${s.epoch}/${s.epochs}, идёт ${s.minutes} мин${s.etaMin != null ? `, осталось ~${s.etaMin} мин` : ''}.` };
         }
         if (args.action === 'stop') return { ok: true, output: (await t.stop()) ? 'Обучение остановлено.' : 'Сейчас ничего не обучается.' };
         const all = Array.isArray(ctx.attachedImages) ? ctx.attachedImages : [];
@@ -796,7 +797,7 @@ function buildToolRegistry(deps = {}, ctx = {}) {
             return Number.isFinite(a) ? Array.from({ length: (b || a) - a + 1 }, (_, i) => a + i) : [];
           }).filter((n) => n >= 1 && n <= all.length);
         try {
-          const res = await t.train({ name: args.name, drawer: args.drawer || 'art', subject: args.subject || '', outfit: args.outfit || '', images: nums.map((n) => all[n - 1]), paths: args.paths || '' });
+          const res = await t.train({ name: args.name, drawer: args.drawer || 'art', subject: args.subject || '', outfit: args.outfit || '', kind: args.kind || 'character', images: nums.map((n) => all[n - 1]), paths: args.paths || '' });
           return { ok: true, output: `Обучение LoRA ${res.slug} запущено: ${res.images} картинок, ${res.epochs} эпох, примерно ${res.etaMin} мин. Слово-триггер: ${res.slug}. Пока идёт обучение, картинки не рисуются. Когда закончит — рисуй через comfy_generate lora="${res.slug}".` };
         } catch (err) {
           return { ok: false, output: `Не запустила обучение: ${err.message}`, error: err.message };
@@ -864,6 +865,50 @@ function buildToolRegistry(deps = {}, ctx = {}) {
     });
   }
 
+  // A cosplayer's looks (Danyal 2026-11-26): one LoRA knows her face, each look is tags + photos in her note
+  if (!torQuarantined && deps.loraLooks && typeof deps.loraLooks.add === 'function') {
+    items.push({
+      name: 'lora_looks',
+      connectorId: 'comfyui',
+      icon: 'checkroom',
+      label: 'Образы LoRA',
+      description: 'Looks (costumes, characters a cosplayer wears) of one of his LoRAs, kept in his Obsidian note GENESIS/ComfyUI/LoRA. '
+        + 'action "list": the looks of a LoRA. action "add": a new look (or new photos for one) — name = the character or look name as he says it, '
+        + 'tags = English tags of the costume, wig and makeup (leave empty when he sent photos: they are read by the vision model), images = attached photo numbers ("all", "1-3"), aliases = other names of the look. '
+        + 'No retraining is needed for a new look: drawing with the LoRA and naming the look in the request is enough.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['list', 'add'] },
+          lora: { type: 'string', description: 'The LoRA (name or alias), like "lyana".' },
+          name: { type: 'string', description: 'Look name, like "Кафка".' },
+          tags: { type: 'string', description: 'Costume / wig / makeup tags, English.' },
+          aliases: { type: 'string', description: 'Other names of the look, comma-separated.' },
+          images: { type: 'string', description: 'Attached photo numbers: "all", "1-3".' },
+        },
+        required: ['action', 'lora'],
+      },
+      async execute(args) {
+        const slug = String(args.lora || '').toLowerCase().trim().replace(/[^a-z0-9_]+/g, '_');
+        if (args.action === 'list') {
+          const looks = await deps.loraLooks.list(slug);
+          if (!looks) return { ok: false, output: `Нет заметки для LoRA ${args.lora} в GENESIS/ComfyUI/LoRA.` };
+          return { ok: true, output: looks.length ? looks.map((l) => `${l.name}: ${l.tags || '(без тегов)'}${l.photos ? ` — фото: ${l.photos}` : ''}`).join('\n') : 'Образов пока нет.' };
+        }
+        const all = Array.isArray(ctx.attachedImages) ? ctx.attachedImages : [];
+        const pick = String(args.images || '').trim().toLowerCase();
+        const nums = !pick ? [] : pick === 'all' ? all.map((_, i) => i + 1)
+          : pick.split(/\s*,\s*/).flatMap((part) => { const [a, b] = part.split(/\s*[-–]\s*/).map(Number); return Number.isFinite(a) ? Array.from({ length: (b || a) - a + 1 }, (_, i) => a + i) : []; }).filter((n) => n >= 1 && n <= all.length);
+        try {
+          const look = await deps.loraLooks.add(slug, { name: args.name, tags: args.tags || '', aliases: String(args.aliases || '').split(',').map((x) => x.trim()).filter(Boolean), images: nums.map((n) => all[n - 1]) });
+          return { ok: true, output: `Образ «${look.name}» сохранён: ${look.tags || '(без тегов)'}${look.photos.length ? `; фото: ${look.photos.length}` : ''}. Рисуй: comfy_generate с lora и названием образа в запросе.` };
+        } catch (err) {
+          return { ok: false, output: `Не сохранила образ: ${err.message}`, error: err.message };
+        }
+      },
+    });
+  }
+
   if (!torQuarantined && typeof deps.comfyDraw === 'function') {
     items.push({
       name: 'comfy_generate',
@@ -917,7 +962,7 @@ function buildToolRegistry(deps = {}, ctx = {}) {
           if (filled !== args) refFilled = true;
           args = filled;
         }
-        const res = await deps.comfyDraw(args, { scope: comfyScope, images });
+        const res = await deps.comfyDraw(args, { scope: comfyScope, images, userText: ctx.userText || '' });
         if (!res?.ok) return { ok: false, output: res?.error || 'ComfyUI не сгенерировал картинку.', error: res?.error || 'comfy failed' };
         const outArtifacts = [];
         if (res.path && typeof registerArtifact === 'function') {
@@ -927,7 +972,7 @@ function buildToolRegistry(deps = {}, ctx = {}) {
         return {
           ok: true,
           output: [
-            `Картинка готова: ${res.drawerLabel || 'ComfyUI'}${res.face ? `, лицо (${res.face} фото)` : ''}${res.look ? `, внешность (${res.look} фото)` : ''}${res.pose ? `, ${res.pose} с референса` : ''}${res.lora ? `, LoRA ${res.lora}` : ''} (${res.width}×${res.height}, шаги ${res.steps}, CFG ${res.cfg}, seed ${res.seed}).`,
+            `Картинка готова: ${res.drawerLabel || 'ComfyUI'}${res.face ? `, лицо (${res.face} фото)` : ''}${res.look ? `, внешность (${res.look} фото)` : ''}${res.pose ? `, ${res.pose} с референса` : ''}${res.lora ? `, LoRA ${res.lora}` : ''}${res.lookName ? `, образ «${res.lookName}»` : ''} (${res.width}×${res.height}, шаги ${res.steps}, CFG ${res.cfg}, seed ${res.seed}).`,
             ...(res.refsSkipped ? ['Лицо и внешность с фото на арте не переносятся (адаптеры портят NoobAI): взяты только из описания в промпте. Для точного сходства — рисовальщик photo или portrait.'] : []),
             `Промпт: ${res.prompt}`,
             `Негатив: ${res.negative}`,

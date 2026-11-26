@@ -2716,6 +2716,7 @@ async function applyPhone() {
       comfyInpaint: (args, opts) => harnessComfyInpaint(args, opts),
       comfyProfile: comfyProfileDeps,
       loraTrainer: loraTrainerDeps,
+      loraLooks: loraLooksDeps,
       skillsEngine: ensureSkillsEngine(),
       pluginsEngine: ensurePluginsEngine(),
       connectorsEngine: ensureConnectorsEngine(),
@@ -2987,6 +2988,8 @@ async function applyPhone() {
       },
       control: phoneControl,
       sprites: phonePack,
+      // speech of a video or song sent from the phone: the PC's own Whisper (127.0.0.1:8765), nothing leaves it
+      transcribeMedia: (file) => ensurePcToolsEngine().transcribeMedia({ source: file }),
       // "скинь фото" from the phone: drawn here like one asked on the PC, shown in her hub's gallery too
       mediaKind: photo.kind,
       photo: (text, kind, history) => (kind === 'screen' ? screenPhotoTask(text) : kind === 'video' ? videoTask(text, history) : photoTask(text, history)),
@@ -3397,17 +3400,54 @@ const comfyProfileDeps = {
 };
 // LoRA training (lora-trainer.js, Danyal 2026-11-26): datasets from his pictures, OneTrainer on this GPU
 const { LoraTrainer } = require('./lora-trainer');
-const loraTrainer = new LoraTrainer();
+const { LoraLibrary } = require('./lora-library');
+// his LoRA notes in Obsidian (GENESIS/ComfyUI/LoRA): aliases, always / never, costume parts, a cosplayer's looks
+const loraLibrary = () => new LoraLibrary({ vaultDir: vaultRootDir() });
+const loraTrainer = new LoraTrainer({ notes: () => loraLibrary().all() });
+// a caption for a person LoRA: everything that changes between her photos, nothing of the face or body, so the
+// trigger learns only her (Danyal 2026-11-26: a cosplayer — same face and figure, many wigs, makeups and costumes)
+const LORA_CAPTION_PROMPT = 'You write a training caption for this photo. List only what CHANGES between photos of this person, as short comma-separated English tags, at most 25: '
+  + 'framing (close-up / upper body / full body), pose, costume and clothes with colours, wig or hairstyle with hair colour, makeup that is visible (eyeliner, glitter, face paint), contact lenses colour, props, accessories, background, lighting, photo style. '
+  + 'Never describe the face shape, eye shape, nose, lips, skin, body type, age, ethnicity or who she is. Answer with the tags only, no sentences, no category names, no brackets, skip what is not there. '
+  + 'Example answer: upper body, hand on hip, red wig, twin tails, maid dress, white apron, red eyeliner, holding a microphone, city street at night, neon lights';
+// a cosplayer's looks (lora_looks): listed from her note, added from his words or from photos he sends
+const loraLooksDeps = {
+  list: (slug) => {
+    const lib = loraLibrary().get(slug);
+    return lib ? lib.looks.map((l) => ({ name: l.name, tags: l.tags, photos: l.photos.length, aliases: l.aliases })) : null;
+  },
+  add: async (slug, { name, tags = '', aliases = [], images = [] } = {}) => {
+    const bufs = images.map((b64) => Buffer.from(String(b64 || '').replace(/^data:[^,]*,/, ''), 'base64')).filter((b) => b.length);
+    let t = String(tags || '').trim();
+    if (!t && bufs.length) {
+      // the costume read off the first photo by the local vision model (no face, no body)
+      const { cleanCaption } = require('./lora-trainer');
+      t = cleanCaption(await ollama.chat({
+        model: brainsLib.VISION,
+        messages: [{ role: 'user', content: ollama.visionPrompt(LORA_CAPTION_PROMPT), images: [bufs[0].toString('base64')] }],
+        numPredict: 160,
+      }, () => {}, AbortSignal.timeout(120000)).catch(() => '')).split(', ')
+        .filter((x) => !/^(upper body|full body|close-up|portrait|indoor|outdoor|soft lighting|bright lighting|natural light(ing)?|daylight)$/i.test(x)).join(', ');
+    }
+    return loraLibrary().addLook(slug, { name, tags: t, aliases, photos: bufs });
+  },
+};
 const loraTrainerDeps = {
   list: () => loraTrainer.list(),
   status: () => loraTrainer.status(),
   stop: () => loraTrainer.stop(),
-  train: async ({ name, drawer, subject, images = [], paths = '' }) => {
+  train: async ({ name, drawer, subject, outfit, kind, images = [], paths = '' }) => {
     const bufs = images.map((b64) => Buffer.from(String(b64 || '').replace(/^data:[^,]*,/, ''), 'base64')).filter((b) => b.length);
-    const meta = loraTrainer.prepare({ name, drawer, subject, images: bufs, paths, drawers: comfyDrawers.DRAWERS });
+    const meta = loraTrainer.prepare({ name, drawer, subject, outfit, kind, images: bufs, paths, drawers: comfyDrawers.DRAWERS });
     return loraTrainer.start(meta.name, {
       // the whole GPU: chat models and ComfyUI out of it first
       beforeTrain: async () => { brains.forget(); await ollama.unloadAll().catch(() => []); try { comfy.stop(); } catch {} },
+      // person LoRAs: the local vision model says what changes on each photo (never the face)
+      describe: async (buf) => ollama.chat({
+        model: brainsLib.VISION,
+        messages: [{ role: 'user', content: ollama.visionPrompt(LORA_CAPTION_PROMPT), images: [buf.toString('base64')] }],
+        numPredict: 120,
+      }, () => {}, AbortSignal.timeout(120000)),
       onDone: ({ ok, slug, error }) => {
         console.log(`[capri] LoRA ${slug}: ${ok ? 'ready' : `failed: ${error}`}`);
         try { new (require('electron').Notification)({ title: ok ? `LoRA ${slug} готова` : `LoRA ${slug}: обучение упало`, body: ok ? 'Можно рисовать с ней.' : String(error || '').slice(-200) }).show(); } catch {}
@@ -3429,7 +3469,7 @@ function resolveLora(raw) {
 // the last picture she drew or redrew: "перерисуй куртку" works on it without attaching it again
 let lastPicture = null;
 
-async function harnessComfyDraw(args = {}, { scope = 'chat', images = [] } = {}) {
+async function harnessComfyDraw(args = {}, { scope = 'chat', images = [], userText = '' } = {}) {
   let said = String(args.prompt || '').trim();
   if (!said) return { ok: false, error: 'Нужен промпт.' };
   if (loraTrainer.busy()) {
@@ -3439,12 +3479,34 @@ async function harnessComfyDraw(args = {}, { scope = 'chat', images = [] } = {})
   // his trained LoRA: "name" or "name:0.8" → its file, its trigger word first in the prompt, its drawer by default
   let loras = [];
   let loraLabel = null;
+  let lookLabel = null;
+  let libraryLook = [];
+  let personTrigger = null; // a person LoRA: her face redrawn big after the picture (the face pass)
   if (args.lora && String(args.lora).toLowerCase() !== 'none') {
     const r = resolveLora(args.lora);
     if (r.error) return { ok: false, error: r.error };
     const found = r.found;
     loras = r.loras;
     loraLabel = found.name;
+    if (found.kind === 'person' || found.real_person) personTrigger = found.trigger || found.name;
+    // a real person's LoRA: her pictures never go to the shared gallery, and never undressed or sexual
+    if (found.real_person) {
+      const { REAL_PERSON_NEGATIVE, REAL_PERSON_BLOCK } = require('./lora-trainer');
+      if (REAL_PERSON_BLOCK.test(said.replace(/\bno (nsfw|nude)\b/gi, ''))) return { ok: false, error: `С LoRA ${found.name} (реальный человек) откровенное не рисую: её согласие — на посты, не на это.` };
+      args = { ...args, negative: [args.negative, REAL_PERSON_NEGATIVE].filter(Boolean).join(', ') };
+      if (scope === 'chat') scope = 'private';
+    }
+    // what the note forbids for this LoRA
+    if (found.negative) args = { ...args, negative: [args.negative, found.negative].filter(Boolean).join(', ') };
+    // a look he named ("в образе Кафки"): its tags, and its photos as the costume reference on the photo drawers
+    const look = loraLibrary().findLook(found, `${userText} ${said}`);
+    if (look) {
+      if (look.tags && !said.toLowerCase().includes(look.tags.toLowerCase().slice(0, 20))) said = `${said}, ${look.tags}`;
+      lookLabel = look.name;
+      libraryLook = loraLibrary().lookPhotos(found.name, look);
+      // the costume of the look replaces the base costume tag
+      args = { ...args, outfit_tag: false };
+    }
     // what this LoRA always needs said (Gemini: her blue hair, which warm scenes turn red)
     for (const t of String(found.tags || '').split(',').map((x) => x.trim()).filter(Boolean)) {
       if (!said.toLowerCase().includes(t.toLowerCase())) said = `${said}, ${t}`;
@@ -3495,7 +3557,7 @@ async function harnessComfyDraw(args = {}, { scope = 'chat', images = [] } = {})
   // on the art drawer the face and look are carried by her description of the pictures, the pose still goes
   const refsOff = drawerKey === 'art';
   const refsSkipped = refsOff && Boolean(lookRef.list.length || faceRef.list.length || String(args.face || '').toLowerCase() === 'me');
-  const lookBuffers = refsOff ? [] : lookRef.list.map((r) => r.buf);
+  const lookBuffers = refsOff ? [] : (lookRef.list.length ? lookRef.list.map((r) => r.buf) : libraryLook);
   const faceBuffers = refsOff ? [] : faceRef.list.map((r) => r.buf);
   // the pose picture's proportions set the frame, so the pose isn't stretched
   const poseFrame = poseRef.list[0] ? comfyDrawers.frameFor(poseRef.list[0].dims.width, poseRef.list[0].dims.height) : null;
@@ -3537,6 +3599,11 @@ async function harnessComfyDraw(args = {}, { scope = 'chat', images = [] } = {})
     poseBuffer,
     poseMode: args.pose_type === 'sketch' ? 'sketch' : 'pose',
     loras,
+    // the face pass (2026-11-26, Lyana v2 probes: likeness 0.08→0.32 on a full-body knight): the words of her
+    // face close-ups in training, plus the wig of this picture so the pass keeps it
+    faceDetail: personTrigger && loras.length
+      ? { denoise: 0.6, prompt: [`${personTrigger}, 1girl, solo, close-up, face focus, portrait`, (said.match(/[^,]*\bwig\b[^,]*/i) || [''])[0].trim()].filter(Boolean).join(', ') }
+      : null,
   });
   // a picture with a real face (his or from a photo he sent) never goes to the shared gallery
   if (faceBuffers.length && scope === 'chat') scope = 'private';
@@ -3555,7 +3622,7 @@ async function harnessComfyDraw(args = {}, { scope = 'chat', images = [] } = {})
   lastPicture = { file, scope, drawer: drawerKey, lora: loraLabel, seed: res.seed, sceneSeed: poseFromLast && lastPicture?.sceneSeed ? lastPicture.sceneSeed : res.seed, prompt: res.prompt, negative: args.negative || '' };
   return {
     ok: true, path: file, image: chat ? name : null, prompt: res.prompt, negative: res.negative, seed: res.seed,
-    width: res.width, height: res.height, steps: res.steps, cfg: res.cfg, drawerLabel: drawer.label, refsSkipped, lora: loraLabel, face: faceFile ? 1 : faceBuffers.length, look: lookBuffers.length, pose: poseBuffer ? (args.pose_type === "sketch" ? "скетч" : "поза") : null,
+    width: res.width, height: res.height, steps: res.steps, cfg: res.cfg, drawerLabel: drawer.label, refsSkipped, lora: loraLabel, lookName: lookLabel, face: faceFile ? 1 : faceBuffers.length, look: lookBuffers.length, pose: poseBuffer ? (args.pose_type === "sketch" ? "скетч" : "поза") : null,
   };
 }
 
@@ -3638,6 +3705,12 @@ async function harnessComfyInpaint(args = {}, { scope = 'chat', images = [] } = 
     if (r.error) return { ok: false, error: r.error };
     loras = r.loras;
     loraLabel = r.found.name;
+    if (r.found.real_person) {
+      const { REAL_PERSON_NEGATIVE, REAL_PERSON_BLOCK } = require('./lora-trainer');
+      if (REAL_PERSON_BLOCK.test(said)) return { ok: false, error: `С LoRA ${r.found.name} (реальный человек) откровенное не рисую.` };
+      args = { ...args, negative: [args.negative, REAL_PERSON_NEGATIVE].filter(Boolean).join(', ') };
+      if (scope === 'chat') scope = 'private';
+    }
     if (r.found.trigger && !said.toLowerCase().includes(r.found.trigger)) said = `${r.found.trigger}, ${said}`;
   }
   const p = comfyProfileLib.read(vaultRootDir(), scope);
@@ -5129,6 +5202,7 @@ function registerIpc() {
                 comfyInpaint: (args, opts) => harnessComfyInpaint(args, opts),
                 comfyProfile: comfyProfileDeps,
                 loraTrainer: loraTrainerDeps,
+                loraLooks: loraLooksDeps,
                 saveGalleryBuffer: (buf, ext = 'png') => {
                   fs.mkdirSync(galleryDir(), { recursive: true });
                   const name = photo.galleryName(new Date(), Math.random(), ext);
