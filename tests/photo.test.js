@@ -10,7 +10,11 @@ test('photo.kind: "скинь фото" and "скинь видео", not every m
   assert.equal(photo.kind('скинь фото'), 'photo');
   assert.equal(photo.kind('Капри, скинь мне своё фото на крыше под дождём'), 'photo');
   assert.equal(photo.kind('пришли селфи'), 'photo');
-  assert.equal(photo.kind('нарисуй картинку с котом'), 'photo');
+  assert.equal(photo.kind('нарисуй картинку'), 'photo');
+  // a described scene not of her goes to the chat model (comfy_generate with drawers)
+  assert.equal(photo.kind('нарисуй картинку с рыжим котом на крыше'), null);
+  assert.equal(photo.kind('Нарисуй реалистичное фото: девушка в полный рост идёт по осенней улице'), null);
+  assert.equal(photo.kind('скинь мне фото, пожалуйста'), 'photo');
   assert.equal(photo.kind('скинь видео как ты танцуешь'), 'video');
   assert.equal(photo.kind('сними видос'), 'video');
   assert.equal(photo.kind('я вчера смотрел фото с моря'), null);

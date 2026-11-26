@@ -21,11 +21,14 @@ const DEFAULT = Object.freeze({
   height: 1216,
   steps: 30,
   cfg: 6.5,
+  drawer: 'art',
   notes: [],
 });
+const DRAWER_NAMES = { art: 'арт', photo: 'фото', portrait: 'портрет' };
+const DRAWER_BY_WORD = { 'арт': 'art', art: 'art', 'фото': 'photo', photo: 'photo', 'портрет': 'portrait', portrait: 'portrait' };
 
 const LIMITS = { width: [512, 1536], height: [512, 1536], steps: [8, 60], cfg: [1, 15] };
-const KEYS = { 'позитив': 'positive', 'негатив': 'negative', 'ширина': 'width', 'высота': 'height', 'шаги': 'steps', 'cfg': 'cfg' };
+const KEYS = { 'позитив': 'positive', 'негатив': 'negative', 'ширина': 'width', 'высота': 'height', 'шаги': 'steps', 'cfg': 'cfg', 'рисовальщик': 'drawer' };
 
 function scopeOf(mode) {
   const m = String(mode || '').toLowerCase();
@@ -53,6 +56,7 @@ function parse(md) {
       const key = KEYS[m[1].trim().toLowerCase()];
       if (!key) continue;
       if (key === 'positive' || key === 'negative') out[key] = tags(m[2]);
+      else if (key === 'drawer') out.drawer = DRAWER_BY_WORD[m[2].trim().toLowerCase().split(/[\s(]/)[0]] || 'art';
       else {
         const v = clamp(key, m[2]);
         if (v !== undefined) out[key] = v;
@@ -79,6 +83,7 @@ function render(p, scope) {
     `- **Высота**: ${p.height}`,
     `- **Шаги**: ${p.steps}`,
     `- **CFG**: ${p.cfg}`,
+    `- **Рисовальщик**: ${DRAWER_NAMES[p.drawer] || 'арт'} (арт / фото / портрет — по умолчанию, если из запроса не ясно)`,
     '',
     '## Что выяснили о твоём вкусе',
     ...(p.notes.length ? p.notes.slice(-40).map((n) => `- ${n}`) : ['- (пока ничего)']),
@@ -115,6 +120,7 @@ function update(vaultDir, scope, patch = {}, { io = fs, now = new Date() } = {})
       if (v !== undefined) p[key] = v;
     }
   }
+  if (patch.drawer && DRAWER_BY_WORD[String(patch.drawer).toLowerCase()]) p.drawer = DRAWER_BY_WORD[String(patch.drawer).toLowerCase()];
   if (patch.note) p.notes.push(`${now.toISOString().slice(0, 10)} — ${String(patch.note).replace(/\s+/g, ' ').trim().slice(0, 300)}`);
   const file = fileOf(vaultDir, scope);
   io.mkdirSync(path.dirname(file), { recursive: true });
@@ -127,7 +133,7 @@ function describe(p) {
   return [
     `Позитив (добавляется всегда): ${p.positive.join(', ') || '—'}`,
     `Негатив: ${p.negative.join(', ') || '—'}`,
-    `Размер: ${p.width}×${p.height}, шаги ${p.steps}, CFG ${p.cfg}`,
+    `Размер: ${p.width}×${p.height}, шаги ${p.steps}, CFG ${p.cfg}; рисовальщик по умолчанию: ${DRAWER_NAMES[p.drawer] || 'арт'}`,
     p.notes.length ? `О вкусе: ${p.notes.slice(-8).join(' | ')}` : 'О вкусе пока ничего не записано.',
   ].join('\n');
 }

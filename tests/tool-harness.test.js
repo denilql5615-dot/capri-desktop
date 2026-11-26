@@ -527,6 +527,29 @@ test('ToolHarness: asked to search the web but answered from memory → one nudg
   assert.equal(res.text, 'Ответ со ссылками [1] https://x.org');
 });
 
+test('ToolHarness: "нарисуй" answered with words and {image} → one nudge to comfy_generate, placeholder dropped', async () => {
+  const drawn = [];
+  const harness = new ToolHarness({
+    comfyDraw: async (args) => { drawn.push(args); return { ok: true, path: null, image: 'pic.png', prompt: 'man', negative: '', seed: 1, width: 896, height: 1152, steps: 30, cfg: 5 }; },
+  });
+  let step = 0;
+  const seen = [];
+  const res = await harness.runLoop({
+    messages: [{ role: 'user', content: 'Сгенерируй фотореалистичный портрет мужчины с бородой' }],
+    ctx: {},
+    async runTurn({ messages }) {
+      step += 1;
+      seen.push(messages.at(-1).content);
+      if (step === 1) return { text: 'Поняла, делаю упор на свет.\n\n{image}', toolCalls: [] };
+      if (step === 2) return { text: '', toolCalls: [{ function: { name: 'comfy_generate', arguments: { prompt: 'bearded man portrait', drawer: 'portrait' } } }] };
+      return { text: 'Готово, мягкий свет.\n\n{image}', toolCalls: [] };
+    },
+  });
+  assert.match(seen[1], /Вызови comfy_generate/);
+  assert.equal(drawn.length, 1);
+  assert.equal(res.text, 'Готово, мягкий свет.');
+});
+
 test('ToolHarness: a made-up markdown image is removed when the real picture is attached', async () => {
   const harness = new ToolHarness({
     comfyDraw: async () => ({ ok: true, path: null, image: 'pic.png', prompt: 'cat', negative: '', seed: 1, width: 832, height: 1216, steps: 30, cfg: 6.5 }),
@@ -544,4 +567,14 @@ test('ToolHarness: a made-up markdown image is removed when the real picture is 
   });
   assert.equal(res.text, 'Держи кота.');
   assert.equal(res.image, 'pic.png');
+});
+
+test('withSingleReference: one attached picture + "в такой же позе" / "с этим лицом" fills the reference the model forgot', () => {
+  const { withSingleReference: w } = require('../src/main/tool-harness');
+  assert.deepEqual(w({ prompt: 'x' }, 1, 'мужчина в точно такой же позе, как на картинке'), { prompt: 'x', pose_ref: '1', pose_type: 'pose' });
+  assert.deepEqual(w({ prompt: 'x' }, 1, 'нарисуй по скетчу'), { prompt: 'x', pose_ref: '1', pose_type: 'sketch' });
+  assert.deepEqual(w({ prompt: 'x' }, 1, 'с этим лицом'), { prompt: 'x', face: '1' });
+  assert.deepEqual(w({ prompt: 'x' }, 1, 'возьми одежду с фото'), { prompt: 'x', look_ref: '1' });
+  assert.deepEqual(w({ prompt: 'x' }, 2, 'в такой же позе'), { prompt: 'x' }); // several pictures: the model decides
+  assert.deepEqual(w({ prompt: 'x', face: '1' }, 1, 'в такой же позе'), { prompt: 'x', face: '1' }); // the model chose
 });

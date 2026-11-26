@@ -9,13 +9,22 @@ const PHOTO_RE = /(?<![а-яё])(скинь|кинь|пришли|отправь
 const VIDEO_RE = /(?<![а-яё])(скинь|кинь|пришли|отправь|покажи|сделай|сними)(?![а-яё]).{0,24}(?<![а-яё])(видео|видос|видосик|ролик|клип)(?![а-яё])/i;
 const SCREENSHOT_RE = /(?<![а-яё])(скинь|кинь|пришли|отправь|покажи|сделай)(?![а-яё]).{0,24}(?<![а-яё])(скриншот|скрин|экран(\s+(пк|ноутбука|компа|монитора))?|монитор|рабочий\s+стол)(?![а-яё])|^\s*(?:капри,?\s+)?что\s+(?:сейчас\s+)?на\s+(?:экране|мониторе)\s*(?:пк|ноутбука|компа)?\s*[.!?]*$/i;
 
+// 2026-11-26: this shortcut draws HER (her LoRA, NoobAI). A described scene that is not of her ("нарисуй
+// девушку в полный рост на улице") goes to her chat model instead, which has comfy_generate with the
+// drawers (art / photo / portrait), the taste profile, face, look and pose references.
+const HER_RE = /(?<![а-яё])(себя|селфи|сам[уа]|свою|сво[её]|свой|своего|тебя|твою|тво[её]|твой|альтаир|капри)(?![а-яё])/i;
+const FILLER_RE = /(?<![а-яё])(мне|нам|пожалуйста|плиз|ну|а|ещ[её]|одну|одно|какую-нибудь|какое-нибудь|ка)(?![а-яё])/gi;
+
 /** 'screen', 'photo', 'video' or null. */
 function kind(text) {
   const t = String(text || '').slice(0, 600);
   if (SCREENSHOT_RE.test(t)) return 'screen';
   if (VIDEO_RE.test(t)) return 'video';
-  if (PHOTO_RE.test(t)) return 'photo';
-  return null;
+  const m = PHOTO_RE.exec(t);
+  if (!m) return null;
+  if (HER_RE.test(t)) return 'photo';
+  const rest = (t.slice(0, m.index) + ' ' + t.slice(m.index + m[0].length)).replace(FILLER_RE, ' ').match(/[a-zа-яё]{2,}/gi) || [];
+  return rest.length >= 2 ? null : 'photo';
 }
 
 const SCHEMA = {

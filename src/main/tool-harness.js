@@ -15,7 +15,21 @@ function isBarePromise(text) {
   return t.length > 0 && t.length < 600 && PROMISE_RE.test(t) && !/https?:\/\//i.test(t);
 }
 // Danyal asked to look on the web, but the model answered from memory without a single call: ask once.
-const WANTS_WEB_RE = /интернет|\bинет|в сети\b|онлайн|погугли|загугли|прочеши|ресерч|research|источник|ссылк|через тор|в торе|даркнет/i;
+// One attached picture and "в такой же позе" / "с этим лицом", but the model named no reference:
+// take it from his words (the 26B often forgets pose_ref). Several pictures stay the model's call.
+const unset = (v) => !v || String(v).trim().toLowerCase() === 'none';
+function withSingleReference(args = {}, imageCount = 0, said = '') {
+  if (imageCount !== 1 || !unset(args.face) || !unset(args.look_ref) || !unset(args.pose_ref)) return args;
+  const t = String(said || '');
+  if (/(?<![а-яё])(?:поз[аеуы]|позой|скетч\S*|набросок\S*|стойк[аеуи])(?![а-яё])/i.test(t)) {
+    return { ...args, pose_ref: '1', pose_type: args.pose_type || (/скетч|набросок|палочн/i.test(t) ? 'sketch' : 'pose') };
+  }
+  if (/(?<![а-яё])(?:лиц[оаеу]|лицом)(?![а-яё])/i.test(t)) return { ...args, face: '1' };
+  if (/(?<![а-яё])(?:одежд\S*|образ\S*|внешност\S*|телосложени\S*|прикид\S*)(?![а-яё])/i.test(t)) return { ...args, look_ref: '1' };
+  return args;
+}
+const WANTS_DRAW_RE = /(?<![а-яё])(?:нарисуй|нарисовать|сгенерируй|сгенерь|сгенери|отрисуй|изобрази|перерисуй|дорисуй)|(?<![а-яё])(?:сделай|создай|покажи)(?![а-яё]).{0,30}(?<![а-яё])(?:картинк|изображени|арт|фото|портрет|рисун)/i;
+const WANTS_WEB_RE =/интернет|\bинет|в сети\b|онлайн|погугли|загугли|прочеши|ресерч|research|источник|ссылк|через тор|в торе|даркнет/i;
 const WANTS_DEEP_RE = /глубок|прочеши|масштабн|тщательн|подробн\S* (?:поиск|ресерч)|сравни/i;
 // Tools whose output is our own (files we made, our containers): everything else (web, RSS, mail, GitHub,
 // the phone's messages, notes with saved pages…) may carry someone else's text, so after it the turn is
@@ -653,6 +667,7 @@ function buildToolRegistry(deps = {}, ctx = {}) {
   // ComfyUI agent (Danyal 2026-11-25): pictures by his taste profile, which she refines from his answers.
   // Three profiles, never mixed: ordinary chat, 18+ and private.
   const comfyScope = ['nsfw', 'private'].includes(String(ctx.mode || '').toLowerCase()) ? String(ctx.mode).toLowerCase() : 'chat';
+  let refFilled = false; // withSingleReference fills a forgotten reference once per turn
   if (!torQuarantined && deps.comfyProfile && typeof deps.comfyProfile.read === 'function') {
     items.push({
       name: 'comfy_profile',
@@ -672,6 +687,7 @@ function buildToolRegistry(deps = {}, ctx = {}) {
           height: { type: 'integer', description: 'Default height (512–1536).' },
           steps: { type: 'integer', description: 'Default steps (8–60).' },
           cfg: { type: 'number', description: 'Default CFG (1–15).' },
+          drawer: { type: 'string', enum: ['art', 'photo', 'portrait'], description: 'Default drawer when a request does not make it clear.' },
           note: { type: 'string', description: 'What you learned about his taste, one sentence in Russian.' },
         },
         required: ['action'],
@@ -693,11 +709,27 @@ function buildToolRegistry(deps = {}, ctx = {}) {
       connectorId: 'comfyui',
       icon: 'image',
       label: 'ComfyUI Генерация',
-      description: 'Generate a picture with local ComfyUI (the chat model steps out of VRAM while it draws and comes back after). The user\'s taste profile is applied automatically. Returns the seed and settings: to change a picture, pass the same seed with the changed prompt or settings. When he reacts to a picture with a lasting preference, also call comfy_profile update.',
+      description: 'Generate a picture with local ComfyUI (the chat model steps out of VRAM while it draws and comes back after). '
+        + 'Pick the drawer from the request and the conversation: "art" (NoobAI: art, anime, illustration, stylized; write Danbooru-style tags), '
+        + '"photo" (Juggernaut: realistic photos, people in scenes, full body, motion, streets, products; write the prompt like a photo caption: subject, pose, setting, lens, light), '
+        + '"portrait" (RealVisXL: close realistic portraits, face, skin, studio). If unclear, leave drawer empty to use his default; if he names a style, follow him. '
+        + 'Pick the framing: portrait (head and shoulders), full_body, scene (landscape with surroundings, several people), wide, square. Describe pose, angle, light, setting and other people in the prompt. '
+        + 'References: he may attach up to 10 pictures and say which is which (numbers follow the order he attached them; several angles of one face or outfit are welcome). '
+        + 'face = the picture numbers with the face to keep, comma-separated like "1,2,3" (or "me" = his own saved photos, only when he asks to draw himself); '
+        + 'look_ref = the picture numbers whose character look to take (build, body, clothes, colours), like "4,5"; '
+        + 'pose_ref = ONE picture number with the pose (pose_type pose for photos and drawn figures, sketch for rough lines or stick figures); the frame then follows that picture; the pose comes from the picture by itself, so describe only the NEW subject in the prompt and never the person in the reference (no "like the girl in the picture", no their gender, clothes or style). '
+        + 'Put everything else he asked (setting, light, details, what to add or change) into the prompt. His taste profile is applied automatically. '
+        + 'Returns the seed: to change a picture, pass the same seed with the changed prompt. When he states a lasting preference, also call comfy_profile update.',
       parameters: {
         type: 'object',
         properties: {
-          prompt: { type: 'string', description: 'Detailed visual description in English tags or sentences.' },
+          prompt: { type: 'string', description: 'Detailed visual description in English (tags for art, a photo caption for photo/portrait).' },
+          drawer: { type: 'string', enum: ['art', 'photo', 'portrait'], description: 'Which model draws (see description).' },
+          framing: { type: 'string', enum: ['portrait', 'full_body', 'scene', 'wide', 'square'], description: 'Shot framing; sets the size.' },
+          face: { type: 'string', description: 'Face to keep: attached picture numbers "1,2,3", or "me" (his saved photos), or "none".' },
+          look_ref: { type: 'string', description: 'Attached picture numbers whose look to take (build, clothes, colours), like "4,5", or "none".' },
+          pose_ref: { type: 'string', description: 'ONE attached picture number with the pose, like "6" ("attached" = the first), or "none".' },
+          pose_type: { type: 'string', enum: ['pose', 'sketch'], description: 'pose = a photo or drawn figure with a visible body; sketch = rough lines or a stick figure.' },
           negative: { type: 'string', description: 'What to avoid in this picture.' },
           width: { type: 'integer', description: '512–1536, multiple of 64.' },
           height: { type: 'integer', description: '512–1536, multiple of 64.' },
@@ -709,7 +741,14 @@ function buildToolRegistry(deps = {}, ctx = {}) {
         required: ['prompt'],
       },
       async execute(args) {
-        const res = await deps.comfyDraw(args, { scope: comfyScope });
+        const images = Array.isArray(ctx.attachedImages) ? ctx.attachedImages : [];
+        // once per turn: if that picture fails ("no face"), her retry without it is respected
+        if (!refFilled) {
+          const filled = withSingleReference(args, images.length, ctx.userText);
+          if (filled !== args) refFilled = true;
+          args = filled;
+        }
+        const res = await deps.comfyDraw(args, { scope: comfyScope, images });
         if (!res?.ok) return { ok: false, output: res?.error || 'ComfyUI не сгенерировал картинку.', error: res?.error || 'comfy failed' };
         const outArtifacts = [];
         if (res.path && typeof registerArtifact === 'function') {
@@ -719,7 +758,7 @@ function buildToolRegistry(deps = {}, ctx = {}) {
         return {
           ok: true,
           output: [
-            `Картинка готова (${res.width}×${res.height}, шаги ${res.steps}, CFG ${res.cfg}, seed ${res.seed}).`,
+            `Картинка готова: ${res.drawerLabel || 'ComfyUI'}${res.face ? `, лицо (${res.face} фото)` : ''}${res.look ? `, внешность (${res.look} фото)` : ''}${res.pose ? `, ${res.pose} с референса` : ''} (${res.width}×${res.height}, шаги ${res.steps}, CFG ${res.cfg}, seed ${res.seed}).`,
             `Промпт: ${res.prompt}`,
             `Негатив: ${res.negative}`,
             'Картинка уже прикреплена к ответу: не вставляй её ссылкой или markdown-картинкой, просто подпиши коротко. Для вариации — тот же seed и изменённый промпт.',
@@ -1006,6 +1045,7 @@ class ToolHarness {
     let promiseNudges = 0;
     let calledAnyTool = false;
     let webNudged = false;
+    let drawNudged = false;
 
     for (let step = 0; step <= maxSteps; step += 1) {
       signal?.throwIfAborted();
@@ -1235,13 +1275,30 @@ class ToolHarness {
         continue;
       }
 
+      // "Нарисуй…" answered with words and a made-up {image}: ask her to draw for real, once.
+      if (canCallMore && toolCalls.length === 0 && !drawNudged && byName.has('comfy_generate')
+        && !artifacts.images.length && WANTS_DRAW_RE.test(askedText)) {
+        drawNudged = true;
+        onStreamReset?.();
+        loopMessages = [
+          ...loopMessages,
+          { role: 'assistant', content: text },
+          {
+            role: 'user',
+            content: '[Система] Пользователь просил картинку, а ты ничего не нарисовала. Вызови comfy_generate сейчас (выбери drawer и framing по запросу), '
+              + 'потом одной-двумя фразами скажи, что получилось. Не пиши {image} и не вставляй ссылки на картинку: она прикрепится сама.',
+          },
+        ];
+        continue;
+      }
+
       finalReply = typeof stripUseTags === 'function' ? stripUseTags(text) : text;
       break;
     }
 
     // a picture is attached to the answer itself: a markdown image the model wrote is made up (placeholder links)
     if (finalReply && (artifacts.images.length || artifacts.items.some((a) => a?.kind === 'image'))) {
-      finalReply = finalReply.replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/\n{3,}/g, '\n\n').trim();
+      finalReply = finalReply.replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/[{[]\s*(?:image|картинка|изображение|photo|фото)\s*[}\]]/gi, '').replace(/\n{3,}/g, '\n\n').trim();
     }
     if (typeof this.deps.extractLinks === 'function' && finalReply) {
       const seenUrls = new Set(artifacts.links.map((l) => l.url));
@@ -1267,4 +1324,5 @@ class ToolHarness {
   }
 }
 
-module.exports = { ToolHarness, buildToolRegistry, coerceToolArgs, boundToolOutput, CONNECTOR_ICONS, resolveDockerHost, normalizeDockerAction };
+module.exports = {
+  ToolHarness, withSingleReference, buildToolRegistry, coerceToolArgs, boundToolOutput, CONNECTOR_ICONS, resolveDockerHost, normalizeDockerAction };

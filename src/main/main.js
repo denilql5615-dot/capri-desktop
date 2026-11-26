@@ -2788,12 +2788,15 @@ async function applyPhone() {
         if ((torSensitive || opts.mobile) && !isLocalOnlyModelAllowed({ cfg, model: pickedModel, llm, ollama, localOnly: true })) {
           throw new Error(opts.localOnly || opts.mobile ? 'Для этого режима нужна доступная локальная модель.' : TOR_CLOUD_BLOCK_MSG);
         }
-        if (!requestedModel && hasImages && cfg.provider === 'ollama' && chatModels?.includes(brainsLib.VISION)
+        // a picture attached to "draw it like this / in this pose" (Danyal 2026-11-26): the 26B sees images and calls
+        // tools, so the turn goes to it with the picture instead of the describe-only vision model
+        const drawWithReference = hasImages && Array.isArray(opts.tools) && opts.tools.length > 0 && DRAW_REF_RE.test(String(said));
+        if (!requestedModel && hasImages && !drawWithReference && cfg.provider === 'ollama' && chatModels?.includes(brainsLib.VISION)
           && (opts.requireVision || brains.isAuto(cfg.chatModel, chatModels))) {
           if (chats.size) throw new Error(brainsLib.VISION_BUSY);
           return { text: await brains.see(messages, signal, opts.numPredict), brain: brainsLib.VISION };
         }
-        if (opts.requireVision) throw new Error('Локальная Vision-модель недоступна.');
+        if (opts.requireVision && !drawWithReference) throw new Error('Локальная Vision-модель недоступна.');
         let model;
         if (requestedModel) {
           if (cfg.provider !== 'ollama' || !chatModels?.includes(requestedModel)) {
@@ -2804,7 +2807,7 @@ async function applyPhone() {
             throw new Error('ПК уже отвечает в другом чате. Повтори после завершения.');
           }
           model = requestedModel;
-        } else if (opts.localMode === 'task' || (opts.localMode === 'nsfw' && !brainsLib.isEmergency(said))) {
+        } else if (drawWithReference || opts.localMode === 'task' || (opts.localMode === 'nsfw' && !brainsLib.isEmergency(said))) {
           if (cfg.provider !== 'ollama' || !brains.ready(chatModels)) throw new Error('Локальная модель для задач недоступна.');
           model = await brains.use('main');
         }
@@ -3383,11 +3386,14 @@ async function planPhoto(said, history, signal) {
 // profile for the mode. Ordinary chat goes to her gallery; 18+ and private go to their own folders, never
 // to the shared gallery (encrypting those folders is a separate step).
 const comfyProfileLib = require('./comfy-profile');
+const comfyDrawers = require('./comfy'); // DRAWERS, FRAMES
+// "draw / generate it like this, in this pose" with a picture attached: a reference for ComfyUI, not a question about it
+const DRAW_REF_RE = /нарису|сгенер|генерац|сделай (?:картинк|фото|арт|изображ|рисун)|в (?:этой|такой) поз|по (?:этой|такой) поз|позу как|референс|как на (?:фото|картинк|скетч)|по скетч/i;
 const comfyProfileDeps = {
   read: (scope) => comfyProfileLib.read(vaultRootDir(), scope),
   update: (scope, patch) => comfyProfileLib.update(vaultRootDir(), scope, patch),
 };
-async function harnessComfyDraw(args = {}, { scope = 'chat' } = {}) {
+async function harnessComfyDraw(args = {}, { scope = 'chat', images = [] } = {}) {
   const said = String(args.prompt || '').trim();
   if (!said) return { ok: false, error: 'Нужен промпт.' };
   const mediaGuard = guardMediaGeneration({ torState, messages: [{ role: 'user', content: said }], tor });
@@ -3395,17 +3401,77 @@ async function harnessComfyDraw(args = {}, { scope = 'chat' } = {}) {
   if (!comfy.installed) return { ok: false, error: 'ComfyUI на этом ПК не найден (нужен Comfy Desktop).' };
   const p = comfyProfileLib.read(vaultRootDir(), scope);
   const useProfile = args.use_profile !== false;
-  const pick = (key) => comfyProfileLib.clamp(key, args[key] ?? p[key]) ?? p[key];
+  // which model draws: asked > the profile's default > art (comfy.js DRAWERS)
+  const drawerKey = comfyDrawers.DRAWERS[args.drawer] ? args.drawer : (comfyDrawers.DRAWERS[p.drawer] ? p.drawer : 'art');
+  const drawer = comfyDrawers.DRAWERS[drawerKey];
+  // his attached pictures by role (Danyal 2026-11-26): face, look (build, clothes), pose — numbers in attach order
+  // "1,3,5" → pictures 1, 3 and 5 of this message ("attached" = the first); several angles of a face or a look
+  const attached = (ref, { one = false } = {}) => {
+    const nums = String(ref ?? '').toLowerCase() === 'attached' ? [1]
+      : [...new Set(String(ref ?? '').split(/[^0-9]+/).filter(Boolean).map(Number))].filter((n) => n >= 1 && n <= 10);
+    const out = [];
+    for (const n of (one ? nums.slice(0, 1) : nums)) {
+      const b64 = String(images[n - 1] || '').replace(/^data:[^,]*,/, '');
+      if (!b64) return { error: `Картинки №${n} в этом сообщении нет: приложи её и попроси снова.` };
+      const buf = Buffer.from(b64, 'base64');
+      const dims = nativeImage.createFromBuffer(buf).getSize();
+      if (!dims.width || !dims.height) return { error: `Не смогла прочитать картинку №${n} (нужен PNG, JPEG или WebP).` };
+      out.push({ buf, dims });
+    }
+    return { list: out };
+  };
+  const poseRef = attached(args.pose_ref, { one: true });
+  const lookRef = attached(args.look_ref);
+  const faceRef = String(args.face || '').toLowerCase() === 'me' ? { list: [] } : attached(args.face);
+  const refError = [poseRef, lookRef, faceRef].find((r) => r.error);
+  if (refError) return { ok: false, error: refError.error };
+  const poseBuffer = poseRef.list[0]?.buf || null;
+  const lookBuffers = lookRef.list.map((r) => r.buf);
+  const faceBuffers = faceRef.list.map((r) => r.buf);
+  // the pose picture's proportions set the frame, so the pose isn't stretched
+  const poseFrame = poseRef.list[0] ? comfyDrawers.frameFor(poseRef.list[0].dims.width, poseRef.list[0].dims.height) : null;
+  // size: explicit > the reference > framing > the profile; steps / CFG: explicit > the profile for art, the drawer's own for photo
+  const frame = comfyDrawers.FRAMES[poseFrame || args.framing];
+  const size = (key, i) => comfyProfileLib.clamp(key, args[key] ?? (frame ? frame[i] : p[key])) ?? p[key];
+  const tune = (key) => comfyProfileLib.clamp(key, args[key] ?? (drawerKey === 'art' ? p[key] : drawer[key])) ?? drawer[key];
+  // his own face: one of his photos from the private vault (faces\me), only when he asks to draw himself
+  let faceFile = null;
+  if (String(args.face || '').toLowerCase() === 'me') {
+    const faceDir = path.join(config.load().privateVaultDir || 'D:\\Capri\\private-vault', 'faces', 'me');
+    const photos = (() => {
+      try {
+        return fs.readdirSync(faceDir).filter((f) => /\.(jpe?g|png|webp)$/i.test(f))
+          .map((f) => path.join(faceDir, f)).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+      } catch { return []; }
+    })();
+    if (!photos.length) {
+      return { ok: false, error: `Нет твоих фото для лица. Положи 1–5 чётких фото лица (анфас, хороший свет) в папку ${faceDir} и попроси снова.` };
+    }
+    faceFile = photos[0];
+  }
   const res = await comfy.drawCustom({
     prompt: said,
     positiveExtra: useProfile ? p.positive : [],
     negative: [args.negative, useProfile ? p.negative.join(', ') : ''].filter(Boolean).join(', '),
-    width: pick('width'),
-    height: pick('height'),
-    steps: pick('steps'),
-    cfg: pick('cfg'),
+    width: size('width', 0),
+    height: size('height', 1),
+    steps: tune('steps'),
+    cfg: tune('cfg'),
     seed: args.seed,
+    checkpoint: drawer.checkpoint,
+    sampler: drawer.sampler,
+    scheduler: drawer.scheduler,
+    negativeBase: drawer.negative,
+    faceFile,
+    faceBuffers,
+    lookBuffers,
+    poseBuffer,
+    poseMode: args.pose_type === 'sketch' ? 'sketch' : 'pose',
   });
+  // a picture with a real face (his or from a photo he sent) never goes to the shared gallery
+  if (faceBuffers.length && scope === 'chat') scope = 'private';
+  // a picture with his face never goes to the shared gallery
+  if (faceFile && scope === 'chat') scope = 'private';
   const chat = scope === 'chat';
   const dir = chat ? galleryDir() : path.join(workers.workDir(config.load()), scope === 'nsfw' ? 'media-18' : 'media-private');
   const name = chat ? photo.galleryName() : `${new Date().toISOString().replace(/[:.]/g, '-')}-${res.seed}.png`;
@@ -3416,7 +3482,10 @@ async function harnessComfyDraw(args = {}, { scope = 'chat' } = {}) {
     fs.writeFileSync(path.join(dir, photo.metaName(name)), JSON.stringify({ said, prompt: res.prompt, seed: res.seed, at: Date.now() }, null, 2));
     chatsWin?.webContents.send('gallery:changed');
   }
-  return { ok: true, path: file, image: chat ? name : null, prompt: res.prompt, negative: res.negative, seed: res.seed, width: res.width, height: res.height, steps: res.steps, cfg: res.cfg };
+  return {
+    ok: true, path: file, image: chat ? name : null, prompt: res.prompt, negative: res.negative, seed: res.seed,
+    width: res.width, height: res.height, steps: res.steps, cfg: res.cfg, drawerLabel: drawer.label, face: faceFile ? 1 : faceBuffers.length, look: lookBuffers.length, pose: poseBuffer ? (args.pose_type === "sketch" ? "скетч" : "поза") : null,
+  };
 }
 
 /** A picture for what you said: into her gallery; her line with [[photo:<file>]], which her chats draw. */

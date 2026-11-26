@@ -21,6 +21,8 @@ const { registerArtifact, getArtifact, mimeFor, extractLinks } = require('./arti
 const { createDocument } = require('./document-create');
 
 const MAX_BODY = 64 * 1024;
+const MAX_CHAT_IMAGES = 10; // pictures in one phone message (references for ComfyUI, Danyal 2026-11-26)
+const MAX_CHAT_IMAGE_BYTES = 1.5 * 1024 * 1024;
 const MAX_RESEARCH_REPORT_BYTES = 256 * 1024;
 const AUDIO_TTL_MS = 10 * 60 * 1000;
 const AUDIO_MAX = 20;
@@ -1686,12 +1688,13 @@ class PhoneBridge {
         return this.send(res, 200, { state: entry.state });
       }
       if (req.method === 'POST' && url.pathname === '/chat') {
-        const body = await this.readJson(req, MAX_BODY + Math.ceil(MAX_UPLOAD_BYTES / 3) * 4);
+        // up to 10 pictures (phone sends them shrunk to ~1600 px, a few hundred KB each) or one document
+        const body = await this.readJson(req, MAX_BODY + Math.ceil((MAX_CHAT_IMAGES * MAX_CHAT_IMAGE_BYTES + MAX_UPLOAD_BYTES) / 3) * 4);
         if (body.text != null && typeof body.text !== 'string') return this.send(res, 400, { error: 'Некорректный текст сообщения.' });
         const rawText = (body.text ?? '').replace(/\u0000/g, '').trim();
         if (rawText.length > 24000) return this.send(res, 400, { error: 'Сообщение длиннее 24 000 символов.' });
         const images = Array.isArray(body.files)
-          ? body.files.filter((f) => f && String(f.mime || '').startsWith('image/') && f.data).map((f) => String(f.data)).slice(0, 4)
+          ? body.files.filter((f) => f && String(f.mime || '').startsWith('image/') && f.data).map((f) => String(f.data)).slice(0, MAX_CHAT_IMAGES)
           : [];
         const docAttachments = Array.isArray(body.files)
           ? body.files.filter((f) => f && !String(f.mime || '').startsWith('image/') && f.name && typeof f.data === 'string').slice(0, 4)
@@ -2192,6 +2195,9 @@ class PhoneBridge {
                 : (this.d.externalBlocked?.(text) ? null : 'main'),
             // the general search log (Obsidian) only from ordinary chat
             journal: !(ephemeral || privateMode || flags.localMode === 'nsfw' || flags.localMode === 'tor'),
+            // pictures attached to this message (base64): a pose / composition reference for ComfyUI
+            attachedImages: Array.isArray(flags.images) ? flags.images : [],
+            userText: text,
             initialConnectors: connCtx.usedConnectorIds,
             ...(typeof flags.askUser === 'function' && { askUser: flags.askUser }),
           },

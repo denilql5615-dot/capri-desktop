@@ -87,23 +87,140 @@ function workflow({ prompt, her = true, seed = Math.floor(Math.random() * 2 ** 4
  * negative, size / steps / CFG / seed as asked (a seed given again = the same picture, changed only as asked).
  */
 const PROFILE_NEGATIVE = 'blurry, text, watermark, signature, worst quality, low quality, bad anatomy, bad hands, extra fingers';
-function profileWorkflow({ prompt, positiveExtra = [], negative = '', width = 832, height = 1216, steps = 30, cfg = 6.5, seed } = {}) {
+const PHOTO_NEGATIVE = 'cartoon, anime, illustration, painting, drawing, 3d render, cgi, plastic skin, deformed, disfigured, bad anatomy, bad hands, extra fingers, extra limbs, blurry, watermark, text, signature, low quality';
+
+// The drawers (Danyal 2026-11-26): NoobAI for art and anime, Juggernaut XI for photos (scenes, full body,
+// motion), RealVisXL V5 for close portraits. The model picks one by what is asked; settings per drawer.
+const DRAWERS = {
+  art: { checkpoint: CHECKPOINT, sampler: 'euler_ancestral', scheduler: 'normal', cfg: 6.5, steps: 30, negative: PROFILE_NEGATIVE, label: 'NoobAI XL (арт, аниме)' },
+  photo: { checkpoint: 'Juggernaut-XI-byRunDiffusion.safetensors', sampler: 'dpmpp_2m', scheduler: 'karras', cfg: 4.5, steps: 32, negative: PHOTO_NEGATIVE, label: 'Juggernaut XI (фото)' },
+  portrait: { checkpoint: 'RealVisXL_V5.0_fp16.safetensors', sampler: 'dpmpp_2m_sde', scheduler: 'karras', cfg: 4, steps: 30, negative: PHOTO_NEGATIVE, label: 'RealVisXL V5 (портрет)' },
+};
+// Framing → SDXL-friendly size (about one megapixel).
+const FRAMES = { portrait: [832, 1216], full_body: [768, 1344], scene: [1216, 832], wide: [1344, 768], square: [1024, 1024] };
+
+// A face from his own photos (IP-Adapter FaceID Plus v2 for SDXL with its LoRA, InsightFace on the CPU).
+const FACEID = { ipadapter: 'ip-adapter-faceid-plusv2_sdxl.bin', lora: 'ip-adapter-faceid-plusv2_sdxl_lora.safetensors', clipVision: 'clip_vision_h.safetensors' };
+
+// A pose from his reference (Danyal 2026-11-26): one xinsir ControlNet Union ProMax for all three drawers.
+// A photo or a drawn figure → DWPose skeleton (openpose); a rough sketch or stick figure → scribble lines.
+const CONTROLNET_UNION = 'xinsir-union-promax-sdxl.safetensors';
+const LOOK_IPADAPTER = 'ip-adapter-plus_sdxl_vit-h.safetensors';
+const POSE_MODES = {
+  pose: { type: 'openpose', strength: 0.85, end: 0.8 },
+  sketch: { type: 'hed/pidi/scribble/ted', strength: 0.6, end: 0.7 },
+};
+
+/** LoadImage for each name and ImageBatch them together (ImageBatch scales each next one to the first): the batch's ref. */
+function batchImages(graph, base, names, pad = 0) {
+  const src = (i) => (pad > 0 ? String(base + 500 + i) : String(base + i));
+  names.forEach((name, i) => {
+    graph[base + i] = { class_type: 'LoadImage', inputs: { image: name } };
+    // a tight close-up: a gray margin around it so InsightFace finds the face (retry after "No face detected")
+    if (pad > 0) graph[base + 500 + i] = { class_type: 'ImagePadForOutpaint', inputs: { image: [String(base + i), 0], left: pad, top: pad, right: pad, bottom: pad, feathering: 0 } };
+  });
+  let ref = [src(0), 0];
+  for (let i = 1; i < names.length; i += 1) {
+    const id = base + 10 + i;
+    graph[id] = { class_type: 'ImageBatch', inputs: { image1: ref, image2: [src(i), 0] } };
+    ref = [String(id), 0];
+  }
+  return ref;
+}
+
+function profileWorkflow({
+  prompt, positiveExtra = [], negative = '', width = 832, height = 1216, steps = 30, cfg = 6.5, seed,
+  checkpoint = CHECKPOINT, sampler = 'euler_ancestral', scheduler = 'normal', negativeBase = PROFILE_NEGATIVE, faceImage = null, faceWeight = 0.85,
+  poseImage = null, poseMode = 'pose', lookImage = null, faceImages = null, lookImages = null, facePad = 0,
+} = {}) {
+  // several angles of the face or the look (Danyal 2026-11-26): batched, the adapter averages them
+  const faces = (faceImages && faceImages.length ? faceImages : (faceImage ? [faceImage] : [])).slice(0, 10);
+  const looks = (lookImages && lookImages.length ? lookImages : (lookImage ? [lookImage] : [])).slice(0, 10);
   const s = Number.isFinite(Number(seed)) && Number(seed) >= 0 ? Math.floor(Number(seed)) : Math.floor(Math.random() * 2 ** 48);
   const positive = [String(prompt || '').trim(), ...positiveExtra].filter(Boolean).join(', ');
-  const neg = [String(negative || '').trim(), PROFILE_NEGATIVE].filter(Boolean).join(', ');
+  const neg = [String(negative || '').trim(), negativeBase].filter(Boolean).join(', ');
+  let model = ['1', 0];
   const graph = {
-    1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: CHECKPOINT } },
+    1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: checkpoint } },
     2: { class_type: 'CLIPTextEncode', inputs: { text: positive, clip: ['1', 1] } },
     3: { class_type: 'CLIPTextEncode', inputs: { text: neg, clip: ['1', 1] } },
     4: { class_type: 'EmptyLatentImage', inputs: { width, height, batch_size: 1 } },
-    5: {
-      class_type: 'KSampler',
-      inputs: { seed: s, steps, cfg, sampler_name: 'euler_ancestral', scheduler: 'normal', denoise: 1, model: ['1', 0], positive: ['2', 0], negative: ['3', 0], latent_image: ['4', 0] },
-    },
     6: { class_type: 'VAEDecode', inputs: { samples: ['5', 0], vae: ['1', 2] } },
     7: { class_type: 'SaveImage', inputs: { filename_prefix: 'capri_profile', images: ['6', 0] } },
   };
+  if (faces.length) {
+    graph[40] = { class_type: 'LoraLoaderModelOnly', inputs: { model, lora_name: FACEID.lora, strength_model: 0.6 } };
+    graph[41] = { class_type: 'IPAdapterModelLoader', inputs: { ipadapter_file: FACEID.ipadapter } };
+    graph[42] = { class_type: 'CLIPVisionLoader', inputs: { clip_name: FACEID.clipVision } };
+    graph[43] = { class_type: 'IPAdapterInsightFaceLoader', inputs: { provider: 'CPU', model_name: 'buffalo_l' } };
+    const faceRef = batchImages(graph, 70, faces, facePad);
+    graph[45] = {
+      class_type: 'IPAdapterFaceID',
+      inputs: {
+        model: ['40', 0], ipadapter: ['41', 0], image: faceRef, weight: faceWeight, weight_faceidv2: 1.0, weight_type: 'linear',
+        combine_embeds: faces.length > 1 ? 'average' : 'concat', start_at: 0, end_at: 1, embeds_scaling: 'V only', clip_vision: ['42', 0], insightface: ['43', 0],
+      },
+    };
+    model = ['45', 0];
+  }
+  // the look of a character (build, clothes, colours) from another picture: IP-Adapter Plus on content, ending
+  // early and lighter when a pose is given, so the picture's own pose doesn't fight the pose reference
+  if (looks.length) {
+    graph[60] = { class_type: 'IPAdapterModelLoader', inputs: { ipadapter_file: LOOK_IPADAPTER } };
+    graph[61] = { class_type: 'CLIPVisionLoader', inputs: { clip_name: FACEID.clipVision } };
+    const lookRef = batchImages(graph, 90, looks);
+    graph[63] = {
+      class_type: 'IPAdapterAdvanced',
+      inputs: {
+        model, ipadapter: ['60', 0], image: lookRef, weight: poseImage ? 0.55 : 0.7, weight_type: 'linear',
+        combine_embeds: looks.length > 1 ? 'average' : 'concat', start_at: 0, end_at: poseImage ? 0.65 : 0.85, embeds_scaling: 'V only', clip_vision: ['61', 0],
+      },
+    };
+    model = ['63', 0];
+  }
+  let cond = { positive: ['2', 0], negative: ['3', 0] };
+  if (poseImage) {
+    const mode = POSE_MODES[poseMode] || POSE_MODES.pose;
+    const res = Math.max(width, height);
+    graph[50] = { class_type: 'LoadImage', inputs: { image: poseImage } };
+    graph[51] = mode.type === 'openpose'
+      ? {
+        class_type: 'DWPreprocessor',
+        inputs: {
+          image: ['50', 0], detect_hand: 'enable', detect_body: 'enable', detect_face: 'enable', resolution: res,
+          bbox_detector: 'yolox_l.onnx', pose_estimator: 'dw-ll_ucoco_384_bs5.torchscript.pt', scale_stick_for_xinsr_cn: 'enable',
+        },
+      }
+      : { class_type: 'ScribblePreprocessor', inputs: { image: ['50', 0], resolution: res } };
+    graph[52] = { class_type: 'ControlNetLoader', inputs: { control_net_name: CONTROLNET_UNION } };
+    graph[53] = { class_type: 'SetUnionControlNetType', inputs: { control_net: ['52', 0], type: mode.type } };
+    graph[54] = {
+      class_type: 'ControlNetApplyAdvanced',
+      inputs: {
+        positive: ['2', 0], negative: ['3', 0], control_net: ['53', 0], image: ['51', 0],
+        strength: mode.strength, start_percent: 0, end_percent: mode.end, vae: ['1', 2],
+      },
+    };
+    cond = { positive: ['54', 0], negative: ['54', 1] };
+  }
+  graph[5] = {
+    class_type: 'KSampler',
+    inputs: { seed: s, steps, cfg, sampler_name: sampler, scheduler, denoise: 1, model, ...cond, latent_image: ['4', 0] },
+  };
   return { graph, positive, negative: neg, seed: s, width, height, steps, cfg };
+}
+
+/** The frame (comfy FRAMES) closest to a reference picture's proportions, so the pose isn't stretched. */
+function frameFor(refWidth, refHeight) {
+  const r = Number(refWidth) / Number(refHeight);
+  if (!Number.isFinite(r) || r <= 0) return 'portrait';
+  let best = 'portrait';
+  let diff = Infinity;
+  for (const [name, [w, h]] of Object.entries(FRAMES)) {
+    const d = Math.abs(Math.log((w / h) / r));
+    if (d < diff) { diff = d; best = name; }
+  }
+  return best;
 }
 
 /**
@@ -409,8 +526,25 @@ class Comfy {
   /** One picture by profile and settings (profileWorkflow): { png, prompt, negative, seed, width, height, steps, cfg }. */
   drawCustom(request) {
     return this.enqueue(() => this.session(async () => {
-      const w = profileWorkflow(request);
-      const png = await this.submit(w.graph);
+      // his face photo goes into ComfyUI's input folder for LoadImage, only for this picture
+      const faceBufs = (request.faceBuffers && request.faceBuffers.length ? request.faceBuffers
+        : [request.faceBuffer || (request.faceFile ? fs.readFileSync(request.faceFile) : null)]).filter(Boolean);
+      const faceImages = [];
+      for (const b of faceBufs) faceImages.push(await this.upload(b));
+      // his references from the chat (pose: photo or sketch; look: build and clothes) go the same way
+      const poseImage = request.poseBuffer ? await this.upload(request.poseBuffer) : null;
+      const lookImages = [];
+      for (const b of (request.lookBuffers || (request.lookBuffer ? [request.lookBuffer] : []))) lookImages.push(await this.upload(b));
+      let w = profileWorkflow({ ...request, faceImages, poseImage, lookImages });
+      let png;
+      try {
+        png = await this.submit(w.graph);
+      } catch (err) {
+        if (!faceImages.length || !/no face detected/i.test(String(err?.message))) throw err;
+        // the face fills the whole photo (a close-up): once more with a margin around it, same seed
+        w = profileWorkflow({ ...request, faceImages, poseImage, lookImages, seed: w.seed, facePad: 384 });
+        png = await this.submit(w.graph);
+      }
       return { png, prompt: w.positive, negative: w.negative, seed: w.seed, width: w.width, height: w.height, steps: w.steps, cfg: w.cfg };
     }));
   }
@@ -565,5 +699,5 @@ class Comfy {
 }
 
 module.exports = {
-  Comfy, locate, desktopPort, workflow, profileWorkflow, styledWorkflow, checkWorkflow, fillWorkflow, loadWorkflow, videoGraph, missingVideoModels, has14BVideoModels, VIDEO_MODELS, VIDEO_MODELS_14B, PLACEHOLDER, PORT, HER,
+  Comfy, locate, desktopPort, workflow, profileWorkflow, frameFor, DRAWERS, FRAMES, FACEID, CONTROLNET_UNION, POSE_MODES, styledWorkflow, checkWorkflow, fillWorkflow, loadWorkflow, videoGraph, missingVideoModels, has14BVideoModels, VIDEO_MODELS, VIDEO_MODELS_14B, PLACEHOLDER, PORT, HER,
 };
