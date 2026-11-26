@@ -2713,7 +2713,9 @@ async function applyPhone() {
       persona: phonePersona,
       modeRules: (mode) => modeRulesText(mode),
       comfyDraw: (args, opts) => harnessComfyDraw(args, opts),
+      comfyInpaint: (args, opts) => harnessComfyInpaint(args, opts),
       comfyProfile: comfyProfileDeps,
+      loraTrainer: loraTrainerDeps,
       skillsEngine: ensureSkillsEngine(),
       pluginsEngine: ensurePluginsEngine(),
       connectorsEngine: ensureConnectorsEngine(),
@@ -3393,9 +3395,66 @@ const comfyProfileDeps = {
   read: (scope) => comfyProfileLib.read(vaultRootDir(), scope),
   update: (scope, patch) => comfyProfileLib.update(vaultRootDir(), scope, patch),
 };
+// LoRA training (lora-trainer.js, Danyal 2026-11-26): datasets from his pictures, OneTrainer on this GPU
+const { LoraTrainer } = require('./lora-trainer');
+const loraTrainer = new LoraTrainer();
+const loraTrainerDeps = {
+  list: () => loraTrainer.list(),
+  status: () => loraTrainer.status(),
+  stop: () => loraTrainer.stop(),
+  train: async ({ name, drawer, subject, images = [], paths = '' }) => {
+    const bufs = images.map((b64) => Buffer.from(String(b64 || '').replace(/^data:[^,]*,/, ''), 'base64')).filter((b) => b.length);
+    const meta = loraTrainer.prepare({ name, drawer, subject, images: bufs, paths, drawers: comfyDrawers.DRAWERS });
+    return loraTrainer.start(meta.name, {
+      // the whole GPU: chat models and ComfyUI out of it first
+      beforeTrain: async () => { brains.forget(); await ollama.unloadAll().catch(() => []); try { comfy.stop(); } catch {} },
+      onDone: ({ ok, slug, error }) => {
+        console.log(`[capri] LoRA ${slug}: ${ok ? 'ready' : `failed: ${error}`}`);
+        try { new (require('electron').Notification)({ title: ok ? `LoRA ${slug} готова` : `LoRA ${slug}: обучение упало`, body: ok ? 'Можно рисовать с ней.' : String(error || '').slice(-200) }).show(); } catch {}
+      },
+    });
+  },
+};
+// "gemini_brigade" or "gemini_brigade:0.8" → the LoRA to load. A name that is another LoRA's trigger goes to
+// that main LoRA (Danyal 2026-11-26: gemini_brigade → gemini_brigade_v2); an exact file name stays as asked.
+function resolveLora(raw) {
+  const [rawName, rawW] = String(raw).split(':');
+  const { slugOf } = require('./lora-trainer');
+  const slug = slugOf(rawName);
+  const all = loraTrainer.list();
+  const found = all.find((l) => l.main && l.ready && l.trigger === slug && l.name !== slug) || all.find((l) => l.name === slug && l.ready);
+  if (!found) return { error: `LoRA ${rawName} нет (или ещё не обучена). Есть: ${all.filter((l) => l.ready && !l.alt).map((l) => l.name).join(', ') || 'ни одной'}.` };
+  return { found, loras: [{ name: `${found.name}.safetensors`, strength: rawW ? Number(rawW) : 0.9 }] };
+}
+// the last picture she drew or redrew: "перерисуй куртку" works on it without attaching it again
+let lastPicture = null;
+
 async function harnessComfyDraw(args = {}, { scope = 'chat', images = [] } = {}) {
-  const said = String(args.prompt || '').trim();
+  let said = String(args.prompt || '').trim();
   if (!said) return { ok: false, error: 'Нужен промпт.' };
+  if (loraTrainer.busy()) {
+    const st = loraTrainer.status();
+    return { ok: false, error: `Видеокарта занята обучением LoRA ${st.slug} (эпоха ${st.epoch}/${st.epochs}${st.etaMin != null ? `, ещё ~${st.etaMin} мин` : ''}): нарисую после.` };
+  }
+  // his trained LoRA: "name" or "name:0.8" → its file, its trigger word first in the prompt, its drawer by default
+  let loras = [];
+  let loraLabel = null;
+  if (args.lora && String(args.lora).toLowerCase() !== 'none') {
+    const r = resolveLora(args.lora);
+    if (r.error) return { ok: false, error: r.error };
+    const found = r.found;
+    loras = r.loras;
+    loraLabel = found.name;
+    // what this LoRA always needs said (Gemini: her blue hair, which warm scenes turn red)
+    for (const t of String(found.tags || '').split(',').map((x) => x.trim()).filter(Boolean)) {
+      if (!said.toLowerCase().includes(t.toLowerCase())) said = `${said}, ${t}`;
+    }
+    // its costume tag by default; another outfit he asked for replaces it
+    const otherClothes = /\b(uniform|serafuku|dress|skirt|shirt|t-shirt|blouse|coat|hoodie|sweater|suit|armor|kimono|yukata|swimsuit|bikini|lingerie|pajamas|shorts|jeans|pants|naked|nude|costume|cosplay|outfit|clothes)\b/i;
+    if (found.outfit && args.outfit_tag !== false && !said.toLowerCase().includes(found.outfit) && !otherClothes.test(said)) said = `${found.outfit}, ${said}`;
+    if (found.trigger && !said.toLowerCase().includes(found.trigger)) said = `${found.trigger}, ${said}`;
+    if (!args.drawer && found.drawer) args = { ...args, drawer: found.drawer };
+  }
   const mediaGuard = guardMediaGeneration({ torState, messages: [{ role: 'user', content: said }], tor });
   if (!mediaGuard.ok) return { ok: false, error: mediaGuard.error };
   if (!comfy.installed) return { ok: false, error: 'ComfyUI на этом ПК не найден (нужен Comfy Desktop).' };
@@ -3420,14 +3479,24 @@ async function harnessComfyDraw(args = {}, { scope = 'chat', images = [] } = {})
     }
     return { list: out };
   };
-  const poseRef = attached(args.pose_ref, { one: true });
+  // "last": the pose of her last picture — the same picture redrawn with other clothes (Danyal 2026-11-26:
+  // big changes like white tights over the bodysuit come out clean this way, unlike a masked redraw)
+  const poseFromLast = String(args.pose_ref || '').toLowerCase() === 'last';
+  if (poseFromLast && (!lastPicture || !fs.existsSync(lastPicture.file))) return { ok: false, error: 'Нет последней картинки, чью позу взять.' };
+  const poseRef = poseFromLast
+    ? (() => { const buf = fs.readFileSync(lastPicture.file); return { list: [{ buf, dims: nativeImage.createFromBuffer(buf).getSize() }] }; })()
+    : attached(args.pose_ref, { one: true });
   const lookRef = attached(args.look_ref);
   const faceRef = String(args.face || '').toLowerCase() === 'me' ? { list: [] } : attached(args.face);
   const refError = [poseRef, lookRef, faceRef].find((r) => r.error);
   if (refError) return { ok: false, error: refError.error };
   const poseBuffer = poseRef.list[0]?.buf || null;
-  const lookBuffers = lookRef.list.map((r) => r.buf);
-  const faceBuffers = faceRef.list.map((r) => r.buf);
+  // NoobAI (Illustrious) burns the colours with the SDXL IP-Adapters (checked 2026-11-26, even at 0.45):
+  // on the art drawer the face and look are carried by her description of the pictures, the pose still goes
+  const refsOff = drawerKey === 'art';
+  const refsSkipped = refsOff && Boolean(lookRef.list.length || faceRef.list.length || String(args.face || '').toLowerCase() === 'me');
+  const lookBuffers = refsOff ? [] : lookRef.list.map((r) => r.buf);
+  const faceBuffers = refsOff ? [] : faceRef.list.map((r) => r.buf);
   // the pose picture's proportions set the frame, so the pose isn't stretched
   const poseFrame = poseRef.list[0] ? comfyDrawers.frameFor(poseRef.list[0].dims.width, poseRef.list[0].dims.height) : null;
   // size: explicit > the reference > framing > the profile; steps / CFG: explicit > the profile for art, the drawer's own for photo
@@ -3436,7 +3505,7 @@ async function harnessComfyDraw(args = {}, { scope = 'chat', images = [] } = {})
   const tune = (key) => comfyProfileLib.clamp(key, args[key] ?? (drawerKey === 'art' ? p[key] : drawer[key])) ?? drawer[key];
   // his own face: one of his photos from the private vault (faces\me), only when he asks to draw himself
   let faceFile = null;
-  if (String(args.face || '').toLowerCase() === 'me') {
+  if (!refsOff && String(args.face || '').toLowerCase() === 'me') {
     const faceDir = path.join(config.load().privateVaultDir || 'D:\\Capri\\private-vault', 'faces', 'me');
     const photos = (() => {
       try {
@@ -3467,6 +3536,7 @@ async function harnessComfyDraw(args = {}, { scope = 'chat', images = [] } = {})
     lookBuffers,
     poseBuffer,
     poseMode: args.pose_type === 'sketch' ? 'sketch' : 'pose',
+    loras,
   });
   // a picture with a real face (his or from a photo he sent) never goes to the shared gallery
   if (faceBuffers.length && scope === 'chat') scope = 'private';
@@ -3482,10 +3552,136 @@ async function harnessComfyDraw(args = {}, { scope = 'chat', images = [] } = {})
     fs.writeFileSync(path.join(dir, photo.metaName(name)), JSON.stringify({ said, prompt: res.prompt, seed: res.seed, at: Date.now() }, null, 2));
     chatsWin?.webContents.send('gallery:changed');
   }
+  lastPicture = { file, scope, drawer: drawerKey, lora: loraLabel, seed: res.seed, sceneSeed: poseFromLast && lastPicture?.sceneSeed ? lastPicture.sceneSeed : res.seed, prompt: res.prompt, negative: args.negative || '' };
   return {
     ok: true, path: file, image: chat ? name : null, prompt: res.prompt, negative: res.negative, seed: res.seed,
-    width: res.width, height: res.height, steps: res.steps, cfg: res.cfg, drawerLabel: drawer.label, face: faceFile ? 1 : faceBuffers.length, look: lookBuffers.length, pose: poseBuffer ? (args.pose_type === "sketch" ? "скетч" : "поза") : null,
+    width: res.width, height: res.height, steps: res.steps, cfg: res.cfg, drawerLabel: drawer.label, refsSkipped, lora: loraLabel, face: faceFile ? 1 : faceBuffers.length, look: lookBuffers.length, pose: poseBuffer ? (args.pose_type === "sketch" ? "скетч" : "поза") : null,
   };
+}
+
+/**
+ * Inpaint: only a part of a picture redrawn (comfy.js inpaintWorkflow). image = an attached picture number or
+ * "last" (her last picture); target = what to find (English words for SAM 3, like "jacket" or "legs");
+ * prompt = what to draw there. The LoRA and drawer of that last picture carry over unless he names others.
+ */
+async function harnessComfyInpaint(args = {}, { scope = 'chat', images = [] } = {}) {
+  let target = String(args.target || '').trim();
+  let said = String(args.prompt || '').trim();
+  if (!target || !said) return { ok: false, error: 'Нужны target (что найти) и prompt (что нарисовать).' };
+  // Recipes for the usual edits: what goes into the prompt and what is forbidden is said by code.
+  const OUTER = /\b(jacket|coat|hoodie|cardigan|blazer|outerwear)\b/i;
+  const LEGWEAR = /\b(legs?|pants|trousers|leggings|tights|pantyhose|stockings)\b/i;
+  const colorWord = (String(args.new_color || '').match(/^(white|black|red|blue|pink|gray|grey|beige|purple|green|yellow|brown)\b/i) || [])[1]
+    || (said.match(/\b(white|black|red|pink|gray|grey|beige|purple|green|yellow|brown)\b(?=[^,]*\b(tights|pantyhose|stockings|legwear|leggings)\b)/i) || [])[1] || '';
+  if (OUTER.test(target)) {
+    // taking it off: SAM sees a puffer's torso apart from its sleeves (a vest stayed), so all of it is searched
+    target = [target, 'sleeves', 'collar', 'puffer jacket', 'vest'].join(', ');
+    if (args.grow == null) args = { ...args, grow: 32 };
+    // unless he asks to put another one on ("wearing a sleeveless bodysuit" is still taking it off)
+    if (!/\b(put on|another|new|different)\b[^,]*\b(jacket|coat|hoodie|cardigan|blazer)\b/i.test(said)) {
+      said = `no jacket, sleeveless, bare arms, bare shoulders, ${said}`;
+      args = { ...args, negative: [args.negative, 'jacket, puffer jacket, white jacket, sleeves, coat, vest'].filter(Boolean).join(', ') };
+    }
+  } else if (LEGWEAR.test(target) && /\b(tights|pantyhose|stockings|legwear)\b/i.test(`${said} ${args.new_color || ''}`)) {
+    // new legwear over the bodysuit legs: the LoRA keeps the blue shiny legs unless they are forbidden outright
+    const c = colorWord.toLowerCase();
+    // a weight on the colour: scene light (a sunset) tinted white tights pink otherwise
+    said = [c && `(${c} pantyhose:1.3), (${c} legwear:1.2)`, 'matte pantyhose', said].filter(Boolean).join(', ');
+    args = { ...args, negative: [args.negative, 'blue legwear, shiny legwear, latex legs, bodysuit legs, skirt, shorts'].filter(Boolean).join(', ') };
+  }
+  if (loraTrainer.busy()) return { ok: false, error: 'Видеокарта занята обучением LoRA: перерисую после.' };
+  if (!comfy.installed) return { ok: false, error: 'ComfyUI на этом ПК не найден (нужен Comfy Desktop).' };
+  const guard = guardMediaGeneration({ torState, messages: [{ role: 'user', content: said }], tor });
+  if (!guard.ok) return { ok: false, error: guard.error };
+  // Big changes (legs, pants, tights, a whole outfit) on her last picture: the whole picture again with the same
+  // pose and seed, its prompt plus the new clothes. Live 2026-11-26: masked redraws of legs failed (SAM missed
+  // legs in a tight bodysuit, or the pelvis and straps broke); the pose redraw came out clean.
+  const BIG = /\b(legs?|pants|trousers|leggings|tights|pantyhose|stockings|bodysuit|outfit|clothes|dress|skirt|uniform)\b/i;
+  const fromLastPic = !/^\d+$/.test(String(args.image || 'last')) && lastPicture && fs.existsSync(lastPicture.file);
+  if (fromLastPic && (BIG.test(target) || args.mode === 'redraw')) {
+    const negatives = [args.negative, lastPicture.negative].filter(Boolean).join(', ');
+    const lora = args.lora || lastPicture.lora || null;
+    const found = lora ? resolveLora(lora).found : null;
+    // the approved costume's parts that this edit does not touch, said by code (the model forgets straps and belts)
+    const changed = `${target} ${negatives}`.toLowerCase(); // what is replaced or removed, not what the new prompt mentions
+    const SAME = { legs: /\b(legs?|pants|trousers|leggings|tights|pantyhose|stockings)\b/, jacket: /\b(jacket|coat|sleeves?|puffer|vest)\b/, shoes: /\b(shoes|sneakers|boots|heels|barefoot)\b/, belt: /\bbelt\b/, straps: /\b(thigh )?straps?\b/, top: /\b(top|leotard|shirt|chest)\b/ }; // "bodysuit legs" is the legs, not the top
+    const parts = found?.parts ? Object.entries(found.parts).filter(([k]) => !(SAME[k] && SAME[k].test(changed))).map(([, v]) => v) : [];
+    const scene = String(lastPicture.prompt || '').split(',').map((x) => x.trim()).filter(Boolean)
+      .filter((x) => !BIG.test(x) && !/gemini_outfit/i.test(x) && !(found?.parts && /jacket|bodysuit|strap|belt|pouch|sneakers|buckle/i.test(x)));
+    const res = await harnessComfyDraw({
+      prompt: [said, ...parts, ...scene].join(', '),
+      negative: negatives,
+      seed: lastPicture.sceneSeed || lastPicture.seed, pose_ref: 'last', lora: lora || undefined,
+      drawer: args.drawer || lastPicture.drawer, use_profile: false, outfit_tag: found?.parts ? false : undefined,
+    }, { scope, images });
+    return res.ok ? { ...res, target, redrawn: true } : res;
+  }
+  // the source: an attached picture or her last one
+  const ref = String(args.image || 'last').toLowerCase();
+  const attachedRef = /^\d+$/.test(ref);
+  let src;
+  if (attachedRef) {
+    const b64 = String(images[Number(ref) - 1] || '').replace(/^data:[^,]*,/, '');
+    if (!b64) return { ok: false, error: `Картинки №${ref} в этом сообщении нет.` };
+    src = Buffer.from(b64, 'base64');
+  } else {
+    if (!lastPicture || !fs.existsSync(lastPicture.file)) return { ok: false, error: 'Нет последней картинки: приложи ту, что перерисовать.' };
+    src = fs.readFileSync(lastPicture.file);
+  }
+  const fromLast = !attachedRef && lastPicture;
+  // the same LoRA and drawer as the picture being fixed, unless he named others
+  let loras = [];
+  let loraLabel = null;
+  const loraName = args.lora || (fromLast && lastPicture.lora) || null;
+  if (loraName && String(loraName).toLowerCase() !== 'none') {
+    const r = resolveLora(loraName);
+    if (r.error) return { ok: false, error: r.error };
+    loras = r.loras;
+    loraLabel = r.found.name;
+    if (r.found.trigger && !said.toLowerCase().includes(r.found.trigger)) said = `${r.found.trigger}, ${said}`;
+  }
+  const p = comfyProfileLib.read(vaultRootDir(), scope);
+  const drawerKey = comfyDrawers.DRAWERS[args.drawer] ? args.drawer
+    : (fromLast && comfyDrawers.DRAWERS[lastPicture.drawer] ? lastPicture.drawer : (comfyDrawers.DRAWERS[p.drawer] ? p.drawer : 'art'));
+  const drawer = comfyDrawers.DRAWERS[drawerKey];
+  // a new colour for the part ("white" tights over blue): a flat fill under the mask, so the drawer keeps it
+  const COLORS = { white: 0xF2F2F4, black: 0x16161A, red: 0xC0282D, blue: 0x2A55C8, green: 0x2E8B4A, pink: 0xF2A0C0, gray: 0x8A8A90, grey: 0x8A8A90, yellow: 0xF0D040, purple: 0x7A4AC0, beige: 0xE8D8B8, brown: 0x6B4A30 };
+  const c = String(args.new_color || '').trim().toLowerCase();
+  const fill = COLORS[c] ?? (/^#?[0-9a-f]{6}$/.test(c) ? parseInt(c.replace('#', ''), 16) : null);
+  const size = nativeImage.createFromBuffer(src).getSize();
+  const res = await comfy.inpaint({
+    imageBuffer: src, target, prompt: said, negative: args.negative || '',
+    // only parts that touch the target belong here: face, skin, hair, background are outside the mask anyway, and
+    // "skin" cut the arms out of a jacket's mask (live probe 2026-11-26)
+    keep: String(args.keep || '').split(/[,;]/).map((x) => x.trim()).filter((x) => x && !/^(face|eyes?|skin|hair|head|body|background|bg|person|character)$/i.test(x)).join(', '), fill, width: size.width || 832, height: size.height || 1216,
+    checkpoint: drawer.checkpoint, sampler: drawer.sampler, scheduler: drawer.scheduler, negativeBase: drawer.negative,
+    steps: drawer.steps, cfg: drawerKey === 'art' ? p.cfg : drawer.cfg, seed: args.seed, loras,
+    denoise: args.strength, grow: args.grow,
+  });
+  // nothing found → the picture comes back unchanged
+  try {
+    const a = nativeImage.createFromBuffer(src).toBitmap();
+    const b = nativeImage.createFromBuffer(res.png).toBitmap();
+    if (a.length === b.length) {
+      let diff = 0;
+      for (let i = 0; i < a.length; i += 16) diff += Math.abs(a[i] - b[i]);
+      if (diff / (a.length / 16) < 0.3) return { ok: false, error: `Не нашла на картинке «${target}»: попробуй другими словами (по-английски, например jacket, legs, shoes, hair).` };
+    }
+  } catch {}
+  const chat = scope === 'chat';
+  const dir = chat ? galleryDir() : path.join(workers.workDir(config.load()), scope === 'nsfw' ? 'media-18' : 'media-private');
+  const name = chat ? photo.galleryName() : `${new Date().toISOString().replace(/[:.]/g, '-')}-inpaint-${res.seed}.png`;
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, name);
+  fs.writeFileSync(file, res.png);
+  if (chat) {
+    fs.writeFileSync(path.join(dir, photo.metaName(name)), JSON.stringify({ said, target, prompt: res.prompt, seed: res.seed, at: Date.now() }, null, 2));
+    chatsWin?.webContents.send('gallery:changed');
+  }
+  // the scene's prompt stays with the edit added, and what was removed stays forbidden ("no jacket" carries over)
+  const prev = lastPicture || {};
+  lastPicture = { file, scope, drawer: drawerKey, lora: loraLabel, seed: res.seed, sceneSeed: fromLast ? (prev.sceneSeed || prev.seed) : res.seed, prompt: fromLast ? [res.prompt, prev.prompt].filter(Boolean).join(', ') : res.prompt, negative: [args.negative, fromLast && prev.negative].filter(Boolean).join(', ') };
+  return { ok: true, path: file, image: chat ? name : null, prompt: res.prompt, seed: res.seed, target, drawerLabel: drawer.label, lora: loraLabel };
 }
 
 /** A picture for what you said: into her gallery; her line with [[photo:<file>]], which her chats draw. */
@@ -4930,7 +5126,9 @@ function registerIpc() {
                 obsidianSearch: (q) => notes.searchVault(notesDir(), q, 4),
                 generateImage: (prompt) => photoTask(prompt, []),
                 comfyDraw: (args, opts) => harnessComfyDraw(args, opts),
+                comfyInpaint: (args, opts) => harnessComfyInpaint(args, opts),
                 comfyProfile: comfyProfileDeps,
+                loraTrainer: loraTrainerDeps,
                 saveGalleryBuffer: (buf, ext = 'png') => {
                   fs.mkdirSync(galleryDir(), { recursive: true });
                   const name = photo.galleryName(new Date(), Math.random(), ext);

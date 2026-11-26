@@ -128,10 +128,96 @@ function batchImages(graph, base, names, pad = 0) {
   return ref;
 }
 
+// Inpaint (Danyal 2026-11-26): redraw only a part of a finished picture. SAM 3.1 finds the part by words
+// ("jacket", "left leg, right leg"), parts to keep are cut out of the mask ("shoes, belt"), the mask is shrunk a
+// little and blurred (soft edges, no halo), the pose of the original holds arms, hips and legs where they were
+// (ControlNet union, openpose), and the original pixels are pasted back everywhere else.
+// Checked 2026-11-26: without the pose a hand on the hip vanished with the sleeve; with it the jacket comes off clean.
+const SAM3 = 'sam3.1_multiplex_fp16.safetensors';
+const words = (t) => [...new Set(String(t || '').split(/[,;]/).map((x) => x.trim().toLowerCase()).filter(Boolean))].slice(0, 6);
+function inpaintWorkflow({
+  image, target, prompt, negative = '', checkpoint = CHECKPOINT, sampler = 'euler_ancestral', scheduler = 'normal',
+  steps = 30, cfg = 6.5, seed, loras = [], denoise = 1.0, grow = 24, threshold = 0.3, negativeBase = PROFILE_NEGATIVE,
+  keep = '', fill = null, width = 832, height = 1216, pose = true,
+} = {}) {
+  const s = Number.isFinite(Number(seed)) && Number(seed) >= 0 ? Math.floor(Number(seed)) : Math.floor(Math.random() * 2 ** 48);
+  const positive = String(prompt || '').trim();
+  const neg = [String(negative || '').trim(), negativeBase].filter(Boolean).join(', ');
+  let model = ['1', 0];
+  let clipRef = ['1', 1];
+  const graph = {
+    1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: checkpoint } },
+    10: { class_type: 'LoadImage', inputs: { image } },
+    20: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: SAM3 } },
+  };
+  const detect = (id, text) => {
+    graph[id] = { class_type: 'CLIPTextEncode', inputs: { text, clip: ['20', 1] } };
+    graph[id + 1] = { class_type: 'SAM3_Detect', inputs: { model: ['20', 0], image: ['10', 0], conditioning: [String(id), 0], threshold, refine_iterations: 2, individual_masks: false } };
+    return [String(id + 1), 0];
+  };
+  // several parts at once ("left leg, right leg"): one detection each, the masks added together
+  let maskRef = null;
+  words(target).forEach((part, i) => {
+    const m = detect(100 + i * 3, part);
+    if (!maskRef) maskRef = m;
+    else {
+      graph[102 + i * 3] = { class_type: 'MaskComposite', inputs: { destination: maskRef, source: m, x: 0, y: 0, operation: 'add' } };
+      maskRef = [String(102 + i * 3), 0];
+    }
+  });
+  graph[23] = { class_type: 'GrowMask', inputs: { mask: maskRef, expand: Math.round(grow), tapered_corners: true } };
+  let m = ['23', 0];
+  // what must stay exactly as it is (shoes, a belt, a strap): cut out of the mask
+  words(keep).forEach((part, i) => {
+    const id = 70 + i * 4;
+    const k = detect(id, part);
+    graph[id + 2] = { class_type: 'GrowMask', inputs: { mask: k, expand: 6, tapered_corners: true } };
+    graph[id + 3] = { class_type: 'MaskComposite', inputs: { destination: m, source: [String(id + 2), 0], x: 0, y: 0, operation: 'subtract' } };
+    m = [String(id + 3), 0];
+  });
+  // shrink, then blur: soft edges that stay inside the part (no halo over the background or the kept parts)
+  graph[27] = { class_type: 'GrowMask', inputs: { mask: m, expand: -6, tapered_corners: true } };
+  graph[26] = { class_type: 'ImpactGaussianBlurMask', inputs: { mask: ['27', 0], kernel_size: 13, sigma: 4 } };
+  (Array.isArray(loras) ? loras : []).slice(0, 4).forEach((l, i) => {
+    const id = 30 + i;
+    const w = Number.isFinite(Number(l?.strength)) ? Math.min(1.5, Math.max(0, Number(l.strength))) : 0.9;
+    graph[id] = { class_type: 'LoraLoader', inputs: { lora_name: l.name, strength_model: w, strength_clip: w, model, clip: clipRef } };
+    model = [String(id), 0];
+    clipRef = [String(id), 1];
+  });
+  graph[2] = { class_type: 'CLIPTextEncode', inputs: { text: positive, clip: clipRef } };
+  graph[3] = { class_type: 'CLIPTextEncode', inputs: { text: neg, clip: clipRef } };
+  let cond = { positive: ['2', 0], negative: ['3', 0] };
+  if (pose) {
+    graph[50] = { class_type: 'DWPreprocessor', inputs: { image: ['10', 0], detect_hand: 'enable', detect_body: 'enable', detect_face: 'disable', resolution: 1024, bbox_detector: 'yolox_l.onnx', pose_estimator: 'dw-ll_ucoco_384_bs5.torchscript.pt', scale_stick_for_xinsr_cn: 'enable' } };
+    graph[51] = { class_type: 'ControlNetLoader', inputs: { control_net_name: CONTROLNET_UNION } };
+    graph[52] = { class_type: 'SetUnionControlNetType', inputs: { control_net: ['51', 0], type: 'openpose' } };
+    graph[53] = { class_type: 'ControlNetApplyAdvanced', inputs: { positive: cond.positive, negative: cond.negative, control_net: ['52', 0], image: ['50', 0], strength: 0.8, start_percent: 0, end_percent: 0.8, vae: ['1', 2] } };
+    cond = { positive: ['53', 0], negative: ['53', 1] };
+  }
+  // a new colour (white tights over blue): a flat fill under the mask shows the drawer which colour to keep
+  let pixels = ['10', 0];
+  if (Number.isInteger(fill)) {
+    graph[61] = { class_type: 'EmptyImage', inputs: { width, height, batch_size: 1, color: fill } };
+    graph[62] = { class_type: 'ImageCompositeMasked', inputs: { destination: ['10', 0], source: ['61', 0], x: 0, y: 0, resize_source: false, mask: ['27', 0] } };
+    pixels = ['62', 0];
+  }
+  graph[60] = { class_type: 'DifferentialDiffusion', inputs: { model } };
+  graph[24] = { class_type: 'InpaintModelConditioning', inputs: { positive: cond.positive, negative: cond.negative, vae: ['1', 2], pixels, mask: ['26', 0], noise_mask: true } };
+  graph[5] = { class_type: 'KSampler', inputs: { seed: s, steps, cfg, sampler_name: sampler, scheduler, denoise: Math.min(1, Math.max(0.3, Number(denoise) || 1.0)), model: ['60', 0], positive: ['24', 0], negative: ['24', 1], latent_image: ['24', 2] } };
+  graph[6] = { class_type: 'VAEDecode', inputs: { samples: ['5', 0], vae: ['1', 2] } };
+  // pasted back by a nearly sharp mask a little wider than the part: no glow over the background, no rim of the old thing
+  graph[28] = { class_type: 'GrowMask', inputs: { mask: m, expand: 3, tapered_corners: true } };
+  graph[29] = { class_type: 'ImpactGaussianBlurMask', inputs: { mask: ['28', 0], kernel_size: 5, sigma: 1.5 } };
+  graph[25] = { class_type: 'ImageCompositeMasked', inputs: { destination: ['10', 0], source: ['6', 0], x: 0, y: 0, resize_source: false, mask: ['29', 0] } };
+  graph[7] = { class_type: 'SaveImage', inputs: { filename_prefix: 'capri_inpaint', images: ['25', 0] } };
+  return { graph, positive, negative: neg, seed: s, steps, cfg };
+}
+
 function profileWorkflow({
   prompt, positiveExtra = [], negative = '', width = 832, height = 1216, steps = 30, cfg = 6.5, seed,
   checkpoint = CHECKPOINT, sampler = 'euler_ancestral', scheduler = 'normal', negativeBase = PROFILE_NEGATIVE, faceImage = null, faceWeight = 0.85,
-  poseImage = null, poseMode = 'pose', lookImage = null, faceImages = null, lookImages = null, facePad = 0,
+  poseImage = null, poseMode = 'pose', lookImage = null, faceImages = null, lookImages = null, facePad = 0, loras = [],
 } = {}) {
   // several angles of the face or the look (Danyal 2026-11-26): batched, the adapter averages them
   const faces = (faceImages && faceImages.length ? faceImages : (faceImage ? [faceImage] : [])).slice(0, 10);
@@ -148,6 +234,18 @@ function profileWorkflow({
     6: { class_type: 'VAEDecode', inputs: { samples: ['5', 0], vae: ['1', 2] } },
     7: { class_type: 'SaveImage', inputs: { filename_prefix: 'capri_profile', images: ['6', 0] } },
   };
+  // his own LoRAs (a character or a style trained in OneTrainer, lora-trainer.js): chained on the checkpoint,
+  // model and text encoder both, before the adapters
+  let clipRef = ['1', 1];
+  (Array.isArray(loras) ? loras : []).slice(0, 4).forEach((l, i) => {
+    const id = 30 + i;
+    const w = Number.isFinite(Number(l?.strength)) ? Math.min(1.5, Math.max(0, Number(l.strength))) : 0.9;
+    graph[id] = { class_type: 'LoraLoader', inputs: { lora_name: l.name, strength_model: w, strength_clip: w, model, clip: clipRef } };
+    model = [String(id), 0];
+    clipRef = [String(id), 1];
+  });
+  graph[2].inputs.clip = clipRef;
+  graph[3].inputs.clip = clipRef;
   if (faces.length) {
     graph[40] = { class_type: 'LoraLoaderModelOnly', inputs: { model, lora_name: FACEID.lora, strength_model: 0.6 } };
     graph[41] = { class_type: 'IPAdapterModelLoader', inputs: { ipadapter_file: FACEID.ipadapter } };
@@ -524,6 +622,16 @@ class Comfy {
   }
 
   /** One picture by profile and settings (profileWorkflow): { png, prompt, negative, seed, width, height, steps, cfg }. */
+  /** Redraw a part of a picture (inpaintWorkflow): { png, prompt, negative, seed, steps, cfg }. */
+  inpaint(request) {
+    return this.enqueue(() => this.session(async () => {
+      const image = await this.upload(request.imageBuffer);
+      const w = inpaintWorkflow({ ...request, image });
+      const png = await this.submit(w.graph);
+      return { png, prompt: w.positive, negative: w.negative, seed: w.seed, steps: w.steps, cfg: w.cfg };
+    }));
+  }
+
   drawCustom(request) {
     return this.enqueue(() => this.session(async () => {
       // his face photo goes into ComfyUI's input folder for LoadImage, only for this picture
@@ -699,5 +807,5 @@ class Comfy {
 }
 
 module.exports = {
-  Comfy, locate, desktopPort, workflow, profileWorkflow, frameFor, DRAWERS, FRAMES, FACEID, CONTROLNET_UNION, POSE_MODES, styledWorkflow, checkWorkflow, fillWorkflow, loadWorkflow, videoGraph, missingVideoModels, has14BVideoModels, VIDEO_MODELS, VIDEO_MODELS_14B, PLACEHOLDER, PORT, HER,
+  Comfy, locate, desktopPort, workflow, profileWorkflow, inpaintWorkflow, SAM3, frameFor, DRAWERS, FRAMES, FACEID, CONTROLNET_UNION, POSE_MODES, styledWorkflow, checkWorkflow, fillWorkflow, loadWorkflow, videoGraph, missingVideoModels, has14BVideoModels, VIDEO_MODELS, VIDEO_MODELS_14B, PLACEHOLDER, PORT, HER,
 };

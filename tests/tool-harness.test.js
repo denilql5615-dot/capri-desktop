@@ -578,3 +578,14 @@ test('withSingleReference: one attached picture + "в такой же позе" 
   assert.deepEqual(w({ prompt: 'x' }, 2, 'в такой же позе'), { prompt: 'x' }); // several pictures: the model decides
   assert.deepEqual(w({ prompt: 'x', face: '1' }, 1, 'в такой же позе'), { prompt: 'x', face: '1' }); // the model chose
 });
+
+test('withSingleReference: "фото 1-3 — лицо, 4 и 5 — одежда, 6 — поза" fills the roles the model left empty', () => {
+  const { withSingleReference: w } = require('../src/main/tool-harness');
+  assert.deepEqual(w({ prompt: 'x' }, 6, 'фото 1-3 — лицо, фото 4 и 5 - одежда и телосложение, фото 6 — поза. Сделай фото на пляже'),
+    { prompt: 'x', face: '1,2,3', look_ref: '4,5', pose_ref: '6', pose_type: 'pose' });
+  assert.deepEqual(w({ prompt: 'x' }, 2, 'Фото 1 и 2 — внешность персонажа: волосы, лицо, одежда. Нарисуй её'), { prompt: 'x', look_ref: '1,2' });
+  assert.deepEqual(w({ prompt: 'x' }, 3, '1,2 - лицо\n3 - поза\nсделай фото в парке'), { prompt: 'x', face: '1,2', pose_ref: '3', pose_type: 'pose' });
+  assert.deepEqual(w({ prompt: 'x', face: '1' }, 6, 'фото 1-3 — лицо'), { prompt: 'x', face: '1' }); // the model's own choice stays
+  assert.deepEqual(w({ prompt: 'x' }, 2, 'сделай фото, где 2 девушки - на пляже'), { prompt: 'x' });
+  assert.deepEqual(w({ prompt: 'x' }, 2, 'фото 7 — поза'), { prompt: 'x' }); // no such picture
+});

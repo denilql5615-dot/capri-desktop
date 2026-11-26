@@ -15,10 +15,48 @@ function isBarePromise(text) {
   return t.length > 0 && t.length < 600 && PROMISE_RE.test(t) && !/https?:\/\//i.test(t);
 }
 // Danyal asked to look on the web, but the model answered from memory without a single call: ask once.
-// One attached picture and "в такой же позе" / "с этим лицом", but the model named no reference:
-// take it from his words (the 26B often forgets pose_ref). Several pictures stay the model's call.
+// The 26B often names no reference even when he said which picture is which. His own words win where she
+// left a role empty: "фото 1 и 2 — внешность, фото 3 — поза, 4-6 — лицо". One picture and no numbers:
+// "в такой же позе" / "с этим лицом" / "в этой одежде".
 const unset = (v) => !v || String(v).trim().toLowerCase() === 'none';
+const ROLE_WORDS = [
+  ['pose_ref', /поз[аеуыо]|позой|скетч|набросок|стойк/i],
+  ['face', /лиц[оаеу]|лицом|морд/i],
+  ['look_ref', /внешн|одежд|образ|телослож|прикид|костюм|персонаж|типаж|фигур|волос/i],
+];
+const REF_RE = /(?:(?:фото|фотк|картинк|изображени|пикч|референс|рисун)\S*\s*(?:№\s*)?|(?<=(?:^|[,;.\n])\s*))(\d{1,2}(?:\s*(?:,|и|\+|-|–)\s*\d{1,2})*)\s*(?:[—–:=-]|это)\s*((?:(?!(?:фото|фотк|картинк|изображени|пикч|референс|рисун)\S*\s*№?\s*\d|[,;]\s*\d{1,2}\s*(?:[—–:=-]|это))[^.;\n])*)/gi;
+function numberedRoles(said, imageCount) {
+  const roles = {};
+  for (const m of String(said || '').matchAll(REF_RE)) {
+    const nums = [];
+    for (const part of m[1].split(/\s*(?:,|и|\+)\s*/)) {
+      const r = part.split(/\s*[-–]\s*/).map(Number);
+      for (let n = r[0]; n <= (r[1] || r[0]) && n - r[0] < 10; n += 1) if (n >= 1 && n <= imageCount) nums.push(n);
+    }
+    // the role word that comes first in his description of these pictures
+    let best = null;
+    for (const [key, re] of ROLE_WORDS) {
+      const i = m[2].search(re);
+      if (i >= 0 && (!best || i < best.i)) best = { key, i };
+    }
+    if (best && nums.length) roles[best.key] = [...new Set([...(roles[best.key] || []), ...nums])];
+  }
+  return roles;
+}
 function withSingleReference(args = {}, imageCount = 0, said = '') {
+  if (!imageCount) return args;
+  const roles = numberedRoles(said, imageCount);
+  if (Object.keys(roles).length) {
+    const out = { ...args };
+    let changed = false;
+    for (const [key, nums] of Object.entries(roles)) {
+      if (!unset(out[key])) continue;
+      out[key] = key === 'pose_ref' ? String(nums[0]) : nums.join(',');
+      if (key === 'pose_ref' && !out.pose_type) out.pose_type = /скетч|набросок|палочн/i.test(String(said)) ? 'sketch' : 'pose';
+      changed = true;
+    }
+    return changed ? out : args;
+  }
   if (imageCount !== 1 || !unset(args.face) || !unset(args.look_ref) || !unset(args.pose_ref)) return args;
   const t = String(said || '');
   if (/(?<![а-яё])(?:поз[аеуы]|позой|скетч\S*|набросок\S*|стойк[аеуи])(?![а-яё])/i.test(t)) {
@@ -27,6 +65,12 @@ function withSingleReference(args = {}, imageCount = 0, said = '') {
   if (/(?<![а-яё])(?:лиц[оаеу]|лицом)(?![а-яё])/i.test(t)) return { ...args, face: '1' };
   if (/(?<![а-яё])(?:одежд\S*|образ\S*|внешност\S*|телосложени\S*|прикид\S*)(?![а-яё])/i.test(t)) return { ...args, look_ref: '1' };
   return args;
+}
+// His main LoRAs by the names he uses for them (meta "aliases": gemini, гемини, джемини).
+function loraByAlias(loras, text) {
+  const t = String(text || '').toLowerCase();
+  return (loras || []).find((l) => [l.trigger, ...(l.aliases || [])].filter(Boolean)
+    .some((a) => new RegExp(`(^|[^a-zа-яё0-9_])${String(a).toLowerCase().replace(/[.*+?^${}()|[]\]/g, '\const WANTS_DRAW_RE = ')}([^a-zа-яё0-9_]|$)`, 'i').test(t))) || null;
 }
 const WANTS_DRAW_RE = /(?<![а-яё])(?:нарисуй|нарисовать|сгенерируй|сгенерь|сгенери|отрисуй|изобрази|перерисуй|дорисуй)|(?<![а-яё])(?:сделай|создай|покажи)(?![а-яё]).{0,30}(?<![а-яё])(?:картинк|изображени|арт|фото|портрет|рисун)/i;
 const WANTS_WEB_RE =/интернет|\bинет|в сети\b|онлайн|погугли|загугли|прочеши|ресерч|research|источник|ссылк|через тор|в торе|даркнет/i;
@@ -668,6 +712,10 @@ function buildToolRegistry(deps = {}, ctx = {}) {
   // Three profiles, never mixed: ordinary chat, 18+ and private.
   const comfyScope = ['nsfw', 'private'].includes(String(ctx.mode || '').toLowerCase()) ? String(ctx.mode).toLowerCase() : 'chat';
   let refFilled = false; // withSingleReference fills a forgotten reference once per turn
+  // his main LoRAs (a character or a style): named in the drawing tool, picked up by alias
+  const mainLoras = (() => {
+    try { return (typeof deps.loraTrainer?.list === 'function' ? deps.loraTrainer.list() : []).filter?.((l) => l.main && l.ready) || []; } catch { return []; }
+  })();
   if (!torQuarantined && deps.comfyProfile && typeof deps.comfyProfile.read === 'function') {
     items.push({
       name: 'comfy_profile',
@@ -703,6 +751,119 @@ function buildToolRegistry(deps = {}, ctx = {}) {
     });
   }
 
+  // LoRA training (Danyal 2026-11-26): she builds a character or style LoRA from his pictures and draws with it.
+  if (!torQuarantined && deps.loraTrainer && typeof deps.loraTrainer.train === 'function') {
+    items.push({
+      name: 'lora_train',
+      connectorId: 'comfyui',
+      icon: 'model_training',
+      label: 'Обучение LoRA',
+      description: 'Train a LoRA (a character or a style) on this PC with OneTrainer from pictures he gives, then draw with it via comfy_generate lora=<name>. '
+        + 'action "train": name = short latin id that is also the trigger word (like gemini_brigade); drawer = the model it is for (art for anime/illustration characters and styles, photo or portrait for real people); '
+        + 'subject = a few Danbooru-style tags true for every picture ("1girl, solo" or "1boy, solo"; for a style LoRA leave empty); '
+        + 'images = attached picture numbers ("all", "1-8", "1,3,5"); paths = folders, image files or archives (zip/7z/rar) on the PC, separated by ";". '
+        + 'At least 5 pictures, best 15–40 of ONE consistent look from different angles, framings and expressions. Training takes the whole GPU for about 30–90 minutes: no pictures and a slower chat meanwhile; say so. '
+        + 'action "status" = progress; "list" = his LoRAs; "stop" = stop the running training (only when he asks).',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['train', 'status', 'list', 'stop'] },
+          name: { type: 'string', description: 'LoRA id and trigger word, latin, like "gemini_brigade".' },
+          drawer: { type: 'string', enum: ['art', 'photo', 'portrait'], description: 'The checkpoint it is trained for.' },
+          subject: { type: 'string', description: 'Tags common to all pictures, like "1girl, solo".' },
+          outfit: { type: 'string', description: 'When all pictures show one costume: a latin tag for it (like "gemini_outfit"), so it can be called whole or swapped for other clothes.' },
+          images: { type: 'string', description: 'Attached picture numbers: "all", "1-8", "1,3,5".' },
+          paths: { type: 'string', description: 'Folders, images or archives on the PC, separated by ";".' },
+        },
+        required: ['action'],
+      },
+      async execute(args) {
+        const t = deps.loraTrainer;
+        if (args.action === 'list') {
+          const list = await t.list();
+          return { ok: true, output: list.length ? list.map((l) => `${l.name}${l.main ? ' [ОСНОВНАЯ]' : ''}${l.alt ? ' [старая версия, только если он назовёт её]' : ''}${l.trigger ? ` (слово ${l.trigger}${l.outfit ? `, костюм ${l.outfit}` : ''}${l.drawer ? `, ${l.drawer}` : ''})` : ''}: ${l.ready ? 'готова' : l.status}`).join('\n') : 'LoRA пока нет.' };
+        }
+        if (args.action === 'status') {
+          const s = await t.status();
+          return { ok: true, output: s.running ? `Обучается ${s.slug}: эпоха ${s.epoch}/${s.epochs}, идёт ${s.minutes} мин${s.etaMin != null ? `, осталось ~${s.etaMin} мин` : ''}.` : 'Сейчас ничего не обучается.' };
+        }
+        if (args.action === 'stop') return { ok: true, output: (await t.stop()) ? 'Обучение остановлено.' : 'Сейчас ничего не обучается.' };
+        const all = Array.isArray(ctx.attachedImages) ? ctx.attachedImages : [];
+        const pick = String(args.images || '').trim().toLowerCase();
+        const nums = !pick ? [] : pick === 'all' ? all.map((_, i) => i + 1)
+          : pick.split(/\s*,\s*/).flatMap((part) => {
+            const [a, b] = part.split(/\s*[-–]\s*/).map(Number);
+            return Number.isFinite(a) ? Array.from({ length: (b || a) - a + 1 }, (_, i) => a + i) : [];
+          }).filter((n) => n >= 1 && n <= all.length);
+        try {
+          const res = await t.train({ name: args.name, drawer: args.drawer || 'art', subject: args.subject || '', outfit: args.outfit || '', images: nums.map((n) => all[n - 1]), paths: args.paths || '' });
+          return { ok: true, output: `Обучение LoRA ${res.slug} запущено: ${res.images} картинок, ${res.epochs} эпох, примерно ${res.etaMin} мин. Слово-триггер: ${res.slug}. Пока идёт обучение, картинки не рисуются. Когда закончит — рисуй через comfy_generate lora="${res.slug}".` };
+        } catch (err) {
+          return { ok: false, output: `Не запустила обучение: ${err.message}`, error: err.message };
+        }
+      },
+    });
+  }
+
+  // Inpaint (Danyal 2026-11-26): one part of a finished picture redrawn, the rest kept pixel for pixel.
+  if (!torQuarantined && typeof deps.comfyInpaint === 'function') {
+    items.push({
+      name: 'comfy_inpaint',
+      connectorId: 'comfyui',
+      icon: 'brush',
+      label: 'ComfyUI Перерисовка части',
+      description: 'Redraw ONLY a part of a picture and keep everything else exactly (face, pose, light, background): '
+        + '"сними куртку", "сделай колготки вместо штанов", "перерисуй руку", "добавь дырки на штанах". '
+        + 'image = "last" (your last picture in this chat, the default) or an attached picture number; '
+        + 'target = what to find on it, short English words, several separated by commas (jacket; "left leg, right leg" for both legs; shoes; hair); '
+        + 'keep = ONLY parts that touch the target and must stay (shoes, belt, thigh strap, pouch); never face, hair, skin or background, they are not touched anyway; '
+        + 'to take off a jacket or coat name all of it: target "jacket, sleeves, collar"; '
+        + 'new_color = when the part changes colour (white tights over blue legs): white, black, red, blue, pink… or #RRGGBB; '
+        + 'prompt = what to draw in that place, Danbooru tags for art or a photo caption (for removing a jacket: what is under it, like "sleeveless bodysuit, bare arms"). '
+        + 'The LoRA and drawer of the last picture carry over by themselves; the pose of the picture is kept automatically. strength 0.6–1.0, default 1.0: lower keeps more of the old shape and colours. '
+        + 'If the result is not right, call again with other target words or another seed. Use comfy_generate for a new picture, this one to fix a part.',
+      parameters: {
+        type: 'object',
+        properties: {
+          image: { type: 'string', description: '"last" or an attached picture number.' },
+          target: { type: 'string', description: 'What to find and redraw, English: "jacket", "legs", "shoes".' },
+          prompt: { type: 'string', description: 'What to draw there.' },
+          negative: { type: 'string', description: 'What to avoid there (the old thing, like "jacket").' },
+          keep: { type: 'string', description: 'Parts to keep untouched, English, comma-separated: "shoes, belt, thigh strap".' },
+          new_color: { type: 'string', description: 'New main colour of the part, if it changes: "white" or "#RRGGBB".' },
+          strength: { type: 'number', description: '0.6–1.0, default 1.0.' },
+          grow: { type: 'integer', description: 'Pixels to widen the found area, default 24.' },
+          seed: { type: 'integer' },
+          lora: { type: 'string', description: 'Only to override the LoRA of the last picture.' },
+          drawer: { type: 'string', enum: ['art', 'photo', 'portrait'] },
+        },
+        required: ['target', 'prompt'],
+      },
+      async execute(args) {
+        const images = Array.isArray(ctx.attachedImages) ? ctx.attachedImages : [];
+        const res = await deps.comfyInpaint(args, { scope: comfyScope, images });
+        if (!res?.ok) return { ok: false, output: res?.error || 'Перерисовка не вышла.', error: res?.error || 'inpaint failed' };
+        const outArtifacts = [];
+        if (res.path && typeof registerArtifact === 'function') {
+          const art = registerArtifact(res.path, { target: 'ComfyUI' });
+          if (art) outArtifacts.push(art);
+        }
+        return {
+          ok: true,
+          output: [
+            res.redrawn
+              ? `Большая замена «${res.target}»: картинка перерисована целиком с той же позой и seed ${res.seed} (${res.drawerLabel}${res.lora ? `, LoRA ${res.lora}` : ''}); фон и мелочи могли немного поменяться.`
+              : `Перерисовала «${res.target}»: ${res.drawerLabel}${res.lora ? `, LoRA ${res.lora}` : ''} (seed ${res.seed}). Остальное осталось как было.`,
+            `Промпт: ${res.prompt}`,
+            'Картинка уже прикреплена к ответу: не вставляй её ссылкой, просто подпиши коротко. Ещё правка — снова comfy_inpaint (image "last").',
+          ].join('\n'),
+          ...(res.image && { image: res.image }),
+          ...(outArtifacts.length && { artifacts: outArtifacts }),
+        };
+      },
+    });
+  }
+
   if (!torQuarantined && typeof deps.comfyDraw === 'function') {
     items.push({
       name: 'comfy_generate',
@@ -718,8 +879,9 @@ function buildToolRegistry(deps = {}, ctx = {}) {
         + 'face = the picture numbers with the face to keep, comma-separated like "1,2,3" (or "me" = his own saved photos, only when he asks to draw himself); '
         + 'look_ref = the picture numbers whose character look to take (build, body, clothes, colours), like "4,5"; '
         + 'pose_ref = ONE picture number with the pose (pose_type pose for photos and drawn figures, sketch for rough lines or stick figures); the frame then follows that picture; the pose comes from the picture by itself, so describe only the NEW subject in the prompt and never the person in the reference (no "like the girl in the picture", no their gender, clothes or style). '
-        + 'Put everything else he asked (setting, light, details, what to add or change) into the prompt. His taste profile is applied automatically. '
-        + 'Returns the seed: to change a picture, pass the same seed with the changed prompt. When he states a lasting preference, also call comfy_profile update.',
+        + 'Put everything else he asked (setting, light, details, what to add or change) into the prompt. On the art drawer face and look_ref are not applied (they spoil NoobAI): for a character from his pictures, describe its look in detailed tags yourself (hair cut and colour, eyes, outfit pieces, accessories). His taste profile is applied automatically. '
+        + 'To change clothes on a picture you just drew while keeping the pose (white tights instead of the bodysuit legs, another outfit, another colour of a big part): call comfy_generate again with pose_ref "last", the SAME seed, and the full prompt with the new clothes, repeating the details that must stay (belt, straps, shoes). For a small local fix (take the jacket off, add holes, fix a hand) use comfy_inpaint instead. When he asks for a character or style he has a LoRA for (lora_train list), pass lora=<name>: it holds the look far better than any description. Returns the seed: to change a picture, pass the same seed with the changed prompt. When he states a lasting preference, also call comfy_profile update.'
+        + (mainLoras.length ? ` His LoRAs (use them whenever he names one): ${mainLoras.map((l) => `${l.name} = ${[l.trigger, ...(l.aliases || [])].join(' / ')}${l.note ? ` (${l.note})` : ''}`).join('; ')}.` : ''),
       parameters: {
         type: 'object',
         properties: {
@@ -728,7 +890,7 @@ function buildToolRegistry(deps = {}, ctx = {}) {
           framing: { type: 'string', enum: ['portrait', 'full_body', 'scene', 'wide', 'square'], description: 'Shot framing; sets the size.' },
           face: { type: 'string', description: 'Face to keep: attached picture numbers "1,2,3", or "me" (his saved photos), or "none".' },
           look_ref: { type: 'string', description: 'Attached picture numbers whose look to take (build, clothes, colours), like "4,5", or "none".' },
-          pose_ref: { type: 'string', description: 'ONE attached picture number with the pose, like "6" ("attached" = the first), or "none".' },
+          pose_ref: { type: 'string', description: 'ONE attached picture number with the pose, like "6" ("attached" = the first), "last" = the pose of your last picture, or "none".' },
           pose_type: { type: 'string', enum: ['pose', 'sketch'], description: 'pose = a photo or drawn figure with a visible body; sketch = rough lines or a stick figure.' },
           negative: { type: 'string', description: 'What to avoid in this picture.' },
           width: { type: 'integer', description: '512–1536, multiple of 64.' },
@@ -737,11 +899,18 @@ function buildToolRegistry(deps = {}, ctx = {}) {
           cfg: { type: 'number', description: '1–15.' },
           seed: { type: 'integer', description: 'Reuse a seed for variations of the same picture.' },
           use_profile: { type: 'boolean', description: 'false to draw without his profile.' },
+          lora: { type: 'string', description: 'One of his trained LoRAs (lora_train list) for a known character or style, like "gemini_brigade" or "gemini_brigade:0.8"; its trigger word and drawer are applied automatically.' },
         },
         required: ['prompt'],
       },
       async execute(args) {
         const images = Array.isArray(ctx.attachedImages) ? ctx.attachedImages : [];
+        // he named a character that has a LoRA ("нарисуй Gemini") but she drew by description: its LoRA on
+        // (live probe 2026-11-26 — without it "Gemini" came out as a random girl)
+        if (!args.lora) {
+          const hit = loraByAlias(mainLoras, `${ctx.userText || ''} ${args.prompt || ''}`);
+          if (hit) args = { ...args, lora: hit.name };
+        }
         // once per turn: if that picture fails ("no face"), her retry without it is respected
         if (!refFilled) {
           const filled = withSingleReference(args, images.length, ctx.userText);
@@ -758,7 +927,8 @@ function buildToolRegistry(deps = {}, ctx = {}) {
         return {
           ok: true,
           output: [
-            `Картинка готова: ${res.drawerLabel || 'ComfyUI'}${res.face ? `, лицо (${res.face} фото)` : ''}${res.look ? `, внешность (${res.look} фото)` : ''}${res.pose ? `, ${res.pose} с референса` : ''} (${res.width}×${res.height}, шаги ${res.steps}, CFG ${res.cfg}, seed ${res.seed}).`,
+            `Картинка готова: ${res.drawerLabel || 'ComfyUI'}${res.face ? `, лицо (${res.face} фото)` : ''}${res.look ? `, внешность (${res.look} фото)` : ''}${res.pose ? `, ${res.pose} с референса` : ''}${res.lora ? `, LoRA ${res.lora}` : ''} (${res.width}×${res.height}, шаги ${res.steps}, CFG ${res.cfg}, seed ${res.seed}).`,
+            ...(res.refsSkipped ? ['Лицо и внешность с фото на арте не переносятся (адаптеры портят NoobAI): взяты только из описания в промпте. Для точного сходства — рисовальщик photo или portrait.'] : []),
             `Промпт: ${res.prompt}`,
             `Негатив: ${res.negative}`,
             'Картинка уже прикреплена к ответу: не вставляй её ссылкой или markdown-картинкой, просто подпиши коротко. Для вариации — тот же seed и изменённый промпт.',
@@ -1325,4 +1495,4 @@ class ToolHarness {
 }
 
 module.exports = {
-  ToolHarness, withSingleReference, buildToolRegistry, coerceToolArgs, boundToolOutput, CONNECTOR_ICONS, resolveDockerHost, normalizeDockerAction };
+  ToolHarness, withSingleReference, loraByAlias, buildToolRegistry, coerceToolArgs, boundToolOutput, CONNECTOR_ICONS, resolveDockerHost, normalizeDockerAction };
