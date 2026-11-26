@@ -237,6 +237,29 @@ function profilePids(exe, dir, run = (args) => require('child_process').execFile
     && !/-contentproc/i.test(cmd) && cmd.toLowerCase().replace(/\//g, '\\').includes(want)).map(([pid]) => Number(pid)).filter(Boolean);
 }
 
+/** Main processes of the browser started with no profile at all (Windows brought it back after a reboot with
+ *  a bare command line: no profile, no port) — the one holding the default profile. */
+function barePids(exe, run = (args) => require('child_process').execFileSync('powershell.exe', args, { encoding: 'utf8', windowsHide: true, timeout: 15000 })) {
+  const name = path.basename(String(exe || ''));
+  if (!name || process.platform !== 'win32') return [];
+  const out = run(['-NoProfile', '-NonInteractive', '-Command',
+    `Get-CimInstance Win32_Process -Filter "Name='${name.replace(/'/g, "''")}'" | ForEach-Object { "$($_.ProcessId)\`t$($_.CommandLine)" }`]);
+  return String(out).split(/\r?\n/).map((l) => l.split('\t')).filter(([pid, cmd]) => pid && cmd
+    && !/-contentproc/i.test(cmd) && !/-?-profile\b|-P\s/i.test(cmd) && !/remote-debugging-port/i.test(cmd)).map(([pid]) => Number(pid)).filter(Boolean);
+}
+
+/** Windows restarts a browser that registered for it after a reboot — without the port (2026-11-27: her web
+ *  was down after every reboot). user.js turns that off for this profile; the session restore keeps the tabs,
+ *  and she opens the browser herself, with the port. */
+function noWindowsRestart(dir, io = fs) {
+  const file = path.join(dir, 'user.js');
+  const line = 'user_pref("toolkit.winRegisterApplicationRestart", false);';
+  try {
+    const cur = io.existsSync(file) ? io.readFileSync(file, 'utf8') : '';
+    if (!cur.includes('toolkit.winRegisterApplicationRestart')) io.writeFileSync(file, `${cur}${cur && !cur.endsWith('\n') ? '\n' : ''}${line}\n`);
+  } catch { /* the profile is not ours to write: nothing */ }
+}
+
 async function restartProfileBrowser(b, dir, port, opts) {
   const key = path.resolve(dir).toLowerCase();
   if (Date.now() - (lastRestart.get(key) || 0) < RESTART_GAP_MS) return false;
@@ -273,7 +296,17 @@ async function attach(opts, { visible = false } = {}) {
     }
     throw new Error(`К ${b ? b.name : 'браузеру'} уже подключена другая сессия управления (прошлая Капри не успела отключиться или другая программа). Перезапусти браузер с профилем «${opts.profileName || name}» — это её снимет.`);
   }
+  if (opts.profileHygiene !== false) noWindowsRestart(dir);
   if (busy(dir)) {
+    // open without the port (Windows brought it back after a reboot, or opened by hand): the same recovery as a
+    // stale session — this profile's browser restarted with the port, its tabs back from the session restore
+    const findPids = opts.findPids || ((exe, d) => { const p = profilePids(exe, d); return p.length ? p : barePids(exe); });
+    if (opts.autoRestart !== false && b && await restartProfileBrowser(b, dir, port, { ...opts, findPids })) {
+      for (let i = 0; i < (opts.startTries || 80); i++) {
+        await pause(opts.startPollMs ?? 250);
+        try { return { ctx: await connect(port), b, attached: true, restarted: true }; } catch { /* still starting */ }
+      }
+    }
     throw new Error(`Профиль «${opts.profileName || name}» открыт без порта управления. Закрой этот браузер — Капри откроет его сама (или запускай его из трея: «Браузер Капри → Открыть профиль»).`);
   }
   if (!b) throw new Error('Нет браузера для этого профиля');
@@ -575,6 +608,6 @@ async function openForSignIn(url, opts = {}) {
 }
 
 module.exports = {
-  readRendered, readRenderedMany, openSession, attach, herWindow, hasSession, releaseAll, ahmiaResults, profilePids, forgetWindows: () => kept.clear(), WINDOW_MARK, profileBusy, duckResults, DEFAULT_PORT, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
+  readRendered, readRenderedMany, openSession, attach, herWindow, hasSession, releaseAll, ahmiaResults, profilePids, barePids, noWindowsRestart, forgetWindows: () => kept.clear(), WINDOW_MARK, profileBusy, duckResults, DEFAULT_PORT, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
   engineOf, kindOf, CHALLENGE, KNOWN, MODES,
 };

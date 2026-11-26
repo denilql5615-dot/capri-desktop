@@ -261,7 +261,37 @@ test('your profile: not running → started as itself with the port (never throu
   const s = await browser.openSession({ app, pick, ...fast, profile: 'C:/p/MAIN', port: 9403, profileBusy: () => false, spawn: (exe, dir, port) => { spawned = { exe, dir, port }; }, connect, startPollMs: 0 });
   assert.deepStrictEqual(spawned, { exe: 'C:/x/librewolf.exe', dir: 'C:/p/MAIN', port: 9403 });
   await s.close();
-  await assert.rejects(browser.openSession({ app, pick, profile: 'C:/p/MAIN', profileName: 'MAIN', port: 9404, profileBusy: () => true, connect: async () => { throw new Error('refused'); }, spawn: () => { throw new Error('must not start a 2nd one'); } }), /Профиль «MAIN» открыт без порта управления/);
+  await assert.rejects(browser.openSession({ app, pick, profile: 'C:/p/MAIN', profileName: 'MAIN', port: 9404, profileBusy: () => true, findPids: () => [], connect: async () => { throw new Error('refused'); }, spawn: () => { throw new Error('must not start a 2nd one'); } }), /Профиль «MAIN» открыт без порта управления/);
+});
+
+test('your profile: open without the port (Windows brought it back after a reboot) → restarted with the port, tabs back', async () => {
+  browser.forgetWindows();
+  const killed = [];
+  let spawned = null;
+  let locked = true;
+  const s = await browser.openSession({
+    app, pick, ...fast, profile: 'C:/p/MAIN3', profileName: 'MAIN', port: 9409, startPollMs: 0,
+    profileBusy: () => locked,
+    findPids: () => [31576],
+    killPid: (pid) => { killed.push(pid); locked = false; },
+    spawn: (exe, dir, port) => { spawned = { dir, port }; },
+    connect: async () => { if (!spawned) throw new Error('refused'); return fakeAttached(); },
+  });
+  await s.close();
+  assert.deepEqual(killed, [31576]);
+  assert.deepEqual(spawned, { dir: 'C:/p/MAIN3', port: 9409 });
+});
+
+test('noWindowsRestart: user.js of the profile gets the pref once', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prof-'));
+  fs.writeFileSync(path.join(dir, 'user.js'), 'user_pref("a", 1);');
+  browser.noWindowsRestart(dir);
+  browser.noWindowsRestart(dir);
+  const text = fs.readFileSync(path.join(dir, 'user.js'), 'utf8');
+  assert.equal(text, 'user_pref("a", 1);\nuser_pref("toolkit.winRegisterApplicationRestart", false);\n');
 });
 
 test('answer, browser-only: the search page and the pages come from her browser, nothing is downloaded around it', async () => {
