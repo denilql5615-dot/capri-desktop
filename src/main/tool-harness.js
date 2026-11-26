@@ -6,6 +6,46 @@ const { URL } = require('node:url');
 
 const { readsNetwork } = require('./terminal-tool');
 
+/** The object starting at text[open] ('{'), by matching braces outside quoted strings; null when unbalanced. */
+function objectAt(text, open) {
+  let depth = 0;
+  let inStr = false;
+  for (let i = open; i < text.length; i += 1) {
+    const c = text[i];
+    if (inStr) {
+      if (c === '\\') i += 1;
+      else if (c === '"') inStr = false;
+    } else if (c === '"') inStr = true;
+    else if (c === '{') depth += 1;
+    else if (c === '}' && (depth -= 1) === 0) return text.slice(open, i + 1);
+  }
+  return null;
+}
+
+/**
+ * A tool call the model typed as text instead of a native call: {"action": "<tool>", "action_input": {...} or
+ * "{...}"} or {"name": "<tool>", "arguments": {...}}. Only a known tool; its arguments must parse as JSON (an
+ * action_input string with unescaped quotes is read by its braces). → { call, before } or null.
+ */
+function parseTextToolCall(text, byName) {
+  const t = String(text || '');
+  const m = t.match(/\{\s*"(?:action|name|tool|tool_name)"\s*:\s*"([A-Za-z0-9_]+)"\s*,\s*"(?:action_input|arguments|parameters|args|input)"\s*:\s*"?\s*(?=\{)/);
+  if (!m || !byName?.has(m[1])) return null;
+  let args = null;
+  // proper JSON: the whole object parses, its input an object or a JSON string ("{ \"drawer\": ... }")
+  try {
+    const outer = JSON.parse(objectAt(t, m.index));
+    const input = outer.action_input ?? outer.arguments ?? outer.parameters ?? outer.args ?? outer.input;
+    args = typeof input === 'string' ? JSON.parse(input) : input;
+  } catch {
+    // unescaped quotes inside the input string: the inner object read by its own braces
+    const body = objectAt(t, m.index + m[0].length);
+    try { args = body ? JSON.parse(body) : null; } catch { args = null; }
+  }
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
+  return { call: { function: { name: m[1], arguments: args } }, before: t.slice(0, m.index).trim() };
+}
+
 const DEFAULT_MAX_STEPS = 10; // search + reading a few pages + the answer needs more than 6
 // "Сейчас соберу ссылки…" with no tool call is a promise, not an answer: the loop asks to act (twice at most).
 const PROMISE_RE = /(?:^|[\s,.])(?:сейчас|щас|секунд\S*|минутк\S*|подожди|погоди|момент)(?:[\s,.!…]|$)|(?:^|[\s,])(?:соберу|поищу|найду|проверю|посмотрю|гляну|почитаю|прочитаю|открою|загружу|уточню|изучу|поищем|глянем)(?:[\s,.!…]|$)/i;
@@ -1288,6 +1328,20 @@ class ToolHarness {
       }
       lastTurn = turnRes;
 
+      // A call written as text (Danyal 2026-11-27: after a few pictures the 26B typed
+      // {"action": "comfy_generate", "action_input": "{ ... }"} into the chat and nothing was drawn): run it as a call.
+      if (process.argv.includes('--dev') && toolCalls.length === 0 && /"action"|"action_input"|"arguments"/.test(text)) {
+        console.log(`[harness] typed call? step=${step} canCallMore=${canCallMore} tools=${byName.size} comfy=${byName.has('comfy_generate')} parsed=${Boolean(parseTextToolCall(text, byName))} head=${JSON.stringify(text.slice(text.indexOf('{'), text.indexOf('{') + 60))}`);
+      }
+      if (canCallMore && toolCalls.length === 0) {
+        const typed = parseTextToolCall(text, byName);
+        if (typed) {
+          onStreamReset?.();
+          toolCalls = [typed.call];
+          text = typed.before;
+        }
+      }
+
       if (canCallMore && toolCalls.length > 0) {
         calledAnyTool = true;
         if (text) onStreamReset?.();
@@ -1540,4 +1594,4 @@ class ToolHarness {
 }
 
 module.exports = {
-  ToolHarness, withSingleReference, loraByAlias, buildToolRegistry, coerceToolArgs, boundToolOutput, CONNECTOR_ICONS, resolveDockerHost, normalizeDockerAction };
+  ToolHarness, withSingleReference, loraByAlias, parseTextToolCall, buildToolRegistry, coerceToolArgs, boundToolOutput, CONNECTOR_ICONS, resolveDockerHost, normalizeDockerAction };

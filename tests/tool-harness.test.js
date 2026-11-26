@@ -589,3 +589,27 @@ test('withSingleReference: "фото 1-3 — лицо, 4 и 5 — одежда, 
   assert.deepEqual(w({ prompt: 'x' }, 2, 'сделай фото, где 2 девушки - на пляже'), { prompt: 'x' });
   assert.deepEqual(w({ prompt: 'x' }, 2, 'фото 7 — поза'), { prompt: 'x' }); // no such picture
 });
+
+test('parseTextToolCall: a call typed as text (action_input string with raw quotes, or arguments object) becomes a call', () => {
+  const { parseTextToolCall } = require('../src/main/tool-harness');
+  const byName = new Map([['comfy_generate', {}]]);
+  const typed = 'Погнали.\n\n{ "action": "comfy_generate", "action_input": "{ "drawer": "art", "prompt": "gemini_brigade, on a bed {neon}", "seed": 0 }" }';
+  const r = parseTextToolCall(typed, byName);
+  assert.equal(r.call.function.name, 'comfy_generate');
+  assert.deepEqual(r.call.function.arguments, { drawer: 'art', prompt: 'gemini_brigade, on a bed {neon}', seed: 0 });
+  assert.equal(r.before, 'Погнали.');
+  const r2 = parseTextToolCall('{"name": "comfy_generate", "arguments": {"prompt": "x"}}', byName);
+  assert.deepEqual(r2.call.function.arguments, { prompt: 'x' });
+  assert.equal(parseTextToolCall('{"action": "rm_rf", "action_input": {"x": 1}}', byName), null);
+  assert.equal(parseTextToolCall('просто текст про {скобки}', byName), null);
+  assert.equal(parseTextToolCall('{"action": "comfy_generate", "action_input": "{ broken"}', byName), null);
+});
+
+test('parseTextToolCall: proper JSON with the input as an escaped JSON string', () => {
+  const { parseTextToolCall } = require('../src/main/tool-harness');
+  const byName = new Map([['comfy_generate', {}]]);
+  const text = `Погнали.\n\n${JSON.stringify({ action: 'comfy_generate', action_input: JSON.stringify({ drawer: 'art', prompt: 'gemini_brigade, on a bed', seed: 0 }) }, null, 2)}`;
+  const r = parseTextToolCall(text, byName);
+  assert.deepEqual(r.call.function.arguments, { drawer: 'art', prompt: 'gemini_brigade, on a bed', seed: 0 });
+  assert.equal(r.before, 'Погнали.');
+});
