@@ -114,10 +114,10 @@ function fakeAttached(seen = {}, { existing = [] } = {}) {
       isClosed: () => page.closed === true,
       goto: async (u) => { url = u; seen.opened.push(u); },
       title: async () => 'Page',
-      evaluate: async (fn) => (String(fn).includes('.result') ? [
+      evaluate: async (fn) => (String(fn).includes('.result') ? { kind: 'ddg', rows: [
         { title: 'Ad', href: 'https://duckduckgo.com/y.js?ad_domain=x', snippet: '' },
         { title: 'Real one', href: 'https://duckduckgo.com/l/?uddg=https%3A%2F%2Freal.example%2Fa&rut=1', snippet: 'about it' },
-      ] : long),
+      ] } : long),
       close: async () => { page.closed = true; seen.closed++; pages.splice(pages.indexOf(page), 1); },
     };
     pages.push(page);
@@ -356,4 +356,28 @@ test('readRendered: rejects redirects to non-http schemes and reports final redi
   const ok = await browser.readRendered('https://a.example/', { app, pick, ...fast, launch: redirLaunch('https://b.example/final') });
   assert.strictEqual(ok.url, 'https://b.example/final');
   assert.match(ok.text, /about the outage/);
+});
+
+test('searchAt: DuckDuckGo (and its onion) with safe search off, another engine as is', () => {
+  const ddg = new URL(browser.searchAt(null, 'a b'));
+  assert.equal(ddg.hostname, 'html.duckduckgo.com');
+  assert.equal(ddg.searchParams.get('q'), 'a b');
+  assert.equal(ddg.searchParams.get('kp'), '-2');
+  const onion = new URL(browser.searchAt('https://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/html/?q={q}', 'x'));
+  assert.equal(onion.searchParams.get('kp'), '-2');
+  assert.equal(browser.searchAt('https://example.org/s?q={q}', 'x'), 'https://example.org/s?q=x');
+  assert.equal(new URL(browser.searchAt('https://html.duckduckgo.com/html/?q={q}&kp=1', 'x')).searchParams.get('kp'), '1');
+});
+
+test('searxResults: direct links from our SearXNG page, one per site, its engines named; searchAt leaves it as is', () => {
+  const r = browser.searxResults([
+    { title: ' A ', href: 'https://www.a.example/x', snippet: ' one\n two ', engines: ['google cse', 'yahoo'] },
+    { title: 'A again', href: 'https://a.example/y', snippet: '' },
+    { title: 'B', href: 'https://b.example/', snippet: 's' },
+    { title: 'bad', href: 'javascript:void(0)' },
+  ]);
+  assert.deepEqual(r.map((x) => x.url), ['https://www.a.example/x', 'https://b.example/']);
+  assert.equal(r[0].snippet, 'one two');
+  assert.equal(r[0].engine, 'google cse, yahoo (SearXNG, браузер)');
+  assert.equal(browser.searchAt('http://192.168.0.107:8888/search?q={q}&safesearch=0', 'a b'), 'http://192.168.0.107:8888/search?q=a%20b&safesearch=0');
 });

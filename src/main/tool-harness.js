@@ -50,9 +50,14 @@ const DEFAULT_MAX_STEPS = 10; // search + reading a few pages + the answer needs
 // "Сейчас соберу ссылки…" with no tool call is a promise, not an answer: the loop asks to act (twice at most).
 const PROMISE_RE = /(?:^|[\s,.])(?:сейчас|щас|секунд\S*|минутк\S*|подожди|погоди|момент)(?:[\s,.!…]|$)|(?:^|[\s,])(?:соберу|поищу|найду|проверю|посмотрю|гляну|почитаю|прочитаю|открою|загружу|уточню|изучу|поищем|глянем)(?:[\s,.!…]|$)/i;
 const MAX_PROMISE_NUDGES = 2;
+// A long answer that ENDS by announcing the work (Danyal 2026-11-27: a 700-char plan, then "Запускаю процесс
+// поиска через Camoufox… вернусь с результатами" — and no call): its last lines are a promise too.
+const PROMISE_TAIL_RE = /(?:^|[\s,.(«"])(?:запускаю|начинаю|приступаю|вернусь|отпишусь|прочешу|пойду|иду|захожу|ищу|отправляюсь|сейчас|щас)(?:[\s,.!…»")]|$)/i;
 function isBarePromise(text) {
   const t = String(text || '').trim();
-  return t.length > 0 && t.length < 600 && PROMISE_RE.test(t) && !/https?:\/\//i.test(t);
+  if (!t || /https?:\/\//i.test(t)) return false;
+  if (t.length < 600 && PROMISE_RE.test(t)) return true;
+  return PROMISE_TAIL_RE.test(t.slice(-300));
 }
 // Danyal asked to look on the web, but the model answered from memory without a single call: ask once.
 // The 26B often names no reference even when he said which picture is which. His own words win where she
@@ -1565,6 +1570,8 @@ class ToolHarness {
       break;
     }
 
+    // --dev only: how the turn ended (no text: private turns stay private)
+    if (process.argv.includes('--dev')) console.log(`[harness] done reply=${finalReply.length} chars, last text=${String(lastTurn?.text || '').length}, tools=${loopMessages.filter((m) => m.role === 'tool').map((m) => m.tool_name).join(',') || 'none'}`);
     // a picture is attached to the answer itself: a markdown image the model wrote is made up (placeholder links)
     if (finalReply && (artifacts.images.length || artifacts.items.some((a) => a?.kind === 'image'))) {
       finalReply = finalReply.replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/[{[]\s*(?:image|картинка|изображение|photo|фото)\s*[}\]]/gi, '').replace(/\n{3,}/g, '\n\n').trim();
@@ -1594,4 +1601,4 @@ class ToolHarness {
 }
 
 module.exports = {
-  ToolHarness, withSingleReference, loraByAlias, parseTextToolCall, buildToolRegistry, coerceToolArgs, boundToolOutput, CONNECTOR_ICONS, resolveDockerHost, normalizeDockerAction };
+  ToolHarness, withSingleReference, loraByAlias, parseTextToolCall, isBarePromise, buildToolRegistry, coerceToolArgs, boundToolOutput, CONNECTOR_ICONS, resolveDockerHost, normalizeDockerAction };

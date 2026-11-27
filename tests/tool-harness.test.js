@@ -613,3 +613,14 @@ test('parseTextToolCall: proper JSON with the input as an escaped JSON string', 
   assert.deepEqual(r.call.function.arguments, { drawer: 'art', prompt: 'gemini_brigade, on a bed', seed: 0 });
   assert.equal(r.before, 'Погнали.');
 });
+
+test('isBarePromise: a long plan that ends announcing the search is a promise; a real long answer is not', () => {
+  const { isBarePromise } = require('../src/main/tool-harness');
+  const plan = `Принято. ${'План: зайду в браузер, проверю выдачу, отберу лучшее. '.repeat(14)}\n\nЗапускаю процесс поиска через Camoufox...\n\n(Сейчас я «прочешу» выдачу через браузер и вернусь с результатами)`;
+  assert.ok(plan.length > 600);
+  assert.equal(isBarePromise(plan), true);
+  assert.equal(isBarePromise('Щас поищу.'), true);
+  const answer = `${'Вот что нашлось по теме: факты, цифры и выводы. '.repeat(20)}Итого: лучше взять второй вариант, он дешевле и надёжнее.`;
+  assert.equal(isBarePromise(answer), false);
+  assert.equal(isBarePromise('Сейчас нашла: https://a.example'), false);
+});

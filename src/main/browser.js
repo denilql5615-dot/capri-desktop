@@ -204,6 +204,19 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 // the browser, its tabs and the profile stay as they were.
 const DEFAULT_PORT = 19339;
 
+/** The search page for a query. DuckDuckGo with its safe search off (kp=-2; Danyal 2026-11-27: the moderate
+ *  default hid whole topics from the local model's research), its own onion too; another engine untouched. */
+function searchAt(searchUrl, q) {
+  const at = String(searchUrl || 'https://html.duckduckgo.com/html/?q={q}').replace('{q}', encodeURIComponent(q));
+  try {
+    const u = new URL(at);
+    if (/duckduckgo\.com$|^duckduckgogg42\w*\.onion$/.test(u.hostname) && !u.searchParams.has('kp')) u.searchParams.set('kp', '-2');
+    return u.toString();
+  } catch {
+    return at;
+  }
+}
+
 /** The profile is open in a browser right now (Firefox holds parent.lock while running). */
 function profileBusy(dir, io = fs) {
   const lock = path.join(dir, 'parent.lock');
@@ -487,14 +500,26 @@ async function openSession(opts = {}) {
       }
     }
     try {
-      const at = (opts.searchUrl || 'https://html.duckduckgo.com/html/?q={q}').replace('{q}', encodeURIComponent(q));
+      const at = searchAt(opts.searchUrl, q);
       await page.goto(at, { waitUntil: 'domcontentloaded', timeout: Math.max(timeoutMs, opts.verifyUrl ? 30000 : 0) }).catch(() => {});
-      const raw = await page.evaluate(() => [...document.querySelectorAll('.result')].map((r) => {
-        const a = r.querySelector('a.result__a');
-        const s = r.querySelector('.result__snippet');
-        return a ? { title: a.innerText, href: a.href, snippet: s ? s.innerText : '' } : null;
-      }).filter(Boolean)).catch(() => []);
-      return duckResults(raw).slice(0, limit);
+      // DuckDuckGo's HTML page (Tor) or our SearXNG's (the open web, 2026-11-27): each has its own markup
+      const raw = await page.evaluate(() => {
+        const searx = [...document.querySelectorAll('article.result')];
+        if (searx.length) {
+          return { kind: 'searx', rows: searx.map((r) => {
+            const a = r.querySelector('h3 a');
+            const s = r.querySelector('p.content');
+            const engines = [...r.querySelectorAll('.engines span')].map((e) => e.innerText.trim()).filter(Boolean);
+            return a ? { title: a.innerText, href: a.href, snippet: s ? s.innerText : '', engines } : null;
+          }).filter(Boolean) };
+        }
+        return { kind: 'ddg', rows: [...document.querySelectorAll('.result')].map((r) => {
+          const a = r.querySelector('a.result__a');
+          const s = r.querySelector('.result__snippet');
+          return a ? { title: a.innerText, href: a.href, snippet: s ? s.innerText : '' } : null;
+        }).filter(Boolean) };
+      }).catch(() => ({ kind: 'ddg', rows: [] }));
+      return (raw.kind === 'searx' ? searxResults(raw.rows) : duckResults(raw.rows)).slice(0, limit);
     } finally {
       await done(page);
     }
@@ -548,6 +573,23 @@ function duckResults(raw) {
       seen.add(host);
     } catch { continue; }
     out.push({ title: String(r.title || '').trim().slice(0, 160), url, snippet: String(r.snippet || '').replace(/\s+/g, ' ').trim().slice(0, 300), engine: 'duckduckgo (браузер)' });
+  }
+  return out;
+}
+
+/** Our SearXNG's HTML results (opened in her browser): direct links, one per site, its engines named. */
+function searxResults(raw) {
+  const seen = new Set();
+  const out = [];
+  for (const r of raw || []) {
+    const url = String(r.href || '');
+    try {
+      const host = new URL(url).hostname.replace(/^www\./, '');
+      if (!/^https?:/.test(url) || seen.has(host)) continue;
+      seen.add(host);
+    } catch { continue; }
+    const engines = Array.isArray(r.engines) && r.engines.length ? r.engines.join(', ') : 'searxng';
+    out.push({ title: String(r.title || '').trim().slice(0, 160), url, snippet: String(r.snippet || '').replace(/\s+/g, ' ').trim().slice(0, 300), engine: `${engines} (SearXNG, браузер)` });
   }
   return out;
 }
@@ -608,6 +650,6 @@ async function openForSignIn(url, opts = {}) {
 }
 
 module.exports = {
-  readRendered, readRenderedMany, openSession, attach, herWindow, hasSession, releaseAll, ahmiaResults, profilePids, barePids, noWindowsRestart, forgetWindows: () => kept.clear(), WINDOW_MARK, profileBusy, duckResults, DEFAULT_PORT, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
+  readRendered, readRenderedMany, openSession, attach, herWindow, hasSession, releaseAll, ahmiaResults, profilePids, barePids, noWindowsRestart, searchAt, forgetWindows: () => kept.clear(), WINDOW_MARK, profileBusy, duckResults, searxResults, DEFAULT_PORT, openForSignIn, profileDir, candidates, resolve, installed, registered, systemDefault,
   engineOf, kindOf, CHALLENGE, KNOWN, MODES,
 };
