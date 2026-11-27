@@ -1448,6 +1448,23 @@ class PhoneBridge {
         res.writeHead(200, { 'content-type': /\.webm$/i.test(name) ? 'video/webm' : 'image/png', 'content-length': file.length });
         return res.end(file);
       }
+      // the phone's gallery (2026-11-27): /media?scope=chat|private|nsfw — the list; /media/<scope>/<name>[?thumb=1]
+      if (req.method === 'GET' && url.pathname === '/media') {
+        const g = this.d.mediaGallery?.();
+        if (!g) return this.send(res, 503, { ok: false, error: 'Галерея недоступна.' });
+        return this.send(res, 200, { ok: true, ...g.list(url.searchParams.get('scope') || 'chat', { offset: url.searchParams.get('offset'), limit: url.searchParams.get('limit') }) });
+      }
+      if (req.method === 'GET' && url.pathname.startsWith('/media/')) {
+        const g = this.d.mediaGallery?.();
+        const [scope, ...rest] = url.pathname.slice('/media/'.length).split('/');
+        const f = g?.file(decodeURIComponent(scope || ''), decodeURIComponent(rest.join('/')));
+        if (!f) return this.send(res, 404, { error: 'no picture' });
+        const thumb = url.searchParams.get('thumb') === '1' && !/^video\//.test(f.mime) ? this.d.mediaThumb?.(f.path) : null;
+        let body;
+        try { body = thumb || fs.readFileSync(f.path); } catch { return this.send(res, 404, { error: 'no picture' }); }
+        res.writeHead(200, { 'content-type': thumb ? 'image/jpeg' : f.mime, 'content-length': body.length, 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' });
+        return res.end(body);
+      }
       if (req.method === 'GET' && url.pathname.startsWith('/files/')) {
         const id = decodeURIComponent(url.pathname.slice('/files/'.length));
         const art = getArtifact(id);

@@ -2997,6 +2997,16 @@ async function applyPhone() {
         if (!photo.GALLERY_FILE.test(name)) return null;
         try { return fs.readFileSync(path.join(galleryDir(), name)); } catch { return null; }
       },
+      // the phone's gallery: chat / private / 18+ sections, each its own folder; thumbnails made here
+      mediaGallery: () => mediaGallery(),
+      mediaThumb: (file) => {
+        try {
+          const img = nativeImage.createFromPath(file);
+          if (img.isEmpty()) return null;
+          const { width } = img.getSize();
+          return (width > 360 ? img.resize({ width: 360, quality: 'good' }) : img).toJPEG(78);
+        } catch { return null; }
+      },
       applyControl: (patch) => {
         if (typeof patch.voice === 'boolean') updateConfig({ voice: { ...config.load().voice, tts: patch.voice } });
         if (typeof patch.router === 'boolean') updateConfig({ router: patch.router });
@@ -3342,6 +3352,17 @@ async function computerTask(messages, send, signal) {
 
 // ---------------------------------------------------------------- "скинь фото" (photo.js, comfy.js)
 const galleryDir = () => path.join(app.getPath('userData'), 'gallery');
+// the same three folders comfy pictures go to (harnessComfyDraw): chat gallery, media-private, media-18
+let mediaGalleryInst = null;
+function mediaGallery() {
+  if (!mediaGalleryInst) {
+    const { MediaGallery } = require('./media-gallery');
+    mediaGalleryInst = new MediaGallery({
+      dirOf: (scope) => (scope === 'chat' ? galleryDir() : path.join(workers.workDir(config.load()), scope === 'nsfw' ? 'media-18' : 'media-private')),
+    });
+  }
+  return mediaGalleryInst;
+}
 const comfy = new Comfy({
   appData: app.getPath('appData'),
   // the GPU for ComfyUI: every chat model out of it, whichever is loaded (they come back on the next message)
@@ -4451,6 +4472,9 @@ function councilMembers(cfg, only, { signal, notifyActivity, rector } = {}) {
 function browserOpts(cfg) {
   return {
     app, browser: cfg.capriBrowser,
+    // the search page in her browser: our SearXNG on the home server, no safe search (Danyal 2026-11-27:
+    // DuckDuckGo cut too much; it stays only for Tor, through its onion)
+    ...(cfg.searxUrl ? { searchUrl: `${String(cfg.searxUrl).replace(/\/$/, '')}/search?q={q}&safesearch=0&language=auto` } : {}),
     ...(cfg.capriBrowserProfile ? { profile: cfg.capriBrowserProfile, profileName: cfg.capriBrowserProfileName, port: cfg.capriBrowserPort } : {}),
   };
 }
